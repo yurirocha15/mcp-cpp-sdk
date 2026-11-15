@@ -15,6 +15,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -188,23 +189,28 @@ class HttpModernTest : public ::testing::Test {
 
 TEST(HttpModernStatus, ErrorCodesMapToTheSpecifiedStatuses) {
     using mcp::detail::http_status_for_error;
-    EXPECT_EQ(http_status_for_error(mcp::g_INVALID_PARAMS), http::status::bad_request);
-    EXPECT_EQ(http_status_for_error(mcp::g_HEADER_MISMATCH), http::status::bad_request);
-    EXPECT_EQ(http_status_for_error(mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY),
+    EXPECT_EQ(http_status_for_error(mcp::constants::jsonrpc::g_INVALID_PARAMS),
               http::status::bad_request);
-    EXPECT_EQ(http_status_for_error(mcp::g_UNSUPPORTED_PROTOCOL_VERSION), http::status::bad_request);
-    EXPECT_EQ(http_status_for_error(mcp::g_METHOD_NOT_FOUND), http::status::not_found);
-    EXPECT_EQ(http_status_for_error(mcp::g_INTERNAL_ERROR), http::status::ok);
-    EXPECT_EQ(http_status_for_error(mcp::g_INVALID_REQUEST), http::status::ok);
+    EXPECT_EQ(http_status_for_error(mcp::constants::jsonrpc::g_HEADER_MISMATCH),
+              http::status::bad_request);
+    EXPECT_EQ(http_status_for_error(mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY),
+              http::status::bad_request);
+    EXPECT_EQ(http_status_for_error(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION),
+              http::status::bad_request);
+    EXPECT_EQ(http_status_for_error(mcp::constants::jsonrpc::g_METHOD_NOT_FOUND),
+              http::status::not_found);
+    EXPECT_EQ(http_status_for_error(mcp::constants::jsonrpc::g_INTERNAL_ERROR), http::status::ok);
+    EXPECT_EQ(http_status_for_error(mcp::constants::jsonrpc::g_INVALID_REQUEST), http::status::ok);
 }
 
 TEST(HttpModernStatus, SerializedResponseErrorCodeMatchesTheParsedCode) {
     using mcp::detail::response_error_code;
     using mcp::detail::serialized_response_error_code;
-    const std::string error = json{{"jsonrpc", "2.0"},
-                                   {"id", 3},
-                                   {"error", {{"code", mcp::g_HEADER_MISMATCH}, {"message", "m"}}}}
-                                  .dump();
+    const std::string error =
+        json{{"jsonrpc", "2.0"},
+             {"id", 3},
+             {"error", {{"code", mcp::constants::jsonrpc::g_HEADER_MISMATCH}, {"message", "m"}}}}
+            .dump();
     const std::string result = json{{"jsonrpc", "2.0"}, {"id", 3}, {"result", {{"ok", true}}}}.dump();
     // A result whose text mentions the key still goes through the parse and yields no code.
     const std::string mentions_key =
@@ -215,7 +221,7 @@ TEST(HttpModernStatus, SerializedResponseErrorCodeMatchesTheParsedCode) {
     for (const auto* response : {&error, &result, &mentions_key}) {
         EXPECT_EQ(serialized_response_error_code(*response), response_error_code(*response));
     }
-    EXPECT_EQ(serialized_response_error_code(error), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(serialized_response_error_code(error), mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(serialized_response_error_code(result), std::nullopt);
     EXPECT_EQ(serialized_response_error_code(mentions_key), std::nullopt);
 }
@@ -253,22 +259,22 @@ TEST_F(HttpModernTest, ServesAModernRequestWithoutASession) {
 TEST_F(HttpModernTest, MissingProtocolVersionHeaderIsHeaderMismatch) {
     const auto body = call_tool(1, "echo");
     expect_error(exchange_one(20401, body, without(modern_headers(body), "MCP-Protocol-Version")), 400,
-                 mcp::g_HEADER_MISMATCH);
+                 mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 }
 
 TEST_F(HttpModernTest, ProtocolVersionHeaderMustMatchTheBody) {
     const auto body = call_tool(1, "echo");
     expect_error(
         exchange_one(20402, body, with(modern_headers(body), "MCP-Protocol-Version", "2026-07-29")),
-        400, mcp::g_HEADER_MISMATCH);
+        400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 }
 
 TEST_F(HttpModernTest, McpMethodIsRequiredAndMustMatch) {
     const auto body = make_modern_request(1, "tools/list");
     expect_error(exchange_one(20403, body, without(modern_headers(body), "Mcp-Method")), 400,
-                 mcp::g_HEADER_MISMATCH);
+                 mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     expect_error(exchange_one(20404, body, with(modern_headers(body), "Mcp-Method", "Tools/List")), 400,
-                 mcp::g_HEADER_MISMATCH);
+                 mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 }
 
 TEST_F(HttpModernTest, McpNameIsRequiredForTheThreeNamedMethodsOnly) {
@@ -286,15 +292,15 @@ TEST_F(HttpModernTest, McpNameIsRequiredForTheThreeNamedMethodsOnly) {
         list = co_await post(port, list_body, modern_headers(list_body));
     });
 
-    expect_error(call, 400, mcp::g_HEADER_MISMATCH);
-    expect_error(read, 400, mcp::g_HEADER_MISMATCH);
+    expect_error(call, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
+    expect_error(read, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(list.status, 200u) << list.body;
 }
 
 TEST_F(HttpModernTest, McpNameMustMatchTheBody) {
     const auto body = call_tool(1, "echo");
     expect_error(exchange_one(20406, body, with(modern_headers(body), "Mcp-Name", "other")), 400,
-                 mcp::g_HEADER_MISMATCH);
+                 mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 }
 
 TEST_F(HttpModernTest, McpNameInTheBase64SentinelIsDecodedBeforeComparing) {
@@ -312,7 +318,7 @@ TEST_F(HttpModernTest, McpNameInTheBase64SentinelIsDecodedBeforeComparing) {
 
     EXPECT_EQ(encoded.status, 200u) << encoded.body;
     EXPECT_TRUE(encoded.parsed().contains("result")) << encoded.body;
-    expect_error(undecodable, 400, mcp::g_HEADER_MISMATCH);
+    expect_error(undecodable, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 }
 
 TEST_F(HttpModernTest, HeaderNamesAreCaseInsensitive) {
@@ -332,9 +338,9 @@ TEST_F(HttpModernTest, UnsupportedVersionIsNamedBeforeMissingHeaders) {
     const auto no_method = exchange_one(20460, list, without(modern_headers(list), "Mcp-Method"));
     const auto no_name = exchange_one(20461, call, without(modern_headers(call), "Mcp-Name"));
 
-    expect_error(no_method, 400, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    expect_error(no_method, 400, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     EXPECT_EQ(no_method.parsed()["error"]["data"]["requested"], "2099-01-01");
-    expect_error(no_name, 400, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    expect_error(no_name, 400, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
 }
 
 TEST_F(HttpModernTest, UnsupportedVersionIs400WithTheServedVersions) {
@@ -342,7 +348,7 @@ TEST_F(HttpModernTest, UnsupportedVersionIs400WithTheServedVersions) {
     body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] = "1900-01-01";
     const auto reply = exchange_one(20409, body, modern_headers(body));
 
-    expect_error(reply, 400, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    expect_error(reply, 400, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     EXPECT_EQ(reply.parsed()["error"]["data"]["requested"], "1900-01-01");
     EXPECT_EQ(reply.parsed()["error"]["data"]["supported"],
               (json{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"}));
@@ -351,7 +357,7 @@ TEST_F(HttpModernTest, UnsupportedVersionIs400WithTheServedVersions) {
 TEST_F(HttpModernTest, UnknownMethodIs404WithAJsonRpcBody) {
     const auto body = make_modern_request(7, "no/such/method");
     const auto reply = exchange_one(20410, body, modern_headers(body));
-    expect_error(reply, 404, mcp::g_METHOD_NOT_FOUND);
+    expect_error(reply, 404, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(reply.parsed()["id"], 7);
 }
 
@@ -366,8 +372,8 @@ TEST_F(HttpModernTest, UnknownToolAndMissingCapabilitiesAre400InvalidParams) {
         body["params"]["_meta"].erase("io.modelcontextprotocol/clientCapabilities");
         missing_capabilities = co_await post_modern(port, body);
     });
-    expect_error(unknown_tool, 400, mcp::g_INVALID_PARAMS);
-    expect_error(missing_capabilities, 400, mcp::g_INVALID_PARAMS);
+    expect_error(unknown_tool, 400, mcp::constants::jsonrpc::g_INVALID_PARAMS);
+    expect_error(missing_capabilities, 400, mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(HttpModernTest, NotificationPostIsAccepted) {
@@ -461,7 +467,7 @@ TEST_F(HttpModernTest, InitializeWithAModernHeaderIsMethodNotFound) {
         sessions = manager.session_count();
     });
 
-    expect_error(modern, 404, mcp::g_METHOD_NOT_FOUND);
+    expect_error(modern, 404, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(modern.parsed()["id"], "i");
     EXPECT_EQ(modern.parsed()["error"]["data"]["supported"],
               (json{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"}));
@@ -535,7 +541,7 @@ TEST_F(HttpModernTest, PolicyWithoutLegacyRefusesInitializeWithoutCreatingASessi
         modern = co_await post_modern(port, make_modern_request(1, "tools/list"));
     });
 
-    expect_error(initialize, 404, mcp::g_METHOD_NOT_FOUND);
+    expect_error(initialize, 404, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(initialize.parsed()["error"]["data"]["supported"], (json{"2026-07-28"}));
     EXPECT_FALSE(initialize.session_id.has_value());
     EXPECT_EQ(sessions, 0u);
@@ -710,7 +716,7 @@ TEST_F(HttpModernTest, McpParamHeadersThatDoNotMatchAreHeaderMismatch) {
     ASSERT_EQ(replies.size(), 8u);
     for (const auto& [why, reply] : replies) {
         SCOPED_TRACE(why);
-        expect_error(reply, 400, mcp::g_HEADER_MISMATCH);
+        expect_error(reply, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
         EXPECT_NE(reply.parsed()["error"]["message"].get<std::string>().find("Mcp-Param-"),
                   std::string::npos)
             << reply.body;
@@ -721,7 +727,7 @@ TEST_F(HttpModernTest, McpParamHeadersThatDoNotMatchAreHeaderMismatch) {
 TEST_F(HttpModernTest, UnknownToolWithMcpParamHeadersIsInvalidParams) {
     const auto body = call_tool(1, "missing");
     expect_error(exchange_one(20426, body, with(modern_headers(body), "Mcp-Param-Region", "x")), 400,
-                 mcp::g_INVALID_PARAMS);
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(HttpModernTest, RepeatedStandardHeadersAreHeaderMismatch) {
@@ -741,7 +747,7 @@ TEST_F(HttpModernTest, RepeatedStandardHeadersAreHeaderMismatch) {
     });
     ASSERT_EQ(replies.size(), 3u);
     for (const auto& reply : replies) {
-        expect_error(reply, 400, mcp::g_HEADER_MISMATCH);
+        expect_error(reply, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
         EXPECT_NE(reply.parsed()["error"]["message"].get<std::string>().find("Duplicate"),
                   std::string::npos)
             << reply.body;
@@ -753,7 +759,7 @@ TEST_F(HttpModernTest, ModernHeaderWithoutMetaIsInvalidParams) {
         {"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}, {"params", json::object()}};
     const Headers headers = {{"MCP-Protocol-Version", "2026-07-28"}, {"Mcp-Method", "tools/list"}};
     const auto reply = exchange_one(20428, body, headers);
-    expect_error(reply, 400, mcp::g_INVALID_PARAMS);
+    expect_error(reply, 400, mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_FALSE(reply.parsed().contains("result")) << reply.body;
 }
 

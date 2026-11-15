@@ -5,6 +5,7 @@
 // Pattern used here:
 //   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/core.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/protocol/protocol.hpp>
@@ -326,9 +327,9 @@ class Context {
      * client in the request's `input_required` result, and the call returns once the client
      * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
      * declare the capability the question needs, the request is answered with
-     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
-     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
-     * cannot ask the client anything, and the call throws std::runtime_error.
+     * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
+     * when the client never retries in time; the handler's own answer then goes nowhere. Any other
+     * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request,
                                          InputOptions options = {}) {
@@ -370,9 +371,9 @@ class Context {
      * client in the request's `input_required` result, and the call returns once the client
      * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
      * declare the capability the question needs, the request is answered with
-     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
-     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
-     * cannot ask the client anything, and the call throws std::runtime_error.
+     * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
+     * when the client never retries in time; the handler's own answer then goes nowhere. Any other
+     * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<ElicitResult> elicit(const ElicitRequestParams& params, InputOptions options = {}) {
         if (!sender_) {
@@ -413,9 +414,9 @@ class Context {
      * client in the request's `input_required` result, and the call returns once the client
      * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
      * declare the capability the question needs, the request is answered with
-     * `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does when the client never
-     * retries in time; the handler's own answer then goes nowhere. Any other 2026-07-28 request
-     * cannot ask the client anything, and the call throws std::runtime_error.
+     * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
+     * when the client never retries in time; the handler's own answer then goes nowhere. Any other
+     * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
     Task<ListRootsResult> request_roots(InputOptions options = {}) {
         if (!sender_) {

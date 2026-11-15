@@ -15,11 +15,14 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -94,7 +97,7 @@ mcp::Task<Answers> exchange(asio::any_io_executor executor, unsigned short port)
     EXPECT_FALSE(session_id.empty());
     const Headers negotiated{
         {"Mcp-Session-Id", session_id},
-        {"MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)}};
+        {"MCP-Protocol-Version", std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)}};
     co_await send(executor, port, http::verb::post, make_initialized_notification().dump(), negotiated);
 
     const Headers older{{"Mcp-Session-Id", session_id}, {"MCP-Protocol-Version", "2025-03-26"}};

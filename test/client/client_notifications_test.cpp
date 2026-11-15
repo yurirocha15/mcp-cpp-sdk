@@ -12,6 +12,7 @@
 #include <chrono>
 #include <functional>
 #include <map>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -25,7 +26,7 @@ namespace {
 // differs from the shared helper in test_utils.hpp which returns a
 // complete response envelope.  Callers here wrap it inline.
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -279,7 +280,8 @@ TEST_F(ClientNotificationsTest, AnswerThatCannotBeEncodedIsAnError) {
     }
     for (const auto* id : {"r", "t"}) {
         ASSERT_TRUE(answers.count(id) == 1) << id;
-        EXPECT_EQ(answers[id]["error"]["code"], mcp::g_INTERNAL_ERROR) << answers[id].dump();
+        EXPECT_EQ(answers[id]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+            << answers[id].dump();
         EXPECT_EQ(answers[id]["error"]["message"], "The answer could not be encoded as JSON");
     }
 }
@@ -323,7 +325,7 @@ TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     auto response = nlohmann::json::parse(written_messages[2]);
     EXPECT_EQ(response["id"], "server-req-unknown");
     ASSERT_TRUE(response.contains("error"));
-    EXPECT_EQ(response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 namespace {
@@ -411,7 +413,7 @@ TEST_F(ClientNotificationsTest, MalformedCancelledNotificationDoesNotStopReadLoo
     EXPECT_TRUE(outcome.survived) << "the session died on one malformed notification: "
                                   << outcome.failure;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
 
 // `total` and `message` are optional. A peer that serializes absent optionals as explicit null --
@@ -482,7 +484,7 @@ TEST_F(ClientNotificationsTest, MessageNestedBeyondTheDepthLimitIsDroppedNotFata
 
     EXPECT_TRUE(outcome.survived) << "the session died on a deeply nested message: " << outcome.failure;
     ASSERT_EQ(outcome.reported.size(), 1U) << "expected only the message over the limit to be dropped";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_NE(outcome.reported.front().message.find("nests deeper than 128 levels"), std::string::npos)
         << "actual: " << outcome.reported.front().message;
 }
@@ -505,7 +507,7 @@ TEST_F(ClientNotificationsTest, ThrowingNotificationCallbackDoesNotStopReadLoop)
     EXPECT_TRUE(outcome.survived) << "the session died on a throwing application callback: "
                                   << outcome.failure;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the throw was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_NE(outcome.reported.front().message.find("notifications/message"), std::string::npos)
         << "actual: " << outcome.reported.front().message;
     EXPECT_NE(outcome.reported.front().message.find("callback blew up"), std::string::npos)

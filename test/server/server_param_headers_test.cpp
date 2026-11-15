@@ -10,6 +10,7 @@
 #include <boost/asio/io_context.hpp>
 #include <cstdint>
 #include <limits>
+#include <mcp/core/constants.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -284,7 +285,7 @@ TEST_F(ServerParamHeadersDispatch, CheckedOnlyWhenTheTransportSuppliesHeaders) {
     mismatched.param_headers = {{{"Region", "eu"}}};
     auto refused = dispatch(*server, route_call("us"), std::move(mismatched));
     ASSERT_TRUE(refused.contains("error")) << refused;
-    EXPECT_EQ(refused["error"]["code"], mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(refused["error"]["code"], mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 
     mcp::RequestContext matched;
     matched.param_headers = {{{"Region", "us"}}};
@@ -303,7 +304,7 @@ TEST_F(ServerParamHeadersDispatch, InvalidHeaderIsRefusedWhenItsArgumentIsAbsent
     invalid.param_headers = {{{"Region", std::string("eu\x01")}}};
     auto refused = dispatch(*server, call, std::move(invalid));
     ASSERT_TRUE(refused.contains("error")) << refused;
-    EXPECT_EQ(refused["error"]["code"], mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(refused["error"]["code"], mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 
     mcp::RequestContext valid;
     valid.param_headers = {{{"Region", "eu"}}};
@@ -335,7 +336,7 @@ TEST_F(ServerParamHeadersDispatch, RetryIsCheckedAndARefusedRetryCanBeRepeated) 
 
     const auto refused = dispatch(*server, retry, with_header("eu"));
     ASSERT_TRUE(refused.contains("error")) << refused;
-    EXPECT_EQ(refused["error"]["code"], mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(refused["error"]["code"], mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 
     const auto served = dispatch(*server, retry, with_header("us"));
     ASSERT_TRUE(served.contains("result")) << served;
@@ -368,17 +369,17 @@ TEST_F(ServerParamHeadersDispatch, EachServerChecksTheAnnotationsOfItsOwnSchema)
     auto second = make("Region");
     auto other = make("Zone");
     for (auto* server : {first.get(), second.get()}) {
-        EXPECT_EQ(answer(*server, "Region"), mcp::g_HEADER_MISMATCH);
+        EXPECT_EQ(answer(*server, "Region"), mcp::constants::jsonrpc::g_HEADER_MISMATCH);
         EXPECT_EQ(answer(*server, "Zone"), 0);
     }
-    EXPECT_EQ(answer(*other, "Zone"), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(answer(*other, "Zone"), mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(answer(*other, "Region"), 0);
 
     first.reset();
     second.reset();
     other.reset();
     auto again = make("Region");
-    EXPECT_EQ(answer(*again, "Region"), mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(answer(*again, "Region"), mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(answer(*again, "Zone"), 0);
 }
 

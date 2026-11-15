@@ -3,35 +3,33 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include "constants.hpp"
 
 namespace mcp::detail::json_text {
-
-inline constexpr std::uint64_t g_ONES = 0x0101010101010101ULL;
-inline constexpr std::uint64_t g_HIGH_BITS = 0x8080808080808080ULL;
-/// The bytes needs_attention() looks at in one step.
-inline constexpr std::size_t g_BLOCK_BYTES = sizeof(std::uint64_t);
 
 /// Whether any of the eight bytes of @p word is a control character, `"`, `\` or not ASCII.
 /// It can also flag a plain byte that follows a flagged one, which only costs a closer look.
 constexpr bool needs_attention(std::uint64_t word) {
-    const std::uint64_t control = (word - g_ONES * 0x20U) & ~word;
-    const std::uint64_t quote = word ^ (g_ONES * 0x22U);
-    const std::uint64_t backslash = word ^ (g_ONES * 0x5CU);
-    const std::uint64_t quote_found = (quote - g_ONES) & ~quote;
-    const std::uint64_t backslash_found = (backslash - g_ONES) & ~backslash;
-    return ((control | quote_found | backslash_found | word) & g_HIGH_BITS) != 0;
+    const std::uint64_t control = (word - mcp::detail::constants::json_text::g_ONES * 0x20U) & ~word;
+    const std::uint64_t quote = word ^ (mcp::detail::constants::json_text::g_ONES * 0x22U);
+    const std::uint64_t backslash = word ^ (mcp::detail::constants::json_text::g_ONES * 0x5CU);
+    const std::uint64_t quote_found = (quote - mcp::detail::constants::json_text::g_ONES) & ~quote;
+    const std::uint64_t backslash_found =
+        (backslash - mcp::detail::constants::json_text::g_ONES) & ~backslash;
+    return ((control | quote_found | backslash_found | word) &
+            mcp::detail::constants::json_text::g_HIGH_BITS) != 0;
 }
 
 /// Advances @p at past the bytes, eight at a time, that are none of those needs_attention()
 /// looks for, stopping on the block that holds the first that may be one.
 inline const unsigned char* skip_plain_blocks(const unsigned char* at, const unsigned char* end) {
-    while (static_cast<std::size_t>(end - at) >= g_BLOCK_BYTES) {
+    while (static_cast<std::size_t>(end - at) >= mcp::detail::constants::json_text::g_BLOCK_BYTES) {
         std::uint64_t word = 0;
         std::memcpy(&word, at, sizeof word);
         if (needs_attention(word)) {
             break;
         }
-        at += g_BLOCK_BYTES;
+        at += mcp::detail::constants::json_text::g_BLOCK_BYTES;
     }
     return at;
 }

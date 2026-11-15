@@ -1,6 +1,7 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 
+#include "../detail/constants.hpp"
 #include "../detail/json_text_scan.hpp"
 
 #include <algorithm>
@@ -11,26 +12,11 @@
 #include <cstring>
 #include <string_view>
 
+namespace encoding = mcp::detail::constants::encoding;
+
 namespace mcp::detail {
 
 namespace {
-
-/// For each byte below 0x80, the letter of its two-character escape, `u` for one written as
-/// `\u00XX`, or 0 for a byte written as it is.
-constexpr std::array<char, 0x80> g_ESCAPES = [] {
-    std::array<char, 0x80> escapes{};
-    for (std::size_t byte = 0; byte < 0x20; ++byte) {
-        escapes[byte] = 'u';
-    }
-    escapes['\b'] = 'b';
-    escapes['\t'] = 't';
-    escapes['\n'] = 'n';
-    escapes['\f'] = 'f';
-    escapes['\r'] = 'r';
-    escapes['"'] = '"';
-    escapes['\\'] = '\\';
-    return escapes;
-}();
 
 /// Whether @p byte is written as it is and needs no UTF-8 check.
 constexpr bool is_plain(unsigned char byte) {
@@ -209,7 +195,7 @@ class Writer {
         std::memcpy(data + length_, at, prefix);
         length_ += prefix;
         at = plain_end;
-        constexpr std::size_t block = json_text::g_BLOCK_BYTES;
+        constexpr std::size_t block = mcp::detail::constants::json_text::g_BLOCK_BYTES;
         while (at < end) {
             if (static_cast<std::size_t>(end - at) >= block) {
                 std::uint64_t word = 0;
@@ -238,14 +224,14 @@ class Writer {
                     at += sequence;
                     continue;
                 }
-                const char escape = g_ESCAPES[byte];
+                const char escape = mcp::detail::constants::json_dump::g_ESCAPES[byte];
                 if (escape == 0) {
                     data[length_++] = static_cast<char>(byte);
                 } else if (escape != 'u') {
                     data[length_++] = '\\';
                     data[length_++] = escape;
                 } else {
-                    const auto hex = constants::g_hex_digits;
+                    const auto hex = encoding::g_HEX_DIGITS;
                     data[length_++] = '\\';
                     data[length_++] = 'u';
                     data[length_++] = '0';

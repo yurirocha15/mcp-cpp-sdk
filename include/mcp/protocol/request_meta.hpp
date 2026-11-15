@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/protocol/notification.hpp>
 
@@ -11,25 +12,6 @@
 #include <vector>
 
 namespace mcp {
-
-/// @brief `_meta` key carrying a request's protocol version (2026-07-28 and later).
-inline constexpr std::string_view g_META_PROTOCOL_VERSION = "io.modelcontextprotocol/protocolVersion";
-
-/// @brief `_meta` key carrying the client capabilities relevant to a request.
-inline constexpr std::string_view g_META_CLIENT_CAPABILITIES =
-    "io.modelcontextprotocol/clientCapabilities";
-
-/// @brief `_meta` key carrying the client's name and version.
-inline constexpr std::string_view g_META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
-
-/// @brief `_meta` key carrying the minimum log level the server should emit for a request.
-inline constexpr std::string_view g_META_LOG_LEVEL = "io.modelcontextprotocol/logLevel";
-
-/// @brief `_meta` key carrying the server's name and version on a result.
-inline constexpr std::string_view g_META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
-
-/// @brief `_meta` key carrying the id of the subscriptions/listen request a message belongs to.
-inline constexpr std::string_view g_META_SUBSCRIPTION_ID = "io.modelcontextprotocol/subscriptionId";
 
 /**
  * @brief The per-request protocol fields of a 2026-07-28 request.
@@ -57,7 +39,8 @@ struct RequestMetadata {
 };
 
 /**
- * @brief The `data` of an UnsupportedProtocolVersionError (`g_UNSUPPORTED_PROTOCOL_VERSION`).
+ * @brief The `data` of an UnsupportedProtocolVersionError
+ * (`mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION`).
  */
 struct UnsupportedProtocolVersionData {
     std::vector<std::string> supported;  ///< Protocol versions the server supports.

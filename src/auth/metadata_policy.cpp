@@ -9,17 +9,15 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include "../detail/constants.hpp"
+
+namespace ipv4 = mcp::detail::constants::ipv4;
 
 namespace mcp::auth {
 
 namespace net = boost::asio;
 
 namespace {
-
-constexpr std::uint32_t g_octet_mask = 0xFFU;
-constexpr int g_octet1_shift = 24;
-constexpr int g_octet2_shift = 16;
-constexpr int g_octet3_shift = 8;
 
 /// Decompose an absolute URL into its scheme and authority without normalizing either.
 bool split_url(const std::string& url, std::string& scheme, std::string& authority) {
@@ -244,9 +242,9 @@ bool denies_origin(const std::vector<std::string>& origins, const std::string& c
 /// Classify an IPv4 address against the ranges that must never be reached by a metadata fetch.
 MetadataUrlDecision classify_v4(const MetadataFetchPolicy& policy, const net::ip::address_v4& address) {
     const auto value = address.to_uint();
-    const auto octet1 = static_cast<std::uint32_t>(value >> g_octet1_shift) & g_octet_mask;
-    const auto octet2 = static_cast<std::uint32_t>(value >> g_octet2_shift) & g_octet_mask;
-    const auto octet3 = static_cast<std::uint32_t>(value >> g_octet3_shift) & g_octet_mask;
+    const auto octet1 = static_cast<std::uint32_t>(value >> ipv4::g_OCTET1_SHIFT) & ipv4::g_OCTET_MASK;
+    const auto octet2 = static_cast<std::uint32_t>(value >> ipv4::g_OCTET2_SHIFT) & ipv4::g_OCTET_MASK;
+    const auto octet3 = static_cast<std::uint32_t>(value >> ipv4::g_OCTET3_SHIFT) & ipv4::g_OCTET_MASK;
 
     if (octet1 == 127) {
         return policy.allow_plain_http_loopback ? MetadataUrlDecision::allowed

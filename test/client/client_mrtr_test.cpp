@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <functional>
 #include <istream>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -394,7 +395,7 @@ TEST(ClientMrtr, CallTimeoutCoversTheInputHandlers) {
         failure = co_await failure_of(*harness.client, "tools/call", params, options);
         release = true;
     });
-    EXPECT_EQ(failure.code, mcp::g_REQUEST_TIMEOUT) << failure.message;
+    EXPECT_EQ(failure.code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT) << failure.message;
     EXPECT_EQ(harness.requests("tools/call").size(), 1u);
 }
 
@@ -414,7 +415,7 @@ TEST(ClientMrtr, TooManyQuestionsInOneResultAreRefused) {
         const json params = tool_params();
         failure = co_await failure_of(*harness.client, "tools/call", params);
     });
-    EXPECT_EQ(failure.code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(failure.code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_NE(failure.message.find("max_input_requests"), std::string::npos) << failure.message;
     EXPECT_TRUE(handler_calls().empty());
 }
@@ -434,7 +435,7 @@ TEST(ClientMrtr, QuestionThatCannotBeDecodedIsAnMcpError) {
         const json params = tool_params();
         failure = co_await failure_of(*harness.client, "tools/call", params);
     });
-    EXPECT_EQ(failure.code, mcp::g_INVALID_REQUEST) << failure.message;
+    EXPECT_EQ(failure.code, mcp::constants::jsonrpc::g_INVALID_REQUEST) << failure.message;
     EXPECT_NE(failure.message.find("cannot be decoded"), std::string::npos) << failure.message;
 }
 
@@ -479,7 +480,7 @@ TEST(ClientMrtr, CancelDuringRound) {
         failure = co_await failure_of(*harness.client, "tools/call", params, options);
         EXPECT_EQ(harness.client->pending_request_count(), 0u);
     });
-    EXPECT_EQ(failure.code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(failure.code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(harness.requests("tools/call").size(), 2u);
 }
 
@@ -676,7 +677,7 @@ TEST(ClientMrtr, InputRequiredOnOtherMethodRejected) {
         const json params = json::object();
         listing = co_await failure_of(*harness.client, "tools/list", params);
     });
-    EXPECT_EQ(listing.code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(listing.code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_NE(listing.message.find("input_required"), std::string::npos) << listing.message;
     EXPECT_EQ(harness.requests("tools/list").size(), 1u);
     EXPECT_TRUE(handler_calls().empty());
@@ -691,7 +692,7 @@ TEST(ClientMrtr, EmptyInputRequiredRejected) {
         const json params = tool_params();
         failure = co_await failure_of(*harness.client, "tools/call", params);
     });
-    EXPECT_EQ(failure.code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(failure.code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_EQ(harness.requests("tools/call").size(), 1u);
 }
 

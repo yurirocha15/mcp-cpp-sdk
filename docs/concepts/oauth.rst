@@ -629,7 +629,7 @@ Request body size
 
 Both transports cap the HTTP request body they will read, answering
 ``413 Payload Too Large`` and closing the connection beyond it. The default is
-:cpp:var:`mcp::constants::g_default_max_request_body_bytes`, 8 MiB, and
+:cpp:var:`mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES`, 8 MiB, and
 ``set_max_request_body_bytes`` overrides it.
 
 The headers are read first, and the origin and bearer checks run on them, so

@@ -16,11 +16,14 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -247,7 +250,7 @@ class HttpServerModernTest : public ::testing::Test {
         if (session_id) {
             headers.emplace_back("MCP-Session-Id", *session_id);
             headers.emplace_back("MCP-Protocol-Version",
-                                 std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+                                 std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
         }
         return post(std::move(body), std::move(headers));
     }
@@ -351,12 +354,12 @@ TEST_F(HttpServerModernTest, ErrorsUseTheSpecifiedStatuses) {
     });
 
     ASSERT_EQ(replies.size(), 5u);
-    expect_error(replies[0].second, 400, mcp::g_HEADER_MISMATCH);
-    expect_error(replies[1].second, 400, mcp::g_INVALID_PARAMS);
-    expect_error(replies[2].second, 400, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    expect_error(replies[0].second, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
+    expect_error(replies[1].second, 400, mcp::constants::jsonrpc::g_INVALID_PARAMS);
+    expect_error(replies[2].second, 400, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     EXPECT_EQ(replies[2].second.parsed()["error"]["data"]["requested"], "2099-01-01");
-    expect_error(replies[3].second, 404, mcp::g_METHOD_NOT_FOUND);
-    expect_error(replies[4].second, 400, mcp::g_INVALID_PARAMS);
+    expect_error(replies[3].second, 404, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
+    expect_error(replies[4].second, 400, mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_EQ(transport_->header_mismatch_rejections(), 1u);
 }
 
@@ -372,8 +375,8 @@ TEST_F(HttpServerModernTest, McpParamHeadersAreCheckedAgainstTheTool) {
     });
 
     EXPECT_EQ(matched.status, 200u) << matched.body;
-    expect_error(mismatched, 400, mcp::g_HEADER_MISMATCH);
-    expect_error(missing, 400, mcp::g_HEADER_MISMATCH);
+    expect_error(mismatched, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
+    expect_error(missing, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(transport_->header_mismatch_rejections(), 2u);
 }
 
@@ -407,7 +410,7 @@ TEST_F(HttpServerModernTest, InitializeWithAModernHeaderIsMethodNotFound) {
         modern = co_await post(make_initialize_request("i"), modern_header);
         unknown = co_await post(make_initialize_request("u"), unknown_header);
     });
-    expect_error(modern, 404, mcp::g_METHOD_NOT_FOUND);
+    expect_error(modern, 404, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(modern.parsed()["id"], "i");
     EXPECT_EQ(modern.parsed()["error"]["data"]["supported"], (json{"2025-11-25", "2026-07-28"}));
     EXPECT_FALSE(modern.session_id.has_value());
@@ -437,7 +440,7 @@ TEST_F(HttpServerModernTest, WrapperHandingOverTheTransportIsServedAsIt) {
 
     EXPECT_EQ(logged.status, 200u) << logged.body;
     EXPECT_EQ(transport_->event_store().size(), stored_before);
-    expect_error(missing_param, 400, mcp::g_HEADER_MISMATCH);
+    expect_error(missing_param, 400, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(transport_->header_mismatch_rejections(), 1u);
 }
 
@@ -481,7 +484,7 @@ TEST_F(HttpServerModernTest, EndingTheLegacySessionLeavesModernRequestsRunning) 
         co_await wait_until([this] { return held_started_.load(); });
         const Headers session_headers = {
             {"MCP-Session-Id", session_id},
-            {"MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)}};
+            {"MCP-Protocol-Version", std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)}};
         deleted = co_await send(io_ctx_.get_executor(), transport_->port(), http::verb::delete_, "",
                                 session_headers);
         release_held_.store(true);
@@ -572,7 +575,7 @@ TEST_F(HttpServerModernTest, PolicyWithoutLegacyAnswersWithTheHttpStatusesItShou
         remove = co_await send(io_ctx_.get_executor(), transport_->port(), http::verb::delete_, "", {});
     });
     EXPECT_EQ(initialize.status, 404u);
-    EXPECT_EQ(initialize.parsed()["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(initialize.parsed()["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(initialize.parsed()["error"]["data"]["supported"], (json{"2026-07-28"}));
     EXPECT_EQ(get.status, 405u);
     EXPECT_EQ(get.allow, "POST");
@@ -685,5 +688,5 @@ TEST_F(HttpServerModernTest, RequestsQueuedBeforeTheServerBindsHaveNoStream) {
     EXPECT_EQ(logged.content_type, "application/json") << logged.body;
     EXPECT_TRUE(logged.parsed()["result"]["structuredContent"]["logged"].get<bool>()) << logged.body;
     EXPECT_EQ(transport_->event_store().size(), stored_before);
-    expect_error(listened, 404, mcp::g_METHOD_NOT_FOUND);
+    expect_error(listened, 404, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }

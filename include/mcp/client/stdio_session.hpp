@@ -2,6 +2,7 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
@@ -61,9 +62,9 @@ struct StdioSessionOptions {
  * it, and when the process ends without the session or the transport having asked it to, starts
  * another one (as StdioSessionOptions::restart allows) and connects a new Client.
  *
- * Calls on the previous Client fail with `g_CONNECTION_CLOSED` and its subscriptions end as
- * SubscriptionEnd::eDropped; the application then calls the new client() again. A modern-era
- * server keeps no state between requests, so the new Client carries on from there; a legacy
+ * Calls on the previous Client fail with `mcp::constants::jsonrpc::g_CONNECTION_CLOSED` and its
+ * subscriptions end as SubscriptionEnd::eDropped; the application then calls the new client() again. A
+ * modern-era server keeps no state between requests, so the new Client carries on from there; a legacy
  * session starts over with the initialize handshake that connect() performs.
  *
  * A server that has not finished connecting never triggers a restart: start() fails and shuts the

@@ -36,7 +36,7 @@ done
 **What it demonstrates:**
 - `ctx.report_progress()` for real-time progress updates
 - `ctx.is_cancelled()` for cancellation detection
-- Client-side cancellation requests; in a 2026-07-28 session the cancelled call fails with `g_REQUEST_CANCELLED`
+- Client-side cancellation requests; in a 2026-07-28 session the cancelled call fails with `mcp::constants::jsonrpc::g_REQUEST_CANCELLED`
 - `RequestOptions::log_level` asking for the log messages of one request
 
 **Key APIs:**
@@ -275,7 +275,7 @@ done
 **What it demonstrates:**
 - Registration refusing a tool whose schema cannot be used, with `SchemaError::category()` (a misspelled `type`, a remote `$ref`)
 - Arguments that break the input schema answered with an `isError` result listing the violations, without running the handler
-- A `structuredContent` that breaks the tool's `outputSchema` refused by the server with `g_INTERNAL_ERROR`
+- A `structuredContent` that breaks the tool's `outputSchema` refused by the server with `mcp::constants::jsonrpc::g_INTERNAL_ERROR`
 - The client's own check of `structuredContent`, which throws `StructuredContentError`, against a server whose output check is turned off
 - `Server::tool_validation_stats()`
 
