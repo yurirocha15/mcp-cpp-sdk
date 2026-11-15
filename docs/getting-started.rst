@@ -182,8 +182,11 @@ Quick Start: Minimal Client
 
 .. note::
 
-   A convenience ``client.run_stdio()`` API is planned. For now, clients
-   require manual ``io_context`` setup as shown below.
+   A client runs on an ``io_context`` that the application owns, as below. To
+   launch a stdio server as a child process and talk to it, give the ``Client`` a
+   ``StdioClientTransport``, or use ``StdioClientSession``, which also restarts
+   the server when it exits; see :doc:`concepts/transports` and the
+   ``stdio_launch`` example.
 
 Here's a minimal MCP client that connects to an already running Streamable HTTP
 server and calls a tool:
@@ -219,12 +222,17 @@ server and calls a tool:
                std::cout << "Result: " << nlohmann::json(result).dump(2) << std::endl;
 
                client.close();
-           }(),
+           },
            boost::asio::detached
        );
 
        io.run();
    }
+
+``co_spawn`` is given the lambda itself, not the result of calling it: it keeps
+the lambda alive until the coroutine finishes. A coroutine started from a
+temporary lambda would read the lambda's captures after the temporary is
+destroyed.
 
 ``connect()`` returns a ``ConnectResult`` with the ``era`` of the session
 (``ProtocolEra::eModern`` for protocol revision 2026-07-28 or ``eLegacy`` for

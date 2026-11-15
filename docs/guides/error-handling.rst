@@ -160,7 +160,7 @@ Clients should always wrap server calls in ``try-catch`` blocks to handle potent
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
    :start-after: // ========== TEST 1: Catch exception from thrown error ==========
-   :end-before: // Wait between tests
+   :end-before: // ========== TEST 2: Handle error JSON response ==========
 
 Request Timeouts
 ~~~~~~~~~~~~~~~~
@@ -251,7 +251,7 @@ If the server returns a successful JSON-RPC response but the tool itself failed 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
    :start-after: // ========== TEST 2: Handle error JSON response ==========
-   :end-before: // Wait between tests
+   :end-before: // ========== TEST 3: Catch exception from invalid JSON access ==========
 
 Graceful Degradation Patterns
 -----------------------------

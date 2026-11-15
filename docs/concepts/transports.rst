@@ -266,7 +266,8 @@ The following example shows how to use the convenience method:
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp
-   :lines: 83-99
+   :start-after: // ========== CONVENIENCE SETUP (this example) ==========
+   :end-before: constexpr auto startup_delay
    :dedent: 8
 
 Manual HTTP Configuration
@@ -278,7 +279,8 @@ yourself.
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp
-   :lines: 39-49
+   :start-after: using namespace mcp;
+   :end-before: // ========== CONVENIENCE SETUP (this example) ==========
    :dedent: 8
 
 WebSocket Transport
@@ -336,7 +338,8 @@ both ends of the transport are correctly linked.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
-   :lines: 32-39
+   :start-after: // Create bidirectional memory transport pair
+   :end-before: std::cout << "[Main] Created MemoryTransport pair
    :dedent: 8
 
 Usage in Integration Tests
@@ -347,7 +350,8 @@ transports, your server and client code remain identical to production.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
-   :lines: 43-66
+   :start-after: std::cout << "[Main] Transports are bidirectionally connected
+   :end-before: // ========== RUN IO CONTEXT ==========
    :dedent: 8
 
 A default ``Client`` and a default ``Server`` speak protocol revision 2026-07-28
@@ -365,7 +369,8 @@ further simplifies transport creation by binding them to a specific runtime.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
-   :lines: 88-99
+   :start-after: void demo_transport_factory() {
+   :end-before: std::cout << "[Main] Demo 2 completed
    :dedent: 4
 
 Choosing the Right Transport

@@ -864,6 +864,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   the same process, such as the system one that libcurl loads, then called the
   SDK's copy with objects of its own and could crash. On platforms other than
   Windows and macOS the library now keeps those symbols out of its exports.
+- Examples and documentation that did not work as written: the
+  getting-started client handed `co_spawn` a coroutine of a temporary lambda,
+  which read the lambda's captures after it was destroyed; the server refused
+  the curl commands of the llama.cpp and LLDB example READMEs; the LLDB example
+  stopped answering requests while LLDB waited for the debugged process; the
+  stdio client example read its own standard input instead of launching a
+  server; `graceful_shutdown()` did not say that its watchdog keeps
+  `io_context::run()` going until the timeout unless cancelled; and several
+  pages included the wrong lines of the examples.
 - With libc++, an exception of `nlohmann_json` that the shared library
   throws, such as the `nlohmann::json::type_error` 316 of
   `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be

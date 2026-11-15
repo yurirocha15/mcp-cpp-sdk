@@ -43,7 +43,9 @@ For more complex resources, you can use the structured protocol types:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 126-142
+   :start-after: // Resource: config://app/settings
+   :end-before: // Resource template: users://{user_id}/profile
+   :dedent: 8
    :linenos:
    :caption: Example of a structured static resource registration.
 
@@ -106,7 +108,9 @@ polling loop or opening a file watch) when a client expresses interest.
 
 .. literalinclude:: ../../examples/features/legacy_protocols.cpp
    :language: cpp
-   :lines: 164-165
+   :start-after: auto unsubscribed = std::make_shared<std::vector<std::string>>();
+   :end-before: auto transport = start_server(server, executor);
+   :dedent: 4
    :linenos:
    :caption: Handling resource subscriptions and unsubscriptions.
 
@@ -133,7 +137,9 @@ again; delivery and refresh timing still depend on the connection and client.
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
-   :lines: 165-166
+   :start-after: // ========== SERVER SENDS, CLIENT READS ==========
+   :end-before: std::cout << "[Server] Triggering notify_tools_list_changed
+   :dedent: 20
    :linenos:
    :caption: Triggering a resource update notification.
 
