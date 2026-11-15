@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/protocol/extensions.hpp>
@@ -26,18 +27,6 @@
  */
 
 namespace mcp::apps {
-
-/// Identifier of the extension in `capabilities.extensions`.
-inline constexpr std::string_view g_EXTENSION_ID = "io.modelcontextprotocol/ui";
-
-/// MIME type of an HTML view.
-inline constexpr std::string_view g_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
-
-/// URI scheme every view resource uses, with the `://` separator.
-inline constexpr std::string_view g_URI_PREFIX = "ui://";
-
-/// Deprecated flat `_meta` key that names a tool's view; read for compatibility, never written.
-inline constexpr std::string_view g_LEGACY_RESOURCE_URI_KEY = "ui/resourceUri";
 
 /// Origins a view may reach, each list mapping to one Content Security Policy directive.
 struct ResourceCsp {
@@ -237,7 +226,9 @@ inline void from_json(const nlohmann::json& json_obj, ToolMeta& meta) {
 
 /// @return Whether @p uri names a view resource: it starts with `ui://`.
 [[nodiscard]] inline bool is_view_uri(std::string_view uri) {
-    return uri.size() > g_URI_PREFIX.size() && uri.substr(0, g_URI_PREFIX.size()) == g_URI_PREFIX;
+    return uri.size() > mcp::constants::apps::g_URI_PREFIX.size() &&
+           uri.substr(0, mcp::constants::apps::g_URI_PREFIX.size()) ==
+               mcp::constants::apps::g_URI_PREFIX;
 }
 
 /// @return `{"ui": meta}`, the `_meta` object that carries @p meta on a resource or a tool.
@@ -270,7 +261,8 @@ template <typename Meta>
     }
     if (!result || !result->resourceUri) {
         if (tool.meta && tool.meta->is_object()) {
-            const auto legacy = tool.meta->find(std::string(g_LEGACY_RESOURCE_URI_KEY));
+            const auto legacy =
+                tool.meta->find(std::string(mcp::constants::apps::g_LEGACY_RESOURCE_URI_KEY));
             if (legacy != tool.meta->end() && legacy->is_string()) {
                 if (!result) {
                     result = ToolMeta{};
@@ -322,12 +314,14 @@ template <typename Meta>
 
 /// The settings object of the extension on the client side.
 [[nodiscard]] inline nlohmann::json client_settings() {
-    return nlohmann::json{{"mimeTypes", nlohmann::json::array({std::string(g_RESOURCE_MIME_TYPE)})}};
+    return nlohmann::json{
+        {"mimeTypes",
+         nlohmann::json::array({std::string(mcp::constants::apps::g_RESOURCE_MIME_TYPE)})}};
 }
 
 /// Declares MCP Apps support in @p capabilities, as a host does. Replaces an earlier declaration.
 inline void declare_support(ClientCapabilities& capabilities) {
-    declare_extension(capabilities, g_EXTENSION_ID, client_settings());
+    declare_extension(capabilities, mcp::constants::apps::g_EXTENSION_ID, client_settings());
 }
 
 /**
@@ -337,7 +331,7 @@ inline void declare_support(ClientCapabilities& capabilities) {
  *         `text/html;profile=mcp-app`.
  */
 [[nodiscard]] inline bool supports_views(const ClientCapabilities& capabilities) {
-    const auto settings = extension_settings(capabilities, g_EXTENSION_ID);
+    const auto settings = extension_settings(capabilities, mcp::constants::apps::g_EXTENSION_ID);
     if (!settings) {
         return false;
     }
@@ -346,7 +340,8 @@ inline void declare_support(ClientCapabilities& capabilities) {
         return false;
     }
     return std::any_of(types->begin(), types->end(), [](const nlohmann::json& type) {
-        return type.is_string() && type.get_ref<const std::string&>() == g_RESOURCE_MIME_TYPE;
+        return type.is_string() &&
+               type.get_ref<const std::string&>() == mcp::constants::apps::g_RESOURCE_MIME_TYPE;
     });
 }
 

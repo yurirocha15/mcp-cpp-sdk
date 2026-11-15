@@ -2,6 +2,7 @@
 
 #include <mcp/auth/client_authentication.hpp>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -27,22 +28,11 @@
 
 namespace mcp::auth {
 
-/// Identifier of the extension in `capabilities.extensions`.
-inline constexpr std::string_view g_ENTERPRISE_AUTHORIZATION_EXTENSION_ID =
-    "io.modelcontextprotocol/enterprise-managed-authorization";
-
-/// Token type of an OpenID Connect ID token.
-inline constexpr std::string_view g_ID_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:id_token";
-/// Token type of a refresh token the IdP issued for a SAML assertion.
-inline constexpr std::string_view g_REFRESH_TOKEN_TYPE =
-    "urn:ietf:params:oauth:token-type:refresh_token";
-/// Token type of a SAML 2.0 assertion.
-inline constexpr std::string_view g_SAML2_TYPE = "urn:ietf:params:oauth:token-type:saml2";
-
 /// The identity assertion the IdP issued when the user signed in.
 struct IdentityAssertion {
     std::string token;  ///< The ID token, refresh token or assertion.
-    std::string token_type{std::string(g_ID_TOKEN_TYPE)};  ///< Its token type URN.
+    std::string token_type{
+        std::string(mcp::constants::oauth::g_ID_TOKEN_TYPE)};  ///< Its token type URN.
 };
 
 /// Supplies the user's current identity assertion. Called for every token exchange, so an

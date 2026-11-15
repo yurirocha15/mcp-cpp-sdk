@@ -32,6 +32,7 @@
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/http_server.hpp>
@@ -39,6 +40,7 @@
 
 // Reach-in for retained-state assertions; see the header. Not a public SDK header.
 #include "../../src/auth/oauth_internal.hpp"
+#include "../../src/detail/constants.hpp"
 #include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/socket_gate.hpp"
@@ -6091,7 +6093,8 @@ mcp::Task<RawChallenge> fetch_unauthenticated_challenge(const asio::any_io_execu
     const auto body = json{{"jsonrpc", "2.0"},
                            {"method", "initialize"},
                            {"params",
-                            {{"protocolVersion", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+                            {{"protocolVersion",
+                              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
                              {"clientInfo", {{"name", "auth-pairing-test"}, {"version", "1"}}},
                              {"capabilities", json::object()}}},
                            {"id", 1}}
@@ -6102,11 +6105,12 @@ mcp::Task<RawChallenge> fetch_unauthenticated_challenge(const asio::any_io_execu
     co_await stream.async_connect(endpoints, asio::use_awaitable);
 
     http::request<http::string_body> request(http::verb::post, "/mcp",
-                                             mcp::constants::g_http_version_11);
+                                             mcp::detail::constants::http_client::g_VERSION_11);
     request.set(http::field::host, "127.0.0.1:" + std::to_string(port));
     request.set(http::field::content_type, "application/json");
     request.set(http::field::accept, "application/json, text/event-stream");
-    request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    request.set("MCP-Protocol-Version",
+                std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     request.body() = body;
     request.prepare_payload();
     co_await http::async_write(stream, request, asio::use_awaitable);

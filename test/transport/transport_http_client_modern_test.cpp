@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <set>
@@ -347,7 +348,8 @@ Reply modern_reply(const Recorded& request, const json& tools) {
             {{"resultType", "complete"},
              {"contents", json::array({{{"uri", message["params"]["uri"]}, {"text", "doc"}}})}}));
     }
-    return json_reply(rpc_error(message, mcp::g_METHOD_NOT_FOUND, "no such method"), 404);
+    return json_reply(rpc_error(message, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND, "no such method"),
+                      404);
 }
 
 /// Header names a request carries beyond the ones every HTTP request has.
@@ -601,8 +603,9 @@ TEST(HttpClientModern, HeaderMismatchRefreshThenRetry) {
     RawServer raw(io, [](const Recorded& request) {
         const auto message = request.parsed();
         if (message.value("method", "") == "tools/call" && !request.header("Mcp-Param-Region")) {
-            return json_reply(
-                rpc_error(message, mcp::g_HEADER_MISMATCH, "Missing Mcp-Param-Region header"), 400);
+            return json_reply(rpc_error(message, mcp::constants::jsonrpc::g_HEADER_MISMATCH,
+                                        "Missing Mcp-Param-Region header"),
+                              400);
         }
         return modern_reply(request, json::array({route_tool()}));
     });
@@ -634,7 +637,8 @@ TEST(HttpClientModern, HeaderMismatchIsRetriedOnlyOnce) {
     RawServer raw(io, [](const Recorded& request) {
         const auto message = request.parsed();
         if (message.value("method", "") == "tools/call") {
-            return json_reply(rpc_error(message, mcp::g_HEADER_MISMATCH, "Header mismatch"), 400);
+            return json_reply(
+                rpc_error(message, mcp::constants::jsonrpc::g_HEADER_MISMATCH, "Header mismatch"), 400);
         }
         return modern_reply(request, json::array({route_tool()}));
     });
@@ -651,7 +655,7 @@ TEST(HttpClientModern, HeaderMismatchIsRetriedOnlyOnce) {
         client.close();
     });
 
-    EXPECT_EQ(code, mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(raw.rpc_methods(),
               (std::vector<std::string>{"server/discover", "tools/call", "tools/list", "tools/call"}));
 }
@@ -722,7 +726,8 @@ TEST(HttpClientModern, Fallback400ModernBodyStaysModern) {
         const auto message = request.parsed();
         if (message.value("method", "") == "server/discover" && ++probes == 1) {
             return json_reply(
-                rpc_error(message, mcp::g_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
+                rpc_error(message, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                          "Unsupported protocol version",
                           json{{"supported", json::array({"2026-07-28"})}}),
                 400);
         }
@@ -751,7 +756,9 @@ TEST(HttpClientModern, Fallback400ModernBodyStaysModern) {
 TEST(HttpClientModern, Fallback400HeaderMismatchBodyDoesNotFallBack) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
-        return json_reply(rpc_error(request.parsed(), mcp::g_HEADER_MISMATCH, "Header mismatch"), 400);
+        return json_reply(
+            rpc_error(request.parsed(), mcp::constants::jsonrpc::g_HEADER_MISMATCH, "Header mismatch"),
+            400);
     });
     auto transport = make_transport(io, raw.url());
     mcp::Client client(transport, io.get_executor(), auto_options());
@@ -763,7 +770,7 @@ TEST(HttpClientModern, Fallback400HeaderMismatchBodyDoesNotFallBack) {
         client.close();
     });
 
-    EXPECT_EQ(code, mcp::g_HEADER_MISMATCH);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(raw.rpc_methods(), (std::vector<std::string>{"server/discover"}));
 }
 
@@ -774,9 +781,11 @@ TEST(HttpClientModern, Fallback400NonJsonBodyGoesLegacy) {
 }
 
 TEST(HttpClientModern, Fallback400UnrecognizedJsonRpcErrorGoesLegacy) {
-    const json error = {{"jsonrpc", "2.0"},
-                        {"id", nullptr},
-                        {"error", {{"code", mcp::g_INVALID_REQUEST}, {"message", "Missing session"}}}};
+    const json error = {
+        {"jsonrpc", "2.0"},
+        {"id", nullptr},
+        {"error",
+         {{"code", mcp::constants::jsonrpc::g_INVALID_REQUEST}, {"message", "Missing session"}}}};
     expect_legacy_fallback(status_reply(400, error.dump()));
 }
 
@@ -905,7 +914,7 @@ TEST(HttpClientModern, CancelClosesTheResponseStream) {
     });
 
     EXPECT_TRUE(finished);
-    EXPECT_EQ(code, mcp::g_REQUEST_CANCELLED);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
     EXPECT_EQ(raw.streams_abandoned, 1);
     // Closing the stream is the cancellation: no notification went over the wire.
     const auto methods = raw.rpc_methods();
@@ -941,7 +950,7 @@ TEST(HttpClientModern, TimeoutClosesTheResponseStream) {
         client.close();
     });
 
-    EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(raw.streams_started, 1);
     EXPECT_EQ(raw.streams_abandoned, 1);
     const auto methods = raw.rpc_methods();
@@ -1074,7 +1083,7 @@ TEST(HttpClientModern, CancelReachesAQuietHandler) {
     });
 
     EXPECT_TRUE(finished);
-    EXPECT_EQ(code, mcp::g_REQUEST_CANCELLED);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
     EXPECT_EQ(raw.answers_abandoned, 1);
     EXPECT_TRUE(handler_running_at_cancel_return);
 }
@@ -1096,7 +1105,7 @@ TEST(HttpClientModern, TimeoutReachesAQuietHandler) {
         client.close();
     });
 
-    EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(raw.answers_abandoned, 1);
 }
 
@@ -1157,7 +1166,7 @@ TEST(HttpClientModern, ListenWithoutAnAnswerTimesOut) {
         client.close();
     });
 
-    EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(raw.answers_abandoned, 1);
 }
 
@@ -1229,7 +1238,7 @@ TEST(HttpClientModern, ListenStreamThatBreaksEndsAsDropped) {
 
     EXPECT_EQ(end, mcp::SubscriptionEnd::eDropped);
     ASSERT_TRUE(error.has_value());
-    EXPECT_EQ(error->code, mcp::g_CONNECTION_CLOSED);
+    EXPECT_EQ(error->code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
 }
 
 TEST(HttpClientModern, ArgumentTooLongForItsHeaderIsRefused) {
@@ -1253,7 +1262,7 @@ TEST(HttpClientModern, ArgumentTooLongForItsHeaderIsRefused) {
         client.close();
     });
 
-    EXPECT_EQ(code, mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_EQ(calls_on_the_wire, 0u);
 }
 
@@ -1972,11 +1981,11 @@ int code_of_listing(const std::string& input_schema) {
 
 TEST(HttpClientModern, DeeplyNestedToolSchemaIsRefused) {
     EXPECT_EQ(code_of_listing(R"({"type":"object","default":)" + deep_array() + "}"),
-              mcp::g_REQUEST_TIMEOUT);
+              mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
 }
 
 TEST(HttpClientModern, DeeplyNestedToolPropertiesAreRefused) {
-    EXPECT_EQ(code_of_listing(deep_properties()), mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code_of_listing(deep_properties()), mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
 }
 
 TEST(HttpClientModern, DeeplyNestedErrorBodyGoesLegacy) {

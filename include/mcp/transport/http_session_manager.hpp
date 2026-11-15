@@ -99,7 +99,7 @@ class MCP_API StreamableHttpSessionManager {
     StreamableHttpSessionManager(
         const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
         ServerFactory factory,
-        std::size_t event_store_capacity = constants::g_event_store_default_capacity);
+        std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~StreamableHttpSessionManager();
 
@@ -182,8 +182,8 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection is
      * closed; it never reaches MCP dispatch. Defaults to
-     * mcp::constants::g_default_max_request_body_bytes. Binary content travels as base64 inside the
-     * JSON body, so a cap near the size of the raw content rejects it.
+     * mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES. Binary content travels as base64
+     * inside the JSON body, so a cap near the size of the raw content rejects it.
      *
      * The body is read, up to this cap, before the origin and bearer token are checked, so the cap
      * is also what one unauthenticated connection can make the transport buffer. The body is parsed
@@ -341,7 +341,8 @@ class MCP_API StreamableHttpSessionManager {
      * @details Applied to every Server the manager builds from its factory: each session's, the
      * stateless one and the shared modern server (unless set_modern_server() supplied it). When
      * legacy clients are not served, no session is created: initialize is answered `404` with
-     * `g_METHOD_NOT_FOUND` naming the versions served, and GET and DELETE `405`.
+     * `mcp::constants::jsonrpc::g_METHOD_NOT_FOUND` naming the versions served, and GET and DELETE
+     * `405`.
      *
      * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
      * @throws std::logic_error If listen() has already been called or the manager is closed.
@@ -370,9 +371,9 @@ class MCP_API StreamableHttpSessionManager {
      */
     [[nodiscard]] std::shared_ptr<Server> modern_server();
 
-    /// 2026-07-28 requests refused with `g_HEADER_MISMATCH` because their MCP-Protocol-Version,
-    /// Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed or did not match the
-    /// body.
+    /// 2026-07-28 requests refused with `mcp::constants::jsonrpc::g_HEADER_MISMATCH` because their
+    /// MCP-Protocol-Version, Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed or did
+    /// not match the body.
     [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
 
     /**

@@ -25,6 +25,7 @@
 
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_types.hpp>
@@ -349,7 +350,7 @@ class MiddlewareAuthErrorBridgeTransport final : public mcp::ITransport {
                     if (text.starts_with("Unauthorized:")) {
                         mcp::JSONRPCErrorResponse error_response;
                         error_response.id = json_msg.at("id").get<mcp::RequestId>();
-                        error_response.error.code = mcp::g_UNAUTHORIZED;
+                        error_response.error.code = mcp::constants::jsonrpc::g_UNAUTHORIZED;
                         error_response.error.message = text;
                         outbound = json(error_response).dump();
                         std::cout << "[Server] Middleware rejection mapped to JSON-RPC auth error\n";
@@ -390,7 +391,7 @@ std::string make_initialize_request_wire() {
                 {"id", "1"},
                 {"method", "initialize"},
                 {"params",
-                 {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
+                 {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
                   {"clientInfo", {{"name", "oauth-flow-example-client"}, {"version", "1.0.0"}}},
                   {"capabilities", json::object()}}}}
         .dump();

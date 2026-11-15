@@ -242,11 +242,6 @@ struct MrtrSealedState {
     nlohmann::json answers = nlohmann::json::object();
 };
 
-/// The shortest `requestState` limit (MrtrOptions::max_state_bytes) that set_mrtr_options() accepts.
-/// A state that carries one question, a principal digest and a parameters digest seals to fewer
-/// characters than this, so a smaller limit would fail every question.
-inline constexpr std::size_t g_min_state_chars = 512;
-
 /// A digest of a principal for MrtrSealedState::principal_digest; empty for an unknown one.
 std::string mrtr_principal_digest(std::string_view principal);
 

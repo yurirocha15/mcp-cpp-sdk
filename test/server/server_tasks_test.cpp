@@ -17,6 +17,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -417,7 +418,7 @@ TEST_F(TasksTest, TaskMethodsDoNotExistUntilTasksAreEnabled) {
         const json request = task_request(1, "tasks/get", "0123456789abcdef0123456789abcdef");
         answer = co_await send(request);
     });
-    EXPECT_EQ(answer["error"]["code"], mcp::g_METHOD_NOT_FOUND) << answer;
+    EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) << answer;
 }
 
 TEST_F(TasksTest, ModeNeedsAKnownTool) {
@@ -528,7 +529,7 @@ TEST_F(TasksTest, ARequiredToolRefusesAClientWithoutTheExtension) {
         response = co_await send(request);
     });
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
     EXPECT_EQ(response["error"]["data"]["requiredCapabilities"],
               (json{{"extensions", {{g_tasks, json::object()}}}}));
 }
@@ -566,7 +567,8 @@ TEST_F(TasksTest, ALegacyClientNeverSeesATask) {
     ASSERT_TRUE(auto_tool.contains("result")) << auto_tool;
     EXPECT_FALSE(auto_tool["result"].contains("taskId"));
     EXPECT_FALSE(auto_tool["result"].contains("resultType"));
-    EXPECT_EQ(required_tool["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+    EXPECT_EQ(required_tool["error"]["code"],
+              mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
         << required_tool;
 }
 
@@ -580,7 +582,7 @@ TEST_F(TasksTest, ALegacyClientCannotUseTheTaskMethods) {
                               {"params", {{"taskId", "0123456789abcdef0123456789abcdef"}}}};
         answer = co_await send(request);
     });
-    EXPECT_EQ(answer["error"]["code"], mcp::g_METHOD_NOT_FOUND) << answer;
+    EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) << answer;
 }
 
 TEST_F(TasksTest, TheRemovedCoreTaskMethodsStayUnknown) {
@@ -593,7 +595,7 @@ TEST_F(TasksTest, TheRemovedCoreTaskMethodsStayUnknown) {
         }
     });
     for (const auto& answer : answers) {
-        EXPECT_EQ(answer["error"]["code"], mcp::g_METHOD_NOT_FOUND) << answer;
+        EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) << answer;
     }
 }
 
@@ -637,7 +639,7 @@ TEST_F(TasksTest, AJsonRpcFailureFailsTheTask) {
         const auto id = co_await start("broken_output");
         failed = co_await task_in_status(id, "failed");
     });
-    EXPECT_EQ(failed["error"]["code"], mcp::g_INTERNAL_ERROR) << failed;
+    EXPECT_EQ(failed["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << failed;
     EXPECT_TRUE(failed["error"]["message"].is_string());
     EXPECT_TRUE(failed["statusMessage"].is_string());
     EXPECT_FALSE(failed.contains("result"));
@@ -741,7 +743,9 @@ TEST_F(TasksTest, TheTaskMethodsNeedTheDeclaredExtension) {
     });
     ASSERT_EQ(answers.size(), 3u);
     for (const auto& answer : answers) {
-        EXPECT_EQ(answer["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << answer;
+        EXPECT_EQ(answer["error"]["code"],
+                  mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+            << answer;
         EXPECT_EQ(answer["error"]["data"]["requiredCapabilities"],
                   (json{{"extensions", {{g_tasks, json::object()}}}}));
     }
@@ -758,7 +762,7 @@ TEST_F(TasksTest, AnUnknownTaskIsInvalidParams) {
         }
     });
     for (const auto& answer : answers) {
-        EXPECT_EQ(answer["error"]["code"], mcp::g_INVALID_PARAMS) << answer;
+        EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << answer;
         EXPECT_EQ(answer["error"]["message"], "Failed to retrieve task: Task not found");
     }
 }
@@ -785,7 +789,7 @@ TEST_F(TasksTest, MalformedTaskRequestsAreInvalidParams) {
     });
     ASSERT_EQ(answers.size(), 4u);
     for (const auto& answer : answers) {
-        EXPECT_EQ(answer["error"]["code"], mcp::g_INVALID_PARAMS) << answer;
+        EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << answer;
     }
 }
 
@@ -813,7 +817,7 @@ TEST_F(TasksTest, ATaskBelongsToThePrincipalThatStartedIt) {
     });
     ASSERT_EQ(foreign.size(), 4u);
     for (const auto& answer : foreign) {
-        EXPECT_EQ(answer["error"]["code"], mcp::g_INVALID_PARAMS) << answer;
+        EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << answer;
         EXPECT_EQ(answer["error"]["message"], "Failed to retrieve task: Task not found");
     }
     EXPECT_EQ(owned["result"]["status"], "working");
@@ -1117,7 +1121,7 @@ TEST_F(TasksTest, ATaskExpiresWithItsTimeToLive) {
         release_ = true;
     });
     EXPECT_EQ(before["result"]["ttlMs"], 1000);
-    EXPECT_EQ(after["error"]["code"], mcp::g_INVALID_PARAMS) << after;
+    EXPECT_EQ(after["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << after;
 }
 
 TEST_F(TasksTest, ATaskCanBeKeptWithoutALimitOnItsTime) {
@@ -1148,7 +1152,7 @@ TEST_F(TasksTest, APrincipalCannotHoldMoreTasksThanTheLimit) {
         other_principal = co_await send(other, "bob");
         release_ = true;
     });
-    EXPECT_EQ(second["error"]["code"], mcp::g_INTERNAL_ERROR) << second;
+    EXPECT_EQ(second["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << second;
     EXPECT_EQ(other_principal["result"]["resultType"], "task") << other_principal;
 }
 
@@ -1182,7 +1186,7 @@ TEST_F(TasksTest, ACancelledTaskKeepsItsSlotUntilItsHandlerReturns) {
         EXPECT_TRUE(freed);
     });
     for (const auto& answer : refused) {
-        EXPECT_EQ(answer["error"]["code"], mcp::g_INTERNAL_ERROR) << answer;
+        EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << answer;
     }
     EXPECT_EQ(refused.size(), 5u);
 }
@@ -1203,7 +1207,7 @@ TEST_F(TasksTest, TheLimitOnAllTasksCountsHandlersThatKeepRunning) {
         refused = co_await send(again, "carol");
         release_ = true;
     });
-    EXPECT_EQ(refused["error"]["code"], mcp::g_INTERNAL_ERROR) << refused;
+    EXPECT_EQ(refused["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << refused;
 }
 
 TEST_F(TasksTest, ATaskThatExpiresAsksItsHandlerToStop) {
@@ -1243,7 +1247,7 @@ TEST_F(TasksTest, AnExpiredTaskKeepsItsSlotUntilItsHandlerReturns) {
                                                });
         EXPECT_TRUE(freed);
     });
-    EXPECT_EQ(refused["error"]["code"], mcp::g_INTERNAL_ERROR) << refused;
+    EXPECT_EQ(refused["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << refused;
 }
 
 TEST_F(TasksTest, DestroyingTheServerCancelsARunningTask) {
@@ -1379,7 +1383,7 @@ TEST_F(TasksTest, ATaskPreparationIsNotCalledWhenARequiredToolRefusesTheClient) 
         response = co_await send(request);
     });
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
     EXPECT_EQ(preparations_.load(), 0);
 }
 
@@ -1498,7 +1502,7 @@ TEST_F(TasksTest, APrincipalAtTheTaskLimitIsAnsweredBeforeTheTaskPreparationRuns
         release_ = true;
     });
     ASSERT_TRUE(second.contains("error")) << second;
-    EXPECT_EQ(second["error"]["code"], mcp::g_INTERNAL_ERROR) << second;
+    EXPECT_EQ(second["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << second;
     EXPECT_EQ(preparations_.load(), 0);
 }
 
@@ -1561,7 +1565,8 @@ TEST_F(TasksTest, ATaskPreparationCannotAskWhatTheClientDidNotDeclare) {
         response = co_await send(request);
     });
     ASSERT_TRUE(response.contains("error")) << response;
-    EXPECT_EQ(response["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << response;
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+        << response;
     EXPECT_EQ(response["error"]["data"]["requiredCapabilities"],
               (json{{"elicitation", {{"form", json::object()}}}}));
 }
@@ -1801,7 +1806,8 @@ TEST_F(TaskListen, AskingForTaskNotificationsNeedsTheExtension) {
         answer = co_await response_to(1);
         co_await finish();
     });
-    EXPECT_EQ(answer["error"]["code"], mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << answer;
+    EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+        << answer;
     EXPECT_EQ(answer["error"]["data"]["requiredCapabilities"],
               (json{{"extensions", {{g_tasks, json::object()}}}}));
 }
@@ -1816,7 +1822,7 @@ TEST_F(TaskListen, TaskIdsMustBeAnArrayOfStrings) {
         answer = co_await response_to(1);
         co_await finish();
     });
-    EXPECT_EQ(answer["error"]["code"], mcp::g_INVALID_PARAMS) << answer;
+    EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << answer;
 }
 
 TEST_F(TaskListen, ASessionServesTasksOverItsOwnTransport) {

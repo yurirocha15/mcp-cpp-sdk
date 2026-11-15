@@ -15,6 +15,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -211,7 +212,7 @@ TEST_F(ClientTasks, AFailedTaskThrowsTheErrorItFailedWith) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
 }
 
 TEST_F(ClientTasks, ATaskThatAsksForInputIsAnsweredByTheRegisteredHandler) {
@@ -360,7 +361,7 @@ TEST_F(ClientTasks, AnUnknownTaskIsInvalidParams) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(ClientTasks, ADetachedHandleRefusesEveryCall) {
@@ -374,7 +375,7 @@ TEST_F(ClientTasks, ADetachedHandleRefusesEveryCall) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
 }
 
 TEST_F(ClientTasks, ATaskStatusNotificationArrivesOnAStreamThatAsksForIt) {
@@ -535,7 +536,7 @@ TEST(ClientTasksScripted, ATaskAnswerIsAnErrorWhenTheClientDeclaredNothing) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     const auto calls = server.requests("tools/call");
     ASSERT_EQ(calls.size(), 1u);
     EXPECT_TRUE(declared_extension(calls[0]).empty());
@@ -654,7 +655,7 @@ TEST(ClientTasksScripted, GivesUpAfterTheTaskTimeout) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
 }
 
 TEST(ClientTasksScripted, CallToolCancelsTheTaskItGivesUpOn) {
@@ -683,7 +684,7 @@ TEST(ClientTasksScripted, CallToolCancelsTheTaskItGivesUpOn) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     const auto cancels = server.requests("tasks/cancel");
     ASSERT_EQ(cancels.size(), 1u);
     EXPECT_EQ(cancels[0].at("params").at("taskId"), "task-1");
@@ -720,7 +721,7 @@ TEST(ClientTasksScripted, CallToolCancelsTheTaskWhenItCannotAnswerItsQuestions) 
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_EQ(server.requests("tasks/cancel").size(), 1u);
 }
 
@@ -741,7 +742,7 @@ TEST(ClientTasksScripted, AHandleThatGivesUpLeavesTheTaskRunning) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_TRUE(server.requests("tasks/cancel").empty());
 }
 
@@ -784,8 +785,8 @@ TEST(ClientTasksScripted, AMalformedTaskIsAnMcpErrorOnBothPaths) {
                 starting = error.code();
             }
         });
-        EXPECT_EQ(following, mcp::g_INVALID_REQUEST);
-        EXPECT_EQ(starting, mcp::g_INVALID_REQUEST);
+        EXPECT_EQ(following, mcp::constants::jsonrpc::g_INVALID_REQUEST);
+        EXPECT_EQ(starting, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     }
 }
 
@@ -810,7 +811,7 @@ TEST(ClientTasksScripted, AFailedTaskWithoutAnErrorCodeIsAnMcpError) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
 }
 
 TEST(ClientTasksScripted, AnUnknownStatusIsNotATaskState) {
@@ -827,7 +828,7 @@ TEST(ClientTasksScripted, AnUnknownStatusIsNotATaskState) {
             code = error.code();
         }
     });
-    EXPECT_EQ(code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
 }
 
 TEST(ClientTasksScripted, EachInputRequestIsAnsweredOnce) {

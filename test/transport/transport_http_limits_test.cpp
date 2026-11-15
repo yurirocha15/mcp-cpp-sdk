@@ -25,11 +25,14 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <chrono>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace event_store = mcp::constants::event_store;
 
 namespace {
 
@@ -434,7 +437,7 @@ TEST_F(SessionLimitsTest, RequestIdBeyondInt64IsRefused) {
         ended = co_await wait_until([this] { return manager_.session_count() == 0; });
     });
     EXPECT_EQ(refused.status, 400u);
-    EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_TRUE(ended);
 }
 
@@ -901,7 +904,7 @@ TEST_F(SessionLimitsTest, SessionLimitMustAllowASession) {
 
 TEST(EventStoreLimits, OldestEventsGoPastTheByteLimit) {
     mcp::EventStore store;
-    const std::string event(mcp::constants::g_event_store_max_bytes / 2, 'x');
+    const std::string event(event_store::g_MAX_BYTES / 2, 'x');
     const auto first = store.append(event);
     const auto second = store.append(event);
     EXPECT_EQ(store.events_after(first)->size(), 1u);
@@ -909,7 +912,7 @@ TEST(EventStoreLimits, OldestEventsGoPastTheByteLimit) {
     EXPECT_FALSE(store.events_after(first).has_value());
     EXPECT_EQ(store.events_after(second)->size(), 1u);
     // The newest is kept whatever its size.
-    const auto last = store.append(std::string(mcp::constants::g_event_store_max_bytes * 2, 'y'));
+    const auto last = store.append(std::string(event_store::g_MAX_BYTES * 2, 'y'));
     EXPECT_FALSE(store.events_after(third).has_value());
     EXPECT_TRUE(store.events_after(last).has_value());
 }
@@ -1256,7 +1259,7 @@ TEST_F(ReverseBindingTest, RequestIdBeyondInt64IsRefused) {
             json::parse(R"({"jsonrpc":"2.0","id":9223372036854775808,"method":"ping"})"), session);
     });
     EXPECT_EQ(refused.status, 400u);
-    EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(json::parse(refused.body)["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
 }
 
 // Subscriptions of a session that ended are not the next client's: they must not use up its limit.

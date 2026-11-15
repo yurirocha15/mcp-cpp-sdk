@@ -11,10 +11,11 @@
 /// The client uses the default ClientProtocol::Auto(), so against this server it speaks
 /// 2026-07-28. There the server sends nothing more for a request the client cancelled, not even
 /// its response, so Client::cancel() ends the wait at once and the call fails with
-/// g_REQUEST_CANCELLED. A client of an earlier revision gets the tool's own answer instead; the
-/// code below handles both.
+/// mcp::constants::jsonrpc::g_REQUEST_CANCELLED. A client of an earlier revision gets the tool's own
+/// answer instead; the code below handles both.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -29,6 +30,8 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace asio = boost::asio;
 
@@ -204,7 +207,7 @@ int main() {
                         call_cancelled = result.isError.value_or(false);
                     } catch (const mcp::McpError& error) {
                         std::cout << "Client: Call ended: " << error.what() << "\n";
-                        call_cancelled = error.code() == mcp::g_REQUEST_CANCELLED;
+                        call_cancelled = error.code() == jsonrpc::g_REQUEST_CANCELLED;
                     }
 
                     // Give the tool time to see the cancellation and stop.

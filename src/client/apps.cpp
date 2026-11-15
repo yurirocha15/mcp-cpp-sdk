@@ -1,4 +1,5 @@
 #include <mcp/client/apps.hpp>
+#include <mcp/core/constants.hpp>
 
 #include "../detail/base64_decode.hpp"
 
@@ -28,8 +29,9 @@ Task<View> read_view(Client& client, std::string uri, std::optional<Resource> li
         if (view.uri != uri) {
             continue;
         }
-        if (!mime_type || *mime_type != g_RESOURCE_MIME_TYPE) {
-            throw std::runtime_error("View " + uri + " is not " + std::string(g_RESOURCE_MIME_TYPE));
+        if (!mime_type || *mime_type != mcp::constants::apps::g_RESOURCE_MIME_TYPE) {
+            throw std::runtime_error("View " + uri + " is not " +
+                                     std::string(mcp::constants::apps::g_RESOURCE_MIME_TYPE));
         }
         view.mimeType = *mime_type;
         if (const auto* text = std::get_if<TextResourceContents>(&content)) {

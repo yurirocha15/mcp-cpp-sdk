@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/protocol/extensions.hpp>
@@ -24,27 +25,7 @@
  * specification in github.com/modelcontextprotocol/ext-skills, specification/beta/skills.mdx.
  */
 
-namespace mcp::skills {
-
-/// Identifier of the extension in `capabilities.extensions`.
-inline constexpr std::string_view g_EXTENSION_ID = "io.modelcontextprotocol/skills";
-
-/// URI prefix servers conventionally use for skill resources.
-inline constexpr std::string_view g_URI_PREFIX = "skill://";
-
-/// Name of the file every skill has at its root.
-inline constexpr std::string_view g_SKILL_FILE_NAME = "SKILL.md";
-
-/// MIME type of a directory resource.
-inline constexpr std::string_view g_DIRECTORY_MIME_TYPE = "inode/directory";
-
-/// Most files a skill entry may list; hosts support skills up to this size.
-inline constexpr std::size_t g_MAX_RESOURCES_PER_SKILL = 512;
-
-/// Most bytes a skill's listed files may add up to (16 MiB).
-inline constexpr std::int64_t g_MAX_SKILL_BYTES = 16 * 1024 * 1024;
-
-}  // namespace mcp::skills
+namespace mcp::skills {}  // namespace mcp::skills
 
 namespace mcp {
 
@@ -206,13 +187,13 @@ namespace mcp::skills {
 
 /// @return Whether a server declared the extension.
 [[nodiscard]] inline bool supports_skills(const ServerCapabilities& capabilities) {
-    return declares_extension(capabilities, g_EXTENSION_ID);
+    return declares_extension(capabilities, mcp::constants::skills::g_EXTENSION_ID);
 }
 
 /// @return Whether a server declared the extension with `directoryRead: true`. A client does not
 ///         call `resources/directory/read` on any other server.
 [[nodiscard]] inline bool supports_directory_read(const ServerCapabilities& capabilities) {
-    const auto settings = extension_settings(capabilities, g_EXTENSION_ID);
+    const auto settings = extension_settings(capabilities, mcp::constants::skills::g_EXTENSION_ID);
     if (!settings) {
         return false;
     }
