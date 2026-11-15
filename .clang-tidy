@@ -38,6 +38,13 @@ CheckOptions:
     value:           's_'
   - key:             readability-identifier-naming.GlobalVariablePrefix
     value:           'g_'
+  # Namespace-scope constants are g_UPPER_CASE; class-scope constants are lower_case.
+  - key:             readability-identifier-naming.GlobalConstantCase
+    value:           UPPER_CASE
+  - key:             readability-identifier-naming.GlobalConstantPrefix
+    value:           'g_'
+  - key:             readability-identifier-naming.ClassConstantCase
+    value:           lower_case
   # C++20 concepts are misidentified as global variables; ignore CamelCase globals.
   - key:             readability-identifier-naming.GlobalVariableIgnoredRegexp
     value:           '^[A-Z]'

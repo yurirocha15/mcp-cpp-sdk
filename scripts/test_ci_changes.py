@@ -20,7 +20,7 @@ import ci_changes  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 ALL_JOBS = set(ci_changes.JOB_INPUTS)
 PACKAGES = {"package_core", "native_package", "homebrew_package", "windows_package"}
-LIBRARY_JOBS = {"code", "conan"}
+LIBRARY_JOBS = {"code", "conan", "naming"}
 # Release modules each job starts, directly or through a script in scripts/release/.
 ENTRY_MODULES = {
     "package_core": ("release/construct_core.py",),
@@ -145,7 +145,7 @@ class ClassifierTests(unittest.TestCase):
             "test/core/protocol_test.cpp": {"code"},
             "test/data/json-schema/suite.json": {"code", "release"},
             "test/pipe_stream.hpp": {"code"},
-            "examples/features/pagination.cpp": {"code"},
+            "examples/features/pagination.cpp": {"code", "naming"},
             "scripts/run_examples.py": {"code", "release"},
             "scripts/check_doc_snippets.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
@@ -153,7 +153,8 @@ class ClassifierTests(unittest.TestCase):
             "benchmark/run.sh": {"benchmark"},
             "test/release/test_signing.py": {"release"},
             "release/github_anchor.py": {"release"},
-            "scripts/ci_changes.py": {"release"},
+            "scripts/ci_changes.py": {"release", "naming"},
+            ".clang-tidy": {"naming"},
             ".github/workflows/release.yml": {"release"},
             ".github/workflows/release-candidate.yml": {"release"},
             ".github/workflows/conformance.yml": {"release"},
@@ -174,7 +175,7 @@ class ClassifierTests(unittest.TestCase):
             "scripts/package_build.py": {"release"} | PACKAGES,
             "CMakeLists.txt": LIBRARY_JOBS | {"release"} | PACKAGES,
             "cmake/config.cmake.in": LIBRARY_JOBS | PACKAGES,
-            "conanfile.py": LIBRARY_JOBS | {"release"} | PACKAGES,
+            "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release"} | PACKAGES,
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
             "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
@@ -185,7 +186,8 @@ class ClassifierTests(unittest.TestCase):
 
     def test_other_events_also_package_source(self) -> None:
         for path, jobs in (("src/main.cpp", LIBRARY_JOBS), ("test/core/protocol_test.cpp", {"code"}),
-                           ("examples/features/pagination.cpp", {"code"}), ("LICENSE", {"conan"})):
+                           ("examples/features/pagination.cpp", {"code", "naming"}),
+                           ("LICENSE", {"conan"})):
             with self.subTest(path=path):
                 self.assertEqual(self.jobs_for_change(path, "push"), jobs | PACKAGES)
 
