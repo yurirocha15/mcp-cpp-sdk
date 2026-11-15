@@ -105,7 +105,7 @@ Set ``ClientOptions::protocol`` to choose:
 .. code-block:: cpp
 
    mcp::ClientOptions options;
-   options.protocol = mcp::ClientProtocol::Version("2026-07-28");  // or Legacy(), Auto()
+   options.protocol = mcp::ClientProtocol::pinned("2026-07-28");  // or legacy(), automatic()
    mcp::Client client(client_transport, io_ctx.get_executor(), options);
 
 ``ConnectResult::era`` and ``ConnectResult::protocolVersion`` tell a test which
@@ -113,7 +113,7 @@ era a session ended up in. ``ClientOptions::on_era_decision`` reports why. To
 test a server that must refuse older clients, give it a ``ServerProtocolPolicy``
 with ``serve_legacy = false`` through ``Server::set_protocol_policy()`` before it
 runs; to test how it treats a client of an older revision, pin the client with
-``ClientProtocol::Legacy()``. Some calls exist in only one era: ``Client::ping()``
+``ClientProtocol::legacy()``. Some calls exist in only one era: ``Client::ping()``
 and ``resources/subscribe`` only in legacy sessions, ``Client::listen()`` only in
 2026-07-28 sessions.
 

@@ -115,24 +115,24 @@ parse_authorization_response(const std::string& redirect_url);
  * @brief Outcome of validating an authorization response against its request record.
  */
 enum class AuthorizationResponseStatus {
-    accepted,         ///< Response is authentic and carries a code.
-    state_missing,    ///< Response omitted `state` although the request sent one.
-    state_mismatch,   ///< Returned `state` did not match the recorded value.
-    issuer_missing,   ///< Server advertised `iss` support but omitted the parameter.
-    issuer_mismatch,  ///< Returned `iss` did not match the recorded issuer.
-    server_error,     ///< Authentic response carrying an OAuth `error`.
-    code_missing,     ///< Authentic success response with no authorization code.
+    eAccepted,        ///< Response is authentic and carries a code.
+    eStateMissing,    ///< Response omitted `state` although the request sent one.
+    eStateMismatch,   ///< Returned `state` did not match the recorded value.
+    eIssuerMissing,   ///< Server advertised `iss` support but omitted the parameter.
+    eIssuerMismatch,  ///< Returned `iss` did not match the recorded issuer.
+    eServerError,     ///< Authentic response carrying an OAuth `error`.
+    eCodeMissing,     ///< Authentic success response with no authorization code.
 };
 
 /**
  * @brief Result of validating an authorization response.
  */
 struct AuthorizationResponseValidation {
-    AuthorizationResponseStatus status{AuthorizationResponseStatus::accepted};  ///< Outcome.
+    AuthorizationResponseStatus status{AuthorizationResponseStatus::eAccepted};  ///< Outcome.
     std::string message;  ///< Diagnostic description of the outcome.
 
     /// @return True when the authorization code may be sent to a token endpoint.
-    [[nodiscard]] bool accepted() const { return status == AuthorizationResponseStatus::accepted; }
+    [[nodiscard]] bool accepted() const { return status == AuthorizationResponseStatus::eAccepted; }
 };
 
 /**

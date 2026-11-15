@@ -177,13 +177,13 @@ TEST(AuthIssuerValidationTest, AppliesTheFourRowDecisionTable) {
     };
     const Row rows[] = {
         {"advertised and present compares equal", true, true,
-         mcp::auth::AuthorizationResponseStatus::accepted},
+         mcp::auth::AuthorizationResponseStatus::eAccepted},
         {"advertised and absent rejects", true, false,
-         mcp::auth::AuthorizationResponseStatus::issuer_missing},
+         mcp::auth::AuthorizationResponseStatus::eIssuerMissing},
         {"not advertised but present still compares", false, true,
-         mcp::auth::AuthorizationResponseStatus::accepted},
+         mcp::auth::AuthorizationResponseStatus::eAccepted},
         {"not advertised and absent proceeds", false, false,
-         mcp::auth::AuthorizationResponseStatus::accepted},
+         mcp::auth::AuthorizationResponseStatus::eAccepted},
     };
 
     for (const auto& row : rows) {
@@ -200,7 +200,7 @@ TEST(AuthIssuerValidationTest, RejectsAPresentIssuerThatDiffers) {
         const auto request = make_request("https://as.test/tenant1", advertised);
         const auto response = make_response("https://evil.test/tenant1");
         const auto validation = mcp::auth::validate_authorization_response(request, response);
-        EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::issuer_mismatch)
+        EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::eIssuerMismatch)
             << "advertised=" << advertised;
     }
 }
@@ -225,7 +225,7 @@ TEST(AuthIssuerValidationTest, ComparisonIsNotCanonicalizing) {
         const auto request = make_request(pair.recorded, true);
         const auto response = make_response(pair.returned);
         const auto validation = mcp::auth::validate_authorization_response(request, response);
-        EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::issuer_mismatch)
+        EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::eIssuerMismatch)
             << pair.name;
     }
 }
@@ -239,7 +239,7 @@ TEST(AuthIssuerValidationTest, RejectsErrorResponsesBeforeActingOnTheirErrorValu
 
     const auto validation =
         mcp::auth::validate_authorization_response(make_request("https://as.test", true), response);
-    EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::issuer_mismatch);
+    EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::eIssuerMismatch);
     EXPECT_EQ(validation.message.find("access_denied"), std::string::npos);
     EXPECT_EQ(validation.message.find("attacker supplied text"), std::string::npos);
 }
@@ -251,7 +251,7 @@ TEST(AuthIssuerValidationTest, ReportsAServerErrorOnlyWhenTheIssuerIsAuthentic) 
 
     const auto validation =
         mcp::auth::validate_authorization_response(make_request("https://as.test", true), response);
-    EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::server_error);
+    EXPECT_EQ(validation.status, mcp::auth::AuthorizationResponseStatus::eServerError);
 }
 
 TEST(AuthIssuerValidationTest, RejectsMissingAndMismatchedState) {
@@ -259,14 +259,14 @@ TEST(AuthIssuerValidationTest, RejectsMissingAndMismatchedState) {
     missing.state.reset();
     EXPECT_EQ(mcp::auth::validate_authorization_response(make_request("https://as.test", true), missing)
                   .status,
-              mcp::auth::AuthorizationResponseStatus::state_missing);
+              mcp::auth::AuthorizationResponseStatus::eStateMissing);
 
     auto mismatched = make_response("https://as.test");
     mismatched.state = "other-state";
     EXPECT_EQ(
         mcp::auth::validate_authorization_response(make_request("https://as.test", true), mismatched)
             .status,
-        mcp::auth::AuthorizationResponseStatus::state_mismatch);
+        mcp::auth::AuthorizationResponseStatus::eStateMismatch);
 }
 
 TEST(AuthIssuerValidationTest, RejectsAnAuthenticResponseWithNoCode) {
@@ -275,62 +275,62 @@ TEST(AuthIssuerValidationTest, RejectsAnAuthenticResponseWithNoCode) {
     EXPECT_EQ(
         mcp::auth::validate_authorization_response(make_request("https://as.test", true), response)
             .status,
-        mcp::auth::AuthorizationResponseStatus::code_missing);
+        mcp::auth::AuthorizationResponseStatus::eCodeMissing);
 }
 
 TEST(AuthMetadataPolicyTest, DefaultPolicyDeniesEveryOrigin) {
     const mcp::auth::MetadataFetchPolicy policy;
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/.well-known/x"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, DenyListWinsOverAllowList) {
     auto policy = allow_origin("https://as.test");
     policy.denied_origins.emplace_back("https://as.test");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, OriginComparisonIgnoresExplicitDefaultPort) {
     const auto policy = allow_origin("https://as.test");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     // An explicit default port canonicalizes to the same origin as no port at all.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test:443/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     // A subdomain is a genuinely different origin and must stay refused.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://sub.as.test/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
     // A non-default port is preserved and still distinguishes origins.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test:8443/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, DenyListCanonicalizesSchemeAndHostCase) {
     auto policy = allow_origin("https://evil.example");
     policy.denied_origins.emplace_back("https://evil.example");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "HTTPS://Evil.example/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, DenyListCanonicalizesExplicitDefaultPort) {
     auto policy = allow_origin("https://evil.example");
     policy.denied_origins.emplace_back("https://evil.example");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:443/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, DenyListCanonicalizesTrailingDot) {
     auto policy = allow_origin("https://evil.example");
     policy.denied_origins.emplace_back("https://evil.example");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example./prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, AllowListEntryCaseDoesNotHaveToMatchTheUrl) {
     const auto policy = allow_origin("HTTPS://AS.TEST");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, OriginAllowanceCallbackReceivesTheCanonicalOrigin) {
@@ -344,7 +344,7 @@ TEST(AuthMetadataPolicyTest, OriginAllowanceCallbackReceivesTheCanonicalOrigin) 
     // deliberately byte-exact; only the host case, the explicit default port and the origin passed to
     // the callback are under test.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://Evil.example:443/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     EXPECT_EQ(observed, "https://evil.example");
 }
 
@@ -353,33 +353,33 @@ TEST(AuthMetadataPolicyTest, IpLiteralAndIpv6OriginsAreUnaffectedByCanonicalizat
     // by lowercasing.
     const auto v4_policy = allow_origin("https://93.184.216.34");
     EXPECT_EQ(mcp::auth::validate_metadata_url(v4_policy, "https://93.184.216.34/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 
     // An IPv6 bracketed literal keeps its brackets; only the hex digits are lowercased.
     auto v6_policy = allow_origin("https://[2606:2800:220:1::1]");
     EXPECT_EQ(mcp::auth::validate_metadata_url(v6_policy, "https://[2606:2800:220:1::1]/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_url(v6_policy, "https://[2606:2800:220:1::1]:443/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 
     v6_policy.denied_origins.emplace_back("https://[2606:2800:220:1::1]");
     EXPECT_EQ(mcp::auth::validate_metadata_url(v6_policy, "https://[2606:2800:220:1::1]/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, DenyListCanonicalizesLeadingZerosInADefaultPort) {
     auto policy = allow_origin("https://evil.example");
     policy.denied_origins.emplace_back("https://evil.example");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:00443/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:0443/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, NonDefaultPortCanonicalizesNumericallyDespiteLeadingZeros) {
     const auto policy = allow_origin("https://evil.example:8443");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:08443/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, RejectsAPortThatIsNotAPlainDecimalNumber) {
@@ -392,7 +392,7 @@ TEST(AuthMetadataPolicyTest, RejectsAPortThatIsNotAPlainDecimalNumber) {
     };
     for (const auto* url : urls) {
         EXPECT_EQ(mcp::auth::validate_metadata_url(policy, url),
-                  mcp::auth::MetadataUrlDecision::malformed_url)
+                  mcp::auth::MetadataUrlDecision::eMalformedUrl)
             << url;
     }
 }
@@ -402,13 +402,13 @@ TEST(AuthMetadataPolicyTest, DenyListMatchesAnAlternateIpv6TextualForm) {
     policy.denied_origins.emplace_back("https://[2606:2800:220:1::1]");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy,
                                                "https://[2606:2800:0220:0001:0000:0000:0000:0001]/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, AllowListEntryWithAPathMatchesNothing) {
     const auto policy = allow_origin("https://as.test/realms/foo");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 }
 
 // An allow entry that is not a bare origin grants nothing, and says so by returning a decision
@@ -425,7 +425,7 @@ TEST(AuthMetadataPolicyTest, AllowListEntryThatIsNotABareOriginStillFailsClosedQ
         mcp::auth::MetadataUrlDecision decision{};
         EXPECT_NO_THROW(decision = mcp::auth::validate_metadata_url(policy, "https://as.test/prm"))
             << entry;
-        EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::origin_not_allowed) << entry;
+        EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::eOriginNotAllowed) << entry;
     }
 }
 
@@ -438,7 +438,7 @@ TEST(AuthMetadataPolicyTest, DenyListEntryWithATrailingSlashIsRejected) {
         const auto decision = mcp::auth::validate_metadata_url(policy, "https://evil.example/prm");
         FAIL() << "expected MetadataPolicyError, got decision " << static_cast<int>(decision);
     } catch (const mcp::auth::MetadataPolicyError& error) {
-        EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::denied_origin_entry_malformed);
+        EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::eDeniedOriginEntryMalformed);
         EXPECT_EQ(error.target(), "https://evil.example/");
     }
 }
@@ -456,7 +456,7 @@ TEST(AuthMetadataPolicyTest, DenyListEntryWithAPathQueryOrFragmentIsRejected) {
             const auto decision = mcp::auth::validate_metadata_url(policy, "https://evil.example/prm");
             ADD_FAILURE() << entry << " was admitted with decision " << static_cast<int>(decision);
         } catch (const mcp::auth::MetadataPolicyError& error) {
-            EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::denied_origin_entry_malformed)
+            EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::eDeniedOriginEntryMalformed)
                 << entry;
             EXPECT_EQ(error.target(), entry);
         }
@@ -482,7 +482,7 @@ TEST(AuthMetadataPolicyTest, MalformedDenyEntryIsReportedEvenAfterAMatchingEntry
         (void)mcp::auth::validate_metadata_url(policy, "https://evil.example/prm");
         FAIL() << "expected MetadataPolicyError";
     } catch (const mcp::auth::MetadataPolicyError& error) {
-        EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::denied_origin_entry_malformed);
+        EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::eDeniedOriginEntryMalformed);
         EXPECT_EQ(error.target(), "https://other.example/");
     }
 }
@@ -495,68 +495,68 @@ TEST(AuthMetadataPolicyTest, WellFormedDenyListStillDeniesAndStillAdmits) {
     policy.denied_origins.emplace_back("https://evil.example");
     policy.denied_origins.emplace_back("https://[2606:2800:220:1::1]:8443");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 // A deny list the caller never populated is the common case and must stay free of policy errors.
 TEST(AuthMetadataPolicyTest, EmptyDenyListIsNotAPolicyError) {
     const auto policy = allow_origin("https://as.test");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, LoopbackOptOutIsCaseInsensitiveOnSchemeAndHost) {
     auto policy = allow_origin("http://localhost:9000");
     policy.allow_plain_http_loopback = true;
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "HTTP://localhost:9000/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://LOCALHOST:9000/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, DenyListCanonicalizesMultipleTrailingDots) {
     auto policy = allow_origin("https://evil.example");
     policy.denied_origins.emplace_back("https://evil.example");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example../prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, RejectsAHostThatIsNothingButDots) {
     const mcp::auth::MetadataFetchPolicy policy;
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://.../prm"),
-              mcp::auth::MetadataUrlDecision::malformed_url);
+              mcp::auth::MetadataUrlDecision::eMalformedUrl);
 }
 
 TEST(AuthMetadataPolicyTest, RejectsPlainHttpForNonLoopbackHosts) {
     const auto policy = allow_origin("http://as.test");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+              mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, LoopbackOptOutIsNeverImplicit) {
     auto policy = allow_origin("http://127.0.0.1:9000");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:9000/prm"),
-              mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+              mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
 
     policy.allow_plain_http_loopback = true;
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:9000/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, LoopbackOptOutDoesNotRelaxNonLoopbackHosts) {
     auto policy = allow_origin("http://as.test");
     policy.allow_plain_http_loopback = true;
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+              mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, RejectsUserinfoInTheAuthority) {
     auto policy = allow_origin("https://as.test");
     policy.allowed_origins.emplace_back("https://as.test@169.254.169.254");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test@169.254.169.254/prm"),
-              mcp::auth::MetadataUrlDecision::malformed_url);
+              mcp::auth::MetadataUrlDecision::eMalformedUrl);
 }
 
 TEST(AuthMetadataPolicyTest, RejectsBlockedAddressesWrittenAsUrlLiterals) {
@@ -567,23 +567,23 @@ TEST(AuthMetadataPolicyTest, RejectsBlockedAddressesWrittenAsUrlLiterals) {
     };
     const Case cases[] = {
         {"https://169.254.169.254/latest/meta-data", "https://169.254.169.254",
-         mcp::auth::MetadataUrlDecision::address_link_local},
-        {"https://10.0.0.1/prm", "https://10.0.0.1", mcp::auth::MetadataUrlDecision::address_private},
+         mcp::auth::MetadataUrlDecision::eAddressLinkLocal},
+        {"https://10.0.0.1/prm", "https://10.0.0.1", mcp::auth::MetadataUrlDecision::eAddressPrivate},
         {"https://172.16.0.1/prm", "https://172.16.0.1",
-         mcp::auth::MetadataUrlDecision::address_private},
+         mcp::auth::MetadataUrlDecision::eAddressPrivate},
         {"https://192.168.1.1/prm", "https://192.168.1.1",
-         mcp::auth::MetadataUrlDecision::address_private},
+         mcp::auth::MetadataUrlDecision::eAddressPrivate},
         {"https://127.0.0.1/prm", "https://127.0.0.1",
-         mcp::auth::MetadataUrlDecision::address_loopback},
+         mcp::auth::MetadataUrlDecision::eAddressLoopback},
         {"https://224.0.0.1/prm", "https://224.0.0.1",
-         mcp::auth::MetadataUrlDecision::address_multicast},
-        {"https://0.0.0.0/prm", "https://0.0.0.0", mcp::auth::MetadataUrlDecision::address_reserved},
+         mcp::auth::MetadataUrlDecision::eAddressMulticast},
+        {"https://0.0.0.0/prm", "https://0.0.0.0", mcp::auth::MetadataUrlDecision::eAddressReserved},
         {"https://100.64.0.1/prm", "https://100.64.0.1",
-         mcp::auth::MetadataUrlDecision::address_reserved},
+         mcp::auth::MetadataUrlDecision::eAddressReserved},
         {"https://[fe80::1]/prm", "https://[fe80::1]",
-         mcp::auth::MetadataUrlDecision::address_link_local},
-        {"https://[fc00::1]/prm", "https://[fc00::1]", mcp::auth::MetadataUrlDecision::address_private},
-        {"https://[::1]/prm", "https://[::1]", mcp::auth::MetadataUrlDecision::address_loopback},
+         mcp::auth::MetadataUrlDecision::eAddressLinkLocal},
+        {"https://[fc00::1]/prm", "https://[fc00::1]", mcp::auth::MetadataUrlDecision::eAddressPrivate},
+        {"https://[::1]/prm", "https://[::1]", mcp::auth::MetadataUrlDecision::eAddressLoopback},
     };
 
     for (const auto& item : cases) {
@@ -595,57 +595,57 @@ TEST(AuthMetadataPolicyTest, RejectsBlockedAddressesWrittenAsUrlLiterals) {
 TEST(AuthMetadataPolicyTest, ClassifiesIpv4MappedIpv6Addresses) {
     const mcp::auth::MetadataFetchPolicy policy;
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "::ffff:169.254.169.254"),
-              mcp::auth::MetadataUrlDecision::address_link_local);
+              mcp::auth::MetadataUrlDecision::eAddressLinkLocal);
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "::ffff:10.0.0.1"),
-              mcp::auth::MetadataUrlDecision::address_private);
+              mcp::auth::MetadataUrlDecision::eAddressPrivate);
 }
 
 TEST(AuthMetadataPolicyTest, ClassifiesTheIpv4AddressEmbeddedInNat64And6to4Addresses) {
     mcp::auth::MetadataFetchPolicy policy;
     policy.allow_plain_http_loopback = true;
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "64:ff9b::10.0.0.1"),
-              mcp::auth::MetadataUrlDecision::address_private);
+              mcp::auth::MetadataUrlDecision::eAddressPrivate);
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "64:ff9b::a9fe:a9fe"),
-              mcp::auth::MetadataUrlDecision::address_link_local);
+              mcp::auth::MetadataUrlDecision::eAddressLinkLocal);
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "2002:c0a8:0101::1"),
-              mcp::auth::MetadataUrlDecision::address_private);
+              mcp::auth::MetadataUrlDecision::eAddressPrivate);
     // An embedded loopback address is not the local host, so the loopback opt-out does not apply.
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "2002:7f00:0001::1"),
-              mcp::auth::MetadataUrlDecision::address_loopback);
+              mcp::auth::MetadataUrlDecision::eAddressLoopback);
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "64:ff9b::5db8:d822"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, AllowsRoutablePublicAddresses) {
     const mcp::auth::MetadataFetchPolicy policy;
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "93.184.216.34"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_address(policy, "2606:2800:220:1::1"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
 TEST(AuthMetadataPolicyTest, DescribesEveryDecision) {
-    EXPECT_EQ(mcp::auth::describe(mcp::auth::MetadataUrlDecision::allowed), "allowed");
-    for (const auto decision : {mcp::auth::MetadataUrlDecision::malformed_url,
-                                mcp::auth::MetadataUrlDecision::scheme_not_allowed,
-                                mcp::auth::MetadataUrlDecision::origin_denied,
-                                mcp::auth::MetadataUrlDecision::origin_not_allowed,
-                                mcp::auth::MetadataUrlDecision::address_link_local,
-                                mcp::auth::MetadataUrlDecision::address_private,
-                                mcp::auth::MetadataUrlDecision::address_loopback,
-                                mcp::auth::MetadataUrlDecision::address_multicast,
-                                mcp::auth::MetadataUrlDecision::address_reserved,
-                                mcp::auth::MetadataUrlDecision::redirect_limit_exceeded,
-                                mcp::auth::MetadataUrlDecision::response_too_large}) {
+    EXPECT_EQ(mcp::auth::describe(mcp::auth::MetadataUrlDecision::eAllowed), "allowed");
+    for (const auto decision : {mcp::auth::MetadataUrlDecision::eMalformedUrl,
+                                mcp::auth::MetadataUrlDecision::eSchemeNotAllowed,
+                                mcp::auth::MetadataUrlDecision::eOriginDenied,
+                                mcp::auth::MetadataUrlDecision::eOriginNotAllowed,
+                                mcp::auth::MetadataUrlDecision::eAddressLinkLocal,
+                                mcp::auth::MetadataUrlDecision::eAddressPrivate,
+                                mcp::auth::MetadataUrlDecision::eAddressLoopback,
+                                mcp::auth::MetadataUrlDecision::eAddressMulticast,
+                                mcp::auth::MetadataUrlDecision::eAddressReserved,
+                                mcp::auth::MetadataUrlDecision::eRedirectLimitExceeded,
+                                mcp::auth::MetadataUrlDecision::eResponseTooLarge}) {
         EXPECT_FALSE(mcp::auth::describe(decision).empty());
         EXPECT_NE(mcp::auth::describe(decision), "allowed");
     }
 }
 
 TEST(AuthMetadataPolicyTest, PolicyErrorCarriesItsDecisionAndTarget) {
-    const mcp::auth::MetadataPolicyError error(mcp::auth::MetadataUrlDecision::address_link_local,
+    const mcp::auth::MetadataPolicyError error(mcp::auth::MetadataUrlDecision::eAddressLinkLocal,
                                                "169.254.169.254");
-    EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::address_link_local);
+    EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::eAddressLinkLocal);
     EXPECT_EQ(error.target(), "169.254.169.254");
     EXPECT_NE(std::string(error.what()).find("link-local"), std::string::npos);
     EXPECT_NE(std::string(error.what()).find("169.254.169.254"), std::string::npos);

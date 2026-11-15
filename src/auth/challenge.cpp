@@ -274,11 +274,11 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
                                                                 const AuthorizationResponse& response) {
     if (!request.state.empty()) {
         if (!response.state) {
-            return {AuthorizationResponseStatus::state_missing,
+            return {AuthorizationResponseStatus::eStateMissing,
                     "authorization response omitted the state parameter"};
         }
         if (*response.state != request.state) {
-            return {AuthorizationResponseStatus::state_mismatch,
+            return {AuthorizationResponseStatus::eStateMismatch,
                     "authorization response state did not match the recorded value"};
         }
     }
@@ -287,11 +287,11 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
     // default-port elision, no trailing-slash or percent-encoding normalization.
     if (response.iss) {
         if (*response.iss != request.issuer) {
-            return {AuthorizationResponseStatus::issuer_mismatch,
+            return {AuthorizationResponseStatus::eIssuerMismatch,
                     "authorization response iss did not match the recorded issuer"};
         }
     } else if (request.issuer_parameter_supported) {
-        return {AuthorizationResponseStatus::issuer_missing,
+        return {AuthorizationResponseStatus::eIssuerMissing,
                 "authorization server advertises iss support but omitted the parameter"};
     }
 
@@ -302,14 +302,14 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
         // us through a redirect the authorization server controls, and being issuer-authentic makes
         // it trustworthy as to origin, not as to content.
         return {
-            AuthorizationResponseStatus::server_error,
+            AuthorizationResponseStatus::eServerError,
             "authorization server returned error " + detail::sanitize_for_diagnostics(*response.error)};
     }
     if (!response.code || response.code->empty()) {
-        return {AuthorizationResponseStatus::code_missing,
+        return {AuthorizationResponseStatus::eCodeMissing,
                 "authorization response carried no authorization code"};
     }
-    return {AuthorizationResponseStatus::accepted, {}};
+    return {AuthorizationResponseStatus::eAccepted, {}};
 }
 
 }  // namespace mcp::auth

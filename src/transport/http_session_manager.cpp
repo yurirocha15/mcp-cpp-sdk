@@ -745,11 +745,11 @@ struct StreamableHttpSessionManager::Impl {
         const std::optional<std::vector<std::string>>& token_scopes) const {
         const auto check = detail::check_request_scopes(scope_requirements_, token_scopes, request_json,
                                                         bearer_challenge_);
-        if (check.outcome == detail::ScopeCheck::Outcome::failed) {
+        if (check.outcome == detail::ScopeCheck::Outcome::eFailed) {
             return detail_session_mgr::make_error_response(request, http::status::internal_server_error,
                                                            "Scope requirement check failed");
         }
-        if (check.outcome == detail::ScopeCheck::Outcome::allowed) {
+        if (check.outcome == detail::ScopeCheck::Outcome::eAllowed) {
             return std::nullopt;
         }
         auto response = detail_session_mgr::make_error_response(request, http::status::forbidden,

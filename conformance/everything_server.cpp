@@ -31,9 +31,9 @@
 
 namespace {
 
-constexpr std::string_view g_test_image_base64 =
+constexpr std::string_view g_TEST_IMAGE_BASE64 =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
-constexpr std::string_view g_test_audio_base64 =
+constexpr std::string_view g_TEST_AUDIO_BASE64 =
     "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF0YQIAAAA=";
 
 nlohmann::json empty_object_schema() {
@@ -48,14 +48,14 @@ mcp::TextContent text_content(std::string text) {
 
 mcp::ImageContent image_content() {
     mcp::ImageContent content;
-    content.data = g_test_image_base64;
+    content.data = g_TEST_IMAGE_BASE64;
     content.mimeType = "image/png";
     return content;
 }
 
 mcp::AudioContent audio_content() {
     mcp::AudioContent content;
-    content.data = g_test_audio_base64;
+    content.data = g_TEST_AUDIO_BASE64;
     content.mimeType = "audio/wav";
     return content;
 }
@@ -512,7 +512,7 @@ void register_resources(mcp::Server& server) {
             mcp::BlobResourceContents contents;
             contents.uri = std::move(request.uri);
             contents.mimeType = "image/png";
-            contents.blob = g_test_image_base64;
+            contents.blob = g_TEST_IMAGE_BASE64;
             result.contents.emplace_back(std::move(contents));
             return result;
         });

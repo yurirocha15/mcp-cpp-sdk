@@ -155,7 +155,7 @@ TEST(StdioClientTransport, LegacySessionWorks) {
         auto transport =
             std::make_shared<mcp::StdioClientTransport>(harness.io.get_executor(), server_options());
         mcp::ClientOptions options;
-        options.protocol = mcp::ClientProtocol::Legacy();
+        options.protocol = mcp::ClientProtocol::legacy();
         mcp::Client client(transport, harness.io.get_executor(), options);
         co_await client.connect("stdio-client-test", "1.0");
         args = co_await call(client, "args");

@@ -48,7 +48,7 @@ using Node = NativeSchema::Node;
 /// one is left to jsoncons; any keyword in neither list is one jsoncons ignores, and so is ignored
 /// here.
 bool is_unsupported_keyword(std::string_view keyword) {
-    static constexpr std::array<std::string_view, 26> unsupported = {
+    static constexpr std::array<std::string_view, 26> s_unsupported = {
         "$anchor",
         "$defs",
         "$dynamicAnchor",
@@ -76,7 +76,7 @@ bool is_unsupported_keyword(std::string_view keyword) {
         "unevaluatedItems",
         "unevaluatedProperties",
     };
-    return std::find(unsupported.begin(), unsupported.end(), keyword) != unsupported.end();
+    return std::find(s_unsupported.begin(), s_unsupported.end(), keyword) != s_unsupported.end();
 }
 
 /// A size keyword's value. The metaschema has checked that it is a non-negative integer; one
@@ -387,8 +387,8 @@ class Evaluation {
         if (value.is_number_float() && !std::isfinite(value.get<double>())) {
             // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what the
             // peer would receive, so that is what is checked.
-            static const nlohmann::json null_value;
-            return check(node, null_value);
+            static const nlohmann::json s_null_value;
+            return check(node, s_null_value);
         }
         if (node.reject_all) {
             return report("No value is allowed here");
