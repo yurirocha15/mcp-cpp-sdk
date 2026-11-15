@@ -29,7 +29,7 @@ constexpr bool is_plain(unsigned char byte) {
 class Writer {
    public:
     explicit Writer(std::string& out) : out_(out), length_(out.size()) {
-        out_.resize(length_ + g_INITIAL_ROOM);
+        out_.resize(length_ + initial_room);
     }
 
     Writer(const Writer&) = delete;
@@ -137,9 +137,9 @@ class Writer {
     }
 
    private:
-    static constexpr std::size_t g_INITIAL_ROOM = 256;
+    static constexpr std::size_t initial_room = 256;
     /// An escape is six bytes, the most one byte of a string becomes.
-    static constexpr std::size_t g_WIDEST_ESCAPE = 6;
+    static constexpr std::size_t widest_escape = 6;
 
     std::string& out_;
     std::size_t length_;
@@ -208,7 +208,7 @@ class Writer {
             }
             // Byte by byte through this block.
             const auto* const block_end = at + std::min(block, static_cast<std::size_t>(end - at));
-            make_room(g_WIDEST_ESCAPE * block);
+            make_room(widest_escape * block);
             data = out_.data();
             while (at < block_end) {
                 const unsigned char byte = *at;

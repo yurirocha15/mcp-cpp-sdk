@@ -16,7 +16,7 @@
 /// another. When the tool calls ctx.elicit(), the server answers the tools/call with an
 /// input_required result that holds the question; the client runs its on_elicitation() handler and
 /// sends the tools/call again with the answer, and the tool then resumes. The tool and the handler
-/// are written the same way in both eras; with a client pinned to ClientProtocol::Legacy() the
+/// are written the same way in both eras; with a client pinned to ClientProtocol::legacy() the
 /// server sends an elicitation/create request instead. Server::mrtr_stats() counts the retries
 /// that resumed a waiting tool.
 
@@ -44,7 +44,7 @@ namespace {
 /// The form the tool asks, built from typed fields. A function-local static keeps its strings out
 /// of the tool's coroutine frame.
 const mcp::ElicitationSchema& contact_form() {
-    static const mcp::ElicitationSchema form = [] {
+    static const mcp::ElicitationSchema s_form = [] {
         using namespace mcp;
         ElicitationSchema built;
         built.add("name", StringSchema{.title = "Full Name", .minLength = 1}, true)
@@ -60,7 +60,7 @@ const mcp::ElicitationSchema& contact_form() {
             .add("subscribe", BooleanSchema{.title = "Send me updates", .defaultValue = false});
         return built;
     }();
-    return form;
+    return s_form;
 }
 
 }  // namespace

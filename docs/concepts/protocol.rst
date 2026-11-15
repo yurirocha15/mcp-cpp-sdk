@@ -98,7 +98,7 @@ the server answers it with ``g_INVALID_PARAMS``.
 ``supportedVersions``. The era is fixed for the lifetime of the client.
 
 By default the client does not know which era a server speaks.
-``ClientOptions::protocol`` defaults to ``ClientProtocol::Auto()``, which sends
+``ClientOptions::protocol`` defaults to ``ClientProtocol::automatic()``, which sends
 ``server/discover`` first. A ``DiscoverResult``, or an error that only a
 2026-07-28 server sends, means the server is modern. Any other outcome means it
 is an older server, and the client sends ``initialize``. ``ConnectResult::era``

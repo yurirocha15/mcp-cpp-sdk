@@ -151,8 +151,8 @@ class UniqueFd {
 /// Serializes pipe creation, the close-on-exec setup and fork() among this library's launches, so
 /// that on systems without pipe2() a launch in another thread never inherits a half-set-up pipe.
 std::mutex& spawn_mutex() {
-    static std::mutex mutex;
-    return mutex;
+    static std::mutex s_mutex;
+    return s_mutex;
 }
 
 /// A pipe whose ends are close-on-exec and above the standard descriptors, so that the launch's
@@ -237,8 +237,8 @@ std::vector<std::string> environment_strings(const StdioProcessOptions& options)
 
 /// Sets SIGPIPE to ignored once, unless the application chose a disposition of its own.
 void ignore_broken_pipe_signal() {
-    static std::once_flag once;
-    std::call_once(once, [] {
+    static std::once_flag s_once;
+    std::call_once(s_once, [] {
         struct sigaction current{};
         if (::sigaction(SIGPIPE, nullptr, &current) == 0 && current.sa_handler == SIG_DFL &&
             (current.sa_flags & SA_SIGINFO) == 0) {

@@ -200,7 +200,7 @@ TEST_F(HttpTasksTest, TheHttpClientFollowsATaskThroughTheServer) {
         auto transport = std::make_shared<mcp::HttpClientTransport>(
             io_ctx_.get_executor(), "http://127.0.0.1:" + std::to_string(g_port) + "/mcp");
         mcp::ClientOptions options;
-        options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+        options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
         options.tasks = mcp::ClientTaskMode::eAuto;
         options.task_poll_interval = std::chrono::milliseconds(5);
         mcp::Client client(transport, io_ctx_.get_executor(), options);

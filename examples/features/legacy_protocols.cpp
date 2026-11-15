@@ -4,7 +4,7 @@
 /// Every program that does not pin a protocol speaks 2026-07-28 with a server that serves it.
 /// This example is about the other case: clients and servers that start a session with
 /// `initialize`. It shows:
-/// - ClientProtocol::Version() pinning each of the four older revisions, and Legacy() pinning
+/// - ClientProtocol::pinned() pinning each of the four older revisions, and legacy() pinning
 ///   the newest of them (2025-11-25)
 /// - ping() and resources/subscribe, which exist only in those revisions
 /// - ServerProtocolPolicy and Server::set_protocol_policy(): which revisions a server serves, and
@@ -46,8 +46,8 @@ const char* era_name(mcp::ProtocolEra era) {
     return era == mcp::ProtocolEra::eModern ? "modern" : "legacy";
 }
 
-const std::string g_resource_uri = "mcp://example/counter";
-const mcp::Implementation g_client_info{"legacy-protocols-example-client", "1.0.0"};
+const std::string g_RESOURCE_URI = "mcp://example/counter";
+const mcp::Implementation g_CLIENT_INFO{"legacy-protocols-example-client", "1.0.0"};
 
 std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy) {
     mcp::ServerCapabilities caps;
@@ -60,11 +60,11 @@ std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy
         mcp::Implementation{"legacy-protocols-example-server", "1.0.0"}, caps);
 
     mcp::Resource resource;
-    resource.uri = g_resource_uri;
+    resource.uri = g_RESOURCE_URI;
     resource.name = "counter";
     resource.mimeType = "text/plain";
     server->add_resource<json, json>(resource, [](const json& /*params*/) -> json {
-        return json{{"contents", json::array({json{{"uri", g_resource_uri},
+        return json{{"contents", json::array({json{{"uri", g_RESOURCE_URI},
                                                    {"mimeType", "text/plain"},
                                                    {"text", "counter value: 1"}}})}};
     });
@@ -115,21 +115,21 @@ mcp::Task<bool> wait_for(const bool& flag, const asio::any_io_executor& executor
     co_return flag;
 }
 
-/// Pins one older revision with ClientProtocol::Version() and calls ping(), which only those
+/// Pins one older revision with ClientProtocol::pinned() and calls ping(), which only those
 /// revisions have.
 mcp::Task<bool> exercise_pinned_version(const char* version, const asio::any_io_executor& executor) {
     bool ok = true;
     auto transport = start_server(make_server(mcp::ServerProtocolPolicy{}), executor);
 
     auto client_owner =
-        make_client(std::move(transport), executor, mcp::ClientProtocol::Version(version));
+        make_client(std::move(transport), executor, mcp::ClientProtocol::pinned(version));
     mcp::Client& client = *client_owner;
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_client_info, mcp::ClientCapabilities{});
+            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
         ok &= check(connected.era == mcp::ProtocolEra::eLegacy && connected.protocolVersion == version,
-                    std::string("Version(\"") + version + "\") gives a " + era_name(connected.era) +
+                    std::string("pinned(\"") + version + "\") gives a " + era_name(connected.era) +
                         " session of " + connected.protocolVersion);
     }
 
@@ -139,21 +139,21 @@ mcp::Task<bool> exercise_pinned_version(const char* version, const asio::any_io_
     co_return ok;
 }
 
-/// Legacy() is the newest of the older revisions.
+/// legacy() is the newest of the older revisions.
 mcp::Task<bool> exercise_legacy_pin(const asio::any_io_executor& executor) {
     bool ok = true;
     auto transport = start_server(make_server(mcp::ServerProtocolPolicy{}), executor);
 
-    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::Legacy());
+    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::legacy());
     mcp::Client& client = *client_owner;
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_client_info, mcp::ClientCapabilities{});
+            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
         ok &= check(
             connected.era == mcp::ProtocolEra::eLegacy &&
                 connected.protocolVersion == mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION,
-            "Legacy() gives a session of " + connected.protocolVersion);
+            "legacy() gives a session of " + connected.protocolVersion);
     }
     client.close();
     co_return ok;
@@ -169,7 +169,7 @@ mcp::Task<bool> exercise_subscribe(const asio::any_io_executor& executor) {
     server->on_unsubscribe([unsubscribed](const std::string& uri) { unsubscribed->push_back(uri); });
     auto transport = start_server(server, executor);
 
-    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::Legacy());
+    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::legacy());
     mcp::Client& client = *client_owner;
 
     bool updated = false;
@@ -183,14 +183,14 @@ mcp::Task<bool> exercise_subscribe(const asio::any_io_executor& executor) {
         list_changed = true;
     });
 
-    co_await client.connect(g_client_info, mcp::ClientCapabilities{});
+    co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
 
-    const std::optional<json> subscribe_params = json{{"uri", g_resource_uri}};
+    const std::optional<json> subscribe_params = json{{"uri", g_RESOURCE_URI}};
     co_await client.send_request("resources/subscribe", subscribe_params);
-    ok &= check(subscribed->size() == 1 && subscribed->front() == g_resource_uri,
+    ok &= check(subscribed->size() == 1 && subscribed->front() == g_RESOURCE_URI,
                 "resources/subscribe reached Server::on_subscribe");
 
-    co_await server->notify_resource_updated(g_resource_uri);
+    co_await server->notify_resource_updated(g_RESOURCE_URI);
     const bool got_update = co_await wait_for(updated, executor);
     ok &= check(got_update, "the subscriber received notifications/resources/updated");
 
@@ -213,9 +213,9 @@ mcp::Task<bool> exercise_legacy_only_policy(const asio::any_io_executor& executo
     policy.legacy_versions = std::vector<std::string>{"2024-11-05", "2025-03-26"};
     auto transport = start_server(make_server(policy), executor);
 
-    // The default Auto() probes with server/discover. This server refuses it, so the client falls
+    // The default automatic() probes with server/discover. This server refuses it, so the client falls
     // back to initialize, which negotiates the newest version the policy lists.
-    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::Auto(),
+    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::automatic(),
                                     [](const mcp::EraDecision& decision) {
                                         std::cout << "  era decision: " << era_name(decision.era)
                                                   << '\n';
@@ -224,10 +224,10 @@ mcp::Task<bool> exercise_legacy_only_policy(const asio::any_io_executor& executo
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_client_info, mcp::ClientCapabilities{});
+            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
         ok &= check(
             connected.era == mcp::ProtocolEra::eLegacy && connected.protocolVersion == "2025-03-26",
-            "an Auto() client lands in a legacy session of " + connected.protocolVersion);
+            "an automatic() client lands in a legacy session of " + connected.protocolVersion);
     }
     client.close();
     co_return ok;
@@ -240,12 +240,12 @@ mcp::Task<bool> exercise_modern_only_policy(const asio::any_io_executor& executo
     policy.serve_legacy = false;
     auto transport = start_server(make_server(policy), executor);
 
-    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::Legacy());
+    auto client_owner = make_client(std::move(transport), executor, mcp::ClientProtocol::legacy());
     mcp::Client& client = *client_owner;
 
     bool refused = false;
     try {
-        co_await client.connect(g_client_info, mcp::ClientCapabilities{});
+        co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
     } catch (const mcp::McpError& error) {
         std::cout << "  initialize refused: " << error.what() << '\n';
         refused = error.code() == jsonrpc::g_METHOD_NOT_FOUND;
@@ -261,15 +261,15 @@ mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) 
     auto transport = start_server(make_server(mcp::ServerProtocolPolicy{}), executor);
 
     auto client_owner =
-        make_client(std::move(transport), executor, mcp::ClientProtocol::Version("2026-07-28"));
+        make_client(std::move(transport), executor, mcp::ClientProtocol::pinned("2026-07-28"));
     mcp::Client& client = *client_owner;
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_client_info, mcp::ClientCapabilities{});
+            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
         ok &= check(
             connected.era == mcp::ProtocolEra::eModern,
-            std::string("Version(\"2026-07-28\") gives a ") + era_name(connected.era) + " session");
+            std::string("pinned(\"2026-07-28\") gives a ") + era_name(connected.era) + " session");
     }
 
     bool ping_failed = false;
@@ -283,7 +283,7 @@ mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) 
 
     bool subscribe_failed = false;
     try {
-        const std::optional<json> subscribe_params = json{{"uri", g_resource_uri}};
+        const std::optional<json> subscribe_params = json{{"uri", g_RESOURCE_URI}};
         co_await client.send_request("resources/subscribe", subscribe_params);
     } catch (const mcp::McpError& error) {
         std::cout << "  resources/subscribe: " << error.what() << '\n';
@@ -302,7 +302,7 @@ mcp::Task<bool> run_all(const asio::any_io_executor& executor) {
         const bool pinned = co_await exercise_pinned_version(version, executor);
         ok = ok && pinned;
     }
-    std::cout << "Legacy()\n";
+    std::cout << "legacy()\n";
     const bool legacy_pin = co_await exercise_legacy_pin(executor);
     ok = ok && legacy_pin;
 

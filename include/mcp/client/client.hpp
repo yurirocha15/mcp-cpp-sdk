@@ -111,7 +111,7 @@ class MCP_API ClientProtocol {
         eVersion,  ///< Exactly the version named, no probe.
     };
 
-    /** @brief Equivalent to Auto(). */
+    /** @brief Equivalent to automatic(). */
     ClientProtocol() = default;
 
     /**
@@ -123,16 +123,16 @@ class MCP_API ClientProtocol {
      * mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY); any other error, a reply that is
      * not JSON, or no reply within ClientOptions::probe_timeout makes it legacy, and the client sends
      * initialize. A server that exits when it receives the probe fails the connect with an error that
-     * names Legacy() as the remedy.
+     * names legacy() as the remedy.
      *
      * Over HTTP the probe is a 2026-07-28 POST. A legacy server answers it with an error status
      * (400 without a modern protocol error in the body, 404 or 405), and the client falls back to
      * initialize.
      */
-    [[nodiscard]] static ClientProtocol Auto();
+    [[nodiscard]] static ClientProtocol automatic();
 
     /** @brief initialize with the newest legacy version (2025-11-25); sends no probe. */
-    [[nodiscard]] static ClientProtocol Legacy();
+    [[nodiscard]] static ClientProtocol legacy();
 
     /**
      * @brief Speak exactly one version.
@@ -143,12 +143,12 @@ class MCP_API ClientProtocol {
      *
      * @throws std::invalid_argument For any other string.
      */
-    [[nodiscard]] static ClientProtocol Version(std::string version);
+    [[nodiscard]] static ClientProtocol pinned(std::string version);
 
     /** @brief What this value selects. */
     [[nodiscard]] Kind kind() const noexcept { return kind_; }
 
-    /** @brief The pinned version for Version(), the newest legacy version for Legacy(), else empty. */
+    /** @brief The pinned version for pinned(), the newest legacy version for legacy(), else empty. */
     [[nodiscard]] const std::string& version() const noexcept { return version_; }
 
    private:
@@ -201,14 +201,14 @@ enum class ClientTaskMode : std::uint8_t {
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
     /**
-     * @brief Which protocol to speak; Auto() unless set.
+     * @brief Which protocol to speak; automatic() unless set.
      *
      * @details See ClientProtocol. Construction throws std::invalid_argument for a value that
      * names a version the SDK does not know.
      */
-    ClientProtocol protocol{ClientProtocol::Auto()};
+    ClientProtocol protocol{ClientProtocol::automatic()};
     /**
-     * @brief How long ClientProtocol::Auto() waits for the answer to server/discover.
+     * @brief How long ClientProtocol::automatic() waits for the answer to server/discover.
      *
      * @details The timer starts when the client starts probing, once the transport is ready.
      * A legacy server that ignores the unknown request is the case it exists for. Must be
@@ -649,7 +649,7 @@ class MCP_API Client {
      * @param capabilities Capabilities supported by this client.
      * @return A task that resolves to what the server declared.
      * @throws McpError If the server cannot be reached, closes the connection while it is probed
-     *         (pin ClientProtocol::Legacy() for such a server), or shares no protocol version.
+     *         (pin ClientProtocol::legacy() for such a server), or shares no protocol version.
      */
     Task<ConnectResult> connect(const Implementation& client_info,
                                 const ClientCapabilities& capabilities);

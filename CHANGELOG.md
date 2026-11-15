@@ -247,8 +247,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `RequestContext::watch_cancel` lets a transport wake a request when it sets
   `cancelled`.
 - The client detects the server's protocol era and speaks both.
-  `ClientOptions::protocol` takes `ClientProtocol::Auto()` (the default),
-  `Legacy()` or `Version("...")`. `Auto()` sends `server/discover` first: a
+  `ClientOptions::protocol` takes `ClientProtocol::automatic()` (the default),
+  `legacy()` or `pinned("...")`. `automatic()` sends `server/discover` first: a
   `DiscoverResult` or a modern protocol error
   (`g_UNSUPPORTED_PROTOCOL_VERSION`, `g_HEADER_MISMATCH`,
   `g_MISSING_REQUIRED_CLIENT_CAPABILITY`) means a 2026-07-28 server, while any
@@ -586,11 +586,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   handlers too, not only in tools. The response of a request of 2025-11-25 or
   earlier is still sent.
 - `Client::connect()` sends `server/discover` before `initialize` by default
-  (`ClientProtocol::Auto()`, also what a default-constructed `ClientProtocol`
+  (`ClientProtocol::automatic()`, also what a default-constructed `ClientProtocol`
   selects) and speaks 2026-07-28 with a server that serves it. A legacy server
   costs one extra round trip, or `ClientOptions::probe_timeout` if it ignores
   the request; one that closes the connection on it fails the connect.
-  `ClientOptions::protocol = ClientProtocol::Legacy()` keeps sending only
+  `ClientOptions::protocol = ClientProtocol::legacy()` keeps sending only
   `initialize`.
 - `Client::connect()` resolves to `ConnectResult` instead of
   `InitializeResult`: `era`, `protocolVersion`, `capabilities`, `serverInfo`
@@ -809,6 +809,21 @@ Versioning; a `0.x` version is a stable release unless its version has an
   constants of `mcp::auth::constants` are in
   `mcp::constants::oauth` and `mcp::constants::metadata_policy`. The old names
   are gone. Constants only the implementation uses moved to a private header.
+- Enum values follow the `eCamelCase` rule of `.clang-tidy`. These public enums
+  changed: `AuthorizationResponseStatus` (`eAccepted`, `eStateMissing`,
+  `eStateMismatch`, `eIssuerMissing`, `eIssuerMismatch`, `eServerError`,
+  `eCodeMissing`), `ClientIdentitySource` (`ePreRegistered`,
+  `eClientIdMetadataDocument`, `eDynamicRegistration`),
+  `ClientIdentityDecision` (`eUsePreRegistered`,
+  `eUseClientIdMetadataDocument`, `eReuseStoredRegistration`,
+  `eRegisterDynamically`, `eUnavailable`) and `MetadataUrlDecision`
+  (`eAllowed`, `eMalformedUrl`, `eSchemeNotAllowed`, `eOriginDenied`,
+  `eOriginNotAllowed`, `eAddressLinkLocal`, `eAddressPrivate`,
+  `eAddressLoopback`, `eAddressMulticast`, `eAddressReserved`,
+  `eRedirectLimitExceeded`, `eResponseTooLarge`,
+  `eDeniedOriginEntryMalformed`). The strings `describe()` returns are
+  unchanged. The `ClientProtocol` factories `Auto()`, `Legacy()` and
+  `Version()` are `automatic()`, `legacy()` and `pinned()`.
 
 ### Deprecated
 
@@ -1063,7 +1078,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
   password, or a `.` or `..` path segment, by throwing
   `std::invalid_argument`, instead of using it as a client identifier the
   authorization specification does not allow.
-- A request's timeout, and the `probe_timeout` of `ClientProtocol::Auto()`, no
+- A request's timeout, and the `probe_timeout` of `ClientProtocol::automatic()`, no
   longer run while `OAuthClientTransport` waits for the user to answer an
   authorization prompt. A prompt that took longer than the timeout failed the
   request, and one that took longer than `probe_timeout` made `connect()` fall

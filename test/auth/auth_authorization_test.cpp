@@ -659,7 +659,7 @@ namespace {
 /// Drive one challenge against a manager whose resolver is instrumented, and report the refusal.
 struct RefusalOutcome {
     bool threw{false};
-    mcp::auth::MetadataUrlDecision decision{mcp::auth::MetadataUrlDecision::allowed};
+    mcp::auth::MetadataUrlDecision decision{mcp::auth::MetadataUrlDecision::eAllowed};
     int resolver_calls{0};
 };
 
@@ -719,7 +719,7 @@ TEST(AuthMetadataSsrfTest, RefusesTheLinkLocalMetadataServiceWithoutResolving) {
         refuse_challenge(R"(Bearer resource_metadata="http://169.254.169.254/latest/meta-data")",
                          {"http://169.254.169.254"});
     EXPECT_TRUE(outcome.threw);
-    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
     EXPECT_EQ(outcome.resolver_calls, 0);
 }
 
@@ -727,7 +727,7 @@ TEST(AuthMetadataSsrfTest, RefusesAPrivateRangeTargetWithoutResolving) {
     const auto outcome = refuse_challenge(R"(Bearer resource_metadata="http://10.10.10.10/prm")",
                                           {"http://10.10.10.10"});
     EXPECT_TRUE(outcome.threw);
-    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
     EXPECT_EQ(outcome.resolver_calls, 0);
 }
 
@@ -736,7 +736,7 @@ TEST(AuthMetadataSsrfTest, RefusesPlainHttpToANonLoopbackHostWithoutResolving) {
         refuse_challenge(R"(Bearer resource_metadata="http://metadata.example.test/prm")",
                          {"http://metadata.example.test"});
     EXPECT_TRUE(outcome.threw);
-    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
     EXPECT_EQ(outcome.resolver_calls, 0);
 }
 
@@ -744,7 +744,7 @@ TEST(AuthMetadataSsrfTest, RefusesAnUnlistedOriginWithoutResolving) {
     const auto outcome =
         refuse_challenge(R"(Bearer resource_metadata="https://unlisted.example.test/prm")", {});
     EXPECT_TRUE(outcome.threw);
-    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::origin_not_allowed);
+    EXPECT_EQ(outcome.decision, mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
     EXPECT_EQ(outcome.resolver_calls, 0);
 }
 
@@ -762,7 +762,7 @@ TEST(AuthMetadataSsrfTest, RefusesTheWholeAnswerWhenOneResolvedAddressIsBlocked)
 
     int resolver_calls = 0;
     bool refused = false;
-    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+    auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
     asio::co_spawn(
         io_ctx,
@@ -789,7 +789,7 @@ TEST(AuthMetadataSsrfTest, RefusesTheWholeAnswerWhenOneResolvedAddressIsBlocked)
     io_ctx.run();
 
     EXPECT_TRUE(refused);
-    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::address_link_local);
+    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::eAddressLinkLocal);
     EXPECT_EQ(resolver_calls, 1);
     EXPECT_EQ(canary.accepts(), 0);
 }
@@ -850,7 +850,7 @@ TEST(AuthMetadataRedirectTest, RefusesARedirectOntoABlockedTarget) {
     asio::co_spawn(io_ctx, server.serve(2), asio::detached);
 
     bool refused = false;
-    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+    auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
     asio::co_spawn(
         io_ctx,
@@ -872,7 +872,7 @@ TEST(AuthMetadataRedirectTest, RefusesARedirectOntoABlockedTarget) {
     io_ctx.run();
 
     EXPECT_TRUE(refused);
-    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
     // Only the original hop was made; the redirect target was refused rather than followed.
     EXPECT_EQ(server.accepts(), 1);
 }
@@ -889,7 +889,7 @@ TEST(AuthMetadataRedirectTest, BoundsTheRedirectChain) {
     asio::co_spawn(io_ctx, server.serve(5), asio::detached);
 
     bool refused = false;
-    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+    auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
     asio::co_spawn(
         io_ctx,
@@ -911,7 +911,7 @@ TEST(AuthMetadataRedirectTest, BoundsTheRedirectChain) {
     io_ctx.run();
 
     EXPECT_TRUE(refused);
-    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::redirect_limit_exceeded);
+    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::eRedirectLimitExceeded);
     // The initial request plus exactly two redirects.
     EXPECT_EQ(server.accepts(), 3);
 }
@@ -969,7 +969,7 @@ TEST(AuthMetadataSizeCapTest, RejectsAnOversizedMetadataResponse) {
     asio::co_spawn(io_ctx, server.serve(1), asio::detached);
 
     bool refused = false;
-    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+    auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
     asio::co_spawn(
         io_ctx,
@@ -991,7 +991,7 @@ TEST(AuthMetadataSizeCapTest, RejectsAnOversizedMetadataResponse) {
     io_ctx.run();
 
     EXPECT_TRUE(refused);
-    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::response_too_large);
+    EXPECT_EQ(decision, mcp::auth::MetadataUrlDecision::eResponseTooLarge);
 }
 
 TEST(AuthMetadataSizeCapTest, AcceptsAResponseWithinTheCap) {
@@ -5072,21 +5072,21 @@ TEST(AuthClientIdentityBindingTest, RefusesInjectedCredentialsBoundToADifferentI
     other.registration_endpoint = "https://as-two.example.com/register";
 
     EXPECT_EQ(mcp::auth::select_client_identity(config, other, std::nullopt),
-              mcp::auth::ClientIdentityDecision::unavailable);
+              mcp::auth::ClientIdentityDecision::eUnavailable);
 
     mcp::auth::ClientIdentityServerFacts matching;
     matching.issuer = "https://as-one.example.com";
     EXPECT_EQ(mcp::auth::select_client_identity(config, matching, std::nullopt),
-              mcp::auth::ClientIdentityDecision::use_pre_registered);
+              mcp::auth::ClientIdentityDecision::eUsePreRegistered);
 
     // Credentials that never named an issuer are unbound, not universally bound. A secret that
     // belongs to nobody in particular must not be handed to whichever authorization server the
     // protected-resource document happened to name.
     config.pre_registered->issuer.clear();
     EXPECT_EQ(mcp::auth::select_client_identity(config, other, std::nullopt),
-              mcp::auth::ClientIdentityDecision::unavailable);
+              mcp::auth::ClientIdentityDecision::eUnavailable);
     EXPECT_EQ(mcp::auth::select_client_identity(config, matching, std::nullopt),
-              mcp::auth::ClientIdentityDecision::unavailable);
+              mcp::auth::ClientIdentityDecision::eUnavailable);
 }
 
 // The refusal is aimed at the secret, not at injected credentials in general. A public client's
@@ -5102,12 +5102,12 @@ TEST(AuthClientIdentityBindingTest, UnboundPublicClientCredentialsAreStillUsed) 
     anywhere.registration_endpoint = "https://as-two.example.com/register";
 
     EXPECT_EQ(mcp::auth::select_client_identity(config, anywhere, std::nullopt),
-              mcp::auth::ClientIdentityDecision::use_pre_registered);
+              mcp::auth::ClientIdentityDecision::eUsePreRegistered);
 
     // An empty-string secret is no secret at all and must not trip the refusal.
     config.pre_registered->client_secret = "";
     EXPECT_EQ(mcp::auth::select_client_identity(config, anywhere, std::nullopt),
-              mcp::auth::ClientIdentityDecision::use_pre_registered);
+              mcp::auth::ClientIdentityDecision::eUsePreRegistered);
 }
 
 namespace {
@@ -6801,7 +6801,7 @@ std::vector<std::string> methods_of(const ClientAuthRun& run) {
 }  // namespace
 
 TEST(AuthModernClientTest, ChallengeOn401ThenSuccessUnderAutoEra) {
-    const auto run = run_client_auth(mcp::ClientProtocol::Auto(), nullptr, call_the_tool);
+    const auto run = run_client_auth(mcp::ClientProtocol::automatic(), nullptr, call_the_tool);
 
     EXPECT_EQ(run.error, "");
     ASSERT_TRUE(run.connected.has_value());
@@ -6818,7 +6818,7 @@ TEST(AuthModernClientTest, ChallengeOn401ThenSuccessUnderAutoEra) {
 
 TEST(AuthModernClientTest, StepUp403OnToolsCall) {
     const auto run = run_client_auth(
-        mcp::ClientProtocol::Auto(),
+        mcp::ClientProtocol::automatic(),
         [](const json& message, const std::string& token, int,
            const std::string& base) -> std::optional<http::response<http::string_body>> {
             if (message.value("method", "") == "tools/call" && token == "token-1") {
@@ -6844,7 +6844,7 @@ TEST(AuthModernClientTest, StepUp403OnToolsCall) {
 
 TEST(AuthModernClientTest, StepUpInsideMrtrRetry) {
     const auto run = run_client_auth(
-        mcp::ClientProtocol::Version("2026-07-28"),
+        mcp::ClientProtocol::pinned("2026-07-28"),
         [](const json& message, const std::string& token, int index,
            const std::string& base) -> std::optional<http::response<http::string_body>> {
             if (message.value("method", "") != "tools/call") {
@@ -6888,8 +6888,7 @@ TEST(AuthModernClientTest, StepUpInsideMrtrRetry) {
 }
 
 TEST(AuthModernClientTest, PinnedModernWorks) {
-    const auto run =
-        run_client_auth(mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool);
+    const auto run = run_client_auth(mcp::ClientProtocol::pinned("2026-07-28"), nullptr, call_the_tool);
 
     EXPECT_EQ(run.error, "");
     ASSERT_TRUE(run.connected.has_value());
@@ -6900,7 +6899,7 @@ TEST(AuthModernClientTest, PinnedModernWorks) {
 }
 
 TEST(AuthModernClientTest, PinnedLegacyUnchanged) {
-    const auto run = run_client_auth(mcp::ClientProtocol::Legacy(), nullptr, call_the_tool);
+    const auto run = run_client_auth(mcp::ClientProtocol::legacy(), nullptr, call_the_tool);
 
     EXPECT_EQ(run.error, "");
     ASSERT_TRUE(run.connected.has_value());
@@ -6942,7 +6941,7 @@ constexpr auto g_deadline = std::chrono::milliseconds(3000);
 TEST(ClientAuthDeadlineTest, ConsentLongerThanRequestTimeoutDoesNotFailTheRequest) {
     int prompts = 0;
     const auto run = run_client_auth(
-        mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool,
+        mcp::ClientProtocol::pinned("2026-07-28"), nullptr, call_the_tool,
         [](mcp::ClientOptions& options) { options.request_timeout = g_deadline; },
         slow_consent(g_deadline, &prompts));
 
@@ -6956,7 +6955,7 @@ TEST(ClientAuthDeadlineTest, ConsentLongerThanProbeTimeoutStaysModern) {
     int prompts = 0;
     std::vector<mcp::EraDecision> decisions;
     const auto run = run_client_auth(
-        mcp::ClientProtocol::Auto(), nullptr, call_the_tool,
+        mcp::ClientProtocol::automatic(), nullptr, call_the_tool,
         [&decisions](mcp::ClientOptions& options) {
             options.probe_timeout = g_deadline;
             options.on_era_decision = [&decisions](const mcp::EraDecision& decision) {
@@ -6984,7 +6983,7 @@ TEST(ClientAuthDeadlineTest, TimeoutStillFiresAfterConsentReturns) {
     // Four requests are answered: the refused discover, the two metadata documents and the token.
     // The replay of the discover request is then never accepted and waits out its deadline.
     const auto run = run_client_auth(
-        mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool,
+        mcp::ClientProtocol::pinned("2026-07-28"), nullptr, call_the_tool,
         [](mcp::ClientOptions& options) { options.request_timeout = g_deadline; },
         slow_consent(std::chrono::milliseconds(0), &prompts), 4);
 
@@ -7009,7 +7008,7 @@ TEST(ClientAuthDeadlineTest, CloseDuringConsentStillCancels) {
         co_return response;
     };
     const auto run = run_client_auth(
-        mcp::ClientProtocol::Version("2026-07-28"), nullptr, call_the_tool,
+        mcp::ClientProtocol::pinned("2026-07-28"), nullptr, call_the_tool,
         [](mcp::ClientOptions& options) { options.request_timeout = g_deadline; }, closing_consent, 60,
         &client);
 
@@ -7136,7 +7135,7 @@ TEST(AuthModernClientTest, StepsUpOnceAgainstAnSdkServerThatRequiresAScope) {
                 recording_callback(&consent_scopes));
             auto client_transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, manager);
             mcp::ClientOptions options;
-            options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+            options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
             mcp::Client client(client_transport, io_ctx.get_executor(), options);
             try {
                 (void)co_await client.connect("auth-client", "1.0");
