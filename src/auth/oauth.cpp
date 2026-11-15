@@ -1,5 +1,6 @@
 #include <mcp/auth/oauth.hpp>
 
+#include "../detail/constants.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/socket_deadline.hpp"
@@ -11,6 +12,7 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 
@@ -50,6 +52,8 @@
 #include <utility>
 #include <vector>
 
+namespace jsonrpc = mcp::constants::jsonrpc;
+
 // GCC 11 SSO Coroutine Safety -- see docs/contributing.rst "Known Issues".
 // Strings and string-containing protocol values that cross a suspension point
 // live in shared operation state rather than directly in coroutine frames.
@@ -67,23 +71,28 @@ std::string base64_encode(const unsigned char* data, std::size_t len) {
     result.reserve(((len + 2) / 3) * 4);
 
     for (std::size_t i = 0; i < len; i += 3) {
-        unsigned int value = static_cast<unsigned int>(data[i]) << constants::g_shift16;
+        unsigned int value = static_cast<unsigned int>(data[i])
+                             << mcp::detail::constants::encoding::g_SHIFT_16;
         if (i + 1 < len) {
-            value |= static_cast<unsigned int>(data[i + 1]) << constants::g_shift8;
+            value |= static_cast<unsigned int>(data[i + 1])
+                     << mcp::detail::constants::encoding::g_SHIFT_8;
         }
         if (i + 2 < len) {
             value |= static_cast<unsigned int>(data[i + 2]);
         }
 
-        result.push_back(
-            mcp::constants::g_alphabet[(value >> constants::g_shift18) & constants::g_mask0x3F]);
-        result.push_back(
-            mcp::constants::g_alphabet[(value >> constants::g_shift12) & constants::g_mask0x3F]);
-        result.push_back(
-            (i + 1 < len)
-                ? mcp::constants::g_alphabet[(value >> constants::g_shift6) & constants::g_mask0x3F]
-                : '=');
-        result.push_back((i + 2 < len) ? mcp::constants::g_alphabet[value & constants::g_mask0x3F]
+        result.push_back(mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                             [(value >> mcp::detail::constants::encoding::g_SHIFT_18) &
+                              mcp::detail::constants::encoding::g_MASK_0X3F]);
+        result.push_back(mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                             [(value >> mcp::detail::constants::encoding::g_SHIFT_12) &
+                              mcp::detail::constants::encoding::g_MASK_0X3F]);
+        result.push_back((i + 1 < len) ? mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                                             [(value >> mcp::detail::constants::encoding::g_SHIFT_6) &
+                                              mcp::detail::constants::encoding::g_MASK_0X3F]
+                                       : '=');
+        result.push_back((i + 2 < len) ? mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                                             [value & mcp::detail::constants::encoding::g_MASK_0X3F]
                                        : '=');
     }
 
@@ -104,8 +113,9 @@ std::string base64url_encode(const unsigned char* data, std::size_t len) {
     return encoded;
 }
 
-std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input) {
-    std::array<unsigned char, constants::g_sha256_digest_length> digest{};
+std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> sha256(
+    const std::string& input) {
+    std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> digest{};
     unsigned int digest_len = 0;
 
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
@@ -119,7 +129,8 @@ std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::s
 }
 
 std::string generate_random_string(std::size_t length) {
-    static const std::size_t s_charset_size = mcp::constants::g_unreserved_chars.size();
+    static const std::size_t s_charset_size =
+        mcp::detail::constants::encoding::g_UNRESERVED_CHARS.size();
     static const auto s_bias_limit =
         static_cast<unsigned char>((256 / s_charset_size) * s_charset_size);
 
@@ -131,7 +142,8 @@ std::string generate_random_string(std::size_t length) {
             throw std::runtime_error("RAND_bytes failed");
         }
         if (byte < s_bias_limit) {
-            result.push_back(mcp::constants::g_unreserved_chars[byte % s_charset_size]);
+            result.push_back(
+                mcp::detail::constants::encoding::g_UNRESERVED_CHARS[byte % s_charset_size]);
         }
     }
     return result;
@@ -147,8 +159,10 @@ std::string url_encode(const std::string& value) {
             result.push_back(static_cast<char>(ch));
         } else {
             result.push_back('%');
-            result.push_back(mcp::constants::g_hex_digits_upper[ch >> constants::g_shift4]);
-            result.push_back(mcp::constants::g_hex_digits_upper[ch & constants::g_mask0x0F]);
+            result.push_back(mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER
+                                 [ch >> mcp::detail::constants::encoding::g_SHIFT_4]);
+            result.push_back(mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER
+                                 [ch & mcp::detail::constants::encoding::g_MASK_0X0F]);
         }
     }
     return result;
@@ -168,8 +182,8 @@ std::string build_form_body(const KeyValuePairList& params) {
 }  // namespace detail
 
 PkcePair generate_pkce_pair(std::size_t verifier_length) {
-    if (verifier_length < constants::g_min_verifier_length ||
-        verifier_length > constants::g_max_verifier_length) {
+    if (verifier_length < mcp::constants::oauth::g_MIN_VERIFIER_LENGTH ||
+        verifier_length > mcp::constants::oauth::g_MAX_VERIFIER_LENGTH) {
         throw std::invalid_argument("PKCE verifier length must be 43-128 characters");
     }
 
@@ -247,8 +261,6 @@ void InMemoryTokenStore::remove(const std::string& server_url) {
 }
 
 namespace {
-
-constexpr std::string_view g_https_prefix = "https://";
 
 /// Flattens peer-controlled text -- control characters, bidi overrides and ill-formed UTF-8 -- and
 /// caps it, so a value a peer chose cannot forge or reorder a line of a diagnostic. Every throw
@@ -488,14 +500,14 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         std::string scheme;
         std::string default_port;
         std::size_t prefix_length = 0;
-        if (url.starts_with(mcp::constants::g_http_prefix)) {
+        if (url.starts_with(mcp::detail::constants::url::g_HTTP_PREFIX)) {
             scheme = "http";
             default_port = "80";
-            prefix_length = mcp::constants::g_http_prefix.size();
-        } else if (url.starts_with(g_https_prefix)) {
+            prefix_length = mcp::detail::constants::url::g_HTTP_PREFIX.size();
+        } else if (url.starts_with(mcp::detail::constants::url::g_HTTPS_PREFIX)) {
             scheme = "https";
             default_port = "443";
-            prefix_length = g_https_prefix.size();
+            prefix_length = mcp::detail::constants::url::g_HTTPS_PREFIX.size();
         } else {
             throw std::invalid_argument(
                 "OAuth HTTP client URL must use the http:// or https:// scheme");
@@ -610,7 +622,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         // exchange, so a name that resolves differently later cannot redirect it.
         const mcp::detail::SocketDeadline deadline(
             exchange->stream->get_executor(), exchange->stream->socket(),
-            std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
         try {
             co_await exchange->stream->async_connect(exchange->endpoints, net::use_awaitable);
         } catch (const boost::system::system_error&) {
@@ -633,7 +645,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
         const mcp::detail::SocketDeadline deadline(
             exchange->stream->get_executor(), exchange->stream->socket(),
-            std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
         try {
             co_await http::async_write(*exchange->stream, request, net::use_awaitable);
         } catch (const boost::system::system_error&) {
@@ -897,7 +909,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             exchange->reset();
 
             http::request<http::empty_body> request(http::verb::get, exchange->parsed.path,
-                                                    mcp::constants::g_http_version_11);
+                                                    mcp::detail::constants::http_client::g_VERSION_11);
             request.set(http::field::host, exchange->parsed.host_header);
             request.set(http::field::accept, "application/json");
             co_await exchange_once(exchange, request);
@@ -917,7 +929,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             exchange->url = resolve_redirect_target(exchange->url, std::string(location->value()));
         }
 
-        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
+        if (exchange->response().result_int() >=
+            mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST) {
             throw std::runtime_error("HTTP GET " + sanitize_for_diagnostics(exchange->url) +
                                      " failed with status " +
                                      std::to_string(exchange->response().result_int()));
@@ -946,7 +959,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         exchange->reset();
 
         http::request<http::string_body> request(http::verb::post, exchange->parsed.path,
-                                                 mcp::constants::g_http_version_11);
+                                                 mcp::detail::constants::http_client::g_VERSION_11);
         request.set(http::field::host, exchange->parsed.host_header);
         request.set(http::field::content_type, content_type);
         request.set(http::field::accept, "application/json");
@@ -957,7 +970,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         request.prepare_payload();
         co_await exchange_once(exchange, request);
 
-        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
+        if (exchange->response().result_int() >=
+            mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST) {
             throw std::runtime_error(failure_label + " failed with status " +
                                      std::to_string(exchange->response().result_int()) + ": " +
                                      sanitize_for_diagnostics(exchange->response().body()));
@@ -3051,7 +3065,7 @@ struct OAuthClientTransport::Impl {
             } else if (const auto* error = std::get_if<JSONRPCErrorResponse>(&message);
                        error && error->id) {
                 key = error->id->correlation_key();
-                unauthorized = error->error.code == g_UNAUTHORIZED;
+                unauthorized = error->error.code == jsonrpc::g_UNAUTHORIZED;
             }
             if (!key) {
                 return {};

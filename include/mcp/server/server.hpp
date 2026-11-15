@@ -9,6 +9,7 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <mcp/core/concepts.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
@@ -145,7 +146,8 @@ struct ToolValidationOptions {
     /// are answered with an `isError` result listing the violations, and the handler does not run.
     bool validate_arguments = true;
     /// Check the `structuredContent` of a successful result against the tool's output schema. A
-    /// result that does not conform is a fault in the tool, answered with `g_INTERNAL_ERROR`.
+    /// result that does not conform is a fault in the tool, answered with
+    /// `mcp::constants::jsonrpc::g_INTERNAL_ERROR`.
     bool validate_structured_content = true;
 };
 
@@ -194,16 +196,16 @@ struct CacheHint {
  */
 struct ServerProtocolPolicy {
     /// Serve requests that carry their protocol version in `_meta`. When false, every such
-    /// request is answered with `g_UNSUPPORTED_PROTOCOL_VERSION`.
+    /// request is answered with `mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION`.
     bool serve_modern = true;
     /// Serve clients that start a session with initialize. When false, initialize is answered
-    /// with `g_METHOD_NOT_FOUND` naming the versions served in its message and in
-    /// `data.supported`, and any other request without a protocol version in `_meta` with
-    /// `g_INVALID_PARAMS`.
+    /// with `mcp::constants::jsonrpc::g_METHOD_NOT_FOUND` naming the versions served in its message and
+    /// in `data.supported`, and any other request without a protocol version in `_meta` with
+    /// `mcp::constants::jsonrpc::g_INVALID_PARAMS`.
     bool serve_legacy = true;
-    /// The versions initialize may negotiate, each one of g_LEGACY_PROTOCOL_VERSIONS. Unset
-    /// means all of them. An initialize asking for another version negotiates the newest one
-    /// listed.
+    /// The versions initialize may negotiate, each one of
+    /// mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS. Unset means all of them. An initialize
+    /// asking for another version negotiates the newest one listed.
     std::optional<std::vector<std::string>> legacy_versions;
 
     /**
@@ -211,7 +213,7 @@ struct ServerProtocolPolicy {
      *
      * @throws std::invalid_argument If neither era is served, if legacy clients are served with
      *         an empty `legacy_versions`, or if `legacy_versions` names a version that is not one
-     *         of g_LEGACY_PROTOCOL_VERSIONS.
+     *         of mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.
      */
     void validate() const;
 };
@@ -236,10 +238,11 @@ MCP_API std::vector<std::string> served_protocol_versions(const ServerProtocolPo
  * (see Server::protocol_rejection_stats()).
  */
 struct ProtocolRejectionStats {
-    /// Requests whose required `_meta` fields were missing or malformed (`g_INVALID_PARAMS`).
+    /// Requests whose required `_meta` fields were missing or malformed
+    /// (`mcp::constants::jsonrpc::g_INVALID_PARAMS`).
     std::uint64_t invalid_metadata = 0;
     /// Requests naming a protocol version the server does not serve
-    /// (`g_UNSUPPORTED_PROTOCOL_VERSION`).
+    /// (`mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION`).
     std::uint64_t unsupported_version = 0;
     /// Refusals of requests that name no protocol version in `_meta`: server/discover without
     /// one, and, when legacy clients are not served, initialize and every other such request. A
@@ -352,7 +355,7 @@ enum class ToolTaskMode : std::uint8_t {
     /// any other client waits for the result as usual.
     eAuto,
     /// Like eAuto, except that a client that did not declare the tasks extension is answered with
-    /// `g_MISSING_REQUIRED_CLIENT_CAPABILITY` naming it.
+    /// `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` naming it.
     eRequired,
 };
 
@@ -1007,10 +1010,11 @@ class MCP_API Server {
      * A request that carries its protocol version in `_meta` is served as a 2026-07-28
      * request: its version and per-request fields are checked.
      *
-     * @details Request parameter decoding failures are returned as `g_INVALID_PARAMS` (-32602).
-     * Exceptions thrown by middleware, or by resource, prompt and completion handlers, are
-     * returned as `g_INTERNAL_ERROR` (-32603); a tool handler's exception becomes a tool error
-     * result (`isError: true`).
+     * @details Request parameter decoding failures are returned as
+     * `mcp::constants::jsonrpc::g_INVALID_PARAMS` (-32602). Exceptions thrown by middleware, or by
+     * resource, prompt and completion handlers, are returned as
+     * `mcp::constants::jsonrpc::g_INTERNAL_ERROR` (-32603); a tool handler's exception becomes a tool
+     * error result (`isError: true`).
      *
      * @param json_msg The parsed JSON-RPC request object.
      * @return A task that resolves to the serialized JSON-RPC response.

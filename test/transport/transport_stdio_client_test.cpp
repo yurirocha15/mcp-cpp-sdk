@@ -31,7 +31,10 @@
 #include <signal.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <mcp/core/constants.hpp>
 #endif
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 #ifndef MCP_TEST_STDIO_SERVER
 #error "MCP_TEST_STDIO_SERVER must name the stdio test server executable"
@@ -284,7 +287,7 @@ TEST(StdioClientTransport, UnexpectedExitIsReportedAndFailsPendingCalls) {
         status = transport->exit_status();
     });
     ASSERT_TRUE(failure_code.has_value());
-    EXPECT_EQ(*failure_code, mcp::g_CONNECTION_CLOSED);
+    EXPECT_EQ(*failure_code, jsonrpc::g_CONNECTION_CLOSED);
     ASSERT_TRUE(reported.has_value());
     EXPECT_EQ(reported->code, 7);
     EXPECT_FALSE(reported->signaled);
@@ -713,7 +716,7 @@ TEST(StdioClientSession, RestartsTheServerAndEstablishesSubscriptionsAgain) {
         }
         co_await session.stop();
     });
-    EXPECT_EQ(failure_code, mcp::g_CONNECTION_CLOSED);
+    EXPECT_EQ(failure_code, jsonrpc::g_CONNECTION_CLOSED);
     EXPECT_EQ(before, after);
 }
 

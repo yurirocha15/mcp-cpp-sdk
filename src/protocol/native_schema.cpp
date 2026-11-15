@@ -1,5 +1,6 @@
 #include "native_schema.hpp"
 
+#include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
 
 #include <mcp/detail/regex.hpp>
@@ -42,8 +43,6 @@ struct NativeSchema::Node {
 namespace {
 
 using Node = NativeSchema::Node;
-
-constexpr std::string_view g_dialect = "https://json-schema.org/draft/2020-12/schema";
 
 /// Keywords jsoncons implements for 2020-12 that the native evaluation does not. A schema using
 /// one is left to jsoncons; any keyword in neither list is one jsoncons ignores, and so is ignored
@@ -122,7 +121,7 @@ bool compile_into(const nlohmann::json& schema, bool root, Node& node) {
             if (!uri.empty() && uri.back() == '#') {
                 uri.remove_suffix(1);
             }
-            if (uri != g_dialect) {
+            if (uri != mcp::detail::constants::native_schema::g_DIALECT) {
                 return false;
             }
         } else if (is_unsupported_keyword(keyword)) {

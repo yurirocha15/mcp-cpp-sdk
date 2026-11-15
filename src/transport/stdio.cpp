@@ -1,4 +1,5 @@
 #include <mcp/transport/stdio.hpp>
+#include "../detail/constants.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #if defined(_WIN32)
@@ -48,24 +49,6 @@
 namespace mcp {
 namespace {
 
-constexpr int kStdinDescriptor = 0;
-constexpr int kStdoutDescriptor = 1;
-constexpr int kStderrDescriptor = 2;
-// The protocol's copy of stdout must not take one of the standard descriptors.
-// In a process started with stderr closed, 2 is the lowest free descriptor, and
-// pointing stdout at stderr would then point it back at the protocol stream.
-constexpr int kFirstPrivateDescriptor = 3;
-
-/// The WebSocket transports' default limit, so a message fits every transport or none.
-constexpr std::size_t g_default_max_message_bytes = 16U * 1024U * 1024U;
-constexpr std::size_t g_read_chunk_bytes = 64U * 1024U;
-/// Input is read ahead of read_message() up to this many bytes.
-constexpr std::size_t g_max_read_ahead_bytes = 16U * 1024U * 1024U;
-/// What an empty line costs in the queue, so short lines cannot fill memory unnoticed.
-constexpr std::size_t g_input_line_overhead = 64;
-/// How long the destructor waits for accepted writes to reach a peer that is reading.
-constexpr std::chrono::seconds g_final_flush_wait{1};
-
 enum class LineResult : std::uint8_t {
     eLine,      ///< A line ended by a newline.
     eLastLine,  ///< A line ended by the end of the input.
@@ -75,12 +58,12 @@ enum class LineResult : std::uint8_t {
 
 #if defined(_WIN32)
 // _dup() takes the lowest free descriptor, so set aside any it hands out below
-// kFirstPrivateDescriptor and keep asking.
+// mcp::detail::constants::stdio::g_FIRST_PRIVATE_DESCRIPTOR and keep asking.
 int duplicate_descriptor(int descriptor) {
-    int standard[kFirstPrivateDescriptor];
+    int standard[mcp::detail::constants::stdio::g_FIRST_PRIVATE_DESCRIPTOR];
     int held = 0;
     int duplicate = ::_dup(descriptor);
-    while (duplicate >= 0 && duplicate < kFirstPrivateDescriptor) {
+    while (duplicate >= 0 && duplicate < mcp::detail::constants::stdio::g_FIRST_PRIVATE_DESCRIPTOR) {
         standard[held++] = duplicate;
         duplicate = ::_dup(descriptor);
     }
@@ -100,7 +83,8 @@ std::ptrdiff_t write_descriptor(int descriptor, const char* data, std::size_t si
 }
 #else
 int duplicate_descriptor(int descriptor) {
-    return ::fcntl(descriptor, F_DUPFD_CLOEXEC, kFirstPrivateDescriptor);
+    return ::fcntl(descriptor, F_DUPFD_CLOEXEC,
+                   mcp::detail::constants::stdio::g_FIRST_PRIVATE_DESCRIPTOR);
 }
 int replace_descriptor(int source, int target) { return ::dup2(source, target); }
 int release_descriptor(int descriptor) { return ::close(descriptor); }
@@ -163,8 +147,8 @@ class DescriptorStreambuf final : public std::streambuf {
 
 /// The buffers the process's standard streams started with. A program can replace them, and then
 /// std::cin and std::cout no longer stand for the descriptors.
-std::streambuf* const g_process_stdin_buffer = std::cin.rdbuf();
-std::streambuf* const g_process_stdout_buffer = std::cout.rdbuf();
+std::streambuf* const g_PROCESS_STDIN_BUFFER = std::cin.rdbuf();
+std::streambuf* const g_PROCESS_STDOUT_BUFFER = std::cout.rdbuf();
 
 /// Whether @p buffer is the process's own buffer for @p descriptor: the one the stream started with,
 /// or the one libstdc++ puts in its place when the program calls std::ios::sync_with_stdio(false).
@@ -186,10 +170,10 @@ bool is_process_buffer(std::streambuf* buffer, std::streambuf* original, int des
 /// reading would keep the process from ever exiting.
 class RawStdout {
    public:
-    RawStdout() : buffer_(kStdoutDescriptor), stream_(&buffer_) {
+    RawStdout() : buffer_(mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR), stream_(&buffer_) {
         std::cout.flush();
         std::fflush(stdout);
-        suppress_pipe_signal(kStdoutDescriptor);
+        suppress_pipe_signal(mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR);
     }
 
     std::ostream& stream() noexcept { return stream_; }
@@ -205,7 +189,9 @@ class RawStdout {
 class DescriptorLines {
    public:
     DescriptorLines(int descriptor, int wake)
-        : descriptor_(descriptor), wake_(wake), chunk_(g_read_chunk_bytes) {}
+        : descriptor_(descriptor),
+          wake_(wake),
+          chunk_(mcp::detail::constants::stdio::g_READ_CHUNK_BYTES) {}
 
     LineResult next(std::string& line, std::size_t limit) {
         line.clear();
@@ -286,7 +272,7 @@ class OwnedStdout {
         std::cout.flush();
         std::fflush(stdout);
 
-        replace_descriptor(descriptor_, kStdoutDescriptor);
+        replace_descriptor(descriptor_, mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR);
         release_descriptor(descriptor_);
         owner_active().store(false, std::memory_order_release);
     }
@@ -316,7 +302,7 @@ class OwnedStdout {
         std::cout.flush();
         std::fflush(stdout);
 
-        const int descriptor = duplicate_descriptor(kStdoutDescriptor);
+        const int descriptor = duplicate_descriptor(mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR);
         if (descriptor < 0) {
             owner_active().store(false, std::memory_order_release);
             throw std::runtime_error(
@@ -324,12 +310,15 @@ class OwnedStdout {
         }
         suppress_pipe_signal(descriptor);
 
-        if (replace_descriptor(kStderrDescriptor, kStdoutDescriptor) < 0) {
+        if (replace_descriptor(mcp::detail::constants::stdio::g_STDERR_DESCRIPTOR,
+                               mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR) < 0) {
             // A process started with standard error closed still needs its
             // standard output kept off the protocol stream.
             const int null_device = open_null_device();
             const bool diverted =
-                null_device >= 0 && replace_descriptor(null_device, kStdoutDescriptor) >= 0;
+                null_device >= 0 &&
+                replace_descriptor(null_device, mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR) >=
+                    0;
             if (null_device >= 0) {
                 release_descriptor(null_device);
             }
@@ -388,7 +377,7 @@ struct StdioTransport::Impl {
         std::thread::id writer_id;
         /// Bytes of input read ahead of what read_message() took.
         std::size_t queued_input_bytes{0};
-        std::size_t max_message_bytes{g_default_max_message_bytes};
+        std::size_t max_message_bytes{mcp::detail::constants::stdio::g_DEFAULT_MAX_MESSAGE_BYTES};
         /// A pipe that ends a wait on standard input; -1 when there is none.
         int wake_read{-1};
         int wake_write{-1};
@@ -482,19 +471,21 @@ struct StdioTransport::Impl {
 
     static bool is_process_stdout(const std::ostream& output) {
         return &output == &std::cout &&
-               is_process_buffer(output.rdbuf(), g_process_stdout_buffer, kStdoutDescriptor);
+               is_process_buffer(output.rdbuf(), g_PROCESS_STDOUT_BUFFER,
+                                 mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR);
     }
 
     [[nodiscard]] bool reads_process_stdin() const {
         return &input == &std::cin &&
-               is_process_buffer(input.rdbuf(), g_process_stdin_buffer, kStdinDescriptor);
+               is_process_buffer(input.rdbuf(), g_PROCESS_STDIN_BUFFER,
+                                 mcp::detail::constants::stdio::g_STDIN_DESCRIPTOR);
     }
 
     /// Whether the reader can take standard input from the descriptor. Input still buffered in a
     /// replaced stream buffer would be skipped that way. Called before the reader starts.
     [[nodiscard]] bool reads_stdin_descriptor() const {
         return reads_process_stdin() &&
-               (input.rdbuf() == g_process_stdin_buffer || input.rdbuf()->in_avail() <= 0);
+               (input.rdbuf() == g_PROCESS_STDIN_BUFFER || input.rdbuf()->in_avail() <= 0);
     }
 
     ~Impl() {
@@ -509,7 +500,7 @@ struct StdioTransport::Impl {
         {
             std::unique_lock lock(pump->mutex);
             if (state->output_may_stall) {
-                pump->wake.wait_for(lock, g_final_flush_wait,
+                pump->wake.wait_for(lock, mcp::detail::constants::stdio::g_FINAL_FLUSH_WAIT,
                                     [&pump] { return pump->output_drained(); });
                 writer_stuck = !pump->output_drained();
             }
@@ -584,13 +575,15 @@ struct StdioTransport::Impl {
                 // Whoever reads the transport may have stopped, and a peer can keep sending.
                 pump->wake.wait(lock, [&pump] {
                     return !pump->state || pump->state->closed.load(std::memory_order_acquire) ||
-                           pump->queued_input_bytes < g_max_read_ahead_bytes;
+                           pump->queued_input_bytes <
+                               mcp::detail::constants::stdio::g_MAX_READ_AHEAD_BYTES;
                 });
                 auto shared_state = pump->state;
                 if (!shared_state || shared_state->closed.load(std::memory_order_acquire)) {
                     break;
                 }
-                pump->queued_input_bytes += line.size() + g_input_line_overhead;
+                pump->queued_input_bytes +=
+                    line.size() + mcp::detail::constants::stdio::g_INPUT_LINE_OVERHEAD;
                 boost::asio::post(shared_state->strand,
                                   [shared_state, message = std::move(line)]() mutable {
                                       shared_state->queue.push(std::move(message));
@@ -627,14 +620,15 @@ struct StdioTransport::Impl {
             if (reads_stdin_descriptor()) {
                 shared_state->pump->open_wake_pipe(shared_state->closed);
                 reader_thread = std::thread([pump = shared_state->pump]() {
-                    DescriptorLines lines(kStdinDescriptor, pump->wake_read);
+                    DescriptorLines lines(mcp::detail::constants::stdio::g_STDIN_DESCRIPTOR,
+                                          pump->wake_read);
                     read_lines([&lines](std::string& line,
                                         std::size_t limit) { return lines.next(line, limit); },
                                pump);
                 });
             } else {
                 reader_thread = std::thread([&in = input, pump = shared_state->pump]() {
-                    std::vector<char> chunk(g_read_chunk_bytes);
+                    std::vector<char> chunk(mcp::detail::constants::stdio::g_READ_CHUNK_BYTES);
                     read_lines(
                         [&in, &chunk](std::string& line, std::size_t limit) {
                             return read_line(in, line, chunk, limit);
@@ -770,7 +764,8 @@ struct StdioTransport::Impl {
                 shared_state->queue.pop();
                 {
                     std::lock_guard lock(shared_state->pump->mutex);
-                    shared_state->pump->queued_input_bytes -= message.size() + g_input_line_overhead;
+                    shared_state->pump->queued_input_bytes -=
+                        message.size() + mcp::detail::constants::stdio::g_INPUT_LINE_OVERHEAD;
                     shared_state->pump->wake.notify_all();
                 }
                 co_return message;

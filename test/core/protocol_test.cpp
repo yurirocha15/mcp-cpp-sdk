@@ -12,12 +12,14 @@
 #include "mcp/protocol/tasks.hpp"
 #include "mcp/protocol/tools.hpp"
 
+#include "../../src/detail/constants.hpp"
 #include "../../src/detail/peer_json.hpp"
 
 #include <gtest/gtest.h>
 
 #include <nlohmann/json.hpp>
 
+#include <mcp/core/constants.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -73,26 +75,28 @@ TEST(ProtocolTest, MovedTextContentSerializesLikeACopy) {
 
 TEST(ProtocolTest, InitializeRequestSerialization) {
     mcp::InitializeRequest req;
-    req.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    req.protocolVersion = std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
     req.clientInfo = {"test-client", "1.0.0"};
     req.capabilities = mcp::ClientCapabilities{};
 
     json json_obj = req;
 
-    EXPECT_EQ(json_obj["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(json_obj["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(json_obj["clientInfo"]["name"], "test-client");
     EXPECT_EQ(json_obj["clientInfo"]["version"], "1.0.0");
     EXPECT_TRUE(json_obj["capabilities"].is_object());
 }
 
 TEST(ProtocolTest, InitializeResultDeserialization) {
-    json json_obj = {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
+    json json_obj = {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
                      {"capabilities", {}},
                      {"serverInfo", {{"name", "test-server"}, {"version", "0.1.0"}}}};
 
     mcp::InitializeResult res = json_obj.get<mcp::InitializeResult>();
 
-    EXPECT_EQ(res.protocolVersion, std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(res.protocolVersion,
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(res.serverInfo.name, "test-server");
     EXPECT_FALSE(res.instructions.has_value());
 }
@@ -104,7 +108,7 @@ TEST(ProtocolTest, SupportedProtocolVersions) {
     bool has_2025_11_25 = false;
     bool has_2026_07_28 = false;
 
-    for (const auto& version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
+    for (const auto& version : mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS) {
         if (version == "2024-11-05") {
             has_2024_11_05 = true;
         }
@@ -1113,49 +1117,49 @@ TEST(ProtocolTest, ProgressTokenIsRequestId) {
 
 TEST(ProtocolTest, ErrorSerialization) {
     mcp::Error error;
-    error.code = mcp::g_INVALID_REQUEST;
+    error.code = mcp::constants::jsonrpc::g_INVALID_REQUEST;
     error.message = "Invalid Request";
     error.data = nlohmann::json{{"detail", "missing method"}};
 
     nlohmann::json j = error;
-    EXPECT_EQ(j["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(j["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_EQ(j["message"], "Invalid Request");
     EXPECT_EQ(j["data"]["detail"], "missing method");
 
     auto deserialized = j.get<mcp::Error>();
-    EXPECT_EQ(deserialized.code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(deserialized.code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_EQ(deserialized.message, "Invalid Request");
     ASSERT_TRUE(deserialized.data.has_value());
     EXPECT_EQ((*deserialized.data)["detail"], "missing method");
 
     mcp::Error minimal;
-    minimal.code = mcp::g_METHOD_NOT_FOUND;
+    minimal.code = mcp::constants::jsonrpc::g_METHOD_NOT_FOUND;
     minimal.message = "Method not found";
 
     nlohmann::json j2 = minimal;
     EXPECT_FALSE(j2.contains("data"));
 
     auto deserialized2 = j2.get<mcp::Error>();
-    EXPECT_EQ(deserialized2.code, mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(deserialized2.code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_FALSE(deserialized2.data.has_value());
 }
 
 TEST(ProtocolTest, SpecReservedErrorCodesAreDistinctFromLegacyBand) {
-    EXPECT_EQ(mcp::g_HEADER_MISMATCH, -32020);
-    EXPECT_EQ(mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY, -32021);
-    EXPECT_EQ(mcp::g_UNSUPPORTED_PROTOCOL_VERSION, -32022);
+    EXPECT_EQ(mcp::constants::jsonrpc::g_HEADER_MISMATCH, -32020);
+    EXPECT_EQ(mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY, -32021);
+    EXPECT_EQ(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION, -32022);
 
-    EXPECT_NE(mcp::g_HEADER_MISMATCH, mcp::g_CONNECTION_CLOSED);
+    EXPECT_NE(mcp::constants::jsonrpc::g_HEADER_MISMATCH, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
 
     mcp::Error error;
-    error.code = mcp::g_UNSUPPORTED_PROTOCOL_VERSION;
+    error.code = mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION;
     error.message = "Unsupported protocol version";
 
     nlohmann::json j = error;
     EXPECT_EQ(j["code"], -32022);
 
     auto deserialized = j.get<mcp::Error>();
-    EXPECT_EQ(deserialized.code, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    EXPECT_EQ(deserialized.code, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
 }
 
 TEST(ProtocolTest, JSONRPCRequestSerialization) {
@@ -1250,17 +1254,17 @@ TEST(ProtocolTest, JSONRPCResultResponseSerialization) {
 
 TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
     mcp::JSONRPCErrorResponse resp;
-    resp.error = {.code = mcp::g_PARSE_ERROR, .message = "Parse error"};
+    resp.error = {.code = mcp::constants::jsonrpc::g_PARSE_ERROR, .message = "Parse error"};
     resp.id = mcp::RequestId{std::string("err-1")};
 
     nlohmann::json j = resp;
     EXPECT_EQ(j["jsonrpc"], "2.0");
-    EXPECT_EQ(j["error"]["code"], mcp::g_PARSE_ERROR);
+    EXPECT_EQ(j["error"]["code"], mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_EQ(j["error"]["message"], "Parse error");
     EXPECT_EQ(j["id"], "err-1");
 
     auto deserialized = j.get<mcp::JSONRPCErrorResponse>();
-    EXPECT_EQ(deserialized.error.code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(deserialized.error.code, mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_EQ(deserialized.error.message, "Parse error");
     ASSERT_TRUE(deserialized.id.has_value());
     ASSERT_TRUE(std::holds_alternative<std::string>(deserialized.id->value));
@@ -1268,7 +1272,7 @@ TEST(ProtocolTest, JSONRPCErrorResponseSerialization) {
 
     // No id (parse error before id was read)
     mcp::JSONRPCErrorResponse no_id;
-    no_id.error = {.code = mcp::g_PARSE_ERROR, .message = "Parse error"};
+    no_id.error = {.code = mcp::constants::jsonrpc::g_PARSE_ERROR, .message = "Parse error"};
 
     nlohmann::json j2 = no_id;
     EXPECT_FALSE(j2.contains("id"));
@@ -1302,13 +1306,14 @@ TEST(ProtocolTest, JSONRPCResponseVariantDispatch) {
     EXPECT_EQ(ok.result["status"], "ok");
 
     // Error response
-    nlohmann::json j_err = {{"jsonrpc", "2.0"},
-                            {"id", 5},
-                            {"error", {{"code", mcp::g_INVALID_REQUEST}, {"message", "Invalid"}}}};
+    nlohmann::json j_err = {
+        {"jsonrpc", "2.0"},
+        {"id", 5},
+        {"error", {{"code", mcp::constants::jsonrpc::g_INVALID_REQUEST}, {"message", "Invalid"}}}};
     auto resp_err = j_err.get<mcp::JSONRPCResponse>();
     ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCErrorResponse>(resp_err));
     auto& err = std::get<mcp::JSONRPCErrorResponse>(resp_err);
-    EXPECT_EQ(err.error.code, mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(err.error.code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
 
     // Round-trip
     nlohmann::json j_rt = resp_ok;
@@ -1336,7 +1341,8 @@ TEST(ProtocolTest, JSONRPCMessageVariantDispatch) {
     // Error response
     nlohmann::json j_error = {
         {"jsonrpc", "2.0"},
-        {"error", {{"code", mcp::g_METHOD_NOT_FOUND}, {"message", "Method not found"}}}};
+        {"error",
+         {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND}, {"message", "Method not found"}}}};
     auto msg_error = j_error.get<mcp::JSONRPCMessage>();
     ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCErrorResponse>(msg_error));
 
@@ -1439,9 +1445,9 @@ TEST(ProtocolTest, ImplementationDescriptionField) {
 }
 
 TEST(ProtocolTest, LatestProtocolVersion) {
-    EXPECT_EQ(std::string(mcp::g_LATEST_PROTOCOL_VERSION), "2026-07-28");
-    EXPECT_EQ(mcp::g_PROTOCOL_VERSION_2025_11_25, "2025-11-25");
-    EXPECT_EQ(mcp::g_PROTOCOL_VERSION_2026_07_28, "2026-07-28");
+    EXPECT_EQ(std::string(mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION), "2026-07-28");
+    EXPECT_EQ(mcp::constants::protocol::g_PROTOCOL_VERSION_2025_11_25, "2025-11-25");
+    EXPECT_EQ(mcp::constants::protocol::g_PROTOCOL_VERSION_2026_07_28, "2026-07-28");
 }
 
 TEST(ProtocolTest, ClientCapabilitiesEmptySerialization) {
@@ -1600,7 +1606,7 @@ TEST(ProtocolTest, ServerCapabilitiesPartialSerialization) {
 
 TEST(ProtocolTest, InitializeRequestWithClientCapabilities) {
     mcp::InitializeRequest req;
-    req.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    req.protocolVersion = std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
     req.clientInfo = {"my-client", "3.0.0"};
     req.clientInfo.description = "An advanced MCP client";
     req.capabilities.roots = mcp::ClientCapabilities::RootsCapability{.listChanged = true};
@@ -1630,7 +1636,7 @@ TEST(ProtocolTest, InitializeRequestWithClientCapabilities) {
 
 TEST(ProtocolTest, InitializeResultWithServerCapabilities) {
     mcp::InitializeResult res;
-    res.protocolVersion = std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    res.protocolVersion = std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
     res.serverInfo = {"my-server", "1.0.0"};
     res.serverInfo.description = "A powerful MCP server";
     res.capabilities.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
@@ -2144,32 +2150,36 @@ TEST(ProtocolTest, RejectsMismatchedContentDiscriminator) {
 TEST(ProtocolTest, SupportedVersionsDoNotLeakIntoLegacyNegotiation) {
     // 2026-07-28 is supported but not negotiable: a legacy initialize requesting it must fall
     // back to the newest legacy version, not be echoed back.
-    EXPECT_TRUE(mcp::is_supported_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28));
-    EXPECT_EQ(mcp::negotiate_protocol_version(mcp::g_PROTOCOL_VERSION_2026_07_28),
-              mcp::g_LATEST_LEGACY_PROTOCOL_VERSION);
-    EXPECT_NE(mcp::negotiate_protocol_version(mcp::g_LATEST_PROTOCOL_VERSION),
-              mcp::g_LATEST_PROTOCOL_VERSION);
+    EXPECT_TRUE(
+        mcp::is_supported_protocol_version(mcp::constants::protocol::g_PROTOCOL_VERSION_2026_07_28));
+    EXPECT_EQ(mcp::negotiate_protocol_version(mcp::constants::protocol::g_PROTOCOL_VERSION_2026_07_28),
+              mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    EXPECT_NE(mcp::negotiate_protocol_version(mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION),
+              mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION);
 
-    ASSERT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 5u);
-    for (const auto version : mcp::g_LEGACY_PROTOCOL_VERSIONS) {
+    ASSERT_EQ(mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.size(), 5u);
+    for (const auto version : mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS) {
         EXPECT_TRUE(mcp::is_supported_protocol_version(version)) << version;
     }
-    EXPECT_EQ(mcp::g_SUPPORTED_PROTOCOL_VERSIONS.back(), mcp::g_LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.back(),
+              mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION);
     EXPECT_FALSE(mcp::is_supported_protocol_version("2025-11-26"));
     EXPECT_FALSE(mcp::is_supported_protocol_version(""));
 }
 
 TEST(ProtocolVersions, LegacyAndModernListsPartitionTheSupportedVersions) {
-    const std::vector<std::string_view> legacy(mcp::g_LEGACY_PROTOCOL_VERSIONS.begin(),
-                                               mcp::g_LEGACY_PROTOCOL_VERSIONS.end());
+    const std::vector<std::string_view> legacy(
+        mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.begin(),
+        mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end());
     EXPECT_EQ(legacy,
               (std::vector<std::string_view>{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}));
-    EXPECT_EQ(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION, "2025-11-25");
-    const std::vector<std::string_view> modern(mcp::g_MODERN_PROTOCOL_VERSIONS.begin(),
-                                               mcp::g_MODERN_PROTOCOL_VERSIONS.end());
+    EXPECT_EQ(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION, "2025-11-25");
+    const std::vector<std::string_view> modern(
+        mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.begin(),
+        mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end());
     EXPECT_EQ(modern, (std::vector<std::string_view>{"2026-07-28"}));
 
-    for (const auto version : mcp::g_SUPPORTED_PROTOCOL_VERSIONS) {
+    for (const auto version : mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS) {
         EXPECT_NE(mcp::is_legacy_protocol_version(version), mcp::is_modern_protocol_version(version))
             << version;
     }
@@ -2180,10 +2190,10 @@ TEST(ProtocolVersions, LegacyAndModernListsPartitionTheSupportedVersions) {
 }
 
 TEST(ProtocolVersions, InitializeNegotiatesOnlyLegacyVersions) {
-    for (const auto version : mcp::g_LEGACY_PROTOCOL_VERSIONS) {
+    for (const auto version : mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS) {
         EXPECT_EQ(mcp::negotiate_protocol_version(version), version);
     }
-    for (const auto version : mcp::g_MODERN_PROTOCOL_VERSIONS) {
+    for (const auto version : mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS) {
         EXPECT_EQ(mcp::negotiate_protocol_version(version), "2025-11-25") << version;
     }
     EXPECT_EQ(mcp::negotiate_protocol_version("1900-01-01"), "2025-11-25");
@@ -2465,10 +2475,10 @@ TEST(PeerJsonTest, ParsePeerJsonDiscardsDocumentsNestedTooDeeplyOrInvalid) {
     const auto nested = [](std::size_t depth) {
         return std::string(depth, '[') + std::string(depth, ']');
     };
-    EXPECT_FALSE(
-        mcp::detail::parse_peer_json(nested(mcp::detail::g_MAX_PEER_JSON_DEPTH)).is_discarded());
-    EXPECT_TRUE(
-        mcp::detail::parse_peer_json(nested(mcp::detail::g_MAX_PEER_JSON_DEPTH + 1)).is_discarded());
+    EXPECT_FALSE(mcp::detail::parse_peer_json(nested(mcp::detail::constants::peer_json::g_MAX_DEPTH))
+                     .is_discarded());
+    EXPECT_TRUE(mcp::detail::parse_peer_json(nested(mcp::detail::constants::peer_json::g_MAX_DEPTH + 1))
+                    .is_discarded());
     EXPECT_TRUE(mcp::detail::parse_peer_json("{not json").is_discarded());
     // Two megabytes of brackets: refused before anything is built from them.
     EXPECT_TRUE(mcp::detail::parse_peer_json(nested(1'000'000)).is_discarded());
@@ -2507,15 +2517,15 @@ TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {
     const auto decode = [](nlohmann::json code) {
         return nlohmann::json{{"code", std::move(code)}, {"message", "m"}}.get<mcp::Error>();
     };
-    EXPECT_EQ(decode(1e308).code, mcp::g_INTERNAL_ERROR);
-    EXPECT_EQ(decode(1.5).code, mcp::g_INTERNAL_ERROR);
-    EXPECT_EQ(decode(4294967296LL).code, mcp::g_INTERNAL_ERROR);
-    EXPECT_EQ(decode(-4294967296LL).code, mcp::g_INTERNAL_ERROR);
-    EXPECT_EQ(decode(18446744073709551615ULL).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(1e308).code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(1.5).code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(4294967296LL).code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(-4294967296LL).code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(18446744073709551615ULL).code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(decode(1e308).message, "m");
     EXPECT_EQ(decode(-32601).code, -32601);
     EXPECT_EQ(decode(-32601.0).code, -32601);
-    EXPECT_EQ(decode(-1.5).code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(decode(-1.5).code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(decode(7).code, 7);
     EXPECT_THROW((void)decode("x"), nlohmann::json::exception);
 }

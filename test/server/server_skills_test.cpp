@@ -8,7 +8,10 @@
 
 #include <gtest/gtest.h>
 
+#include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
 
@@ -178,13 +181,13 @@ TEST(SkillsValidationTest, ReportsEachRuleTheExtensionPutsOnAnEntry) {
     EXPECT_FALSE(skills::validate_skill(bad_digest).empty());
 
     auto too_many = entry();
-    for (std::size_t index = 0; index < skills::g_MAX_RESOURCES_PER_SKILL; ++index) {
+    for (std::size_t index = 0; index < mcp::constants::skills::g_MAX_RESOURCES_PER_SKILL; ++index) {
         too_many.resources.push_back({"skill://acme/refunds/f" + std::to_string(index), digest, 1});
     }
     EXPECT_FALSE(skills::validate_skill(too_many).empty());
 
     auto too_big = entry();
-    too_big.resources[1].size = skills::g_MAX_SKILL_BYTES;
+    too_big.resources[1].size = mcp::constants::skills::g_MAX_SKILL_BYTES;
     EXPECT_FALSE(skills::validate_skill(too_big).empty());
 
     auto not_skill_file = entry();
@@ -226,7 +229,7 @@ TEST(SkillsServerTest, TheExtensionIsDeclaredAndNeedsTheResourcesCapability) {
               json::object());
     const auto directory = mcp_test::dispatch_direct(
         plain, make_modern_request(2, "resources/directory/read", {{"uri", "skill://x"}}));
-    EXPECT_EQ(directory["error"]["code"], mcp::g_METHOD_NOT_FOUND) << directory;
+    EXPECT_EQ(directory["error"]["code"], jsonrpc::g_METHOD_NOT_FOUND) << directory;
 
     skills::SkillsOptions bad_page;
     bad_page.page_size = 0;
@@ -286,7 +289,7 @@ TEST(SkillsServerTest, ListPaginatesWithOpaqueCursors) {
     for (const json& cursor : {json("junk"), json("o99"), json(7), json("o")}) {
         const auto bad = mcp_test::dispatch_direct(
             server, make_modern_request(3, "skills/list", {{"cursor", cursor}}));
-        EXPECT_EQ(bad["error"]["code"], mcp::g_INVALID_PARAMS) << cursor;
+        EXPECT_EQ(bad["error"]["code"], jsonrpc::g_INVALID_PARAMS) << cursor;
     }
 }
 
@@ -305,12 +308,12 @@ TEST(SkillsServerTest, GetAnswersForAServedSkillAndRefusesOthers) {
 
     const auto unknown = mcp_test::dispatch_direct(
         server, make_modern_request(2, "skills/get", {{"uri", "skill://nothing/SKILL.md"}}));
-    EXPECT_EQ(unknown["error"]["code"], mcp::g_INVALID_PARAMS) << unknown;
+    EXPECT_EQ(unknown["error"]["code"], jsonrpc::g_INVALID_PARAMS) << unknown;
     EXPECT_NE(unknown["error"]["message"].get<std::string>().find("skill://nothing/SKILL.md"),
               std::string::npos);
 
     const auto missing = mcp_test::dispatch_direct(server, make_modern_request(3, "skills/get"));
-    EXPECT_EQ(missing["error"]["code"], mcp::g_INVALID_PARAMS) << missing;
+    EXPECT_EQ(missing["error"]["code"], jsonrpc::g_INVALID_PARAMS) << missing;
 }
 
 TEST(SkillsServerTest, FilesAreReadWithResourcesReadAndMatchTheirDigests) {
@@ -429,13 +432,13 @@ TEST(SkillsServerTest, DirectoryReadRefusesFilesAndUnknownUris) {
     const auto file = mcp_test::dispatch_direct(
         server,
         make_modern_request(1, "resources/directory/read", {{"uri", "skill://git-workflow/SKILL.md"}}));
-    EXPECT_EQ(file["error"]["code"], mcp::g_INVALID_PARAMS) << file;
+    EXPECT_EQ(file["error"]["code"], jsonrpc::g_INVALID_PARAMS) << file;
     EXPECT_NE(file["error"]["message"].get<std::string>().find("is not a directory resource"),
               std::string::npos);
 
     const auto unknown = mcp_test::dispatch_direct(
         server, make_modern_request(2, "resources/directory/read", {{"uri", "skill://nothing"}}));
-    EXPECT_EQ(unknown["error"]["code"], mcp::g_INVALID_PARAMS) << unknown;
+    EXPECT_EQ(unknown["error"]["code"], jsonrpc::g_INVALID_PARAMS) << unknown;
 }
 
 TEST(SkillsServerTest, DirectoryReadPaginates) {
@@ -522,7 +525,7 @@ TEST(SkillsClientTest, AClientListsGetsAndReadsWithVerification) {
             try {
                 (void)co_await skills::get_skill(client, "skill://nothing/SKILL.md");
             } catch (const mcp::McpError& error) {
-                refused = error.code() == mcp::g_INVALID_PARAMS;
+                refused = error.code() == jsonrpc::g_INVALID_PARAMS;
             }
             EXPECT_TRUE(refused);
 

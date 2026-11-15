@@ -14,6 +14,7 @@
 /// and the log level of a request is how a 2026-07-28 client asks for it.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -149,7 +150,8 @@ int main() {
                             std::cout << "[Client] server supports: " << supported << '\n';
                         }
                         if (connected.era != ProtocolEra::eModern ||
-                            connected.protocolVersion != g_LATEST_PROTOCOL_VERSION) {
+                            connected.protocolVersion !=
+                                mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION) {
                             throw std::runtime_error("expected a 2026-07-28 session");
                         }
                     }

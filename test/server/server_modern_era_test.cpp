@@ -1,6 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../../src/detail/constants.hpp"
 #include "../../src/detail/modern_methods.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
@@ -18,6 +19,7 @@
 #include <boost/asio/use_future.hpp>
 #include <chrono>
 #include <future>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -298,7 +300,8 @@ TEST_F(ServerModernEraTest, ResultMembersOfTheRevisionAreAddedOnlyWhereAbsent) {
                 return result;
             });
             const auto answer = json::parse(wire_of(*server, call(4, broken.name)));
-            EXPECT_EQ(answer.at("error").at("code"), mcp::g_INTERNAL_ERROR) << answer;
+            EXPECT_EQ(answer.at("error").at("code"), mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+                << answer;
             EXPECT_EQ(answer.at("error").at("message"), "The result could not be encoded as JSON")
                 << answer;
         }
@@ -377,10 +380,12 @@ TEST_F(ServerModernEraTest, MissingClientCapabilitiesIsInvalidParams) {
     auto server = make_server();
     auto meta = make_modern_meta();
     meta.erase("io.modelcontextprotocol/clientCapabilities");
-    expect_error(dispatch(*server, modern_with_meta(1, "tools/list", meta)), mcp::g_INVALID_PARAMS);
+    expect_error(dispatch(*server, modern_with_meta(1, "tools/list", meta)),
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
 
     meta["io.modelcontextprotocol/clientCapabilities"] = "none";
-    expect_error(dispatch(*server, modern_with_meta(2, "tools/list", meta)), mcp::g_INVALID_PARAMS);
+    expect_error(dispatch(*server, modern_with_meta(2, "tools/list", meta)),
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
 
     EXPECT_EQ(server->protocol_rejection_stats().invalid_metadata, 2u);
 }
@@ -389,12 +394,13 @@ TEST_F(ServerModernEraTest, MalformedOptionalFieldsAreInvalidParams) {
     auto server = make_server();
     auto bad_info = make_modern_meta();
     bad_info["io.modelcontextprotocol/clientInfo"] = {{"name", "no-version"}};
-    expect_error(dispatch(*server, modern_with_meta(1, "tools/list", bad_info)), mcp::g_INVALID_PARAMS);
+    expect_error(dispatch(*server, modern_with_meta(1, "tools/list", bad_info)),
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
 
     auto bad_level = make_modern_meta();
     bad_level["io.modelcontextprotocol/logLevel"] = "loud";
     expect_error(dispatch(*server, modern_with_meta(2, "tools/list", bad_level)),
-                 mcp::g_INVALID_PARAMS);
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
 
     auto no_info = make_modern_meta();
     no_info.erase("io.modelcontextprotocol/clientInfo");
@@ -405,7 +411,8 @@ TEST_F(ServerModernEraTest, NonStringProtocolVersionIsInvalidParams) {
     auto server = make_server();
     auto meta = make_modern_meta();
     meta["io.modelcontextprotocol/protocolVersion"] = 20260728;
-    expect_error(dispatch(*server, modern_with_meta(1, "tools/list", meta)), mcp::g_INVALID_PARAMS);
+    expect_error(dispatch(*server, modern_with_meta(1, "tools/list", meta)),
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(ServerModernEraTest, UnservedVersionIsUnsupportedWithExactData) {
@@ -415,7 +422,7 @@ TEST_F(ServerModernEraTest, UnservedVersionIsUnsupportedWithExactData) {
 
     ASSERT_TRUE(response.contains("error")) << response;
     EXPECT_EQ(response["id"], 7);
-    EXPECT_EQ(response["error"]["code"], mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     EXPECT_EQ(response["error"]["data"],
               (json{{"supported", g_all_versions}, {"requested", "1900-01-01"}}));
     EXPECT_EQ(server->protocol_rejection_stats().unsupported_version, 1u);
@@ -427,7 +434,7 @@ TEST_F(ServerModernEraTest, LegacyVersionInMetaIsUnsupported) {
     auto response =
         dispatch(*server, modern_with_meta(1, "tools/list", make_modern_meta("2025-11-25")));
 
-    expect_error(response, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    expect_error(response, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     EXPECT_EQ(response["error"]["data"]["supported"], g_all_versions);
     EXPECT_EQ(response["error"]["data"]["requested"], "2025-11-25");
 }
@@ -439,7 +446,7 @@ TEST_F(ServerModernEraTest, UnsupportedVersionIsReportedBeforeMethodAndFields) {
     expect_error(dispatch(*server, modern_with_meta(
                                        1, "no/such/method",
                                        {{"io.modelcontextprotocol/protocolVersion", "2099-01-01"}})),
-                 mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+                 mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
 }
 
 TEST_F(ServerModernEraTest, RequestWithoutMetaBeforeInitializeIsStillInvalidRequest) {
@@ -449,7 +456,7 @@ TEST_F(ServerModernEraTest, RequestWithoutMetaBeforeInitializeIsStillInvalidRequ
         {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}, {"params", json::object()}}}, 1);
 
     ASSERT_EQ(written.size(), 1u);
-    expect_error(written[0], mcp::g_INVALID_REQUEST);
+    expect_error(written[0], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_EQ(server->protocol_rejection_stats().legacy_shaped, 0u);
 }
 
@@ -459,7 +466,7 @@ TEST_F(ServerModernEraTest, MethodsRemovedIn2026AreNotFoundButServedToLegacySess
          {"ping", "logging/setLevel", "resources/subscribe", "resources/unsubscribe", "shutdown"}) {
         expect_error(dispatch(*server, make_modern_request(1, method,
                                                            {{"uri", "test://doc"}, {"level", "info"}})),
-                     mcp::g_METHOD_NOT_FOUND);
+                     mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     }
 
     auto written = run_session(*server,
@@ -478,7 +485,8 @@ TEST_F(ServerModernEraTest, MethodsRemovedIn2026AreNotFoundButServedToLegacySess
 
 TEST_F(ServerModernEraTest, UnknownMethodIsNotFound) {
     auto server = make_server();
-    expect_error(dispatch(*server, make_modern_request(1, "no/such/method")), mcp::g_METHOD_NOT_FOUND);
+    expect_error(dispatch(*server, make_modern_request(1, "no/such/method")),
+                 mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 TEST_F(ServerModernEraTest, InitializeIsAlwaysLegacy) {
@@ -517,7 +525,7 @@ TEST_F(ServerModernEraTest, ModernRequestsLeaveTheSessionLogLevelAlone) {
     auto written = run_session(*server, {set_level, modern_with_meta(2, "tools/list", meta)}, 2);
 
     ASSERT_EQ(written.size(), 2u);
-    expect_error(written[0], mcp::g_METHOD_NOT_FOUND);
+    expect_error(written[0], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(server->get_log_level(), mcp::LoggingLevel::eDebug);
 }
 
@@ -546,7 +554,7 @@ TEST_F(ServerModernEraTest, ServerToClientRequestsNeedTheClientsCapability) {
     auto server = make_server();
     auto response = dispatch(*server, call_tool(1, "sample"));
 
-    expect_error(response, mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    expect_error(response, mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
     EXPECT_EQ(response["error"]["data"]["requiredCapabilities"], (json{{"sampling", json::object()}}))
         << response;
 }
@@ -558,19 +566,19 @@ TEST_F(ServerModernEraTest, ModernMethodListMatchesTheSchemasClientRequests) {
         "resources/read",      "prompts/list",   "prompts/get",
         "tools/list",          "tools/call",     "completion/complete",
         "subscriptions/listen"};
-    const std::set<std::string_view> served(mcp::detail::g_MODERN_METHODS.begin(),
-                                            mcp::detail::g_MODERN_METHODS.end());
+    const std::set<std::string_view> served(mcp::detail::constants::modern_methods::g_NAMES.begin(),
+                                            mcp::detail::constants::modern_methods::g_NAMES.end());
     EXPECT_EQ(served, expected);
 }
 
 TEST_F(ServerModernEraTest, UnknownToolAndResourceAreInvalidParams) {
     auto server = make_server();
-    expect_error(dispatch(*server, call_tool(1, "missing")), mcp::g_INVALID_PARAMS);
+    expect_error(dispatch(*server, call_tool(1, "missing")), mcp::constants::jsonrpc::g_INVALID_PARAMS);
     expect_error(
         dispatch(*server, make_modern_request(2, "resources/read", {{"uri", "test://missing"}})),
-        mcp::g_INVALID_PARAMS);
+        mcp::constants::jsonrpc::g_INVALID_PARAMS);
     expect_error(dispatch(*server, make_modern_request(3, "prompts/get", {{"name", "missing"}})),
-                 mcp::g_INVALID_PARAMS);
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_EQ(server->protocol_rejection_stats().invalid_metadata, 0u);
 }
 
@@ -597,7 +605,7 @@ TEST_F(ServerModernEraTest, PolicyWithoutModernRefusesEveryModernRequest) {
     server->set_protocol_policy(policy);
 
     auto response = dispatch(*server, make_discover_request(1));
-    expect_error(response, mcp::g_UNSUPPORTED_PROTOCOL_VERSION);
+    expect_error(response, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
     EXPECT_EQ(response["error"]["data"]["supported"],
               (json{"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}));
     EXPECT_EQ(response["error"]["data"]["requested"], "2026-07-28");
@@ -620,11 +628,11 @@ TEST_F(ServerModernEraTest, PolicyWithoutLegacyRefusesInitializeNamingTheServedV
                                3);
 
     ASSERT_EQ(written.size(), 3u);
-    expect_error(written[0], mcp::g_METHOD_NOT_FOUND);
+    expect_error(written[0], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_EQ(written[0]["error"]["data"], (json{{"supported", {"2026-07-28"}}}));
     EXPECT_NE(written[0]["error"]["message"].get<std::string>().find("2026-07-28"), std::string::npos)
         << written[0];
-    expect_error(written[1], mcp::g_INVALID_PARAMS);
+    expect_error(written[1], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_TRUE(written[2].contains("result")) << written[2];
     EXPECT_FALSE(server->is_initialized());
     EXPECT_EQ(server->protocol_rejection_stats().legacy_shaped, 2u);
@@ -1126,10 +1134,10 @@ TEST_F(ServerModernEraTest, NeverEmitsErrorCodes32042And32002) {
                                      });
     mcp::Prompt prompt;
     prompt.name = "closed";
-    server->add_prompt<json, json>(prompt,
-                                   [](mcp::Context& /*ctx*/, json /*params*/) -> mcp::Task<json> {
-                                       throw mcp::McpError(mcp::g_CONNECTION_CLOSED, "Closed");
-                                   });
+    server->add_prompt<json, json>(
+        prompt, [](mcp::Context& /*ctx*/, json /*params*/) -> mcp::Task<json> {
+            throw mcp::McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Closed");
+        });
 
     auto no_capabilities = make_modern_meta();
     no_capabilities.erase("io.modelcontextprotocol/clientCapabilities");
@@ -1157,12 +1165,12 @@ TEST_F(ServerModernEraTest, NeverEmitsErrorCodes32042And32002) {
         make_modern_request("upstream-prompt", "prompts/get", {{"name", "closed"}}),
     };
 
-    const std::set<int> allowed = {mcp::g_INVALID_REQUEST,
-                                   mcp::g_METHOD_NOT_FOUND,
-                                   mcp::g_INVALID_PARAMS,
-                                   mcp::g_INTERNAL_ERROR,
-                                   mcp::g_MISSING_REQUIRED_CLIENT_CAPABILITY,
-                                   mcp::g_UNSUPPORTED_PROTOCOL_VERSION};
+    const std::set<int> allowed = {mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                                   mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
+                                   mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                                   mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                                   mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+                                   mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION};
     std::set<int> seen;
     auto check = [&](const json& response) {
         if (response.contains("result")) {

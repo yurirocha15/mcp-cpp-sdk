@@ -1,3 +1,4 @@
+#include <mcp/core/constants.hpp>
 #include <mcp/server/apps.hpp>
 
 #include <stdexcept>
@@ -18,7 +19,7 @@ void add_view_resource(Server& server, const ViewResource& view) {
     resource.name = view.name;
     resource.title = view.title;
     resource.description = view.description;
-    resource.mimeType = std::string(g_RESOURCE_MIME_TYPE);
+    resource.mimeType = std::string(mcp::constants::apps::g_RESOURCE_MIME_TYPE);
     if (view.meta && view.list_meta) {
         resource.meta = make_meta(*view.meta);
     }
@@ -26,7 +27,7 @@ void add_view_resource(Server& server, const ViewResource& view) {
     TextResourceContents contents;
     contents.uri = view.uri;
     contents.text = view.html;
-    contents.mimeType = std::string(g_RESOURCE_MIME_TYPE);
+    contents.mimeType = std::string(mcp::constants::apps::g_RESOURCE_MIME_TYPE);
     if (view.meta) {
         contents.meta = make_meta(*view.meta);
     }

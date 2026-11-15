@@ -25,6 +25,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -169,7 +170,8 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     EXPECT_EQ(response["jsonrpc"], "2.0");
 
     auto result = response["result"];
-    EXPECT_EQ(result["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(result["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(result["serverInfo"]["name"], "test-server");
     EXPECT_EQ(result["serverInfo"]["version"], "1.0");
     ASSERT_TRUE(result["capabilities"].contains("tools"));
@@ -283,7 +285,7 @@ TEST_F(ServerCoreTest, UnknownMethodReturnsError) {
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("error"));
     EXPECT_EQ(responses[1]["id"], "42");
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_TRUE(responses[1]["error"]["message"].get<std::string>().find("nonexistent/method") !=
                 std::string::npos);
 }
@@ -475,12 +477,12 @@ TEST_F(ServerCoreTest, RequestsRequireCompletedInitializationHandshake) {
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 6);
-    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_TRUE(responses[1].contains("result"));
-    EXPECT_EQ(responses[2]["error"]["code"], mcp::g_INVALID_REQUEST);
-    EXPECT_EQ(responses[3]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[2]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[3]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_TRUE(responses[4]["result"]["tools"].empty());
-    EXPECT_EQ(responses[5]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[5]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_TRUE(server.is_initialized());
 }
 
@@ -549,7 +551,7 @@ TEST_F(ServerCoreTest, NotificationWithNonObjectParamsIsStillRejected) {
 
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("error"));
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
 }
 
 TEST_F(ServerCoreTest, FailedSessionTeardownDoesNotStrandTheServer) {
@@ -626,7 +628,7 @@ TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
 
     ASSERT_EQ(responses.size(), 4);
     for (const auto& response : responses) {
-        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST);
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     }
 }
 
@@ -668,7 +670,8 @@ TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
         io_ctx_.restart();
         io_ctx_.run();
         const auto response = nlohmann::json::parse(wire);
-        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST) << request.dump();
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST)
+            << request.dump();
         EXPECT_EQ(response["error"]["message"], message) << request.dump();
     }
 
@@ -736,7 +739,8 @@ TEST_F(ServerCoreTest, SessionRefusesEachInvalidEnvelopeAndServesBothEras) {
         } else if (response["id"] == "legacy") {
             EXPECT_EQ(response["result"], nlohmann::json::object()) << response.dump();
         } else {
-            EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST) << response.dump();
+            EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST)
+                << response.dump();
             refusal_messages.push_back(response["error"]["message"].get<std::string>());
         }
     }
@@ -770,9 +774,9 @@ TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidR
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 3);
-    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_FALSE(responses[0].contains("id"));
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_FALSE(responses[1].contains("id"));
     EXPECT_EQ(responses[2]["id"], "ping");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
@@ -803,7 +807,7 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromANumberOutOfRange) {
     EXPECT_EQ(server_error, nullptr);
     EXPECT_EQ(client_error, nullptr);
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 }
@@ -828,7 +832,7 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
     EXPECT_EQ(server_error, nullptr);
     EXPECT_EQ(client_error, nullptr);
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
@@ -924,9 +928,9 @@ TEST_F(ServerCoreTest, ParameterDecodingErrorsRemainDistinctFromHandlerFailures)
     EXPECT_EQ(dispatch_error, nullptr);
     ASSERT_EQ(responses.size(), requests.size());
     for (std::size_t index = 0; index + 1 < responses.size(); ++index) {
-        EXPECT_EQ(responses[index]["error"]["code"], mcp::g_INVALID_PARAMS);
+        EXPECT_EQ(responses[index]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     }
-    EXPECT_EQ(responses.back()["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(responses.back()["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(responses.back()["error"]["message"], "resource handler failed");
 }
 
@@ -977,7 +981,7 @@ TEST_F(ServerCoreTest, InitializeRequiresCompleteTypedParameters) {
 
     EXPECT_EQ(error, nullptr);
     EXPECT_EQ(response["id"], "init");
-    EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(ServerCoreTest, ToolArgumentsMustBeAnObject) {
@@ -1002,7 +1006,7 @@ TEST_F(ServerCoreTest, ToolArgumentsMustBeAnObject) {
 
     EXPECT_EQ(error, nullptr);
     EXPECT_EQ(response["id"], "tool");
-    EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(ServerCoreTest, RunWaitsForDispatchedHandlersBeforeReturning) {
@@ -1353,7 +1357,7 @@ TEST_F(ServerCoreTest, DiscoverThenInitializeStillNegotiatesLegacyVersionsUnchan
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_EQ(responses[1]["result"]["protocolVersion"], "2025-11-25");
     EXPECT_EQ(responses[1]["result"]["protocolVersion"],
-              std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
 
     EXPECT_TRUE(server.is_initialized());
 }
@@ -1484,7 +1488,7 @@ TEST_F(ServerCoreTest, DiscoverWithoutPerRequestMetaIsInvalidParams) {
           {{"_meta", {{"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}});
     for (const auto& response : {no_params, empty_params, meta_without_version}) {
         ASSERT_TRUE(response.contains("error")) << response;
-        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS) << response;
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << response;
     }
 
     // params present but not an object: rejected pre-dispatch as an invalid request, the same
@@ -1492,7 +1496,7 @@ TEST_F(ServerCoreTest, DiscoverWithoutPerRequestMetaIsInvalidParams) {
     auto bad_params = dispatch(
         {{"jsonrpc", "2.0"}, {"id", "d4"}, {"method", "server/discover"}, {"params", "not-an-object"}});
     ASSERT_TRUE(bad_params.contains("error"));
-    EXPECT_EQ(bad_params["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(bad_params["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
 
     EXPECT_EQ(server.protocol_rejection_stats().legacy_shaped, 3u);
 }
@@ -1786,8 +1790,8 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
                     continue;
                 }
                 co_await client_transport->write_message(
-                    make_error_response(request.at("id").get<std::string>(), mcp::g_INTERNAL_ERROR,
-                                        peer_message)
+                    make_error_response(request.at("id").get<std::string>(),
+                                        mcp::constants::jsonrpc::g_INTERNAL_ERROR, peer_message)
                         .dump());
                 co_return;
             }
@@ -1846,7 +1850,8 @@ TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticFlattensThePeerChosenMessage
     // cannot hide.
     ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
     ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
-    ASSERT_NE(outcome.what.find(std::to_string(mcp::g_INTERNAL_ERROR)), std::string::npos)
+    ASSERT_NE(outcome.what.find(std::to_string(mcp::constants::jsonrpc::g_INTERNAL_ERROR)),
+              std::string::npos)
         << "actual what(): " << outcome.what;
     ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
 

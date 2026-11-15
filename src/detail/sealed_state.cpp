@@ -1,4 +1,5 @@
 #include "sealed_state.hpp"
+#include "constants.hpp"
 
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
@@ -13,14 +14,12 @@
 #include <memory>
 #include <stdexcept>
 
+namespace encoding = mcp::detail::constants::encoding;
+namespace sealed_token = mcp::detail::constants::sealed_token;
+
 namespace mcp::detail::sealed_state {
 
 namespace {
-
-constexpr std::string_view g_hkdf_info = "mcp-cpp-sdk requestState v1";
-constexpr std::string_view g_alphabet =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-constexpr std::size_t g_nonce_size = 12;
 
 struct CipherCtxDeleter {
     void operator()(EVP_CIPHER_CTX* ctx) const noexcept { EVP_CIPHER_CTX_free(ctx); }
@@ -32,7 +31,7 @@ struct KdfCtxDeleter {
     void operator()(EVP_KDF_CTX* ctx) const noexcept { EVP_KDF_CTX_free(ctx); }
 };
 
-using Derived = std::array<std::uint8_t, g_key_size>;
+using Derived = std::array<std::uint8_t, sealed_token::g_KEY_SIZE>;
 
 /// Wipes a derived key on every exit path.
 struct DerivedGuard {
@@ -56,9 +55,10 @@ bool derive_key(const SealKey& master, const std::uint8_t* salt, DerivedGuard& o
                                           const_cast<std::uint8_t*>(master.secret().data()),
                                           master.secret().size()),
         OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, const_cast<std::uint8_t*>(salt),
-                                          g_salt_size),
-        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, const_cast<char*>(g_hkdf_info.data()),
-                                          g_hkdf_info.size()),
+                                          sealed_token::g_SALT_SIZE),
+        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO,
+                                          const_cast<char*>(sealed_token::g_HKDF_INFO.data()),
+                                          sealed_token::g_HKDF_INFO.size()),
         OSSL_PARAM_construct_end()};
     return EVP_KDF_derive(ctx.get(), out.key.data(), out.key.size(), params) == 1;
 }
@@ -77,22 +77,22 @@ std::string base64url_encode(std::string_view bytes) {
         const unsigned v = (static_cast<unsigned char>(bytes[i]) << 16U) |
                            (static_cast<unsigned char>(bytes[i + 1]) << 8U) |
                            static_cast<unsigned char>(bytes[i + 2]);
-        out += g_alphabet[(v >> 18U) & 63U];
-        out += g_alphabet[(v >> 12U) & 63U];
-        out += g_alphabet[(v >> 6U) & 63U];
-        out += g_alphabet[v & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 18U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 12U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 6U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[v & 63U];
     }
     const std::size_t rest = bytes.size() - i;
     if (rest == 1) {
         const unsigned v = static_cast<unsigned char>(bytes[i]) << 16U;
-        out += g_alphabet[(v >> 18U) & 63U];
-        out += g_alphabet[(v >> 12U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 18U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 12U) & 63U];
     } else if (rest == 2) {
         const unsigned v = (static_cast<unsigned char>(bytes[i]) << 16U) |
                            (static_cast<unsigned char>(bytes[i + 1]) << 8U);
-        out += g_alphabet[(v >> 18U) & 63U];
-        out += g_alphabet[(v >> 12U) & 63U];
-        out += g_alphabet[(v >> 6U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 18U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 12U) & 63U];
+        out += encoding::g_BASE64URL_ALPHABET[(v >> 6U) & 63U];
     }
     return out;
 }
@@ -106,7 +106,7 @@ std::optional<std::string> base64url_decode(std::string_view text) {
     unsigned acc = 0;
     unsigned bits = 0;
     for (const char c : text) {
-        const std::size_t pos = g_alphabet.find(c);
+        const std::size_t pos = encoding::g_BASE64URL_ALPHABET.find(c);
         if (pos == std::string_view::npos) {
             return std::nullopt;
         }
@@ -139,10 +139,11 @@ SealResult Codec::seal(std::string_view payload) const {
     if (keys_.empty()) {
         return {{}, SealError::no_key};
     }
-    const std::size_t raw_size = g_header_size + payload.size() + g_tag_size;
+    const std::size_t raw_size =
+        sealed_token::g_HEADER_SIZE + payload.size() + sealed_token::g_TAG_SIZE;
     const std::size_t encoded_size = (raw_size * 4 + 2) / 3;
-    if (payload.size() >
-            static_cast<std::size_t>(std::numeric_limits<int>::max()) - g_min_token_bytes ||
+    if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) -
+                             sealed_token::g_MIN_TOKEN_BYTES ||
         encoded_size > max_token_chars_) {
         return {{}, SealError::too_large};
     }
@@ -150,10 +151,10 @@ SealResult Codec::seal(std::string_view payload) const {
     const SealKey& key = keys_.front();
     std::string raw(raw_size, '\0');
     auto* out = reinterpret_cast<std::uint8_t*>(raw.data());
-    out[0] = g_version;
-    std::memcpy(out + 1, key.kid().data(), g_kid_size);
-    std::uint8_t* salt = out + 1 + g_kid_size;
-    if (RAND_bytes(salt, to_int(g_salt_size)) != 1) {
+    out[0] = sealed_token::g_VERSION;
+    std::memcpy(out + 1, key.kid().data(), sealed_token::g_KID_SIZE);
+    std::uint8_t* salt = out + 1 + sealed_token::g_KID_SIZE;
+    if (RAND_bytes(salt, to_int(sealed_token::g_SALT_SIZE)) != 1) {
         return {{}, SealError::crypto_failure};
     }
 
@@ -165,12 +166,13 @@ SealResult Codec::seal(std::string_view payload) const {
     if (!ctx) {
         return {{}, SealError::crypto_failure};
     }
-    const std::array<std::uint8_t, g_nonce_size> nonce{};
-    std::uint8_t* ciphertext = out + g_header_size;
+    const std::array<std::uint8_t, sealed_token::g_NONCE_SIZE> nonce{};
+    std::uint8_t* ciphertext = out + sealed_token::g_HEADER_SIZE;
     int len = 0;
-    bool ok = EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, derived.key.data(),
-                                 nonce.data()) == 1 &&
-              EVP_EncryptUpdate(ctx.get(), nullptr, &len, out, to_int(g_header_size)) == 1;
+    bool ok =
+        EVP_EncryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, derived.key.data(), nonce.data()) ==
+            1 &&
+        EVP_EncryptUpdate(ctx.get(), nullptr, &len, out, to_int(sealed_token::g_HEADER_SIZE)) == 1;
     if (ok && !payload.empty()) {
         ok = EVP_EncryptUpdate(ctx.get(), ciphertext, &len,
                                reinterpret_cast<const unsigned char*>(payload.data()),
@@ -180,7 +182,7 @@ SealResult Codec::seal(std::string_view payload) const {
     int final_len = 0;
     ok = ok && EVP_EncryptFinal_ex(ctx.get(), ciphertext + payload.size(), &final_len) == 1 &&
          final_len == 0 &&
-         EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_GET_TAG, to_int(g_tag_size),
+         EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_GET_TAG, to_int(sealed_token::g_TAG_SIZE),
                              ciphertext + payload.size()) == 1;
     if (!ok) {
         return {{}, SealError::crypto_failure};
@@ -199,23 +201,23 @@ OpenResult Codec::open(std::string_view token) const {
     if (!decoded) {
         return {{}, OpenError::bad_encoding};
     }
-    if (decoded->size() < g_min_token_bytes) {
+    if (decoded->size() < sealed_token::g_MIN_TOKEN_BYTES) {
         return {{}, OpenError::truncated};
     }
     const auto* raw = reinterpret_cast<const std::uint8_t*>(decoded->data());
-    if (raw[0] != g_version) {
+    if (raw[0] != sealed_token::g_VERSION) {
         return {{}, OpenError::bad_version};
     }
     const auto found = std::find_if(keys_.begin(), keys_.end(), [&](const SealKey& key) {
-        return std::memcmp(key.kid().data(), raw + 1, g_kid_size) == 0;
+        return std::memcmp(key.kid().data(), raw + 1, sealed_token::g_KID_SIZE) == 0;
     });
     if (found == keys_.end()) {
         return {{}, OpenError::unknown_kid};
     }
 
-    const std::uint8_t* salt = raw + 1 + g_kid_size;
-    const std::size_t cipher_size = decoded->size() - g_min_token_bytes;
-    const std::uint8_t* ciphertext = raw + g_header_size;
+    const std::uint8_t* salt = raw + 1 + sealed_token::g_KID_SIZE;
+    const std::size_t cipher_size = decoded->size() - sealed_token::g_MIN_TOKEN_BYTES;
+    const std::uint8_t* ciphertext = raw + sealed_token::g_HEADER_SIZE;
     const std::uint8_t* tag = ciphertext + cipher_size;
 
     DerivedGuard derived;
@@ -226,12 +228,12 @@ OpenResult Codec::open(std::string_view token) const {
     if (!ctx) {
         return {{}, OpenError::crypto_failure};
     }
-    const std::array<std::uint8_t, g_nonce_size> nonce{};
+    const std::array<std::uint8_t, sealed_token::g_NONCE_SIZE> nonce{};
     std::string payload(cipher_size, '\0');
     int len = 0;
     if (EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, derived.key.data(), nonce.data()) !=
             1 ||
-        EVP_DecryptUpdate(ctx.get(), nullptr, &len, raw, to_int(g_header_size)) != 1) {
+        EVP_DecryptUpdate(ctx.get(), nullptr, &len, raw, to_int(sealed_token::g_HEADER_SIZE)) != 1) {
         return {{}, OpenError::crypto_failure};
     }
     if (cipher_size != 0 &&
@@ -240,10 +242,10 @@ OpenResult Codec::open(std::string_view token) const {
          static_cast<std::size_t>(len) != cipher_size)) {
         return {{}, OpenError::crypto_failure};
     }
-    std::array<std::uint8_t, g_tag_size> tag_copy;
-    std::memcpy(tag_copy.data(), tag, g_tag_size);
-    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_TAG, to_int(g_tag_size), tag_copy.data()) !=
-        1) {
+    std::array<std::uint8_t, sealed_token::g_TAG_SIZE> tag_copy;
+    std::memcpy(tag_copy.data(), tag, sealed_token::g_TAG_SIZE);
+    if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_TAG, to_int(sealed_token::g_TAG_SIZE),
+                            tag_copy.data()) != 1) {
         return {{}, OpenError::crypto_failure};
     }
     int final_len = 0;

@@ -2,11 +2,14 @@
 
 #include "grant_flow.hpp"
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/extensions.hpp>
 
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
+
+namespace oauth = mcp::constants::oauth;
 
 namespace mcp::auth {
 
@@ -99,11 +102,11 @@ void ClientCredentialsAuthenticator::cancel_pending() { impl_->flow->cancel_pend
 void ClientCredentialsAuthenticator::close() { impl_->flow->close(); }
 
 void declare_client_credentials_support(ClientCapabilities& capabilities) {
-    declare_extension(capabilities, g_CLIENT_CREDENTIALS_EXTENSION_ID);
+    declare_extension(capabilities, oauth::g_CLIENT_CREDENTIALS_EXTENSION_ID);
 }
 
 void declare_client_credentials_support(Server& server) {
-    server.declare_extension(std::string(g_CLIENT_CREDENTIALS_EXTENSION_ID));
+    server.declare_extension(std::string(oauth::g_CLIENT_CREDENTIALS_EXTENSION_ID));
 }
 
 }  // namespace mcp::auth

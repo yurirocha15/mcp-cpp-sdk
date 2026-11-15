@@ -17,6 +17,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <queue>
 #include <string>
@@ -27,7 +28,7 @@
 namespace {
 
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -367,7 +368,8 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_EQ(first["method"], "initialize");
     EXPECT_TRUE(first.contains("id"));
     EXPECT_EQ(first["jsonrpc"], "2.0");
-    EXPECT_EQ(first["params"]["protocolVersion"], std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(first["params"]["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(first["params"]["clientInfo"]["name"], "test-client");
     EXPECT_EQ(first["params"]["clientInfo"]["version"], "0.1");
 
@@ -376,7 +378,8 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_FALSE(second.contains("id"));
     EXPECT_EQ(second["jsonrpc"], "2.0");
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.protocolVersion,
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(init_result.serverInfo->name, "test-server");
     EXPECT_EQ(init_result.serverInfo->version, "1.0");
 }
@@ -391,11 +394,11 @@ TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
             return;
         }
 
-        raw_transport->enqueue_message(
-            nlohmann::json{{"jsonrpc", "2.0"},
-                           {"id", nullptr},
-                           {"error", {{"code", mcp::g_PARSE_ERROR}, {"message", "parse error"}}}}
-                .dump());
+        raw_transport->enqueue_message(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", nullptr},
+            {"error", {{"code", mcp::constants::jsonrpc::g_PARSE_ERROR}, {"message", "parse error"}}}}
+                                           .dump());
         raw_transport->enqueue_message(
             make_result_response(json_msg.at("id").get<std::string>(), make_initialize_result())
                 .dump());
@@ -428,7 +431,8 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         } else if (json_msg.contains("id")) {
             auto id = json_msg["id"].get<std::string>();
             raw_transport->enqueue_message(
-                make_error_response(id, mcp::g_METHOD_NOT_FOUND, "method not found").dump());
+                make_error_response(id, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND, "method not found")
+                    .dump());
         }
     });
 
@@ -459,7 +463,8 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         std::rethrow_exception(captured_ex);
     } catch (const std::runtime_error& err) {
         std::string msg = err.what();
-        EXPECT_TRUE(msg.find(std::to_string(mcp::g_METHOD_NOT_FOUND)) != std::string::npos);
+        EXPECT_TRUE(msg.find(std::to_string(mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)) !=
+                    std::string::npos);
         EXPECT_TRUE(msg.find("method not found") != std::string::npos);
     }
 }
@@ -671,7 +676,8 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
 
     io_ctx_.run();
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.protocolVersion,
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(init_result.serverInfo->name, "test-server");
     ASSERT_TRUE(init_result.instructions.has_value());
     EXPECT_EQ(*init_result.instructions, "Welcome to the test server");
@@ -755,7 +761,7 @@ TEST_F(ClientCoreTest, RequestTimeoutThrowsStructuredMcpError) {
     io_ctx_.run();
 
     ASSERT_TRUE(error_code.has_value());
-    EXPECT_EQ(*error_code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(*error_code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(client.pending_request_count(), 0);
 }
 
@@ -798,7 +804,7 @@ TEST_F(ClientCoreTest, RequestTimeoutIncludesTimeQueuedInTransportWrite) {
     EXPECT_TRUE(request_completed);
     EXPECT_FALSE(watchdog_fired);
     ASSERT_TRUE(error_code.has_value());
-    EXPECT_EQ(*error_code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(*error_code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(client.pending_request_count(), 0);
 }
 
@@ -837,7 +843,7 @@ TEST_F(ClientCoreTest, TimedOutQueuedRequestIsNotTransmittedLater) {
     io_ctx_.run();
 
     ASSERT_TRUE(error_code.has_value());
-    EXPECT_EQ(*error_code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(*error_code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(notification_error, nullptr);
     EXPECT_EQ(std::count(transport->methods().begin(), transport->methods().end(), "tools/list"), 0);
     EXPECT_EQ(client.pending_request_count(), 0);
@@ -857,7 +863,8 @@ TEST_F(ClientCoreTest, RemoteErrorPreservesJsonRpcData) {
             raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
             return;
         }
-        auto response = make_error_response(id, mcp::g_INVALID_PARAMS, "invalid arguments");
+        auto response =
+            make_error_response(id, mcp::constants::jsonrpc::g_INVALID_PARAMS, "invalid arguments");
         response["error"]["data"] = {{"field", "limit"}};
         raw_transport->enqueue_message(response.dump());
     });
@@ -881,7 +888,7 @@ TEST_F(ClientCoreTest, RemoteErrorPreservesJsonRpcData) {
     io_ctx_.run();
 
     ASSERT_TRUE(captured_error.has_value());
-    EXPECT_EQ(captured_error->code, mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(captured_error->code, mcp::constants::jsonrpc::g_INVALID_PARAMS);
     ASSERT_TRUE(captured_error->data.has_value());
     EXPECT_EQ(captured_error->data->at("field"), "limit");
 }
@@ -1141,7 +1148,8 @@ TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticFlattensServerChosenV
     // each of those would make the assertions below pass for a reason unrelated to the site under
     // test. Dump the message on failure so a vacuous pass cannot hide.
     ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
-    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST) << "actual message: " << outcome.message;
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INVALID_REQUEST)
+        << "actual message: " << outcome.message;
     ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
         << "actual message: " << outcome.message;
     ASSERT_NE(outcome.message.find("zqtripwire"), std::string::npos)
@@ -1161,7 +1169,7 @@ TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticBoundsServerChosenVer
     const auto outcome = connect_against_protocol_version(io_ctx_, forged_version);
 
     ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
-    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST)
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INVALID_REQUEST)
         << "actual message prefix: " << outcome.message.substr(0, 80);
     ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
         << "actual message prefix: " << outcome.message.substr(0, 80);
@@ -1208,7 +1216,7 @@ PeerErrorOutcome send_request_against_peer_error(boost::asio::io_context& io_ctx
         // bytes rather than as the two-character escapes: the encoder escapes them, the decoder
         // turns them back. That decode is what makes a parsed field sharper than raw wire bytes.
         raw_transport->enqueue_message(
-            make_error_response(id, mcp::g_INTERNAL_ERROR, peer_message).dump());
+            make_error_response(id, mcp::constants::jsonrpc::g_INTERNAL_ERROR, peer_message).dump());
     });
 
     mcp::Client client(transport, io_ctx.get_executor(), legacy_client_options());
@@ -1257,7 +1265,8 @@ TEST_F(ClientCoreTest, PeerErrorDiagnosticFlattensThePeerChosenMessage) {
     // SDK authored, and would satisfy everything below without the peer's bytes ever reaching a
     // diagnostic. Dump what() on failure so a vacuous pass cannot hide.
     ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
-    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR) << "actual what(): " << outcome.what;
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+        << "actual what(): " << outcome.what;
     ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
     ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
 
@@ -1281,7 +1290,7 @@ TEST_F(ClientCoreTest, PeerErrorDiagnosticBoundsThePeerChosenMessage) {
     const auto outcome = send_request_against_peer_error(io_ctx_, forged);
 
     ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
-    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR)
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INTERNAL_ERROR)
         << "actual what() prefix: " << outcome.what.substr(0, 80);
     ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U)
         << "actual what() prefix: " << outcome.what.substr(0, 80);
@@ -1384,13 +1393,15 @@ SecondRequestOutcome send_two_requests(
 TEST_F(ClientCoreTest, ErrorResponseWithoutMessageDoesNotStopReadLoop) {
     const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
         return std::vector<nlohmann::json>{
-            {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", mcp::g_METHOD_NOT_FOUND}}}}};
+            {{"jsonrpc", "2.0"},
+             {"id", id},
+             {"error", {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND}}}}};
     });
 
     EXPECT_TRUE(outcome.second_succeeded)
         << "the session died on one malformed response: " << outcome.second_failure;
     ASSERT_TRUE(outcome.first_threw);
-    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND)
+    EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)
         << "the error code did not survive the missing message: " << outcome.first_message;
 }
 
@@ -1398,16 +1409,18 @@ TEST_F(ClientCoreTest, ErrorResponseWithoutMessageDoesNotStopReadLoop) {
 // without omitempty -- sends `message: null` rather than omitting the key.
 TEST_F(ClientCoreTest, ErrorResponseWithNullMessageDoesNotStopReadLoop) {
     const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
-        return std::vector<nlohmann::json>{
-            {{"jsonrpc", "2.0"},
-             {"id", id},
-             {"error", {{"code", mcp::g_METHOD_NOT_FOUND}, {"message", nullptr}, {"data", nullptr}}}}};
+        return std::vector<nlohmann::json>{{{"jsonrpc", "2.0"},
+                                            {"id", id},
+                                            {"error",
+                                             {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND},
+                                              {"message", nullptr},
+                                              {"data", nullptr}}}}};
     });
 
     EXPECT_TRUE(outcome.second_succeeded)
         << "the session died on one malformed response: " << outcome.second_failure;
     ASSERT_TRUE(outcome.first_threw);
-    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 // An `error` member that is not an object yields no code, so the request it answers fails -- but
@@ -1421,7 +1434,8 @@ TEST_F(ClientCoreTest, ErrorMemberThatIsNotAnObjectFailsOnlyItsOwnRequest) {
     EXPECT_TRUE(outcome.second_succeeded)
         << "the session died on one malformed response: " << outcome.second_failure;
     ASSERT_TRUE(outcome.first_threw);
-    EXPECT_EQ(outcome.first_code, mcp::g_INVALID_REQUEST) << "actual: " << outcome.first_message;
+    EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_INVALID_REQUEST)
+        << "actual: " << outcome.first_message;
 }
 
 // A message the client cannot classify at all is dropped. Dropping it silently would leave an
@@ -1437,7 +1451,7 @@ TEST_F(ClientCoreTest, UndecodableMessageIsReportedAndDropped) {
         << "the session died on one malformed message: " << outcome.second_failure;
     EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
 
 // A request from the peer whose id is neither string nor integer can never be answered. Dispatching
@@ -1453,7 +1467,7 @@ TEST_F(ClientCoreTest, PeerRequestWithUnusableIdDoesNotStopReadLoop) {
         << "the session died on one malformed request: " << outcome.second_failure;
     EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
 
 // `result` and `error` are not symmetric. A null `result` is a legitimate empty result, but a null

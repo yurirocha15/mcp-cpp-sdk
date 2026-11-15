@@ -14,6 +14,7 @@
 #include <boost/asio/io_context.hpp>
 #include <functional>
 #include <mcp/auth/enterprise_authorization.hpp>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -129,7 +130,7 @@ struct Fixture {
 };
 
 mcp::auth::IdentityAssertion id_token() {
-    return {"the-id-token", std::string(mcp::auth::g_ID_TOKEN_TYPE)};
+    return {"the-id-token", std::string(mcp::constants::oauth::g_ID_TOKEN_TYPE)};
 }
 
 TEST(EnterpriseAuthorizationTest, ExchangesTheIdentityAssertionForAnIdJagAndThenForAnAccessToken) {
@@ -173,7 +174,8 @@ TEST(EnterpriseAuthorizationTest, ExchangesTheIdentityAssertionForAnIdJagAndThen
 TEST(EnterpriseAuthorizationTest, ASamlRefreshTokenIsPassedWithItsTokenType) {
     Fixture fixture;
     fixture.serve(4);
-    fixture.run(fixture.config(), {"saml-refresh", std::string(mcp::auth::g_REFRESH_TOKEN_TYPE)},
+    fixture.run(fixture.config(),
+                {"saml-refresh", std::string(mcp::constants::oauth::g_REFRESH_TOKEN_TYPE)},
                 [&](auto& authenticator) -> mcp::Task<void> {
                     EXPECT_TRUE(co_await authenticator.try_handle_challenge(fixture.challenge()));
                 });
@@ -264,7 +266,7 @@ TEST(EnterpriseAuthorizationTest, AnEmptyIdentityAssertionIsRefused) {
     Fixture fixture;
     fixture.serve(3);
     bool refused = false;
-    fixture.run(fixture.config(), {"", std::string(mcp::auth::g_ID_TOKEN_TYPE)},
+    fixture.run(fixture.config(), {"", std::string(mcp::constants::oauth::g_ID_TOKEN_TYPE)},
                 [&](auto& authenticator) -> mcp::Task<void> {
                     try {
                         (void)co_await authenticator.try_handle_challenge(fixture.challenge());

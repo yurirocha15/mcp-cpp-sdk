@@ -82,7 +82,7 @@ member.
    try {
        auto result = co_await client.call_tool("echo", args);
    } catch (const mcp::McpError& error) {
-       if (error.code() == mcp::g_UNSUPPORTED_PROTOCOL_VERSION && error.data()) {
+       if (error.code() == mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION && error.data()) {
            auto data = error.data()->get<mcp::UnsupportedProtocolVersionData>();
            // data.supported lists the versions the server serves
        }
@@ -205,7 +205,7 @@ them or drops to ``send_request`` for that one:
 
 When the deadline expires the awaiting coroutine throws
 :cpp:class:`mcp::McpError` with code ``-32001``
-(:cpp:var:`mcp::g_REQUEST_TIMEOUT`) and the message ``Request timed out``.
+(:cpp:var:`mcp::constants::jsonrpc::g_REQUEST_TIMEOUT`) and the message ``Request timed out``.
 Catch it the same way as any other ``McpError``.
 
 .. warning::

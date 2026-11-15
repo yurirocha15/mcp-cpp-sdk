@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -41,79 +42,9 @@ inline bool has_json_value(const nlohmann::json& json_obj, const char* key) {
 
 // MCP Protocol Constants
 
-/**
- * @brief JSON-RPC error code for unauthorized request.
- */
-inline constexpr int g_UNAUTHORIZED = -32000;
-
-/**
- * @brief JSON-RPC error code for request timeout.
- */
-inline constexpr int g_REQUEST_TIMEOUT = -32001;
-
-/**
- * @brief Error code the SDK uses locally when the transport closes.
- *
- * @details Outside the range JSON-RPC reserves (-32768 to -32000), as the specification asks of
- * codes it does not define, so it cannot be mistaken for an error the peer sent. -32002 is resource
- * not found in protocol revisions 2025-11-25 and earlier.
- */
-inline constexpr int g_CONNECTION_CLOSED = -31000;
-
-/**
- * @brief JSON-RPC error code for a resource that does not exist, in protocol revisions 2025-11-25
- * and earlier. 2026-07-28 uses g_INVALID_PARAMS instead.
- */
-inline constexpr int g_RESOURCE_NOT_FOUND = -32002;
-
 // Error-code allocation policy: -32000..-32019 is a grandfathered legacy band
 // (pre-existing codes above); -32020..-32099 is the spec-reserved band for
 // codes introduced by newer MCP spec revisions, such as the ones below.
-
-/**
- * @brief JSON-RPC error code for a mismatched or missing required header.
- */
-inline constexpr int g_HEADER_MISMATCH = -32020;
-
-/**
- * @brief JSON-RPC error code for a missing required client capability.
- */
-inline constexpr int g_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
-
-/**
- * @brief JSON-RPC error code for an unsupported protocol version.
- */
-inline constexpr int g_UNSUPPORTED_PROTOCOL_VERSION = -32022;
-
-/**
- * @brief JSON-RPC error code for invalid requests.
- */
-inline constexpr int g_INVALID_REQUEST = -32600;
-
-/**
- * @brief JSON-RPC error code for method not found.
- */
-inline constexpr int g_METHOD_NOT_FOUND = -32601;
-
-/**
- * @brief JSON-RPC error code for invalid parameters.
- */
-inline constexpr int g_INVALID_PARAMS = -32602;
-
-/**
- * @brief JSON-RPC error code for internal errors.
- */
-inline constexpr int g_INTERNAL_ERROR = -32603;
-
-/**
- * @brief JSON-RPC error code for parse errors.
- */
-inline constexpr int g_PARSE_ERROR = -32700;
-
-/**
- * @brief JSON-RPC error code for request cancelled.
- */
-inline constexpr int g_REQUEST_CANCELLED = -32800;
 
 /**
  * @brief The sender or recipient of messages and data in a conversation.
@@ -256,7 +187,7 @@ inline void from_json(const nlohmann::json& json_obj, Error& error) {
     // A numeric code that does not fit is still an error: converting it would be undefined
     // behaviour, and refusing it would leave the caller waiting for an answer.
     if (detail::is_number_outside_int(json_obj.at("code"))) {
-        error.code = g_INTERNAL_ERROR;
+        error.code = mcp::constants::jsonrpc::g_INTERNAL_ERROR;
     } else {
         json_obj.at("code").get_to(error.code);
     }
