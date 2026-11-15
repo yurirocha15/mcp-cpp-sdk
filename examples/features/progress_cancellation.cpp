@@ -58,29 +58,26 @@ int main() {
                                       {"properties", {{"duration_ms", {{"type", "integer"}}}}},
                                       {"required", nlohmann::json::array({"duration_ms"})}};
 
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "long_task", "A long-running task that reports progress and can be cancelled", tool_schema,
-            [&tool_saw_cancel](Context& ctx, const nlohmann::json& args) -> Task<nlohmann::json> {
+            [&tool_saw_cancel](Context& ctx, const nlohmann::json& args) -> Task<CallToolResult> {
                 int duration_ms = args.at("duration_ms").get<int>();
                 int steps = 10;
                 int step_duration_ms = duration_ms / steps;
 
                 std::cout << "Tool: Starting long_task for " << duration_ms << "ms\n";
 
+                // One timer stands in for the work of every step.
+                auto executor = co_await asio::this_coro::executor;
+                asio::steady_timer work_timer(executor);
                 for (int i = 0; i < steps; ++i) {
                     if (ctx.is_cancelled()) {
                         std::cout << "Tool: Cancellation detected at step " << i << "\n";
                         tool_saw_cancel = true;
-                        co_return nlohmann::json{
-                            {"content", nlohmann::json::array({nlohmann::json{
-                                            {"type", "text"},
-                                            {"text", "Task cancelled at step " + std::to_string(i) +
-                                                         "/" + std::to_string(steps)}}})},
-                            {"isError", true}};
+                        co_return make_tool_error_result("Task cancelled at step " + std::to_string(i) +
+                                                         "/" + std::to_string(steps));
                     }
 
-                    auto executor = co_await asio::this_coro::executor;
-                    asio::steady_timer work_timer(executor);
                     work_timer.expires_after(std::chrono::milliseconds(step_duration_ms));
                     co_await work_timer.async_wait(asio::use_awaitable);
 
@@ -94,12 +91,8 @@ int main() {
                 }
 
                 std::cout << "Tool: Completed all steps\n";
-                co_return nlohmann::json{
-                    {"content", nlohmann::json::array(
-                                    {nlohmann::json{{"type", "text"},
-                                                    {"text", "Task completed successfully with " +
-                                                                 std::to_string(steps) + " steps"}}})},
-                    {"isError", false}};
+                co_return make_tool_text_result("Task completed successfully with " +
+                                                std::to_string(steps) + " steps");
             });
 
         // ========== TRANSPORT & RUN ==========
@@ -121,11 +114,6 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    std::cout << "Client: Waiting for server to start\n";
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(50));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "Client: Creating client\n";
                     mcp::Client client(client_transport, io_ctx.get_executor());
 

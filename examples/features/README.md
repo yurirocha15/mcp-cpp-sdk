@@ -208,14 +208,15 @@ done
 ### 10. Graceful Shutdown (`graceful_shutdown.cpp`)
 
 **What it demonstrates:**
-- Signal handling with `io_context`
-- `graceful_shutdown()` for clean server shutdown
-- Timer-based forced shutdown
-- `server.run_stdio()` convenience method
+- `graceful_shutdown()` for clean server shutdown, triggered by a timer where a real server
+  would use a signal (`Server::run_stdio()` and `run_http()` handle SIGINT and SIGTERM this way)
+- Cancelling the watchdog timer `graceful_shutdown()` returns once the server has stopped, so
+  the `io_context` ends at once instead of at the timeout
+- The manual `StdioTransport` + `Server::run()` pattern
 
 **Key APIs:**
 - `mcp::graceful_shutdown()`
-- `Server::run_stdio()`
+- `Server::run()`
 
 **Run:** `./build/release/example-feature-graceful-shutdown`
 
@@ -412,7 +413,9 @@ python scripts/build.py --examples --test
 
 ### Example hangs or times out
 
-All examples have auto-exit timers (typically 2-5 seconds). If an example hangs:
+The examples that run a client end the `io_context` as soon as the client is done, and have a
+watchdog timer (typically 10 seconds) that fails the example if something never answers. If an
+example hangs or times out:
 - Check for missing server/client initialization
 - Verify transport is properly connected
 - Check for uncaught exceptions

@@ -9,8 +9,6 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -48,9 +46,11 @@ int main() {
                          {"type", "text"}, {"text", input_args.at("text").get<std::string>()}}})}};
             });
 
-        constexpr unsigned short http_port = 18099;
+        // Port 0 lets the system pick a free port. The transport binds it when it is constructed,
+        // so a client can connect at once, before listen() starts accepting.
         auto http_server_transport =
-            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", http_port);
+            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", 0);
+        const unsigned short http_port = http_server_transport->port();
 
         std::cout << "Starting HTTP server on port " << http_port << '\n';
 
@@ -67,14 +67,10 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    std::cout << "Client: waiting for server to start" << '\n';
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(100 /* NOLINT */));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "Client: creating transport" << '\n';
                     auto http_client_transport = std::make_shared<HttpClientTransport>(
-                        io_ctx.get_executor(), "http://127.0.0.1:18099/mcp");
+                        io_ctx.get_executor(),
+                        "http://127.0.0.1:" + std::to_string(http_port) + "/mcp");
 
                     std::cout << "Client: creating client object" << '\n';
                     Client client(http_client_transport, io_ctx.get_executor());

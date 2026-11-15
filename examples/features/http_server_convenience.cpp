@@ -68,12 +68,10 @@ int main() {
                                       {"properties", {{"text", {{"type", "string"}}}}},
                                       {"required", nlohmann::json::array({"text"})}};
 
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "echo", "Echo the input text", tool_schema,
-            [](nlohmann::json input_args) -> nlohmann::json {
-                std::string text = input_args.at("text").get<std::string>();
-                return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                                      {"type", "text"}, {"text", "Echo: " + text}}})}};
+            [](nlohmann::json input_args) -> CallToolResult {
+                return make_tool_text_result("Echo: " + input_args.at("text").get<std::string>());
             });
 
         asio::io_context probe_io_ctx;
