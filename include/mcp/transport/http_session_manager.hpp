@@ -379,7 +379,8 @@ class MCP_API StreamableHttpSessionManager {
     /**
      * @brief Set how the answers to 2026-07-28 requests are streamed.
      *
-     * @throws std::invalid_argument If an interval is not positive or the queue limit is 0.
+     * @throws std::invalid_argument If an interval is not positive, or max_queued_notifications or
+     *         max_queued_bytes is zero.
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_stream_options(StreamOptions options);

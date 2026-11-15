@@ -49,9 +49,10 @@ jobs:
       run: python3 scripts/ci_changes.py --event "$EVENT" --base "$BASE" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   naming:
-    # clang-tidy runs only readability-identifier-naming, over src/, include/ and examples/ (what
-    # `make lint` checks). It needs the compile database, so CMake configures against
-    # distribution packages and nothing is built.
+    # clang-tidy runs only readability-identifier-naming, over the .cpp files in src/ and examples/
+    # and the headers of include/, src/ and examples/ they include (`make lint` also checks each
+    # header on its own). It needs the compile database, so CMake configures against distribution
+    # packages and nothing is built.
     name: Identifier naming
     needs: changes
     if: needs.changes.outputs.naming == 'true'

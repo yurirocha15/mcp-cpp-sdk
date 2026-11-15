@@ -71,8 +71,10 @@ std::optional<std::string> optional_environment(std::string_view name) {
     return std::string(value);
 }
 
-/// The runner names the revision under test in MCP_CONFORMANCE_PROTOCOL_VERSION when it is given
-/// --spec-version. Unset, the client keeps its default protocol detection.
+/// The alpha runner names the revision each scenario runs at in MCP_CONFORMANCE_PROTOCOL_VERSION:
+/// the one --spec-version or --requirements gives, otherwise 2026-07-28 for a scenario that
+/// revision introduced and 2025-11-25 for the rest. The pinned runner does not set it, so there
+/// the client keeps its default protocol detection.
 mcp::ClientOptions client_options_from_environment() {
     mcp::ClientOptions options;
     if (const auto version = optional_environment("MCP_CONFORMANCE_PROTOCOL_VERSION")) {
