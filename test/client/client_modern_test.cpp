@@ -1076,6 +1076,111 @@ TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
     }
 }
 
+// A CancellationToken ends every call given it at once, in either era: each fails with
+// g_REQUEST_CANCELLED, the server gets notifications/cancelled with the token's reason for each, and
+// an answer that arrives afterwards is dropped without a protocol error.
+TEST(ClientEra, CancellationTokenEndsItsCallsInBothEras) {
+    for (const std::string pin : {"2026-07-28", "2025-11-25"}) {
+        SCOPED_TRACE(pin);
+        const bool modern = pin == "2026-07-28";
+        mcp::ClientOptions options = pinned_options(pin);
+        std::vector<mcp::Error> reported;
+        options.on_protocol_error = [&reported](const mcp::Error& error) { reported.push_back(error); };
+        Harness harness(options);
+        std::vector<json> held;
+        harness.peer.reply = [&held, modern](const json& request) -> std::optional<json> {
+            if (request.at("method") == "tools/call") {
+                held.push_back(request);
+                return std::nullopt;
+            }
+            return modern ? modern_peer(request) : legacy_peer_rejecting_discover(request, -32601);
+        };
+        harness.peer.observe = [&](const json& message) {
+            if (message.value("method", "") != "notifications/cancelled") {
+                return;
+            }
+            // The server answers anyway, as a cancellation may cross the response.
+            for (const auto& request : held) {
+                if (request.at("id") == message.at("params").at("requestId")) {
+                    harness.peer.deliver(response_to(request, modern_result_for("tools/call")));
+                }
+            }
+        };
+
+        std::vector<int> codes;
+        harness.run([&]() -> mcp::Task<void> {
+            co_await harness.client->connect("test-client", "1.0");
+            mcp::RequestOptions request_options;
+            request_options.cancellation = mcp::CancellationToken();
+            for (int call = 0; call < 2; ++call) {
+                boost::asio::co_spawn(
+                    harness.io,
+                    [&harness, &codes, request_options]() -> mcp::Task<void> {
+                        try {
+                            const json arguments = json::object();
+                            co_await harness.client->call_tool("slow", arguments, request_options);
+                            codes.push_back(0);
+                        } catch (const mcp::McpError& error) {
+                            codes.push_back(error.code());
+                        }
+                    },
+                    boost::asio::detached);
+            }
+            boost::asio::steady_timer tick(harness.io);
+            while (held.size() < 2) {
+                tick.expires_after(std::chrono::milliseconds(1));
+                co_await tick.async_wait(boost::asio::use_awaitable);
+            }
+            request_options.cancellation->cancel("user stopped it");
+            while (codes.size() < 2) {
+                tick.expires_after(std::chrono::milliseconds(1));
+                co_await tick.async_wait(boost::asio::use_awaitable);
+            }
+            // Let the late responses reach the client.
+            tick.expires_after(std::chrono::milliseconds(20));
+            co_await tick.async_wait(boost::asio::use_awaitable);
+        });
+
+        EXPECT_EQ(codes, (std::vector<int>{mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                                           mcp::constants::jsonrpc::g_REQUEST_CANCELLED}));
+        const auto cancels = harness.peer.with_method("notifications/cancelled");
+        ASSERT_EQ(cancels.size(), 2u);
+        ASSERT_EQ(held.size(), 2u);
+        for (const auto& cancel : cancels) {
+            const auto params = cancel.value("params", json::object());
+            EXPECT_EQ(params.value("reason", ""), "user stopped it");
+            const auto request_id = params.value("requestId", json());
+            EXPECT_TRUE(request_id == held[0].at("id") || request_id == held[1].at("id")) << request_id;
+        }
+        EXPECT_NE(cancels[0].at("params").at("requestId"), cancels[1].at("params").at("requestId"));
+        EXPECT_TRUE(reported.empty());
+        EXPECT_EQ(harness.client->pending_request_count(), 0u);
+    }
+}
+
+// A request given a token that is already cancelled fails without being sent.
+TEST(ClientEra, CancelledTokenSendsNothing) {
+    Harness harness(pinned_options("2026-07-28"));
+    harness.peer.reply = modern_peer;
+    int code = 0;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("test-client", "1.0");
+        mcp::RequestOptions request_options;
+        request_options.cancellation = mcp::CancellationToken();
+        request_options.cancellation->cancel();
+        try {
+            const json arguments = json::object();
+            co_await harness.client->call_tool("slow", arguments, request_options);
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+    });
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
+    EXPECT_EQ(harness.peer.count("tools/call"), 0u);
+    EXPECT_TRUE(harness.peer.with_method("notifications/cancelled").empty());
+    EXPECT_EQ(harness.client->pending_request_count(), 0u);
+}
+
 // A hook that throws changes nothing about the connect.
 TEST(ClientEra, ThrowingDecisionCallbackIsDiscarded) {
     Harness harness(auto_options());

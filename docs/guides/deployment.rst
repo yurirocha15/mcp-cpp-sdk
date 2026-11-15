@@ -206,7 +206,7 @@ You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdow
    :end-before: // ========== SERVER COROUTINE ==========
    :dedent: 8
 
-The :cpp:func:`mcp::graceful_shutdown` function closes the transport (preventing new connections) and starts a watchdog timer. If requests don't finish within the timeout (defined by ``mcp::constants::shutdown::g_TIMEOUT_MS``), it stops the ``io_context`` forcefully.
+The :cpp:func:`mcp::graceful_shutdown` function closes the transport (preventing new connections) and starts a watchdog timer. If requests don't finish within the timeout (defined by ``mcp::constants::shutdown::g_TIMEOUT_MS``), it stops the ``io_context`` forcefully. It returns the timer: cancel it once ``Server::run()`` has returned, as the example does, or the pending timer keeps ``io_context::run()`` going until the timeout.
 
 Production Considerations
 -------------------------
@@ -331,14 +331,16 @@ The ``http_server_convenience.cpp`` example provides a complete, runnable demons
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp
-   :lines: 81-99
+   :start-after: // ========== CONVENIENCE SETUP (this example) ==========
+   :end-before: constexpr auto startup_delay
    :dedent: 8
 
 For advanced users, ``graceful_shutdown.cpp`` demonstrates how to build a robust server that respects system signals and manages the connection lifecycle manually. This is particularly useful when you need to coordinate the shutdown of multiple services or databases alongside the MCP server.
 
 .. literalinclude:: ../../examples/features/graceful_shutdown.cpp
    :language: cpp
-   :lines: 86-118
+   :start-after: // ========== SERVER COROUTINE ==========
+   :end-before: // ========== RUN IO CONTEXT ==========
    :dedent: 8
 
 Cross-References

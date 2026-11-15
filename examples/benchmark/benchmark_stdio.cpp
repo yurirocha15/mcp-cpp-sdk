@@ -38,6 +38,7 @@ int main() {
         std::cout << "Iterations: " << num_iterations << "\n\n";
 
         asio::io_context io_ctx;
+        bool completed = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -76,15 +77,13 @@ int main() {
             io_ctx,
             [&, transport = client_transport]() -> Task<void> {
                 try {
-                    // Wait for server to start
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(50));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     Client client(transport, io_ctx.get_executor());
 
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo->name << "\n\n";
+                    if (init_result.serverInfo) {
+                        std::cout << "[Client] Connected to: " << init_result.serverInfo->name
+                                  << "\n\n";
+                    }
 
                     // Warmup
                     std::cout << "[Client] Warmup phase (10 calls)...\n";
@@ -124,6 +123,7 @@ int main() {
 
                     std::cout << "[Client] Shutting down\n";
                     client.close();
+                    completed = true;
                     io_ctx.stop();
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Error: " << e.what() << '\n';
@@ -155,6 +155,10 @@ int main() {
         // ========== RUN IO CONTEXT ==========
         io_ctx.run();
 
+        if (!completed) {
+            std::cerr << "Benchmark did not complete\n";
+            return EXIT_FAILURE;
+        }
         return EXIT_SUCCESS;
 
     } catch (const std::exception& e) {

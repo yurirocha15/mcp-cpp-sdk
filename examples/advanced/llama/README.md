@@ -11,25 +11,25 @@ This is an MCP server that acts as an adapter for llama.cpp's `llama-server` HTT
 
 ```bash
 # From the project root:
-make build
+python scripts/build.py --examples
 ```
 
-The `example-llama-mcp` binary will be placed in `./build/`.
+The `example-llama-mcp` binary is placed in `./build/release/`.
 
 ### Usage
 
 **Stdio transport** (default — use with MCP clients that communicate over stdin/stdout):
 
 ```bash
-./build/example-llama-mcp
+./build/release/example-llama-mcp
 # or explicitly:
-./build/example-llama-mcp --transport=stdio
+./build/release/example-llama-mcp --transport=stdio
 ```
 
 **HTTP transport** (starts an HTTP server that MCP clients can connect to):
 
 ```bash
-./build/example-llama-mcp --transport=http --port=8808
+./build/release/example-llama-mcp --transport=http --port=8808
 ```
 
 ### CLI Flags
@@ -65,21 +65,45 @@ The `example-llama-mcp` binary will be placed in `./build/`.
 
 ### Example — HTTP Mode with curl
 
+Each request below is a complete protocol revision 2026-07-28 request: it names its
+version in the `MCP-Protocol-Version` header and in `_meta`, and needs no
+`initialize`. The `Mcp-Method` header repeats the method, and `Mcp-Name` the tool
+name of a `tools/call`; the server refuses a request whose headers are missing or
+do not match its body.
+
 ```bash
 # Start the adapter in HTTP mode
-./build/example-llama-mcp --transport=http --port=8808
+./build/release/example-llama-mcp --transport=http --port=8808
 
 # List available tools
 curl -X POST http://127.0.0.1:8808/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/list" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
 
 # Call the chat tool
 curl -X POST http://127.0.0.1:8808/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chat","arguments":{"messages":[{"role":"user","content":"Hello!"}]}}}'
+  -H "Accept: application/json, text/event-stream" \
+  -H "MCP-Protocol-Version: 2026-07-28" \
+  -H "Mcp-Method: tools/call" \
+  -H "Mcp-Name: chat" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"chat","arguments":{"messages":[{"role":"user","content":"Hello!"}]},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}}}'
 ```
+
+A client of protocol revision 2025-11-25 or earlier starts a session instead:
+`initialize`, then `notifications/initialized`, then its requests, each carrying the
+`MCP-Session-Id` header that the `initialize` response set.
 
 ### Architecture Notes
 
-Each call to llama-server opens a fresh TCP connection — there is no connection pooling. This keeps the example simple and matches the patterns used in the MCP C++ SDK's other examples.
+The tool and resource handlers are coroutines that `co_await` llama-server without
+blocking: while one waits for a model's reply, the server keeps reading and
+answering other requests on the same thread. Each call to llama-server opens a
+fresh TCP connection, with one 120-second deadline covering connecting, sending
+and reading. A tool whose call fails (llama-server unreachable, an error status,
+an unexpected reply) throws, and the SDK answers the call with an `isError`
+result that carries the exception's message. `run_stdio()` and `run_http()` stop
+the server on SIGINT and SIGTERM.

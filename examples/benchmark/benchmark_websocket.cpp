@@ -36,6 +36,7 @@ int main() {
         const std::string host = "127.0.0.1";
 
         asio::io_context io_ctx;
+        bool completed = false;
         tcp::acceptor acceptor(io_ctx, tcp::endpoint(tcp::v4(), 0));
         auto port = acceptor.local_endpoint().port();
 
@@ -89,7 +90,9 @@ int main() {
                 client_info.version = "1.0.0";
 
                 auto init = co_await client.connect(client_info, ClientCapabilities{});
-                std::cout << "[Client] Connected to: " << init.serverInfo->name << "\n";
+                if (init.serverInfo) {
+                    std::cout << "[Client] Connected to: " << init.serverInfo->name << "\n";
+                }
 
                 nlohmann::json warmup_args = {{"message", "warmup"}};
                 nlohmann::json bench_args = {{"message", "bench"}};
@@ -126,6 +129,7 @@ int main() {
 
                 std::cout << "\n[Client] Shutting down\n";
                 client.close();
+                completed = true;
                 asio::steady_timer exit_timer(io_ctx.get_executor());
                 exit_timer.expires_after(std::chrono::milliseconds(100));
                 co_await exit_timer.async_wait(asio::use_awaitable);
@@ -134,6 +138,11 @@ int main() {
             asio::detached);
 
         io_ctx.run();
+
+        if (!completed) {
+            std::cerr << "Benchmark did not complete\n";
+            return EXIT_FAILURE;
+        }
         return EXIT_SUCCESS;
 
     } catch (const std::exception& e) {

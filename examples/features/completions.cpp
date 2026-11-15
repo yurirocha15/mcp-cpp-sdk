@@ -15,7 +15,6 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -127,12 +126,6 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    // Wait for server to start
-                    std::cout << "Client: Waiting for server to start\n";
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(50));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     // Create client
                     std::cout << "Client: Creating client\n";
                     Client client(client_transport, io_ctx.get_executor());
@@ -211,21 +204,19 @@ int main() {
                 } catch (const std::exception& e) {
                     std::cerr << "Client error: " << e.what() << "\n";
                 }
-            },
-            asio::detached);
-
-        // Run the io_context with a timeout
-        asio::steady_timer exit_timer(io_ctx.get_executor());
-        exit_timer.expires_after(std::chrono::seconds(5));
-
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> Task<void> {
-                co_await exit_timer.async_wait(asio::use_awaitable);
-                std::cout << "\nTimeout: Exiting\n";
                 io_ctx.stop();
             },
             asio::detached);
+
+        // Fail rather than hang if something never answers.
+        asio::steady_timer watchdog(io_ctx.get_executor());
+        watchdog.expires_after(std::chrono::seconds(10));
+        watchdog.async_wait([&io_ctx](const boost::system::error_code& error) {
+            if (!error) {
+                std::cerr << "Timed out\n";
+                io_ctx.stop();
+            }
+        });
 
         io_ctx.run();
 

@@ -18,7 +18,6 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -32,6 +31,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -94,11 +94,6 @@ int main() {
             io_ctx,
             [&, transport = client_transport]() -> Task<void> {
                 try {
-                    // Wait for server to start
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(50));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "[Client] Connecting\n";
                     Client client(transport, io_ctx.get_executor());
 
@@ -155,11 +150,6 @@ int main() {
                                       << list_result.nextCursor.value() << ")\n";
                             cursor = list_result.nextCursor;
                             page_num++;
-
-                            // Small delay between pages
-                            asio::steady_timer page_timer(io_ctx.get_executor());
-                            page_timer.expires_after(std::chrono::milliseconds(50));
-                            co_await page_timer.async_wait(asio::use_awaitable);
                         } else {
                             std::cout << "[Client] No more pages (nextCursor is null)\n";
                             break;
@@ -173,30 +163,31 @@ int main() {
                     std::cout << "[Client] Closing connection\n";
                     client.close();
                     std::cout << "[Client] Connection closed\n";
-
+                    client_ok = true;
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Error: " << e.what() << '\n';
-                    std::exit(1);
                 }
-            },
-            asio::detached);
-
-        // ========== AUTO-EXIT TIMER ==========
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> Task<void> {
-                asio::steady_timer exit_timer(io_ctx.get_executor());
-                exit_timer.expires_after(std::chrono::seconds(5));
-                co_await exit_timer.async_wait(asio::use_awaitable);
-
-                std::cout << "\n[Main] Auto-exit timer triggered\n";
                 io_ctx.stop();
             },
             asio::detached);
 
+        // Fail rather than hang if something never answers.
+        asio::steady_timer watchdog(io_ctx.get_executor());
+        watchdog.expires_after(std::chrono::seconds(10));
+        watchdog.async_wait([&io_ctx](const boost::system::error_code& error) {
+            if (!error) {
+                std::cerr << "[Main] Timed out\n";
+                io_ctx.stop();
+            }
+        });
+
         // Run the event loop
         io_ctx.run();
 
+        if (!client_ok) {
+            std::cerr << "[Main] Example failed\n";
+            return 1;
+        }
         std::cout << "[Main] Exiting successfully\n";
         return 0;
 

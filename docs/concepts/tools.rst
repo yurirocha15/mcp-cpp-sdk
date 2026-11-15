@@ -69,14 +69,17 @@ calculator tool:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 14-34
+   :start-after: #include <string>
+   :end-before: struct GreetInput {
 
 You then register the tool by providing these types as template arguments to
 `add_tool`:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 73-81
+   :start-after: Server server(info, caps);
+   :end-before: // Tool: greet
+   :dedent: 8
 
 When using typed handlers, the SDK uses the template parameters to automatically
 wrap your handler in a layer that performs the conversion between `nlohmann::json`
@@ -101,7 +104,9 @@ asynchronous operation:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
-   :lines: 106-124
+   :start-after: Uppercase the input and log
+   :end-before: // Resource: config://app/settings
+   :dedent: 8
 
 Progress and Cancellation
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -111,7 +116,9 @@ report progress and periodically check for cancellation requests.
 
 .. literalinclude:: ../../examples/features/progress_cancellation.cpp
    :language: cpp
-   :lines: 60-100
+   :start-after: // ========== TOOL REGISTRATION ==========
+   :end-before: // ========== TRANSPORT & RUN ==========
+   :dedent: 8
 
 For work that outlasts a request, a tool can run as a task that the client polls
 for, see :doc:`tasks`.
@@ -137,7 +144,9 @@ The following example demonstrates both patterns:
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
-   :lines: 46-74
+   :start-after: // ========== TOOL REGISTRATION ==========
+   :end-before: // Tool 3: Accesses invalid argument
+   :dedent: 8
 
 Use ``isError: true`` when the tool completed normally but needs to report an
 application-level failure back to the client. Either way the client receives a
@@ -190,7 +199,9 @@ content blocks.
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
-   :lines: 95-110
+   :start-after: // Tool 4: Successful tool (for comparison)
+   :end-before: // ========== CLIENT SETUP ==========
+   :dedent: 8
 
 Schema Validation
 -----------------

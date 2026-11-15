@@ -4,15 +4,13 @@
 /// This example shows:
 /// - A long-running tool that reports progress via ctx.report_progress()
 /// - A client that subscribes to progress notifications
-/// - A client that sends a cancellation request
+/// - A client that cancels its call with a CancellationToken
 /// - The tool handler checking ctx.is_cancelled() and exiting early
 /// - RequestOptions::log_level asking the server for the log messages of one request
 ///
-/// The client uses the default ClientProtocol::automatic(), so against this server it speaks
-/// 2026-07-28. There the server sends nothing more for a request the client cancelled, not even
-/// its response, so Client::cancel() ends the wait at once and the call fails with
-/// mcp::constants::jsonrpc::g_REQUEST_CANCELLED. A client of an earlier revision gets the tool's own
-/// answer instead; the code below handles both.
+/// CancellationToken::cancel() sends notifications/cancelled for the call and ends the client's
+/// wait at once, so the call fails with mcp::constants::jsonrpc::g_REQUEST_CANCELLED in every
+/// protocol revision, and the tool sees ctx.is_cancelled() at its next step.
 
 #include <mcp/client/client.hpp>
 #include <mcp/core/constants.hpp>
@@ -58,29 +56,26 @@ int main() {
                                       {"properties", {{"duration_ms", {{"type", "integer"}}}}},
                                       {"required", nlohmann::json::array({"duration_ms"})}};
 
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "long_task", "A long-running task that reports progress and can be cancelled", tool_schema,
-            [&tool_saw_cancel](Context& ctx, const nlohmann::json& args) -> Task<nlohmann::json> {
+            [&tool_saw_cancel](Context& ctx, const nlohmann::json& args) -> Task<CallToolResult> {
                 int duration_ms = args.at("duration_ms").get<int>();
                 int steps = 10;
                 int step_duration_ms = duration_ms / steps;
 
                 std::cout << "Tool: Starting long_task for " << duration_ms << "ms\n";
 
+                // One timer stands in for the work of every step.
+                auto executor = co_await asio::this_coro::executor;
+                asio::steady_timer work_timer(executor);
                 for (int i = 0; i < steps; ++i) {
                     if (ctx.is_cancelled()) {
                         std::cout << "Tool: Cancellation detected at step " << i << "\n";
                         tool_saw_cancel = true;
-                        co_return nlohmann::json{
-                            {"content", nlohmann::json::array({nlohmann::json{
-                                            {"type", "text"},
-                                            {"text", "Task cancelled at step " + std::to_string(i) +
-                                                         "/" + std::to_string(steps)}}})},
-                            {"isError", true}};
+                        co_return make_tool_error_result("Task cancelled at step " + std::to_string(i) +
+                                                         "/" + std::to_string(steps));
                     }
 
-                    auto executor = co_await asio::this_coro::executor;
-                    asio::steady_timer work_timer(executor);
                     work_timer.expires_after(std::chrono::milliseconds(step_duration_ms));
                     co_await work_timer.async_wait(asio::use_awaitable);
 
@@ -94,12 +89,8 @@ int main() {
                 }
 
                 std::cout << "Tool: Completed all steps\n";
-                co_return nlohmann::json{
-                    {"content", nlohmann::json::array(
-                                    {nlohmann::json{{"type", "text"},
-                                                    {"text", "Task completed successfully with " +
-                                                                 std::to_string(steps) + " steps"}}})},
-                    {"isError", false}};
+                co_return make_tool_text_result("Task completed successfully with " +
+                                                std::to_string(steps) + " steps");
             });
 
         // ========== TRANSPORT & RUN ==========
@@ -121,11 +112,6 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    std::cout << "Client: Waiting for server to start\n";
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(50));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "Client: Creating client\n";
                     mcp::Client client(client_transport, io_ctx.get_executor());
 
@@ -144,8 +130,9 @@ int main() {
                     }
 
                     bool progress_received = false;
-                    bool cancel_sent = false;
                     int progress_count = 0;
+                    // Given to the call below; cancelling it cancels the call.
+                    mcp::CancellationToken cancellation;
 
                     int log_count = 0;
                     client.on_notification("notifications/message",
@@ -159,20 +146,10 @@ int main() {
                         }
                         std::cout << "Client: Progress value: " << params.progress << "\n";
 
-                        if (progress_count == 3 && !cancel_sent) {
-                            cancel_sent = true;
-                            std::cout << "Client: Sending cancellation request\n";
-                            // The SDK assigns auto-incrementing integer IDs to JSON-RPC
-                            // requests. connect() used ID 1 (the initialize or server/discover
-                            // request), so our tools/call uses ID 2. In production, track the
-                            // request ID instead of hardcoding it.
-                            asio::co_spawn(
-                                io_ctx,
-                                [&client]() -> mcp::Task<void> {
-                                    co_await client.cancel(mcp::RequestId{"2"},
-                                                           "User requested cancellation");
-                                },
-                                asio::detached);
+                        if (progress_count == 3 && !cancellation.is_cancelled()) {
+                            std::cout << "Client: Cancelling the call\n";
+                            // Safe from any thread; only the first cancel() has an effect.
+                            cancellation.cancel("User requested cancellation");
                         }
                     });
 
@@ -185,26 +162,17 @@ int main() {
                     call_params.arguments = call_args;
                     call_params.meta = nlohmann::json{{"progressToken", "progress-tok-1"}};
 
-                    // Ask the server for the log messages of this request only.
+                    // Ask the server for the log messages of this request only, and let the
+                    // token cancel it.
                     mcp::RequestOptions request_options;
                     request_options.log_level = mcp::LoggingLevel::eInfo;
+                    request_options.cancellation = cancellation;
 
                     bool call_cancelled = false;
                     try {
-                        auto result_json = co_await client.send_request(
-                            "tools/call", nlohmann::json(call_params), request_options);
-                        auto result = result_json.get<mcp::CallToolResult>();
-
-                        std::cout << "Client: Tool answered\n";
-                        for (const auto& content_block : result.content) {
-                            if (const auto* text_content =
-                                    std::get_if<mcp::TextContent>(&content_block)) {
-                                std::cout << "Client: Result text: " << text_content->text << "\n";
-                            }
-                        }
-                        // Only a session of an earlier revision gets here, with the answer of the
-                        // tool that stopped early.
-                        call_cancelled = result.isError.value_or(false);
+                        co_await client.send_request("tools/call", nlohmann::json(call_params),
+                                                     request_options);
+                        std::cout << "Client: Tool finished before the cancellation\n";
                     } catch (const mcp::McpError& error) {
                         std::cout << "Client: Call ended: " << error.what() << "\n";
                         call_cancelled = error.code() == jsonrpc::g_REQUEST_CANCELLED;

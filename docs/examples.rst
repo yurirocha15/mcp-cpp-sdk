@@ -109,13 +109,13 @@ client_stdio
 
 A stdio MCP client demonstrating:
 
+* **Launching the server**: ``StdioClientTransport`` starts ``example-server-stdio``
+  as a child process and shuts it down at the end
 * **Connection**: ``server/discover``, falling back to ``initialize`` for an older server
 * **Tools**: List available tools, call tools with typed arguments
 * **Resources**: List resources, read resource contents
 * **Resource Templates**: List template metadata
 * **Prompts**: List prompts, get prompt with arguments
-* **Completion**: Request completion suggestions
-* **Notifications**: Send notifications to server
 
 **Key patterns demonstrated**:
 
@@ -232,9 +232,11 @@ server with stdio and HTTP deployment options.
 
 **Key patterns demonstrated**:
 
-* Asynchronous HTTP client requests within tool handlers
+* Tool handlers that ``co_await`` an external HTTP API without blocking the server
+* Typed ``mcp::CallToolResult`` results, and thrown exceptions turned into
+  ``isError`` results by the SDK
 * Exposing external service capabilities (LLM) as MCP tools and resources
-* Flexible transport configuration and CLI parameter management
+* ``Server::run_stdio()`` and ``Server::run_http()`` selected at runtime
 
 **Build and run**:
 
@@ -262,7 +264,10 @@ integration with system-level debugging tools.
 
 **Key patterns demonstrated**:
 
-* Managing external library state within an MCP server
+* Running blocking library calls on a dedicated thread with
+  ``Server::set_handler_executor()``, so the server keeps answering requests
+  while a handler waits
+* Moving a resource handler to the same thread with ``co_spawn``
 * Using resource templates for dynamic metadata discovery
 * Implementing complex interactive workflows (debugging) via tools
 
@@ -270,10 +275,11 @@ integration with system-level debugging tools.
 
 .. code-block:: bash
 
-   cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
+   python scripts/build.py --examples
    ./build/release/example-debugger-server
 
-Note: Requires ``-DBUILD_LLDB_EXAMPLE=ON`` and LLDB development libraries installed.
+The example is built with the other examples. It links LLDB when CMake finds
+the LLDB development files, and is built against stubs otherwise.
 
 Building All Examples
 ---------------------
@@ -282,16 +288,9 @@ To build all examples at once:
 
 .. code-block:: bash
 
-   # Using build script (recommended)
    python scripts/build.py --examples
 
-   # Or using CMake directly
-   cmake -DBUILD_EXAMPLES=ON -B build && cmake --build build
-
-   # Note: The debugger example is OFF by default:
-   # cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
-
-All example binaries will be located in ``build/``.
+All example binaries are placed in ``build/release/``.
 
 Using Examples as Templates
 ---------------------------

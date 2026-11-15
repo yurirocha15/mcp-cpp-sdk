@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -105,6 +106,33 @@ mcp::Task<std::string> raw_exchange(asio::any_io_executor executor, unsigned sho
     co_return received;
 }
 
+/// Writes @p text on a new connection and returns what comes back as soon as @p done holds for it,
+/// leaving the connection then. A server that closes first, or g_hang_guard running out, also ends
+/// the exchange; the latter adds "[timed out]".
+template <typename Done>
+mcp::Task<std::string> raw_exchange_until(asio::any_io_executor executor, unsigned short port,
+                                          std::string text, Done done) {
+    beast::tcp_stream stream(executor);
+    stream.expires_after(g_hang_guard);
+    std::string received;
+    try {
+        co_await stream.async_connect(
+            asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port), asio::use_awaitable);
+        co_await asio::async_write(stream, asio::buffer(text), asio::use_awaitable);
+        std::array<char, 4096> chunk{};
+        while (!done(received)) {
+            const auto count =
+                co_await stream.async_read_some(asio::buffer(chunk), asio::use_awaitable);
+            received.append(chunk.data(), count);
+        }
+    } catch (const boost::system::system_error& error) {
+        if (error.code() == beast::error::timeout) {
+            received += "[timed out]";
+        }
+    }
+    co_return received;
+}
+
 /// What a client that sends "Expect: 100-continue" sees: what the server wrote before the client
 /// sent the body, which the client waits for, and everything after it until the server closes.
 struct ContinueExchange {
@@ -151,6 +179,32 @@ std::string header_only_post(std::size_t body_bytes, const std::string& extra = 
            extra + "Content-Length: " + std::to_string(body_bytes) + "\r\n\r\n";
 }
 
+/// What a server writes back to requests its HTTP parser cannot read, each on its own connection.
+struct UnreadableAnswers {
+    std::string long_headers;
+    std::string malformed;
+    std::string two_lengths;
+};
+
+mcp::Task<UnreadableAnswers> send_unreadable_requests(asio::any_io_executor executor,
+                                                      unsigned short port) {
+    // Past the parser's 8 KiB header limit.
+    const std::string long_header = "X-Long: " + std::string(9000, 'a') + "\r\n";
+    UnreadableAnswers answers;
+    answers.long_headers =
+        co_await raw_exchange(executor, port, full_post("{}", long_header), g_hang_guard);
+    answers.malformed = co_await raw_exchange(executor, port, "GARBAGE\r\n\r\n", g_hang_guard);
+    answers.two_lengths =
+        co_await raw_exchange(executor, port, full_post("{}", "Content-Length: 7\r\n"), g_hang_guard);
+    co_return answers;
+}
+
+void expect_unreadable_requests_answered(const UnreadableAnswers& answers) {
+    EXPECT_EQ(answers.long_headers.rfind("HTTP/1.1 431", 0), 0u) << answers.long_headers;
+    EXPECT_EQ(answers.malformed.rfind("HTTP/1.1 400", 0), 0u) << answers.malformed;
+    EXPECT_EQ(answers.two_lengths.rfind("HTTP/1.1 400", 0), 0u) << answers.two_lengths;
+}
+
 template <typename Condition>
 mcp::Task<bool> wait_until(Condition condition) {
     auto executor = co_await asio::this_coro::executor;
@@ -186,6 +240,20 @@ std::unique_ptr<mcp::Server> make_server() {
                                      }
                                      co_return json::object();
                                  });
+    server->add_tool<json, json>(
+        "progress_then_hold", "Reports progress twice, then answers once released",
+        json{{"type", "object"}}, [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+            co_await ctx.report_progress(1);
+            const std::string message(args.value("pad", std::size_t{0}), 'r');
+            co_await ctx.report_progress(2, std::nullopt, message);
+            g_hold_started.store(true);
+            auto executor = co_await asio::this_coro::executor;
+            while (!g_hold_released.load()) {
+                asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+                co_await tick.async_wait(asio::use_awaitable);
+            }
+            co_return json::object();
+        });
     server->add_tool<json, json>(
         "progress", "Reports progress, then answers", json{{"type", "object"}},
         [](mcp::Context& ctx, json args) -> mcp::Task<json> {
@@ -258,6 +326,50 @@ TEST_F(SessionLimitsTest, InitializePastTheLimitIsRefused) {
     });
     EXPECT_EQ(third.status, 503u);
     EXPECT_FALSE(third.session_id.has_value());
+}
+
+// Initializes that arrive together on a manager whose connections run on several threads still
+// create no more sessions than the limit.
+TEST(SessionLimitsThreadsTest, ConcurrentInitializesStayWithinTheLimit) {
+    const std::size_t limit = 5;
+    const int clients = 64;
+    const int thread_count = 8;
+    asio::io_context io(thread_count);
+    const auto port = free_port();
+    mcp::StreamableHttpSessionManager manager(
+        io.get_executor(), "127.0.0.1", port,
+        [](const asio::any_io_executor&) { return make_server(); });
+    manager.set_session_limits({limit, std::chrono::milliseconds::zero()});
+    std::atomic<int> answered{0};
+    std::atomic<int> created{0};
+    asio::co_spawn(io, manager.listen(), asio::detached);
+    for (int i = 0; i < clients; ++i) {
+        asio::co_spawn(
+            io,
+            [&, i]() -> mcp::Task<void> {
+                try {
+                    const auto reply = co_await send(
+                        io.get_executor(), port, make_initialize_request(std::to_string(i)).dump(), {});
+                    if (reply.session_id) {
+                        ++created;
+                    }
+                } catch (const std::exception&) {
+                }
+                if (++answered == clients) {
+                    manager.close();
+                }
+            },
+            asio::detached);
+    }
+    std::vector<std::thread> threads;
+    for (int i = 0; i < thread_count; ++i) {
+        threads.emplace_back([&io] { io.run(); });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+    EXPECT_EQ(answered.load(), clients);
+    EXPECT_LE(created.load(), static_cast<int>(limit));
 }
 
 TEST_F(SessionLimitsTest, InitializeThatFailsKeepsNoSession) {
@@ -463,6 +575,16 @@ TEST_F(SessionLimitsTest, RefusedExpectContinueGetsOnlyTheRefusal) {
     });
     EXPECT_EQ(answer.rfind("HTTP/1.1 401", 0), 0u) << answer;
     EXPECT_EQ(answer.find("100 Continue"), std::string::npos) << answer;
+}
+
+// A request the HTTP parser cannot read is answered before the connection ends: 431 for headers
+// past the parser's limit, 400 for anything else.
+TEST_F(SessionLimitsTest, UnreadableRequestIsAnswered) {
+    UnreadableAnswers answers;
+    run([&]() -> mcp::Task<void> {
+        answers = co_await send_unreadable_requests(io_.get_executor(), port_);
+    });
+    expect_unreadable_requests_answered(answers);
 }
 
 // A request without a valid token is refused on its headers: its body is never waited for.
@@ -797,6 +919,59 @@ TEST_F(SessionLimitsTest, ReplayCountsAgainstTheRequestBudget) {
     EXPECT_EQ(resumed.rfind("HTTP/1.1 503", 0), 0U) << resumed.substr(0, 200);
 }
 
+// The same holds for the stream of a request that is still running, which a refused resume leaves
+// detached; the server goes on serving the session.
+TEST_F(SessionLimitsTest, LiveReplayPastTheRequestBudgetIsRefused) {
+    g_hold_started = false;
+    g_hold_released = false;
+    manager_.set_connection_limits({0, std::chrono::seconds(30), 4096, 128 * 1024});
+    std::string first_part;
+    std::string resumed;
+    Reply pinged;
+    run([&]() -> mcp::Task<void> {
+        const auto initialized = co_await post(make_initialize_request("1"));
+        const auto session = session_header(initialized);
+        co_await post_only(make_initialized_notification(), session);
+        auto call = make_tool_call_request("p", "progress_then_hold", json{{"pad", 100000}});
+        call["params"]["_meta"] = {{"progressToken", "t"}};
+        const auto body = call.dump();
+        // Leave the stream once both progress events have arrived; the tool goes on running.
+        const auto both_progress_events = [](const std::string& received) {
+            const auto first = received.find("notifications/progress");
+            if (first == std::string::npos) {
+                return false;
+            }
+            const auto second = received.find("notifications/progress", first + 1);
+            return second != std::string::npos && received.find("\n\n", second) != std::string::npos;
+        };
+        first_part = co_await raw_exchange_until(
+            io_.get_executor(), port_,
+            full_post(body, "MCP-Session-Id: " + initialized.session_id.value_or("") + "\r\n"),
+            both_progress_events);
+        co_await wait_until([] { return g_hold_started.load(); });
+        const auto id_at = first_part.find("id: ");
+        if (id_at == std::string::npos) {
+            ADD_FAILURE() << "the stream carries no event id: " << first_part.substr(0, 300);
+            g_hold_released = true;
+            co_return;
+        }
+        // Resuming after the first progress replays the second, padded one.
+        const auto event_id = first_part.substr(id_at + 4, first_part.find('\n', id_at) - id_at - 4);
+        resumed = co_await raw_exchange(
+            io_.get_executor(), port_,
+            "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\nMCP-Session-Id: " +
+                initialized.session_id.value_or("") + "\r\nLast-Event-ID: " + event_id +
+                "\r\nConnection: close\r\n\r\n",
+            g_hang_guard);
+        pinged = co_await post(ping(), session);
+        g_hold_released = true;
+    });
+    ASSERT_NE(first_part.find("notifications/progress"), std::string::npos)
+        << first_part.substr(0, 300);
+    EXPECT_EQ(resumed.rfind("HTTP/1.1 503", 0), 0U) << resumed.substr(0, 200);
+    EXPECT_EQ(pinged.status, 200U);
+}
+
 // A body counts by what has arrived, so headers that announce a large body hold nothing, and the
 // requests of other clients are still served.
 TEST_F(SessionLimitsTest, AnnouncedBodyHoldsNothingUntilItArrives) {
@@ -1046,6 +1221,31 @@ TEST(HttpServerTransportLimits, ExpectContinueIsAnsweredBeforeTheBody) {
     io.run();
     EXPECT_EQ(exchange.before_body, "HTTP/1.1 100 Continue\r\n\r\n");
     EXPECT_EQ(exchange.after_body.rfind("HTTP/1.1 200", 0), 0u) << exchange.after_body;
+}
+
+// HttpServerTransport also answers a request its HTTP parser cannot read.
+TEST(HttpServerTransportLimits, UnreadableRequestIsAnswered) {
+    asio::io_context io;
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
+    auto server = make_server();
+    UnreadableAnswers answers;
+    asio::co_spawn(io, transport->listen(), asio::detached);
+    asio::co_spawn(
+        io, [&]() -> mcp::Task<void> { co_await server->run(transport, io.get_executor()); },
+        asio::detached);
+    asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            try {
+                answers = co_await send_unreadable_requests(io.get_executor(), transport->port());
+            } catch (const std::exception& error) {
+                ADD_FAILURE() << error.what();
+            }
+            transport->close();
+        },
+        asio::detached);
+    io.run();
+    expect_unreadable_requests_answered(answers);
 }
 
 // Reverse request ids are small sequential numbers, so anyone could guess the one waiting.

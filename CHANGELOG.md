@@ -525,6 +525,18 @@ Versioning; a `0.x` version is a stable release unless its version has an
   requirement set lacks, and a CI job runs it on every change that
   reads the fixtures and uploads the results. The job cannot fail the workflow:
   the gate stays the pinned `0.1.16` run against `2025-11-25`.
+- `CancellationToken` and `RequestOptions::cancellation` cancel requests the
+  application has started, from any thread, without knowing their ids.
+  `CancellationToken::cancel()` tells the server about each request given the
+  token that is still waiting, with `notifications/cancelled` (or, for a
+  2026-07-28 request over HTTP, by closing its response stream), and ends its
+  wait at once in every protocol revision: the call throws `McpError` with
+  `g_REQUEST_CANCELLED`, and a response that arrives afterwards is dropped. A
+  request given a token that is already cancelled is not sent. A `call_tool()`
+  following a task stops polling and sends `tasks/cancel`; a task the server
+  starts for a call cancelled before its answer arrives stays unknown to the
+  client and runs on. `Client::call_tool()` has an overload that takes
+  `RequestOptions`.
 
 ### Changed
 
@@ -859,6 +871,37 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
+- The shared library exported the symbols of the dependencies linked into it
+  statically, such as the static OpenSSL of a Conan build. Another OpenSSL in
+  the same process, such as the system one that libcurl loads, then called the
+  SDK's copy with objects of its own and could crash. On platforms other than
+  Windows and macOS the library now keeps those symbols out of its exports.
+- `StreamableHttpSessionManager` did not finish refusing a `Last-Event-ID`
+  resume of a running request's stream whose replay did not fit
+  `HttpConnectionLimits::max_request_bytes`: the stream was detached through
+  a session it had not yet been given. It now answers 503, as it does for the
+  replay of a finished stream.
+- `StreamableHttpSessionManager` could create more sessions than
+  `SessionLimits::max_sessions` when initializes arrived together on an
+  executor with several threads. It now checks the limit again as it adds the
+  session.
+- `StdioTransport::write_message()` wrote a message that contains a newline as
+  two lines. It now throws `std::invalid_argument`, as
+  `StdioClientTransport::write_message()` does.
+- `HttpServerTransport` and `StreamableHttpSessionManager` closed the
+  connection without an answer when a request's headers passed the HTTP
+  parser's 8 KiB limit or the request was not valid HTTP. They now answer
+  `431 Request Header Fields Too Large` or `400 Bad Request` before closing it.
+- Examples and documentation that did not work as written: the
+  getting-started client handed `co_spawn` a coroutine of a temporary lambda,
+  which read the lambda's captures after it was destroyed; the server refused
+  the curl commands of the llama.cpp and LLDB example READMEs; the LLDB example
+  stopped answering requests while LLDB waited for the debugged process; the
+  stdio client examples read their own standard input instead of launching a
+  server, and the interactive one kept its server path as a reference to a
+  destroyed temporary; `graceful_shutdown()` did not say that its watchdog keeps
+  `io_context::run()` going until the timeout unless cancelled; and several
+  pages included the wrong lines of the examples.
 - With libc++, an exception of `nlohmann_json` that the shared library
   throws, such as the `nlohmann::json::type_error` 316 of
   `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be

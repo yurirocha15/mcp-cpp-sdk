@@ -491,9 +491,20 @@ struct StreamableHttpSessionManager::Impl {
         runtime->client_transport = client_mem;
         runtime->principal = std::move(principal);
 
+        std::size_t max_sessions = 0;
+        {
+            std::lock_guard lock(configuration_mutex_);
+            max_sessions = session_limits.max_sessions;
+        }
         {
             std::unique_lock lock(sessions_mutex_);
             if (closed.load(std::memory_order_acquire)) {
+                client_mem->close();
+                return nullptr;
+            }
+            // at_session_limit() checked before the session was built, without this lock, so
+            // initializes that arrive together on several threads can all pass it.
+            if (sessions.size() >= max_sessions) {
                 client_mem->close();
                 return nullptr;
             }
@@ -1228,7 +1239,12 @@ struct StreamableHttpSessionManager::Impl {
                 return detail_session_mgr::make_error_response(
                     request, http::status::service_unavailable, "Too many sessions");
             }
-            return create_session(conn_strand, std::move(principal));
+            auto created = create_session(conn_strand, std::move(principal));
+            if (created == nullptr && !closed.load(std::memory_order_acquire)) {
+                return detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Too many sessions");
+            }
+            return created;
         }
 
         std::string session_id_value(session_header_it->value());
@@ -1582,6 +1598,8 @@ struct StreamableHttpSessionManager::Impl {
             }
             if (!bytes.grow_to(replay_bytes)) {
                 if (live) {
+                    // detach_stream() reaches the session through the stream.
+                    legacy->session = std::move(session);
                     detach_stream(*legacy);
                 }
                 co_return detail_session_mgr::make_error_response(

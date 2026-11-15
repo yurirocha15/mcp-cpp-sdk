@@ -119,7 +119,9 @@ You can register subscription handlers using ``on_subscribe()`` and ``on_unsubsc
 
 .. literalinclude:: ../../examples/features/legacy_protocols.cpp
    :language: cpp
-   :lines: 164-165
+   :start-after: auto unsubscribed = std::make_shared<std::vector<std::string>>();
+   :end-before: auto transport = start_server(server, executor);
+   :dedent: 4
    :linenos:
    :caption: Registering subscription callbacks on the server.
 
@@ -130,7 +132,9 @@ When a resource's content is updated, the server should notify all active subscr
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
-   :lines: 165-166
+   :start-after: // ========== SERVER SENDS, CLIENT READS ==========
+   :end-before: std::cout << "[Server] Triggering notify_tools_list_changed
+   :dedent: 20
    :linenos:
    :caption: Notifying subscribers of a resource update.
 
@@ -149,7 +153,9 @@ Example of triggering list notifications:
 
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
-   :lines: 167-173
+   :start-after: co_await server.notify_resource_updated(resource_uri);
+   :end-before: const char* expected[]
+   :dedent: 20
    :linenos:
    :caption: Triggering list change notifications for tools, resources, and prompts.
 
@@ -164,7 +170,9 @@ a notification method name to a callback function.
 
 .. literalinclude:: ../../examples/features/legacy_protocols.cpp
    :language: cpp
-   :lines: 173-180
+   :start-after: server->on_unsubscribe([unsubscribed](const std::string& uri) { unsubscribed->push_back(uri); });
+   :end-before: client.on_notification("notifications/tools/list_changed"
+   :dedent: 4
    :linenos:
    :caption: Registering client-side notification handlers in a 2025-11-25 session.
 

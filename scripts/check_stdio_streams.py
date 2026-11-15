@@ -10,22 +10,16 @@ emitting garbage the peer cannot parse.
 This check drives each stdio example through a short scripted exchange and
 requires every non-empty line it writes to stdout to parse as a JSON-RPC 2.0
 message. Diagnostics are expected on stderr and are not inspected.
+
+The stdio client examples launch their server as a child process and speak to
+it over the child's pipes, so their own stdout is not a protocol channel; the
+example runner checks that they complete.
 """
 import json
 import subprocess
 import sys
 import time
 from pathlib import Path
-
-CLIENT_INITIALIZE_RESPONSE = json.dumps({
-    "jsonrpc": "2.0",
-    "id": "1",
-    "result": {
-        "protocolVersion": "2025-11-25",
-        "capabilities": {"tools": {}},
-        "serverInfo": {"name": "stream-check-server", "version": "1.0.0"},
-    },
-})
 
 SERVER_REQUESTS = [
     json.dumps({
@@ -45,7 +39,6 @@ SERVER_REQUESTS = [
 # Each case is (binary name, lines fed to stdin). A binary that is not present
 # in the build directory is skipped, so this runs against partial builds.
 CASES = [
-    ("example-client-stdio", [CLIENT_INITIALIZE_RESPONSE]),
     ("example-server-stdio", SERVER_REQUESTS),
 ]
 

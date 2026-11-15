@@ -339,7 +339,18 @@ so the project does not promise zero-copy operation.
 For high-throughput scenarios, consider:
 
 * Reusing an ``io_context`` and a multi-session HTTP manager
-* Moving blocking application work to a bounded worker executor
+* Keeping handlers from blocking. A handler runs on the executor that reads and
+  answers requests, so a blocking call (a synchronous library call, a sleep, file
+  or network I/O without ``co_await``) holds up every request behind it. Await
+  asynchronous operations instead, or call ``Server::set_handler_executor()``
+  with an executor of its own, such as a ``boost::asio::thread_pool``, to run
+  tool handlers there; the server's own work stays on its executor. A pool of
+  one thread also keeps state that only the handlers touch on a single thread.
+  The ``debugger_server`` example does this for LLDB's blocking calls.
+* Returning ``mcp::CallToolResult`` (``Out = mcp::CallToolResult``) from tools,
+  for example built with ``mcp::make_tool_text_result()``. A tool that returns
+  ``nlohmann::json`` has its result inspected and decoded once more to tell a
+  ready ``CallToolResult`` from data to wrap.
 * Measuring the complete workload with the reproducible ``benchmark/`` suite
 
 Benchmark results are end-to-end measurements for a pinned workload and build

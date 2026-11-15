@@ -111,11 +111,6 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    std::cout << "Client: Waiting for server to start\n";
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(50));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "Client: Creating client\n";
                     mcp::Client client(client_transport, io_ctx.get_executor());
 

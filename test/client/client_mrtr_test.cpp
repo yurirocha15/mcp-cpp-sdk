@@ -484,6 +484,31 @@ TEST(ClientMrtr, CancelDuringRound) {
     EXPECT_EQ(harness.requests("tools/call").size(), 2u);
 }
 
+// A token cancelled while the client answers a round's questions ends the call before it sends the
+// next round.
+TEST(ClientMrtr, CancelledTokenStopsBeforeTheNextRound) {
+    Harness harness;
+    mcp::CancellationToken cancellation;
+    harness.client->on_request(
+        "elicitation/create", [cancellation](const json& /*params*/) -> mcp::Task<json> {
+            cancellation.cancel();
+            co_return json{{"action", "accept"}, {"content", {{"name", "octocat"}}}};
+        });
+    harness.reply = [](const json&, std::size_t index) -> json {
+        return index == 1 ? input_required({{"k", elicit_entry("q")}}, "s") : complete_tool_result();
+    };
+    Failure failure;
+    harness.run([&]() -> mcp::Task<void> {
+        mcp::RequestOptions options;
+        options.cancellation = cancellation;
+        const json params = tool_params();
+        failure = co_await failure_of(*harness.client, "tools/call", params, options);
+        EXPECT_EQ(harness.client->pending_request_count(), 0u);
+    });
+    EXPECT_EQ(failure.code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
+    EXPECT_EQ(harness.requests("tools/call").size(), 1u);
+}
+
 // Closing the client while a round is in flight fails the call and sends nothing more.
 TEST(ClientMrtr, CloseDuringRound) {
     Harness harness;

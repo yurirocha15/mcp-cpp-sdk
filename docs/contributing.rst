@@ -18,10 +18,10 @@ To set up your development environment:
    # Initialize development environment
    python scripts/init.py --dev
 
-   # Build with tests
+   # Build
    python scripts/build.py
 
-   # Run tests
+   # Build with tests and run them
    python scripts/build.py --test
 
 The ``python scripts/init.py --dev`` target installs all development dependencies including:
@@ -157,7 +157,7 @@ Running Tests
    ctest --preset conan-release --output-on-failure
 
    # Run the GoogleTest binary directly with a filter
-   ./build/mcp-sdk-tests --gtest_filter=ServerCoreTest.*
+   ./build/release/mcp-sdk-tests --gtest_filter=ServerCoreTest.*
 
 A test build from a checkout needs Python 3.9+ for the peer-input matrix check;
 opt out with ``-DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF``.

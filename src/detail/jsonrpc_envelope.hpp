@@ -147,7 +147,6 @@ inline std::optional<JsonRpcEnvelope> scan_jsonrpc_envelope(std::string_view tex
             envelope.has_result = true;
         } else if (key == "error") {
             envelope.has_result_or_error = true;
-            envelope.has_result = key == "result";
         }
         pos = skip_json_whitespace(text, value_end);
         if (pos >= text.size()) {

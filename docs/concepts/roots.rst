@@ -38,9 +38,9 @@ Servers can discover client roots at any time using the ``request_roots()`` meth
 
 .. literalinclude:: ../../examples/features/roots.cpp
    :language: cpp
-   :start-after: try {
-   :end-before: std::cout << "Tool: Received " << roots_result.roots.size()
-   :lines: 1-2
+   :start-after: std::cout << "Tool: Requesting roots from client\n";
+   :end-before: std::cout << "Tool: Received "
+   :dedent: 16
 
 Handling Roots Requests
 -----------------------

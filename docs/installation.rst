@@ -258,7 +258,7 @@ For a source checkout with Conan 2 dependencies:
      -c tools.cmake.cmaketoolchain:generator=Ninja
    cmake --preset conan-release -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
    cmake --build --preset conan-release
-   cmake --install build/Release --prefix /your/install/prefix
+   cmake --install build/build/Release --prefix /your/install/prefix
 
 Use the actual preset/build directory emitted by Conan on your platform.
 

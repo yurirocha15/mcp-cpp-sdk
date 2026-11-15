@@ -40,6 +40,7 @@ int main() {
         std::cout << "Iterations: " << num_iterations << "\n";
 
         asio::io_context io_ctx;
+        bool completed = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -76,11 +77,9 @@ int main() {
             io_ctx,
             [&, transport = http_server_transport]() mutable -> Task<void> {
                 try {
+                    // The transport bound its port when it was constructed, so a client can
+                    // connect before listen() starts accepting.
                     asio::co_spawn(io_ctx, http_transport_ptr->listen(), asio::detached);
-                    // Give listen() time to start
-                    asio::steady_timer startup_delay(io_ctx.get_executor());
-                    startup_delay.expires_after(std::chrono::milliseconds(100));
-                    co_await startup_delay.async_wait(asio::use_awaitable);
                     std::cout << "[Server] HTTP server listening on " << host << ":" << port << "\n";
                     co_await server.run(transport, io_ctx.get_executor());
                 } catch (const std::exception& e) {
@@ -94,11 +93,6 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    // Wait for server to start
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(200));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     Implementation client_info;
                     client_info.name = "http-benchmark-client";
                     client_info.version = "1.0.0";
@@ -110,7 +104,10 @@ int main() {
                     Client client(http_client, io_ctx.get_executor());
 
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo->name << "\n\n";
+                    if (init_result.serverInfo) {
+                        std::cout << "[Client] Connected to: " << init_result.serverInfo->name
+                                  << "\n\n";
+                    }
                     std::cout.flush();
 
                     // Warmup
@@ -159,6 +156,7 @@ int main() {
 
                     std::cout << "[Client] Shutting down\n";
                     client.close();
+                    completed = true;
                     http_transport_ptr->close();
                     io_ctx.stop();
                 } catch (const std::exception& e) {
@@ -184,6 +182,10 @@ int main() {
         // ========== RUN IO CONTEXT ==========
         io_ctx.run();
 
+        if (!completed) {
+            std::cerr << "Benchmark did not complete\n";
+            return EXIT_FAILURE;
+        }
         return EXIT_SUCCESS;
 
     } catch (const std::exception& e) {
