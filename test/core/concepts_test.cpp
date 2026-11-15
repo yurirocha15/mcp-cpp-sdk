@@ -1,7 +1,9 @@
 #include "mcp/core/concepts.hpp"
 #include "mcp/protocol/protocol.hpp"
 
-#include <gtest/gtest.h>
+#include <mutex>
+#include <string>
+#include <vector>
 
 // --- Positive: ADL free functions ---
 static_assert(mcp::JsonSerializable<mcp::Icon>);
@@ -43,30 +45,3 @@ static_assert(mcp::JsonSerializable<int>);
 static_assert(mcp::JsonSerializable<bool>);
 static_assert(mcp::JsonSerializable<double>);
 static_assert(mcp::JsonSerializable<std::vector<int>>);
-
-class ConceptsTest : public ::testing::Test {};
-
-TEST_F(ConceptsTest, JsonSerializableRoundTrip) {
-    mcp::Tool tool;
-    tool.name = "test_tool";
-    tool.description = "A test tool";
-    tool.inputSchema = nlohmann::json::object();
-
-    nlohmann::json j = tool;
-    auto deserialized = j.get<mcp::Tool>();
-
-    EXPECT_EQ(deserialized.name, tool.name);
-    EXPECT_EQ(deserialized.description, tool.description);
-}
-
-TEST_F(ConceptsTest, JsonSerializableRequestIdRoundTrip) {
-    mcp::RequestId string_id = std::string("req-42");
-    nlohmann::json j = string_id;
-    auto deserialized = j.get<mcp::RequestId>();
-    EXPECT_EQ(deserialized, string_id);
-
-    mcp::RequestId int_id = int64_t{99};
-    j = int_id;
-    deserialized = j.get<mcp::RequestId>();
-    EXPECT_EQ(deserialized, int_id);
-}

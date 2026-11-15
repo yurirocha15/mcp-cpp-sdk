@@ -3624,49 +3624,7 @@ TEST(AuthHttpClientExecutorTest, AResultThatCompletedDespiteACancellationIsDeliv
 // flight and run a full authorization flow after the transport had closed. One lock closes that
 // window outright: a manager that is already closed refuses a new challenge before it does anything
 // else, including the discovery fetch this asserts never happens.
-TEST(AuthTransportCloseTest, CloseThenChallengeThrowsPromptlyWithoutAnyDiscoveryOrHttp) {
-    asio::io_context io_ctx;
-    LoopbackServer server(io_ctx);
-    const auto base = server.base_url();
-    server.set_handler([&base](const http::request<http::string_body>&) {
-        return json_response(
-            {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
-    });
-    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
-
-    mcp::auth::OAuthAuthorizationConfig config;
-    config.server_url = base + "/mcp";
-    config.client_id = "test-client";
-    config.redirect_uri = "http://127.0.0.1:9999/callback";
-    config.policy = loopback_policy(server.origin());
-
-    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
-    std::vector<std::string> requested_scopes;
-    auto manager = std::make_shared<mcp::auth::OAuthAuthorizationManager>(
-        io_ctx.get_executor(), store, config, recording_callback(&requested_scopes));
-
-    bool threw = false;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            manager->close();
-            try {
-                (void)co_await manager->try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                             R"(/prm")");
-            } catch (const std::exception&) {
-                threw = true;
-            }
-            server.close();
-        },
-        asio::detached);
-
-    io_ctx.run();
-
-    EXPECT_TRUE(threw);
-    EXPECT_TRUE(server.targets().empty());
-    EXPECT_TRUE(requested_scopes.empty());
-}
-
+//
 // Authenticator::try_handle_challenge() is a coroutine on the virtual this overrides, so its contract
 // is the lazy one: building the awaitable does nothing, and any error surfaces from the await.
 // Impl::handle_challenge() contains no co_await or co_return, which makes it a plain function
@@ -3682,6 +3640,7 @@ TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromT
         return json_response(
             {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
     });
+    asio::co_spawn(io_ctx, server.serve(5), asio::detached);
 
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = base + "/mcp";
@@ -6553,12 +6512,17 @@ const auto no_adjustment = [](mcp::auth::OAuthAuthorizationConfig&) {};
 
 }  // namespace
 
+// The authorization-code token request has no scope parameter (RFC 6749 section 4.1.3), so
+// offline_access travels only on the authorization request.
 TEST(AuthOfflineAccessTest, RequestsOfflineAccessWhenListed) {
     const auto outcome = run_offline_access_case(json::array({"mcp:read", "offline_access"}),
                                                  std::nullopt, "mcp:read", no_adjustment);
 
     ASSERT_TRUE(outcome.authorized);
     EXPECT_EQ(outcome.authorization_scope, "mcp:read offline_access");
+    ASSERT_FALSE(outcome.token_body.empty());
+    EXPECT_EQ(outcome.token_body.find("scope="), std::string::npos) << outcome.token_body;
+    EXPECT_EQ(outcome.token_body.find("offline_access"), std::string::npos) << outcome.token_body;
 }
 
 TEST(AuthOfflineAccessTest, NeverRequestsWhenNotListed) {
@@ -6594,18 +6558,6 @@ TEST(AuthOfflineAccessTest, NoScopeStillOmittedWhenScopesSupportedUndefined) {
 
     ASSERT_TRUE(outcome.authorized);
     EXPECT_EQ(outcome.authorization_scope, "");
-}
-
-// The authorization-code token request has no scope parameter (RFC 6749 section 4.1.3), so
-// offline_access travels only on the authorization request.
-TEST(AuthOfflineAccessTest, TokenRequestDoesNotCarryScope) {
-    const auto outcome = run_offline_access_case(json::array({"mcp:read", "offline_access"}),
-                                                 std::nullopt, "mcp:read", no_adjustment);
-
-    ASSERT_TRUE(outcome.authorized);
-    ASSERT_FALSE(outcome.token_body.empty());
-    EXPECT_EQ(outcome.token_body.find("scope="), std::string::npos) << outcome.token_body;
-    EXPECT_EQ(outcome.token_body.find("offline_access"), std::string::npos) << outcome.token_body;
 }
 
 TEST(AuthOfflineAccessTest, DoesNotDuplicateWhenChallengeAlreadyHasIt) {

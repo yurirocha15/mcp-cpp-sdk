@@ -293,6 +293,7 @@ TEST(AuthMetadataPolicyTest, DenyListWinsOverAllowList) {
 
 TEST(AuthMetadataPolicyTest, OriginComparisonIgnoresExplicitDefaultPort) {
     const auto policy = allow_origin("https://as.test");
+    // The deny list is empty, the common case, and that is not a policy error.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
               mcp::auth::MetadataUrlDecision::eAllowed);
     // An explicit default port canonicalizes to the same origin as no port at all.
@@ -306,25 +307,18 @@ TEST(AuthMetadataPolicyTest, OriginComparisonIgnoresExplicitDefaultPort) {
               mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 }
 
-TEST(AuthMetadataPolicyTest, DenyListCanonicalizesSchemeAndHostCase) {
+// Each spelling of a denied origin canonicalizes to it: scheme and host case, an explicit default
+// port with or without leading zeros, and trailing dots on the host.
+TEST(AuthMetadataPolicyTest, DenyListCanonicalizesEverySpellingOfTheOrigin) {
     auto policy = allow_origin("https://evil.example");
     policy.denied_origins.emplace_back("https://evil.example");
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "HTTPS://Evil.example/prm"),
-              mcp::auth::MetadataUrlDecision::eOriginDenied);
-}
-
-TEST(AuthMetadataPolicyTest, DenyListCanonicalizesExplicitDefaultPort) {
-    auto policy = allow_origin("https://evil.example");
-    policy.denied_origins.emplace_back("https://evil.example");
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:443/prm"),
-              mcp::auth::MetadataUrlDecision::eOriginDenied);
-}
-
-TEST(AuthMetadataPolicyTest, DenyListCanonicalizesTrailingDot) {
-    auto policy = allow_origin("https://evil.example");
-    policy.denied_origins.emplace_back("https://evil.example");
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example./prm"),
-              mcp::auth::MetadataUrlDecision::eOriginDenied);
+    for (const char* url :
+         {"HTTPS://Evil.example/prm", "https://evil.example:443/prm", "https://evil.example:00443/prm",
+          "https://evil.example:0443/prm", "https://evil.example./prm", "https://evil.example../prm"}) {
+        EXPECT_EQ(mcp::auth::validate_metadata_url(policy, url),
+                  mcp::auth::MetadataUrlDecision::eOriginDenied)
+            << url;
+    }
 }
 
 TEST(AuthMetadataPolicyTest, AllowListEntryCaseDoesNotHaveToMatchTheUrl) {
@@ -367,15 +361,6 @@ TEST(AuthMetadataPolicyTest, IpLiteralAndIpv6OriginsAreUnaffectedByCanonicalizat
               mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
-TEST(AuthMetadataPolicyTest, DenyListCanonicalizesLeadingZerosInADefaultPort) {
-    auto policy = allow_origin("https://evil.example");
-    policy.denied_origins.emplace_back("https://evil.example");
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:00443/prm"),
-              mcp::auth::MetadataUrlDecision::eOriginDenied);
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:0443/prm"),
-              mcp::auth::MetadataUrlDecision::eOriginDenied);
-}
-
 TEST(AuthMetadataPolicyTest, NonDefaultPortCanonicalizesNumericallyDespiteLeadingZeros) {
     const auto policy = allow_origin("https://evil.example:8443");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example:08443/prm"),
@@ -405,12 +390,6 @@ TEST(AuthMetadataPolicyTest, DenyListMatchesAnAlternateIpv6TextualForm) {
               mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
-TEST(AuthMetadataPolicyTest, AllowListEntryWithAPathMatchesNothing) {
-    const auto policy = allow_origin("https://as.test/realms/foo");
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
-}
-
 // An allow entry that is not a bare origin grants nothing, and says so by returning a decision
 // rather than throwing: dropping it is fail-closed, so the quiet refusal is the safe outcome and
 // stays the documented one. The deny list, where dropping an entry would be fail-open, is loud
@@ -429,25 +408,14 @@ TEST(AuthMetadataPolicyTest, AllowListEntryThatIsNotABareOriginStillFailsClosedQ
     }
 }
 
-// A deny entry written with a trailing slash must not be discarded in silence, which would admit
-// the origin the author meant to block. It is refused as a policy error instead.
-TEST(AuthMetadataPolicyTest, DenyListEntryWithATrailingSlashIsRejected) {
-    auto policy = allow_origin("https://evil.example");
-    policy.denied_origins.emplace_back("https://evil.example/");
-    try {
-        const auto decision = mcp::auth::validate_metadata_url(policy, "https://evil.example/prm");
-        FAIL() << "expected MetadataPolicyError, got decision " << static_cast<int>(decision);
-    } catch (const mcp::auth::MetadataPolicyError& error) {
-        EXPECT_EQ(error.decision(), mcp::auth::MetadataUrlDecision::eDeniedOriginEntryMalformed);
-        EXPECT_EQ(error.target(), "https://evil.example/");
-    }
-}
-
+// A deny entry that is not a bare origin, even one that differs only by a trailing slash, must not
+// be discarded in silence, which would admit the origin the author meant to block. It is refused
+// as a policy error instead.
 TEST(AuthMetadataPolicyTest, DenyListEntryWithAPathQueryOrFragmentIsRejected) {
     const char* entries[] = {
-        "https://evil.example/realms/foo", "https://evil.example/?tenant=1",
-        "https://evil.example?tenant=1",   "https://evil.example#frag",
-        "https://evil.example:44a3",
+        "https://evil.example/",          "https://evil.example/realms/foo",
+        "https://evil.example/?tenant=1", "https://evil.example?tenant=1",
+        "https://evil.example#frag",      "https://evil.example:44a3",
     };
     for (const auto* entry : entries) {
         auto policy = allow_origin("https://evil.example");
@@ -500,13 +468,6 @@ TEST(AuthMetadataPolicyTest, WellFormedDenyListStillDeniesAndStillAdmits) {
               mcp::auth::MetadataUrlDecision::eAllowed);
 }
 
-// A deny list the caller never populated is the common case and must stay free of policy errors.
-TEST(AuthMetadataPolicyTest, EmptyDenyListIsNotAPolicyError) {
-    const auto policy = allow_origin("https://as.test");
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://as.test/prm"),
-              mcp::auth::MetadataUrlDecision::eAllowed);
-}
-
 TEST(AuthMetadataPolicyTest, LoopbackOptOutIsCaseInsensitiveOnSchemeAndHost) {
     auto policy = allow_origin("http://localhost:9000");
     policy.allow_plain_http_loopback = true;
@@ -514,13 +475,6 @@ TEST(AuthMetadataPolicyTest, LoopbackOptOutIsCaseInsensitiveOnSchemeAndHost) {
               mcp::auth::MetadataUrlDecision::eAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://LOCALHOST:9000/prm"),
               mcp::auth::MetadataUrlDecision::eAllowed);
-}
-
-TEST(AuthMetadataPolicyTest, DenyListCanonicalizesMultipleTrailingDots) {
-    auto policy = allow_origin("https://evil.example");
-    policy.denied_origins.emplace_back("https://evil.example");
-    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://evil.example../prm"),
-              mcp::auth::MetadataUrlDecision::eOriginDenied);
 }
 
 TEST(AuthMetadataPolicyTest, RejectsAHostThatIsNothingButDots) {

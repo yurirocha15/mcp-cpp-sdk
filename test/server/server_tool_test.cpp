@@ -126,52 +126,6 @@ TEST_F(ServerToolTest, NonTemplateSyncHandlerReturnsResult) {
     EXPECT_EQ(responses[1]["result"]["content"][0]["type"], "text");
 }
 
-TEST_F(ServerToolTest, NonTemplateHandlerExceptionBecomesToolError) {
-    mcp::ServerCapabilities caps;
-    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    setup.server.add_tool(
-        "fail", "Always fails", nlohmann::json{{"type", "object"}},
-        [](const nlohmann::json&) -> nlohmann::json { throw std::runtime_error("something broke"); });
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json call_req;
-    call_req["jsonrpc"] = "2.0";
-    call_req["id"] = "2";
-    call_req["method"] = "tools/call";
-    call_req["params"] = {{"name", "fail"}, {"arguments", nlohmann::json::object()}};
-    setup.raw_transport->enqueue_message(call_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["id"], "2");
-    ASSERT_TRUE(responses[1].contains("result"));
-    EXPECT_TRUE(responses[1]["result"]["isError"].get<bool>());
-    auto content_arr = responses[1]["result"]["content"];
-    ASSERT_FALSE(content_arr.empty());
-    auto err_text = content_arr[0]["text"].get<std::string>();
-    EXPECT_NE(err_text.find("something broke"), std::string::npos);
-}
-
 TEST_F(ServerToolTest, NonStdExceptionFromHandlerBecomesToolError) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};

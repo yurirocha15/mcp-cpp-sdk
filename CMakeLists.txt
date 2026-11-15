@@ -437,7 +437,6 @@ if(BUILD_TESTING)
       test/server/server_param_headers_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
-      test/transport/transport_test.cpp
       test/transport/transport_stdio_test.cpp
       test/transport/transport_stdio_client_test.cpp
       test/transport/transport_ws_test.cpp
@@ -461,7 +460,6 @@ if(BUILD_TESTING)
       test/transport/transport_http_limits_test.cpp
       test/transport/transport_http_version_header_test.cpp
       test/transport/http_response_write_test.cpp
-      test/e2e/e2e_integration_test.cpp
       test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp

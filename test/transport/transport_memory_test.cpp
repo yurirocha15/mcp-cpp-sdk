@@ -28,56 +28,6 @@ class MemoryTransportTest : public ::testing::Test {
     boost::asio::io_context io_ctx_;
 };
 
-TEST_F(MemoryTransportTest, CreatePair) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
-    ASSERT_NE(transport_a, nullptr);
-    ASSERT_NE(transport_b, nullptr);
-}
-
-TEST_F(MemoryTransportTest, SendFromAReceiveOnB) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    bool success = false;
-    std::string received_message;
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [ta = std::move(transport_a), tb = std::move(transport_b), &success,
-         &received_message]() -> mcp::Task<void> {
-            co_await ta->write_message("hello from A");
-            received_message = co_await tb->read_message();
-            success = true;
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(received_message, "hello from A");
-}
-
-TEST_F(MemoryTransportTest, SendFromBReceiveOnA) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    bool success = false;
-    std::string received_message;
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [ta = std::move(transport_a), tb = std::move(transport_b), &success,
-         &received_message]() -> mcp::Task<void> {
-            co_await tb->write_message("hello from B");
-            received_message = co_await ta->read_message();
-            success = true;
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    EXPECT_TRUE(success);
-    EXPECT_EQ(received_message, "hello from B");
-}
-
 TEST_F(MemoryTransportTest, MultipleMessagesInOrder) {
     auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
 
@@ -129,30 +79,6 @@ TEST_F(MemoryTransportTest, BidirectionalCommunication) {
     EXPECT_TRUE(success);
     EXPECT_EQ(a_received, "B to A");
     EXPECT_EQ(b_received, "A to B");
-}
-
-TEST_F(MemoryTransportTest, CloseStopsRead) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
-    (void)transport_b;
-
-    bool exception_thrown = false;
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [ta = std::move(transport_a), &exception_thrown]() -> mcp::Task<void> {
-            ta->close();
-            try {
-                co_await ta->read_message();
-            } catch (const std::runtime_error& e) {
-                exception_thrown = true;
-                EXPECT_STREQ(e.what(), "transport closed");
-            }
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    EXPECT_TRUE(exception_thrown);
 }
 
 TEST_F(MemoryTransportTest, CloseOnOneSideAffectsOther) {

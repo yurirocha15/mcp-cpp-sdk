@@ -216,6 +216,7 @@ TEST_F(HttpResumabilityTest, EventStorePopulatedOnWrite) {
         },
         asio::detached);
 
+    std::string client_received;
     asio::co_spawn(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -224,7 +225,7 @@ TEST_F(HttpResumabilityTest, EventStorePopulatedOnWrite) {
 
             nlohmann::json request_payload = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 1}};
             co_await client_transport.write_message(request_payload.dump());
-            co_await client_transport.read_message();
+            client_received = co_await client_transport.read_message();
 
             client_transport.close();
             server_transport.close();
@@ -233,6 +234,8 @@ TEST_F(HttpResumabilityTest, EventStorePopulatedOnWrite) {
 
     io_ctx_.run();
 
+    const nlohmann::json expected_response = {{"jsonrpc", "2.0"}, {"result", "hello"}, {"id", 1}};
+    EXPECT_EQ(nlohmann::json::parse(client_received), expected_response);
     EXPECT_GE(server_transport.event_store().size(), 1);
 }
 
@@ -509,42 +512,4 @@ TEST_F(HttpResumabilityTest, GetOpensAStreamAndResumesOneThatEnded) {
     EXPECT_EQ(resumed->result_int(), 200);
     EXPECT_EQ((*resumed)[http::field::content_type], "text/event-stream");
     EXPECT_EQ(resumed->body(), "");
-}
-
-TEST_F(HttpResumabilityTest, ClientParsesEventIdFromSseResponse) {
-    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18094);
-
-    asio::co_spawn(io_ctx_, server_transport.listen(), asio::detached);
-
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto request_message = co_await server_transport.read_message();
-            auto req_json = nlohmann::json::parse(request_message);
-            nlohmann::json response_payload = {
-                {"jsonrpc", "2.0"}, {"result", "ok"}, {"id", req_json.at("id")}};
-            co_await server_transport.write_message(response_payload.dump());
-        },
-        asio::detached);
-
-    std::string client_received;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::HttpClientTransport client_transport(io_ctx_.get_executor(),
-                                                      "http://127.0.0.1:18094/mcp");
-
-            nlohmann::json request_payload = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 1}};
-            co_await client_transport.write_message(request_payload.dump());
-            client_received = co_await client_transport.read_message();
-
-            client_transport.close();
-            server_transport.close();
-        },
-        asio::detached);
-
-    io_ctx_.run();
-
-    auto parsed = nlohmann::json::parse(client_received);
-    EXPECT_EQ(parsed["result"], "ok");
 }

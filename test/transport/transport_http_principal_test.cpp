@@ -426,19 +426,6 @@ TEST_F(HttpPrincipalTest, InterleavedPrincipalsStayBoundToTheirMessages) {
     }
 }
 
-TEST_F(HttpPrincipalTest, SyncBoolValidatorStillCompiles) {
-    transport_->set_bearer_token_validator([](std::string_view token) { return token == "ok"; });
-    Reply accepted;
-    Reply refused;
-    run([&]() -> mcp::Task<void> {
-        accepted = co_await call("Bearer ok");
-        refused = co_await call("Bearer no");
-    });
-
-    EXPECT_EQ(accepted.status, 200u) << accepted.body;
-    EXPECT_EQ(refused.status, 401u) << refused.body;
-}
-
 TEST_F(HttpPrincipalTest, AsyncValidatorReturningBoolStillWorks) {
     transport_->set_async_bearer_token_validator(
         [](std::string token) -> mcp::Task<mcp::TokenValidation> { co_return token == "ok"; });

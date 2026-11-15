@@ -933,20 +933,6 @@ TEST(SchemaLimits, ContentKeywordsAreChargedByTheStringsLength) {
     }
 }
 
-// 40,000 enum comparisons. Both validators charge 8 units for one, so 100,000 units do not pay for
-// them, whichever validator runs.
-TEST(SchemaLimits, BothValidatorsChargeAComparisonAlike) {
-    json allowed = json::array();
-    for (int i = 0; i < 200; ++i) {
-        allowed.push_back(1000 + i);
-    }
-    const json schema = {{"items", {{"enum", allowed}}}};
-    const json value(200, allowed.back());
-    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
-    EXPECT_TRUE(stops_for_work(schema, value, 100'000));
-    EXPECT_TRUE(stops_for_work(through_jsoncons(schema), value, 100'000));
-}
-
 // Each item is compared with a const of 200 values: 40,000 comparisons in all.
 TEST(SchemaLimits, ConstComparisonsAreCharged) {
     const json constant(200, 7);

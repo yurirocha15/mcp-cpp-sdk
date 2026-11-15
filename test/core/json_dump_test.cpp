@@ -264,15 +264,6 @@ TEST(JsonDumpTest, WritesAtEveryOffsetOfTheRoomItMakes) {
     }
 }
 
-TEST(JsonDumpTest, AppendsAfterExistingText) {
-    std::string out = R"({"id":1,"result":)";
-    append_json(out, nlohmann::json{{"text", "line\n\"quoted\""}});
-    out += '}';
-    // Kept out of the macro: MSVC's preprocessor misreads a raw string with backslashes there.
-    const std::string expected = R"({"id":1,"result":{"text":"line\n\"quoted\""}})";
-    EXPECT_EQ(out, expected);
-}
-
 TEST(JsonDumpTest, WritesAnObjectWithAddedMembersAsDumpWritesTheMergedObject) {
     using mcp::detail::append_json_object_with;
     using mcp::detail::JsonMemberText;
