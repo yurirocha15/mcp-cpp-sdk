@@ -95,16 +95,16 @@ Connecting to Servers of Unknown Era
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 By default a client sends ``server/discover`` to find out which protocol a
-server speaks (``ClientProtocol::Auto()``). Against a server of 2025-11-25 or
+server speaks (``ClientProtocol::automatic()``). Against a server of 2025-11-25 or
 earlier this costs one extra round trip before the client sends ``initialize``.
 A legacy server that ignores the request instead of answering it with an error
 makes the client wait for ``ClientOptions::probe_timeout`` (3 seconds by
 default) before it falls back. A server that closes the connection when it
 receives the probe fails ``connect()`` with an ``McpError`` whose message names
-``ClientProtocol::Legacy()`` as the remedy.
+``ClientProtocol::legacy()`` as the remedy.
 
 To avoid the probe, pin the protocol with ``ClientOptions::protocol`` set to
-``ClientProtocol::Legacy()`` or ``ClientProtocol::Version(...)``.
+``ClientProtocol::legacy()`` or ``ClientProtocol::pinned(...)``.
 
 Server-side Error Handling
 --------------------------

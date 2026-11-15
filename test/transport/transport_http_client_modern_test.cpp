@@ -392,13 +392,13 @@ void run_guarded(asio::io_context& io, RawServer& raw, std::function<mcp::Task<v
 
 mcp::ClientOptions modern_options() {
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+    options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
     return options;
 }
 
 mcp::ClientOptions auto_options() {
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Auto();
+    options.protocol = mcp::ClientProtocol::automatic();
     return options;
 }
 
@@ -1612,7 +1612,7 @@ PinnedOutcome run_pinned(ServerKind kind, unsigned short manager_port, const std
     relay.start();
     auto transport = make_transport(io, relay.url());
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Version(pinned);
+    options.protocol = mcp::ClientProtocol::pinned(pinned);
     mcp::Client client(transport, io.get_executor(), options);
 
     guard.expires_after(g_hang_guard);
@@ -1702,7 +1702,7 @@ std::string legacy_connect_error(unsigned int status, std::function<json(const j
     RawServer raw(io,
                   [&](const Recorded& request) { return json_reply(body(request.parsed()), status); });
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
     std::string error;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
@@ -1768,7 +1768,7 @@ TEST(HttpClientLegacy, ErrorStatusInsideASessionStaysAnHttpStatusError) {
         return accepted;
     });
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
     std::optional<unsigned int> status;
     std::string other;
@@ -1818,7 +1818,7 @@ TEST(HttpClientLegacy, NewSessionWithOtherTermsFailsTheRequest) {
         return accepted;
     });
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
     bool first_answered = false;
     std::string failure;
@@ -1874,7 +1874,7 @@ TEST(HttpClientLegacy, NewSessionIsInitializedBeforeTheRequestIsSentAgain) {
     int initializes = 0;
     RawServer raw = forgetting_server(io, initializes);
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         co_await client.connect("legacy", "1.0");
@@ -1904,7 +1904,7 @@ TEST(HttpClientLegacy, ForgottenSessionIsNotReplacedWhenTurnedOff) {
     auto transport = make_transport(io, raw.url());
     transport->set_reinitialize_on_expired_session(false);
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(transport, io.get_executor(), options);
     std::optional<unsigned int> status;
     std::string other;
@@ -2064,7 +2064,7 @@ void run_ending_streams(EndingStreams& streams, std::size_t wanted) {
     });
     auto transport = make_transport(io, raw.url());
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(transport, io.get_executor(), options);
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         co_await client.connect("streams", "1.0");

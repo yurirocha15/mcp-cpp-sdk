@@ -351,7 +351,7 @@ NotificationSessionOutcome deliver_notifications(
     // Bounded, so that a swallowed response surfaces as a test failure instead of a stalled run.
     options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
-    options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx.get_executor(), options);
     register_handlers(client);
 

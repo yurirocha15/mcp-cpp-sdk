@@ -2,7 +2,7 @@
 /// @brief Demonstrates a client and server speaking protocol revision 2026-07-28.
 ///
 /// This example shows:
-/// - Client::connect() with the default ClientProtocol::Auto(): the client probes with
+/// - Client::connect() with the default ClientProtocol::automatic(): the client probes with
 ///   server/discover and speaks 2026-07-28 with a server that serves it
 /// - ClientOptions::on_era_decision reporting why the client chose that era
 /// - ConnectResult: era, protocolVersion, serverInfo (optional), instructions, supportedVersions
@@ -117,9 +117,9 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    // The default is ClientProtocol::Auto(); it is spelled out for the reader.
+                    // The default is ClientProtocol::automatic(); it is spelled out for the reader.
                     ClientOptions options;
-                    options.protocol = ClientProtocol::Auto();
+                    options.protocol = ClientProtocol::automatic();
                     options.on_era_decision = [](const EraDecision& decision) {
                         std::cout << "[Client] Era decision: " << era_name(decision.era) << " ("
                                   << era_reason_name(decision.reason) << ")\n";

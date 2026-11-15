@@ -28,7 +28,7 @@ Task<void> run_client(const std::string& server_path) {
 
     Implementation info{"interactive-client", "1.0.0"};
     try {
-        // The default ClientProtocol::Auto() speaks 2026-07-28 with a server that serves it and
+        // The default ClientProtocol::automatic() speaks 2026-07-28 with a server that serves it and
         // falls back to initialize otherwise.
         {
             auto connected = co_await client.connect(info, {});

@@ -127,13 +127,13 @@ class BySchemaCache {
 };
 
 BySchemaCache<ToolParamHeaders>& tool_param_headers_cache() {
-    static BySchemaCache<ToolParamHeaders> cache;
-    return cache;
+    static BySchemaCache<ToolParamHeaders> s_cache;
+    return s_cache;
 }
 
 BySchemaCache<ListedSchemaText>& listed_schema_text_cache() {
-    static BySchemaCache<ListedSchemaText> cache;
-    return cache;
+    static BySchemaCache<ListedSchemaText> s_cache;
+    return s_cache;
 }
 
 /// Throws when the `structuredContent` of @p result does not conform to @p schema; the dispatcher
@@ -610,7 +610,7 @@ struct CallToolView {
 };
 
 CallToolView view_call_tool_params(const nlohmann::json& message) {
-    static const nlohmann::json no_arguments = nlohmann::json::object();
+    static const nlohmann::json s_no_arguments = nlohmann::json::object();
     try {
         const auto& params = message.at("params");
         const auto& name = params.at("name");
@@ -618,7 +618,7 @@ CallToolView view_call_tool_params(const nlohmann::json& message) {
             // Throws the type error that decoding the name does.
             static_cast<void>(name.get<std::string>());
         }
-        const nlohmann::json* arguments = &no_arguments;
+        const nlohmann::json* arguments = &s_no_arguments;
         if (params.contains("arguments")) {
             if (!params.at("arguments").is_object()) {
                 throw std::invalid_argument("CallToolParams arguments must be a JSON object");
@@ -771,8 +771,8 @@ class NullTransport : public ITransport {
 };
 
 NullTransport& null_transport() {
-    static NullTransport transport;
-    return transport;
+    static NullTransport s_transport;
+    return s_transport;
 }
 
 struct Server::Impl : std::enable_shared_from_this<Server::Impl> {

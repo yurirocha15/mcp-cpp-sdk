@@ -548,7 +548,7 @@ class ClientToolSchemaTest : public ::testing::Test {
 
     /// Connects a client with @p options, runs @p body with it and closes the transport.
     void run(mcp::ClientOptions options, std::function<mcp::Task<void>(mcp::Client&)> body) {
-        options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
+        options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
         mcp::Client client(transport_, io_ctx_.get_executor(), std::move(options));
         boost::asio::co_spawn(
             io_ctx_,

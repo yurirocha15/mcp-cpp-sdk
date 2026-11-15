@@ -116,7 +116,8 @@ struct ArrivingStringBody {
 
     static std::uint64_t size(const value_type& body) { return body.size(); }
 
-    class reader {
+    // Beast's Body concept looks the reader up under this exact name.
+    class reader {  // NOLINT(readability-identifier-naming)
        public:
         template <bool isRequest, class Fields>
         reader(boost::beast::http::header<isRequest, Fields>& /*header*/, value_type& body)
@@ -271,7 +272,7 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
     // HTTP/1.0 has no interim responses.
     if (head.version() >= 11 && !parser.is_done() &&
         boost::beast::iequals(head[http::field::expect], "100-continue")) {
-        static constexpr std::string_view continue_response = "HTTP/1.1 100 Continue\r\n\r\n";
+        constexpr std::string_view continue_response = "HTTP/1.1 100 Continue\r\n\r\n";
         try {
             co_await boost::asio::async_write(
                 stream, boost::asio::buffer(continue_response.data(), continue_response.size()),

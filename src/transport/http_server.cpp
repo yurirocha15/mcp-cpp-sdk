@@ -651,11 +651,11 @@ struct HttpServerTransport::Impl {
         const std::optional<std::vector<std::string>>& token_scopes) const {
         const auto check = detail::check_request_scopes(scope_requirements, token_scopes, request_json,
                                                         bearer_challenge);
-        if (check.outcome == detail::ScopeCheck::Outcome::failed) {
+        if (check.outcome == detail::ScopeCheck::Outcome::eFailed) {
             return make_error_response(request, http::status::internal_server_error,
                                        "Scope requirement check failed");
         }
-        if (check.outcome == detail::ScopeCheck::Outcome::allowed) {
+        if (check.outcome == detail::ScopeCheck::Outcome::eAllowed) {
             return std::nullopt;
         }
         auto response = make_error_response(request, http::status::forbidden, "Insufficient scope");
@@ -1339,10 +1339,10 @@ struct HttpServerTransport::Impl {
             co_await legacy->signal->async_wait(
                 boost::asio::redirect_error(boost::asio::use_awaitable, wait_error));
             if (!wait_error && stream_open) {
-                static constexpr std::string_view g_keep_alive = ": keep-alive\n\n";
+                constexpr std::string_view keep_alive = ": keep-alive\n\n";
                 boost::system::error_code error;
                 co_await boost::asio::async_write(
-                    stream, http::make_chunk(boost::asio::buffer(g_keep_alive)),
+                    stream, http::make_chunk(boost::asio::buffer(keep_alive)),
                     boost::asio::redirect_error(boost::asio::use_awaitable, error));
                 if (error) {
                     detach_stream(*legacy);
