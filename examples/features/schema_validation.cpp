@@ -38,11 +38,11 @@ using nlohmann::json;
 namespace {
 
 /// Arguments: two integers. Result: their sum, as structured content.
-const json g_add_input_schema = {
+const json g_ADD_INPUT_SCHEMA = {
     {"type", "object"},
     {"properties", {{"a", {{"type", "integer"}}}, {"b", {{"type", "integer"}}}}},
     {"required", json::array({"a", "b"})}};
-const json g_add_output_schema = {{"type", "object"},
+const json g_ADD_OUTPUT_SCHEMA = {{"type", "object"},
                                   {"properties", {{"sum", {{"type", "integer"}}}}},
                                   {"required", json::array({"sum"})}};
 
@@ -85,13 +85,13 @@ bool expect_refused(mcp::Server& server, const std::string& name, const json& in
 /// breaks its own output schema.
 void add_tools(mcp::Server& server) {
     server.add_tool<json, json>(
-        "add", "Adds two integers", g_add_input_schema, g_add_output_schema,
+        "add", "Adds two integers", g_ADD_INPUT_SCHEMA, g_ADD_OUTPUT_SCHEMA,
         [](const json& args) -> json {
             g_add_handler_runs.fetch_add(1);
             return json{{"sum", args.at("a").get<int>() + args.at("b").get<int>()}};
         });
     server.add_tool<json, json>("broken_add", "Returns the sum as text, against its output schema",
-                                g_add_input_schema, g_add_output_schema, [](const json& args) -> json {
+                                g_ADD_INPUT_SCHEMA, g_ADD_OUTPUT_SCHEMA, [](const json& args) -> json {
                                     const int sum = args.at("a").get<int>() + args.at("b").get<int>();
                                     return json{{"sum", std::to_string(sum)}};
                                 });

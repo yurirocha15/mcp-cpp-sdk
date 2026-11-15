@@ -33,8 +33,8 @@ struct RequestMetadata {
 
     /// The empty `_meta` object that a default-constructed RequestMetadata holds.
     static std::shared_ptr<const nlohmann::json> empty_meta() {
-        static const auto empty = std::make_shared<const nlohmann::json>(nlohmann::json::object());
-        return empty;
+        static const auto s_empty = std::make_shared<const nlohmann::json>(nlohmann::json::object());
+        return s_empty;
     }
 };
 

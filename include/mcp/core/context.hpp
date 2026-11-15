@@ -448,9 +448,9 @@ class Context {
 
     /// A fresh, process-unique identifier for a legacy URL-mode elicitation.
     static std::string generate_elicitation_id() {
-        static std::atomic<std::uint64_t> counter{0};
-        static const std::uint64_t seed = std::random_device{}();
-        return "elicit-" + std::to_string(seed) + "-" + std::to_string(counter.fetch_add(1));
+        static std::atomic<std::uint64_t> s_counter{0};
+        static const std::uint64_t s_seed = std::random_device{}();
+        return "elicit-" + std::to_string(s_seed) + "-" + std::to_string(s_counter.fetch_add(1));
     }
 
     ITransport& transport_;

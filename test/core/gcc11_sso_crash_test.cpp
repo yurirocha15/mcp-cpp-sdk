@@ -127,7 +127,7 @@ nlohmann::json make_result_response(const std::string& id, nlohmann::json result
 /// These clients talk to a scripted peer that answers initialize.
 mcp::ClientOptions legacy_client_options() {
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     return options;
 }
 

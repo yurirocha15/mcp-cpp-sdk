@@ -90,8 +90,8 @@ int main() {
                         if (init_result.serverInfo) {
                             std::cout << "Connected to: " << init_result.serverInfo->name << '\n';
                         }
-                        // Over HTTP the default Auto() sends one POST that names 2026-07-28; a legacy
-                        // server answers it with an error status and the client falls back to
+                        // Over HTTP the default automatic() sends one POST that names 2026-07-28; a
+                        // legacy server answers it with an error status and the client falls back to
                         // initialize.
                         std::cout << "Protocol version: " << init_result.protocolVersion << '\n';
                     }

@@ -104,9 +104,9 @@ class ClientTasks : public ::testing::Test {
         auto [client_transport, server_transport] =
             mcp::create_memory_transport_pair(io_.get_executor());
         if (modern) {
-            options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+            options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
         } else {
-            options.protocol = mcp::ClientProtocol::Legacy();
+            options.protocol = mcp::ClientProtocol::legacy();
         }
         client_ = std::make_unique<mcp::Client>(client_transport, io_.get_executor(), options);
         client_->on_elicitation(
@@ -440,7 +440,7 @@ class ScriptedServer {
 
     explicit ScriptedServer(mcp::ClientOptions options = {})
         : transport(std::make_shared<ScriptedTransport>(io.get_executor())), guard(io) {
-        options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+        options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
         client = std::make_unique<mcp::Client>(transport, io.get_executor(), std::move(options));
         transport->set_on_write([this](std::string_view text) {
             auto message = json::parse(text);

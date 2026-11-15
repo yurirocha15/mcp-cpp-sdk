@@ -45,7 +45,7 @@ std::string base_name(const std::string& path) {
 }
 
 std::string guess_mime_type(const std::string& path) {
-    static const std::map<std::string, std::string, std::less<>> types = {
+    static const std::map<std::string, std::string, std::less<>> s_types = {
         {"md", "text/markdown"},      {"txt", "text/plain"},       {"py", "text/x-python"},
         {"sh", "text/x-shellscript"}, {"js", "text/javascript"},   {"json", "application/json"},
         {"yaml", "application/yaml"}, {"yml", "application/yaml"}, {"xml", "application/xml"},
@@ -54,8 +54,8 @@ std::string guess_mime_type(const std::string& path) {
         {"gif", "image/gif"},         {"svg", "image/svg+xml"},    {"pdf", "application/pdf"}};
     const auto dot = path.rfind('.');
     if (dot != std::string::npos && path.find('/', dot) == std::string::npos) {
-        const auto found = types.find(path.substr(dot + 1));
-        if (found != types.end()) {
+        const auto found = s_types.find(path.substr(dot + 1));
+        if (found != s_types.end()) {
             return found->second;
         }
     }

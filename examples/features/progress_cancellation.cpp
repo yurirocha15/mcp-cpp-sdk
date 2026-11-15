@@ -8,7 +8,7 @@
 /// - The tool handler checking ctx.is_cancelled() and exiting early
 /// - RequestOptions::log_level asking the server for the log messages of one request
 ///
-/// The client uses the default ClientProtocol::Auto(), so against this server it speaks
+/// The client uses the default ClientProtocol::automatic(), so against this server it speaks
 /// 2026-07-28. There the server sends nothing more for a request the client cancelled, not even
 /// its response, so Client::cancel() ends the wait at once and the call fails with
 /// mcp::constants::jsonrpc::g_REQUEST_CANCELLED. A client of an earlier revision gets the tool's own

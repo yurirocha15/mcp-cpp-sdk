@@ -248,13 +248,13 @@ mcp::Task<int> request_failure(mcp::Client& client, std::string_view method) {
 
 mcp::ClientOptions auto_options() {
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Auto();
+    options.protocol = mcp::ClientProtocol::automatic();
     return options;
 }
 
 mcp::ClientOptions pinned_options(std::string version) {
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Version(std::move(version));
+    options.protocol = mcp::ClientProtocol::pinned(std::move(version));
     return options;
 }
 
@@ -418,7 +418,7 @@ TEST(ClientEra, AutoProbeClosedByPeerSurfacesActionableError) {
     });
 
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
-    EXPECT_NE(message.find("ClientProtocol::Legacy()"), std::string::npos) << message;
+    EXPECT_NE(message.find("ClientProtocol::legacy()"), std::string::npos) << message;
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
 
@@ -692,7 +692,7 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     const std::string message = failure->what();
     EXPECT_NE(message.find("2026-07-28"), std::string::npos) << message;
     EXPECT_NE(message.find("2025-11-25, 2025-06-18"), std::string::npos) << message;
-    EXPECT_NE(message.find("ClientProtocol::Auto()"), std::string::npos) << message;
+    EXPECT_NE(message.find("ClientProtocol::automatic()"), std::string::npos) << message;
     ASSERT_TRUE(failure->data().has_value());
     EXPECT_EQ(failure->data()->value("requested", ""), "2026-07-28");
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
@@ -910,7 +910,7 @@ TEST(ClientEra, EraDecisionCallbackReportsReason) {
     }
     {
         mcp::ClientOptions options;
-        options.protocol = mcp::ClientProtocol::Legacy();
+        options.protocol = mcp::ClientProtocol::legacy();
         Harness harness(options);
         harness.peer.reply = [](const json& request) {
             return legacy_peer_rejecting_discover(request, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
@@ -1052,9 +1052,9 @@ TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
         std::size_t cancels;
     };
     const std::vector<Case> cases = {
-        {"modern", mcp::ClientProtocol::Version("2026-07-28"), false, 1},
-        {"legacy", mcp::ClientProtocol::Version("2025-11-25"), false, 0},
-        {"auto, silent probe", mcp::ClientProtocol::Auto(), true, 0},
+        {"modern", mcp::ClientProtocol::pinned("2026-07-28"), false, 1},
+        {"legacy", mcp::ClientProtocol::pinned("2025-11-25"), false, 0},
+        {"auto, silent probe", mcp::ClientProtocol::automatic(), true, 0},
     };
     for (const auto& item : cases) {
         SCOPED_TRACE(item.name);
@@ -1271,7 +1271,7 @@ TEST(ClientPinned, PinnedModernSkipsProbe) {
 
     // Never falls back: a legacy server fails the pinned client, with the way out in the message.
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
-    EXPECT_NE(message.find("ClientProtocol::Auto()"), std::string::npos) << message;
+    EXPECT_NE(message.find("ClientProtocol::automatic()"), std::string::npos) << message;
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
     EXPECT_EQ(harness.peer.count("server/discover"), 1u);
     EXPECT_TRUE(harness.decisions.empty());
@@ -1296,14 +1296,14 @@ TEST(ClientPinned, PinnedModernConnectsAndNamesThePin) {
 }
 
 TEST(ClientPinned, InvalidPinThrows) {
-    EXPECT_THROW(mcp::ClientProtocol::Version("1999-01-01"), std::invalid_argument);
-    EXPECT_THROW(mcp::ClientProtocol::Version(""), std::invalid_argument);
-    EXPECT_THROW(mcp::ClientProtocol::Version("2026-07-29"), std::invalid_argument);
+    EXPECT_THROW(mcp::ClientProtocol::pinned("1999-01-01"), std::invalid_argument);
+    EXPECT_THROW(mcp::ClientProtocol::pinned(""), std::invalid_argument);
+    EXPECT_THROW(mcp::ClientProtocol::pinned("2026-07-29"), std::invalid_argument);
     for (const auto* version : {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"}) {
-        EXPECT_NO_THROW(mcp::ClientProtocol::Version(version));
+        EXPECT_NO_THROW(mcp::ClientProtocol::pinned(version));
     }
-    EXPECT_EQ(mcp::ClientProtocol::Legacy().version(), "2025-11-25");
-    EXPECT_EQ(mcp::ClientProtocol::Auto().kind(), mcp::ClientProtocol::Kind::eAuto);
+    EXPECT_EQ(mcp::ClientProtocol::legacy().version(), "2025-11-25");
+    EXPECT_EQ(mcp::ClientProtocol::automatic().kind(), mcp::ClientProtocol::Kind::eAuto);
     EXPECT_EQ(mcp::ClientOptions{}.protocol.kind(), mcp::ClientProtocol::Kind::eAuto);
     EXPECT_EQ(mcp::ClientProtocol{}.kind(), mcp::ClientProtocol::Kind::eAuto);
 }
@@ -1390,10 +1390,10 @@ TEST(E2eEra, MemoryClientAgainstDualEraServer) {
         std::string version;
     };
     const std::vector<Case> cases = {
-        {mcp::ClientProtocol::Auto(), mcp::ProtocolEra::eModern, "2026-07-28"},
-        {mcp::ClientProtocol::Version("2026-07-28"), mcp::ProtocolEra::eModern, "2026-07-28"},
-        {mcp::ClientProtocol::Legacy(), mcp::ProtocolEra::eLegacy, "2025-11-25"},
-        {mcp::ClientProtocol::Version("2025-06-18"), mcp::ProtocolEra::eLegacy, "2025-06-18"},
+        {mcp::ClientProtocol::automatic(), mcp::ProtocolEra::eModern, "2026-07-28"},
+        {mcp::ClientProtocol::pinned("2026-07-28"), mcp::ProtocolEra::eModern, "2026-07-28"},
+        {mcp::ClientProtocol::legacy(), mcp::ProtocolEra::eLegacy, "2025-11-25"},
+        {mcp::ClientProtocol::pinned("2025-06-18"), mcp::ProtocolEra::eLegacy, "2025-06-18"},
     };
     for (const auto& item : cases) {
         boost::asio::io_context io;
@@ -1643,7 +1643,7 @@ TEST(E2eEra, LegacyClientOverHttpIsLegacy) {
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(transport, io.get_executor(), options);
     auto outcome = std::make_shared<EraOutcome>();
 
