@@ -14,12 +14,12 @@ namespace mcp::detail {
 /// What the scope check decided about one request.
 struct ScopeCheck {
     enum class Outcome {
-        allowed,
-        insufficient,
-        failed
+        eAllowed,
+        eInsufficient,
+        eFailed
     };
-    Outcome outcome{Outcome::allowed};
-    /// The challenge of the `403`, set when @c outcome is @c insufficient.
+    Outcome outcome{Outcome::eAllowed};
+    /// The challenge of the `403`, set when @c outcome is @c eInsufficient.
     BearerChallengeConfig challenge;
 };
 
@@ -39,14 +39,15 @@ inline ScopeCheck check_request_scopes(const ScopeRequirementProvider& required,
         return {};
     }
     const auto method = request_json.at("method").get<std::string>();
-    static const nlohmann::json no_params;
+    static const nlohmann::json s_no_params;
     const auto params_it = request_json.find("params");
-    const ScopeRequestContext context{method, params_it == request_json.end() ? no_params : *params_it};
+    const ScopeRequestContext context{method,
+                                      params_it == request_json.end() ? s_no_params : *params_it};
     std::vector<std::string> needed;
     try {
         needed = required(context);
     } catch (...) {
-        return {ScopeCheck::Outcome::failed, {}};
+        return {ScopeCheck::Outcome::eFailed, {}};
     }
     const bool satisfied = std::all_of(needed.begin(), needed.end(), [&held](const auto& scope) {
         return held && std::find(held->begin(), held->end(), scope) != held->end();
@@ -64,9 +65,9 @@ inline ScopeCheck check_request_scopes(const ScopeRequirementProvider& required,
         // A scope that cannot be quoted in the header is a provider failure, not a client's.
         (void)format_www_authenticate(challenge);
     } catch (const std::invalid_argument&) {
-        return {ScopeCheck::Outcome::failed, {}};
+        return {ScopeCheck::Outcome::eFailed, {}};
     }
-    return {ScopeCheck::Outcome::insufficient, std::move(challenge)};
+    return {ScopeCheck::Outcome::eInsufficient, std::move(challenge)};
 }
 
 }  // namespace mcp::detail

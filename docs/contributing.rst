@@ -56,13 +56,19 @@ Naming Conventions
 
 Follow these naming conventions:
 
-* **Classes/Structs**: ``PascalCase`` (e.g., ``Server``, ``ITransport``, ``CallToolRequest``)
-* **Functions/Methods**: ``snake_case`` (e.g., ``add_tool()``, ``call_tool()``, ``log_info()``)
-* **Variables**: ``snake_case`` (e.g., ``request_id``, ``tool_name``, ``json_result``)
-* **Private members**: ``snake_case_`` with trailing underscore (e.g., ``transport_``, ``strand_``)
-* **Constants**: ``kPascalCase`` (e.g., ``kDefaultTimeout``)
-* **Template parameters**: ``PascalCase`` (e.g., ``template <typename T>``)
-* **Namespaces**: ``snake_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
+These are the rules in ``.clang-tidy`` (``readability-identifier-naming``):
+
+* **Classes/Structs/Enums/Unions/Concepts**: ``CamelCase`` (e.g., ``Server``, ``ITransport``, ``CallToolRequest``)
+* **Functions/Methods**: ``lower_case`` (e.g., ``add_tool()``, ``call_tool()``, ``log_info()``)
+* **Variables**: ``lower_case`` (e.g., ``request_id``, ``tool_name``, ``json_result``)
+* **Class members**: ``lower_case_`` with a trailing underscore (e.g., ``transport_``, ``strand_``)
+* **Global variables and namespace-scope constants**: ``g_`` prefix; constants are ``g_UPPER_CASE``
+  (e.g., ``g_INVALID_PARAMS``), declared in ``mcp/core/constants.hpp`` or ``src/detail/constants.hpp``
+* **Static variables**: ``s_`` prefix (e.g., ``s_cache`` for a function-local static)
+* **Enum values**: ``eCamelCase`` (e.g., ``eServerError``)
+* **Class constants** (static data members): ``lower_case`` (e.g., ``max_repeat_count``)
+* **Macros**: ``UPPER_CASE`` (e.g., ``MCP_DEPRECATED``)
+* **Namespaces**: ``lower_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
 
 Code Formatting
 ^^^^^^^^^^^^^^^

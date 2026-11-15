@@ -70,7 +70,7 @@ class Session {
     Session(bool modern, bool client_validates) : guard_(io_) {
         mcp::ClientOptions options;
         options.protocol =
-            modern ? mcp::ClientProtocol::Version("2026-07-28") : mcp::ClientProtocol::Legacy();
+            modern ? mcp::ClientProtocol::pinned("2026-07-28") : mcp::ClientProtocol::legacy();
         options.validate_elicitation_content = client_validates;
         auto [client_transport, server_transport] =
             mcp::create_memory_transport_pair(io_.get_executor());

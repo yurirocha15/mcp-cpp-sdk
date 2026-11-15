@@ -208,7 +208,7 @@ The SDK separates two protocol families, called eras in the API
 
 A ``Server`` serves both by default, on every transport; ``ServerProtocolPolicy``
 narrows that. A ``Client`` picks one when it connects, according to
-``ClientOptions::protocol``. The default, ``ClientProtocol::Auto()``, probes with
+``ClientOptions::protocol``. The default, ``ClientProtocol::automatic()``, probes with
 ``server/discover`` and falls back to ``initialize``. See :doc:`concepts/protocol`.
 
 Data Flow

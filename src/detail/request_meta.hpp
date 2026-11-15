@@ -51,7 +51,7 @@ inline const std::string* requested_protocol_version(const nlohmann::json& messa
 /// Reads a logging level by its spec name. The enum's JSON conversion maps an unknown name to the
 /// first level instead of failing, so names are matched here.
 inline bool parse_logging_level(const nlohmann::json& value, LoggingLevel& level) {
-    static constexpr std::array<std::pair<std::string_view, LoggingLevel>, 8> g_levels{{
+    static constexpr std::array<std::pair<std::string_view, LoggingLevel>, 8> s_levels{{
         {"emergency", LoggingLevel::eEmergency},
         {"alert", LoggingLevel::eAlert},
         {"critical", LoggingLevel::eCritical},
@@ -65,7 +65,7 @@ inline bool parse_logging_level(const nlohmann::json& value, LoggingLevel& level
         return false;
     }
     const auto& name = value.get_ref<const std::string&>();
-    for (const auto& [level_name, level_value] : g_levels) {
+    for (const auto& [level_name, level_value] : s_levels) {
         if (name == level_name) {
             level = level_value;
             return true;

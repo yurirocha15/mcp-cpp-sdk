@@ -174,16 +174,16 @@ class SerializedWriteGate {
 
 struct WebSocketServerTransport::Impl {
     enum class HandshakeState {
-        Pending,
-        Accepting,
-        Open,
-        Failed,
+        ePending,
+        eAccepting,
+        eOpen,
+        eFailed,
     };
 
     WsStream ws;
     asio::strand<asio::any_io_executor> strand;
     std::atomic<bool> closed{false};
-    HandshakeState handshake_state{HandshakeState::Pending};
+    HandshakeState handshake_state{HandshakeState::ePending};
     std::exception_ptr handshake_error;
     std::vector<std::shared_ptr<OperationWaiter>> handshake_waiters;
     SerializedWriteGate write_gate;
@@ -294,7 +294,7 @@ struct WebSocketServerTransport::Impl {
         }
 
         throw_if_closed(state);
-        if (state->handshake_state == HandshakeState::Open) {
+        if (state->handshake_state == HandshakeState::eOpen) {
             co_return;
         }
         if (state->handshake_error) {
@@ -305,25 +305,25 @@ struct WebSocketServerTransport::Impl {
 
     static Task<void> ensure_handshake(std::shared_ptr<Impl> state) {
         throw_if_closed(state);
-        if (state->handshake_state == HandshakeState::Open) {
+        if (state->handshake_state == HandshakeState::eOpen) {
             co_return;
         }
-        if (state->handshake_state == HandshakeState::Accepting) {
+        if (state->handshake_state == HandshakeState::eAccepting) {
             co_await wait_for_handshake(std::move(state));
             co_return;
         }
-        if (state->handshake_state == HandshakeState::Failed) {
+        if (state->handshake_state == HandshakeState::eFailed) {
             std::rethrow_exception(state->handshake_error);
         }
 
-        state->handshake_state = HandshakeState::Accepting;
+        state->handshake_state = HandshakeState::eAccepting;
         try {
             co_await accept_upgrade(state);
             throw_if_closed(state);
-            state->handshake_state = HandshakeState::Open;
+            state->handshake_state = HandshakeState::eOpen;
         } catch (...) {
             state->handshake_error = std::current_exception();
-            state->handshake_state = HandshakeState::Failed;
+            state->handshake_state = HandshakeState::eFailed;
             notify_handshake_waiters(state);
             throw;
         }
@@ -368,7 +368,7 @@ struct WebSocketServerTransport::Impl {
 
     static void close_on_strand(const std::shared_ptr<Impl>& state) {
         state->handshake_error = closed_error("WebSocketServerTransport");
-        state->handshake_state = HandshakeState::Failed;
+        state->handshake_state = HandshakeState::eFailed;
         notify_handshake_waiters(state);
         state->write_gate.cancel();
         close_socket(state->ws);
@@ -448,10 +448,10 @@ void WebSocketServerTransport::close() {
 
 struct WebSocketClientTransport::Impl {
     enum class ConnectionState {
-        Disconnected,
-        Connecting,
-        Connected,
-        Failed,
+        eDisconnected,
+        eConnecting,
+        eConnected,
+        eFailed,
     };
 
     std::chrono::milliseconds connect_timeout;
@@ -462,7 +462,7 @@ struct WebSocketClientTransport::Impl {
     std::string port;
     std::string path;
     std::atomic<bool> closed{false};
-    ConnectionState connection_state{ConnectionState::Disconnected};
+    ConnectionState connection_state{ConnectionState::eDisconnected};
     std::exception_ptr connect_error;
     std::vector<std::shared_ptr<OperationWaiter>> connection_waiters;
     SerializedWriteGate write_gate;
@@ -502,7 +502,7 @@ struct WebSocketClientTransport::Impl {
         }
 
         throw_if_closed(state);
-        if (state->connection_state == ConnectionState::Connected) {
+        if (state->connection_state == ConnectionState::eConnected) {
             co_return;
         }
         if (state->connect_error) {
@@ -513,18 +513,18 @@ struct WebSocketClientTransport::Impl {
 
     static Task<void> ensure_connected(std::shared_ptr<Impl> state) {
         throw_if_closed(state);
-        if (state->connection_state == ConnectionState::Connected) {
+        if (state->connection_state == ConnectionState::eConnected) {
             co_return;
         }
-        if (state->connection_state == ConnectionState::Connecting) {
+        if (state->connection_state == ConnectionState::eConnecting) {
             co_await wait_for_connection(std::move(state));
             co_return;
         }
-        if (state->connection_state == ConnectionState::Failed) {
+        if (state->connection_state == ConnectionState::eFailed) {
             std::rethrow_exception(state->connect_error);
         }
 
-        state->connection_state = ConnectionState::Connecting;
+        state->connection_state = ConnectionState::eConnecting;
         state->connect_error = nullptr;
         std::optional<detail::SocketDeadline> deadline;
         try {
@@ -546,14 +546,14 @@ struct WebSocketClientTransport::Impl {
             deadline.reset();
             throw_if_closed(state);
             state->ws.read_message_max(state->max_message_bytes.load(std::memory_order_acquire));
-            state->connection_state = ConnectionState::Connected;
+            state->connection_state = ConnectionState::eConnected;
         } catch (...) {
             const bool timed_out = deadline && deadline->expired();
             deadline.reset();
             state->connect_error =
                 timed_out ? std::make_exception_ptr(boost::system::system_error(beast::error::timeout))
                           : std::current_exception();
-            state->connection_state = ConnectionState::Failed;
+            state->connection_state = ConnectionState::eFailed;
             notify_connection_waiters(state);
             std::rethrow_exception(state->connect_error);
         }
@@ -589,7 +589,7 @@ struct WebSocketClientTransport::Impl {
 
     static void close_on_strand(const std::shared_ptr<Impl>& state) {
         state->connect_error = closed_error("WebSocketClientTransport");
-        state->connection_state = ConnectionState::Failed;
+        state->connection_state = ConnectionState::eFailed;
         notify_connection_waiters(state);
         state->write_gate.cancel();
         state->resolver.cancel();

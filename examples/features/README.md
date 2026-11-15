@@ -294,7 +294,7 @@ done
 ### 14. Modern Client (`modern_client.cpp`)
 
 **What it demonstrates:**
-- `Client::connect()` with the default `ClientProtocol::Auto()`, which speaks protocol revision 2026-07-28 with a server that serves it
+- `Client::connect()` with the default `ClientProtocol::automatic()`, which speaks protocol revision 2026-07-28 with a server that serves it
 - `ClientOptions::on_era_decision` reporting why the client chose that era
 - `ConnectResult`: `era`, `protocolVersion`, optional `serverInfo`, `instructions`, `supportedVersions`
 - `RequestOptions::log_level`: a handler's log messages reach the client only for a request that sets it
@@ -315,13 +315,13 @@ done
 
 **What it demonstrates:**
 - This example is about the older protocol revisions (2025-11-25 and earlier), which start a session with `initialize`
-- `ClientProtocol::Version()` pinning each of the four older revisions, and `ClientProtocol::Legacy()`
+- `ClientProtocol::pinned()` pinning each of the four older revisions, and `ClientProtocol::legacy()`
 - `ping()` and `resources/subscribe`, which exist only in those revisions, with `Server::on_subscribe()` / `on_unsubscribe()`
 - `ServerProtocolPolicy` and `Server::set_protocol_policy()`: legacy-only and 2026-07-28-only servers
 - The same calls failing locally in a 2026-07-28 session
 
 **Key APIs:**
-- `ClientProtocol::Version()` / `ClientProtocol::Legacy()`
+- `ClientProtocol::pinned()` / `ClientProtocol::legacy()`
 - `ServerProtocolPolicy` / `Server::set_protocol_policy()`
 - `Client::ping()`
 

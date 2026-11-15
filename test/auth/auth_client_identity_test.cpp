@@ -192,7 +192,7 @@ TEST(AuthClientIdentitySelectionTest, InjectedCredentialsWinOverEveryOtherPath) 
         config, facts_with("https://issuer.example", true, "https://issuer.example/register"),
         credentials("stored-client", "https://issuer.example"));
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::use_pre_registered);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUsePreRegistered);
 }
 
 TEST(AuthClientIdentitySelectionTest, InjectedCredentialsNeverFallBackToRegistration) {
@@ -204,7 +204,7 @@ TEST(AuthClientIdentitySelectionTest, InjectedCredentialsNeverFallBackToRegistra
         config, facts_with("https://issuer.example", true, "https://issuer.example/register"),
         std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::use_pre_registered);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUsePreRegistered);
 }
 
 TEST(AuthClientIdentitySelectionTest, PrefersTheMetadataDocumentWhenTheServerAdvertisesIt) {
@@ -215,7 +215,7 @@ TEST(AuthClientIdentitySelectionTest, PrefersTheMetadataDocumentWhenTheServerAdv
         config, facts_with("https://issuer.example", true, "https://issuer.example/register"),
         std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::use_client_id_metadata_document);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUseClientIdMetadataDocument);
 }
 
 TEST(AuthClientIdentitySelectionTest, IgnoresTheMetadataDocumentWhenTheServerDoesNotAdvertiseIt) {
@@ -226,7 +226,7 @@ TEST(AuthClientIdentitySelectionTest, IgnoresTheMetadataDocumentWhenTheServerDoe
         config, facts_with("https://issuer.example", false, "https://issuer.example/register"),
         std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::register_dynamically);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eRegisterDynamically);
 }
 
 TEST(AuthClientIdentitySelectionTest, ReusesCredentialsRecordedAgainstTheSameIssuer) {
@@ -234,7 +234,7 @@ TEST(AuthClientIdentitySelectionTest, ReusesCredentialsRecordedAgainstTheSameIss
         {}, facts_with("https://issuer.example", false, "https://issuer.example/register"),
         credentials("stored-client", "https://issuer.example"));
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::reuse_stored_registration);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eReuseStoredRegistration);
 }
 
 TEST(AuthClientIdentitySelectionTest, RegistersAfreshWhenTheStoredIssuerIsADifferentServer) {
@@ -242,14 +242,14 @@ TEST(AuthClientIdentitySelectionTest, RegistersAfreshWhenTheStoredIssuerIsADiffe
         {}, facts_with("https://second.example", false, "https://second.example/register"),
         credentials("stored-client", "https://first.example"));
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::register_dynamically);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eRegisterDynamically);
 }
 
 TEST(AuthClientIdentitySelectionTest, ReportsUnavailableWhenNoPathRemains) {
     const auto decision = mcp::auth::select_client_identity(
         {}, facts_with("https://issuer.example", true, std::nullopt), std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::unavailable);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUnavailable);
 }
 
 TEST(AuthClientRegistrationRequestTest, CarriesApplicationTypeAndTheRefreshTokenGrant) {
@@ -329,17 +329,17 @@ TEST(AuthClientInformationTest, SerializesTheIssuerBindingAlongsideTheCredential
 }
 
 TEST(AuthClientIdentitySelectionTest, DescribesEverySourceAndDecision) {
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::pre_registered).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::ePreRegistered).empty());
     EXPECT_FALSE(
-        mcp::auth::describe(mcp::auth::ClientIdentitySource::client_id_metadata_document).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::dynamic_registration).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::use_pre_registered).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::use_client_id_metadata_document)
-                     .empty());
+        mcp::auth::describe(mcp::auth::ClientIdentitySource::eClientIdMetadataDocument).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::eDynamicRegistration).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::eUsePreRegistered).empty());
     EXPECT_FALSE(
-        mcp::auth::describe(mcp::auth::ClientIdentityDecision::reuse_stored_registration).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::register_dynamically).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::unavailable).empty());
+        mcp::auth::describe(mcp::auth::ClientIdentityDecision::eUseClientIdMetadataDocument).empty());
+    EXPECT_FALSE(
+        mcp::auth::describe(mcp::auth::ClientIdentityDecision::eReuseStoredRegistration).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::eRegisterDynamically).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::eUnavailable).empty());
 }
 
 TEST(AuthMetadataOriginAllowanceTest, WidensTheAllowListWithoutOverridingTheDenyList) {
@@ -349,27 +349,27 @@ TEST(AuthMetadataOriginAllowanceTest, WidensTheAllowListWithoutOverridingTheDeny
 
     // With no hook, an unlisted origin is refused; the hook admits exactly what it says yes to.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:1234/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 
     policy.origin_allowance = [](const std::string& origin) {
         return origin == "http://127.0.0.1:1234";
     };
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:1234/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:5678/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 
     // A denied origin stays denied even when the hook would admit it.
     policy.origin_allowance = [](const std::string&) { return true; };
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:9/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 
     // Widening the origin list does not relax any other control: the scheme rule still refuses
     // plain HTTP to a non-loopback host, and the address rules still refuse the metadata service.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://169.254.169.254/prm"),
-              mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+              mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://169.254.169.254/prm"),
-              mcp::auth::MetadataUrlDecision::address_link_local);
+              mcp::auth::MetadataUrlDecision::eAddressLinkLocal);
 }
 
 TEST(AuthClientCredentialStoreTest, KeepsEachIssuersCredentialsSeparate) {
@@ -473,7 +473,7 @@ TEST(AuthClientIdentityLoopbackTest, UsesTheMetadataDocumentUrlAsTheClientIdAndS
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::client_id_metadata_document);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eClientIdMetadataDocument);
     EXPECT_EQ(fixture.identity->client_id, "https://client.example/metadata.json");
     EXPECT_FALSE(fixture.identity->client_secret.has_value());
 
@@ -527,7 +527,7 @@ TEST(AuthClientIdentityLoopbackTest, PreRegisteredCredentialsAreNeverExchangedFo
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::pre_registered);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::ePreRegistered);
     EXPECT_EQ(fixture.identity->client_id, "application-chosen-client");
 
     EXPECT_EQ(server.count("/register"), 0U);
@@ -578,7 +578,7 @@ TEST(AuthClientIdentityLoopbackTest, FallsBackToDynamicRegistrationAndSendsAppli
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::dynamic_registration);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eDynamicRegistration);
     EXPECT_EQ(fixture.identity->client_id, "registered-client");
 
     ASSERT_EQ(server.count("/register"), 1U);
@@ -902,7 +902,7 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::dynamic_registration);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eDynamicRegistration);
     EXPECT_EQ(fixture.identity->client_id, "registered-client");
     EXPECT_EQ(server.count("/register"), 1U);
 }
