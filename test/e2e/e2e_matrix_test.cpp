@@ -132,19 +132,19 @@ std::string transport_name(TransportKind kind) {
 mcp::ClientProtocol protocol_of(ClientKind kind) {
     switch (kind) {
         case ClientKind::eAuto:
-            return mcp::ClientProtocol::Auto();
+            return mcp::ClientProtocol::automatic();
         case ClientKind::eModern:
-            return mcp::ClientProtocol::Version("2026-07-28");
+            return mcp::ClientProtocol::pinned("2026-07-28");
         case ClientKind::eLegacy:
-            return mcp::ClientProtocol::Legacy();
+            return mcp::ClientProtocol::legacy();
         case ClientKind::eLegacy2025_06_18:
-            return mcp::ClientProtocol::Version("2025-06-18");
+            return mcp::ClientProtocol::pinned("2025-06-18");
         case ClientKind::eLegacy2025_03_26:
-            return mcp::ClientProtocol::Version("2025-03-26");
+            return mcp::ClientProtocol::pinned("2025-03-26");
         case ClientKind::eLegacy2024_11_05:
-            return mcp::ClientProtocol::Version("2024-11-05");
+            return mcp::ClientProtocol::pinned("2024-11-05");
     }
-    return mcp::ClientProtocol::Auto();
+    return mcp::ClientProtocol::automatic();
 }
 
 mcp::ServerProtocolPolicy policy_of(ServerKind kind) {
@@ -724,7 +724,7 @@ TEST(E2eParamHeaders, IntegralFloatArgumentCarriesTheIntegerHeader) {
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Version("2026-07-28");
+    options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
     mcp::Client client(transport, io.get_executor(), options);
     boost::asio::co_spawn(io, server_transport->listen(), boost::asio::detached);
     boost::asio::co_spawn(io, serve(&server, server_transport, io.get_executor()),

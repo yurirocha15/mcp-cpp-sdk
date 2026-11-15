@@ -30,12 +30,12 @@ int main() {
     try {
         using namespace mcp;
 
-        const int NUM_ITERATIONS = 1000;
+        const int num_iterations = 1000;
 
         std::cout << "\n" << std::string(70, '=') << "\n";
         std::cout << "Memory Transport Benchmark (stdio-equivalent)\n";
         std::cout << std::string(70, '=') << "\n";
-        std::cout << "Iterations: " << NUM_ITERATIONS << "\n\n";
+        std::cout << "Iterations: " << num_iterations << "\n\n";
 
         asio::io_context io_ctx;
 
@@ -95,11 +95,11 @@ int main() {
                     std::cout << "[Client] Warmup complete\n\n";
 
                     // Benchmark
-                    std::cout << "[Client] Starting benchmark (" << NUM_ITERATIONS
+                    std::cout << "[Client] Starting benchmark (" << num_iterations
                               << " iterations)...\n";
                     auto start = std::chrono::steady_clock::now();
 
-                    for (int i = 0; i < NUM_ITERATIONS; ++i) {
+                    for (int i = 0; i < num_iterations; ++i) {
                         nlohmann::json args = {{"message", "benchmark_" + std::to_string(i)}};
                         co_await client.call_tool("echo", args);
                     }
@@ -109,15 +109,15 @@ int main() {
 
                     // Calculate metrics
                     double total_ms = duration.count();
-                    double avg_latency_ms = total_ms / NUM_ITERATIONS;
-                    double calls_per_sec = (NUM_ITERATIONS * 1000.0) / total_ms;
+                    double avg_latency_ms = total_ms / num_iterations;
+                    double calls_per_sec = (num_iterations * 1000.0) / total_ms;
 
                     std::cout << "\n" << std::string(70, '=') << "\n";
                     std::cout << "Benchmark Results (Memory Transport)\n";
                     std::cout << std::string(70, '=') << "\n";
                     std::cout << std::fixed << std::setprecision(2);
                     std::cout << "Total time:        " << total_ms << " ms\n";
-                    std::cout << "Iterations:        " << NUM_ITERATIONS << "\n";
+                    std::cout << "Iterations:        " << num_iterations << "\n";
                     std::cout << "Avg latency:       " << avg_latency_ms << " ms/call\n";
                     std::cout << "Throughput:        " << calls_per_sec << " calls/sec\n";
                     std::cout << std::string(70, '=') << "\n\n";

@@ -76,7 +76,7 @@ std::optional<std::string> optional_environment(std::string_view name) {
 mcp::ClientOptions client_options_from_environment() {
     mcp::ClientOptions options;
     if (const auto version = optional_environment("MCP_CONFORMANCE_PROTOCOL_VERSION")) {
-        options.protocol = mcp::ClientProtocol::Version(*version);
+        options.protocol = mcp::ClientProtocol::pinned(*version);
     }
     return options;
 }
@@ -397,12 +397,12 @@ mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
 
 /// The client ID metadata document this fixture publishes. It is never fetched during the flow;
 /// the URL is the client identifier itself.
-constexpr std::string_view g_client_metadata_url =
+constexpr std::string_view g_CLIENT_METADATA_URL =
     "https://conformance-test.local/client-metadata.json";
 
 /// Redirect URI registered for the flow. The authorization server only echoes it back in a
 /// `Location` header, so nothing ever connects to it.
-constexpr std::string_view g_redirect_uri = "http://127.0.0.1:8080/callback";
+constexpr std::string_view g_REDIRECT_URI = "http://127.0.0.1:8080/callback";
 
 struct RedirectLeg {
     std::string host;
@@ -573,8 +573,8 @@ mcp::auth::OAuthAuthorizationConfig make_authorization_config(boost::asio::io_co
                                                               const std::string& server_url) {
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = server_url;
-    config.redirect_uri = std::string(g_redirect_uri);
-    config.client_identity.client_metadata_url = std::string(g_client_metadata_url);
+    config.redirect_uri = std::string(g_REDIRECT_URI);
+    config.client_identity.client_metadata_url = std::string(g_CLIENT_METADATA_URL);
     config.client_identity.metadata.client_name = "mcp-cpp-sdk-conformance-client";
     config.credential_store = std::make_shared<mcp::auth::InMemoryClientCredentialStore>();
     config.policy = make_fetch_policy(server_url);
@@ -590,7 +590,7 @@ mcp::auth::OAuthAuthorizationConfig make_authorization_config(boost::asio::io_co
             // A secret must name the issuer it belongs to or the SDK refuses to present it.
             injected.issuer = resolve_injected_issuer(io_context, server_url, *context);
         }
-        injected.source = mcp::auth::ClientIdentitySource::pre_registered;
+        injected.source = mcp::auth::ClientIdentitySource::ePreRegistered;
         config.client_identity.pre_registered = std::move(injected);
     }
 

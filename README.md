@@ -107,13 +107,13 @@ int main() {
 }
 ```
 
-`Client` defaults to `mcp::ClientProtocol::Auto()`: it sends `server/discover`
+`Client` defaults to `mcp::ClientProtocol::automatic()`: it sends `server/discover`
 first and falls back to `initialize` when the server does not answer as a
 2026-07-28 server. `connect()` returns a `mcp::ConnectResult` holding the
 session's `era`, the `protocolVersion` in use, the server's `capabilities`, and,
 when the server sent them, `serverInfo`, `instructions` and `supportedVersions`.
 To skip detection, set `ClientOptions::protocol` to
-`mcp::ClientProtocol::Legacy()` or `mcp::ClientProtocol::Version("2026-07-28")`.
+`mcp::ClientProtocol::legacy()` or `mcp::ClientProtocol::pinned("2026-07-28")`.
 
 Note the named `arguments` variable. See [Compiler Notes](#compiler-notes) for
 why it is not built inline.

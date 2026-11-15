@@ -898,7 +898,7 @@ TEST_F(ClientCoreTest, ImmediateResponseCannotBeLostBeforeWaitStarts) {
     mcp::ClientOptions client_options;
     // Longer than the watchdog, so a lost response is reported by the watchdog.
     client_options.request_timeout = g_release_guard;
-    client_options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
+    client_options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx_.get_executor(), client_options);
 
     boost::asio::steady_timer watchdog(io_ctx_);
@@ -973,7 +973,7 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     // because a sanitizer can stop every thread for seconds while it prepares a report, including
     // one a suppression then discards.
     options.request_timeout = g_hang_guard;
-    options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(client_transport, io_ctx_.get_executor(), options);
 
     std::atomic_size_t completed{0};
@@ -1355,7 +1355,7 @@ SecondRequestOutcome send_two_requests(
     // stalled run.
     options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
-    options.protocol = mcp::ClientProtocol::Legacy();  // the scripted peer answers initialize
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx.get_executor(), options);
 
     boost::asio::co_spawn(

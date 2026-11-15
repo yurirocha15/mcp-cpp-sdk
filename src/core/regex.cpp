@@ -264,12 +264,12 @@ class Parser {
         const std::size_t start = pos_;
         // A number stops growing past the limit: braces that turn out not to be a quantifier are
         // literal text whatever number they hold, so the limit is checked once they close.
-        static constexpr std::uint64_t past_limit = std::uint64_t{Regex::max_repeat_count} + 1;
+        static constexpr std::uint64_t s_past_limit = std::uint64_t{Regex::max_repeat_count} + 1;
         auto read_number = [this](std::uint64_t& out) {
             std::size_t digits = 0;
             std::uint64_t value = 0;
             while (!at_end() && peek() >= '0' && peek() <= '9') {
-                value = std::min<std::uint64_t>(value * 10 + (peek() - '0'), past_limit);
+                value = std::min<std::uint64_t>(value * 10 + (peek() - '0'), s_past_limit);
                 ++pos_;
                 ++digits;
             }
@@ -291,7 +291,7 @@ class Parser {
             pos_ = start;
             return false;
         }
-        if (low == past_limit || high == past_limit) {
+        if (low == s_past_limit || high == s_past_limit) {
             fail(RegexError::Kind::eTooLarge,
                  "repetition count exceeds " + std::to_string(Regex::max_repeat_count));
         }

@@ -6,6 +6,8 @@
 #include <lldb/API/LLDB.h>
 #include <lldb/API/SBHostOS.h>
 #else
+// Stand-ins for the LLDB API this example uses, named as LLDB names them.
+// NOLINTBEGIN(readability-identifier-naming)
 namespace lldb {
 using pid_t = unsigned long long;
 enum StateType {
@@ -192,6 +194,7 @@ class SBDebugger {
     SBTarget GetTargetAtIndex(unsigned int) const { return {}; }
 };
 }  // namespace lldb
+// NOLINTEND(readability-identifier-naming)
 #endif  // __has_include(<lldb/API/LLDB.h>)
 
 #include <boost/asio/co_spawn.hpp>
@@ -210,10 +213,10 @@ class SBDebugger {
 
 namespace asio = boost::asio;
 
-constexpr int g_event_timeout_seconds = 30;
-constexpr int g_default_backtrace_count = 20;
-constexpr std::size_t g_stop_desc_buf_size = 256;
-constexpr unsigned short g_default_port = 9695;
+constexpr int g_EVENT_TIMEOUT_SECONDS = 30;
+constexpr int g_DEFAULT_BACKTRACE_COUNT = 20;
+constexpr std::size_t g_STOP_DESC_BUF_SIZE = 256;
+constexpr unsigned short g_DEFAULT_PORT = 9695;
 
 #if __has_include(<lldb/API/LLDB.h>)
 static void set_env(const char* key, const std::string& value) {
@@ -315,7 +318,7 @@ struct LLDBGuard {
 struct AppOptions {
     std::string transport = "stdio";
     std::string host = "127.0.0.1";
-    unsigned short port = g_default_port;
+    unsigned short port = g_DEFAULT_PORT;
 };
 
 static void print_usage(const char* prog) {
@@ -323,7 +326,7 @@ static void print_usage(const char* prog) {
               << "Options:\n"
               << "  --transport=<stdio|http>  Transport to use (default: stdio)\n"
               << "  --host=<addr>             HTTP listen address (default: 127.0.0.1)\n"
-              << "  --port=<n>                HTTP listen port (default: " << g_default_port << ")\n"
+              << "  --port=<n>                HTTP listen port (default: " << g_DEFAULT_PORT << ")\n"
               << "  --help                    Show this help\n";
 }
 
@@ -837,7 +840,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         co_return make_error_result(safe_cstr(err.GetCString(), "Continue failed"));
                     }
                     lldb::StateType waited_state = process.GetState();
-                    while (listener_ptr->WaitForEvent(g_event_timeout_seconds, event)) {
+                    while (listener_ptr->WaitForEvent(g_EVENT_TIMEOUT_SECONDS, event)) {
                         auto st = lldb::SBProcess::GetStateFromEvent(event);
                         waited_state = st;
                         if (st == lldb::eStateRunning || st == lldb::eStateStepping) {
@@ -908,7 +911,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         co_return make_error_result("Invalid step type");
                     }
 
-                    while (listener_ptr->WaitForEvent(g_event_timeout_seconds, event)) {
+                    while (listener_ptr->WaitForEvent(g_EVENT_TIMEOUT_SECONDS, event)) {
                         auto st = lldb::SBProcess::GetStateFromEvent(event);
                         if (st == lldb::eStateRunning || st == lldb::eStateStepping) {
                             continue;
@@ -1024,7 +1027,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     }
 
                     unsigned total = thread.GetNumFrames();
-                    int req = args.count.value_or(g_default_backtrace_count);
+                    int req = args.count.value_or(g_DEFAULT_BACKTRACE_COUNT);
                     unsigned max_frames = 0;
                     if (req > 0) {
                         max_frames = std::min(total, static_cast<unsigned>(req));
@@ -1151,7 +1154,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         if (!th.IsValid()) {
                             continue;
                         }
-                        std::array<char, g_stop_desc_buf_size> stop_buf{};
+                        std::array<char, g_STOP_DESC_BUF_SIZE> stop_buf{};
                         th.GetStopDescription(stop_buf.data(), stop_buf.size());
                         rows.push_back({{"index", i},
                                         {"thread_id", th.GetThreadID()},

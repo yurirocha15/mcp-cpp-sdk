@@ -28,7 +28,7 @@
 /// initialize), whatever the default protocol is.
 inline mcp::ClientOptions legacy_client_options() {
     mcp::ClientOptions options;
-    options.protocol = mcp::ClientProtocol::Legacy();
+    options.protocol = mcp::ClientProtocol::legacy();
     return options;
 }
 

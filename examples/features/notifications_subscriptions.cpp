@@ -134,7 +134,7 @@ int main() {
                     client_info.name = "notifications-client";
                     client_info.version = "1.0.0";
 
-                    // Client::listen() needs a 2026-07-28 session, which Auto() gives with this
+                    // Client::listen() needs a 2026-07-28 session, which automatic() gives with this
                     // server.
                     {
                         auto connected = co_await client.connect(client_info, ClientCapabilities{});

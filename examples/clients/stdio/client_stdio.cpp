@@ -50,7 +50,7 @@ int main() {  // NOLINT(readability-function-cognitive-complexity)
 
                 {
                     auto init_result = co_await client.connect(client_info, caps);
-                    // serverInfo is optional: a server may leave it out. The default Auto() speaks
+                    // serverInfo is optional: a server may leave it out. The default automatic() speaks
                     // 2026-07-28 with a server that serves it and falls back to initialize otherwise;
                     // era and protocolVersion say which one happened.
                     if (init_result.serverInfo) {

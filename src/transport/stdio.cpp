@@ -286,8 +286,8 @@ class OwnedStdout {
 
    private:
     static std::atomic<bool>& owner_active() {
-        static std::atomic<bool> active{false};
-        return active;
+        static std::atomic<bool> s_active{false};
+        return s_active;
     }
 
     static int acquire() {
