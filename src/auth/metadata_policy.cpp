@@ -230,7 +230,7 @@ bool denies_origin(const std::vector<std::string>& origins, const std::string& c
     for (const auto& candidate : origins) {
         const auto canonical_candidate = canonicalize_origin(candidate);
         if (!canonical_candidate) {
-            throw MetadataPolicyError(MetadataUrlDecision::denied_origin_entry_malformed, candidate);
+            throw MetadataPolicyError(MetadataUrlDecision::eDeniedOriginEntryMalformed, candidate);
         }
         if (*canonical_candidate == canonical_origin) {
             denied = true;
@@ -247,41 +247,41 @@ MetadataUrlDecision classify_v4(const MetadataFetchPolicy& policy, const net::ip
     const auto octet3 = static_cast<std::uint32_t>(value >> ipv4::g_OCTET3_SHIFT) & ipv4::g_OCTET_MASK;
 
     if (octet1 == 127) {
-        return policy.allow_plain_http_loopback ? MetadataUrlDecision::allowed
-                                                : MetadataUrlDecision::address_loopback;
+        return policy.allow_plain_http_loopback ? MetadataUrlDecision::eAllowed
+                                                : MetadataUrlDecision::eAddressLoopback;
     }
     if (octet1 == 169 && octet2 == 254) {
-        return MetadataUrlDecision::address_link_local;
+        return MetadataUrlDecision::eAddressLinkLocal;
     }
     if (octet1 == 10 || (octet1 == 172 && octet2 >= 16 && octet2 <= 31) ||
         (octet1 == 192 && octet2 == 168)) {
-        return MetadataUrlDecision::address_private;
+        return MetadataUrlDecision::eAddressPrivate;
     }
     if (value == 0xFFFFFFFFU) {
-        return MetadataUrlDecision::address_multicast;
+        return MetadataUrlDecision::eAddressMulticast;
     }
     if (octet1 >= 224 && octet1 <= 239) {
-        return MetadataUrlDecision::address_multicast;
+        return MetadataUrlDecision::eAddressMulticast;
     }
     if (octet1 == 0 || octet1 >= 240) {
-        return MetadataUrlDecision::address_reserved;
+        return MetadataUrlDecision::eAddressReserved;
     }
     if (octet1 == 100 && octet2 >= 64 && octet2 <= 127) {
-        return MetadataUrlDecision::address_reserved;
+        return MetadataUrlDecision::eAddressReserved;
     }
     if (octet1 == 192 && octet2 == 0 && (octet3 == 0 || octet3 == 2)) {
-        return MetadataUrlDecision::address_reserved;
+        return MetadataUrlDecision::eAddressReserved;
     }
     if (octet1 == 198 && (octet2 == 18 || octet2 == 19)) {
-        return MetadataUrlDecision::address_reserved;
+        return MetadataUrlDecision::eAddressReserved;
     }
     if (octet1 == 198 && octet2 == 51 && octet3 == 100) {
-        return MetadataUrlDecision::address_reserved;
+        return MetadataUrlDecision::eAddressReserved;
     }
     if (octet1 == 203 && octet2 == 0 && octet3 == 113) {
-        return MetadataUrlDecision::address_reserved;
+        return MetadataUrlDecision::eAddressReserved;
     }
-    return MetadataUrlDecision::allowed;
+    return MetadataUrlDecision::eAllowed;
 }
 
 /// Recognize the ::ffff:a.b.c.d form so an IPv4 target cannot be smuggled through an IPv6 literal.
@@ -331,26 +331,26 @@ MetadataUrlDecision classify_v6(const MetadataFetchPolicy& policy, const net::ip
         return classify_v4(strict, mapped);
     }
     if (address.is_unspecified()) {
-        return MetadataUrlDecision::address_reserved;
+        return MetadataUrlDecision::eAddressReserved;
     }
     if (address.is_loopback()) {
-        return policy.allow_plain_http_loopback ? MetadataUrlDecision::allowed
-                                                : MetadataUrlDecision::address_loopback;
+        return policy.allow_plain_http_loopback ? MetadataUrlDecision::eAllowed
+                                                : MetadataUrlDecision::eAddressLoopback;
     }
     if (address.is_link_local()) {
-        return MetadataUrlDecision::address_link_local;
+        return MetadataUrlDecision::eAddressLinkLocal;
     }
     if (address.is_multicast()) {
-        return MetadataUrlDecision::address_multicast;
+        return MetadataUrlDecision::eAddressMulticast;
     }
     const auto bytes = address.to_bytes();
     if ((bytes[0] & 0xFEU) == 0xFCU) {
-        return MetadataUrlDecision::address_private;
+        return MetadataUrlDecision::eAddressPrivate;
     }
     if (address.is_site_local()) {
-        return MetadataUrlDecision::address_private;
+        return MetadataUrlDecision::eAddressPrivate;
     }
-    return MetadataUrlDecision::allowed;
+    return MetadataUrlDecision::eAllowed;
 }
 
 bool is_loopback_host(const std::string& host) {
@@ -366,31 +366,31 @@ bool is_loopback_host(const std::string& host) {
 
 std::string_view describe(MetadataUrlDecision decision) {
     switch (decision) {
-        case MetadataUrlDecision::allowed:
+        case MetadataUrlDecision::eAllowed:
             return "allowed";
-        case MetadataUrlDecision::malformed_url:
+        case MetadataUrlDecision::eMalformedUrl:
             return "URL is malformed or carries userinfo";
-        case MetadataUrlDecision::scheme_not_allowed:
+        case MetadataUrlDecision::eSchemeNotAllowed:
             return "scheme is not https and the loopback opt-out does not apply";
-        case MetadataUrlDecision::origin_denied:
+        case MetadataUrlDecision::eOriginDenied:
             return "origin is on the application deny list";
-        case MetadataUrlDecision::origin_not_allowed:
+        case MetadataUrlDecision::eOriginNotAllowed:
             return "origin is not on the application allow list";
-        case MetadataUrlDecision::address_link_local:
+        case MetadataUrlDecision::eAddressLinkLocal:
             return "address is link-local";
-        case MetadataUrlDecision::address_private:
+        case MetadataUrlDecision::eAddressPrivate:
             return "address is in a private range";
-        case MetadataUrlDecision::address_loopback:
+        case MetadataUrlDecision::eAddressLoopback:
             return "address is loopback and the loopback opt-out is not enabled";
-        case MetadataUrlDecision::address_multicast:
+        case MetadataUrlDecision::eAddressMulticast:
             return "address is multicast or broadcast";
-        case MetadataUrlDecision::address_reserved:
+        case MetadataUrlDecision::eAddressReserved:
             return "address is reserved or non-routable";
-        case MetadataUrlDecision::redirect_limit_exceeded:
+        case MetadataUrlDecision::eRedirectLimitExceeded:
             return "redirect chain exceeded the configured bound";
-        case MetadataUrlDecision::response_too_large:
+        case MetadataUrlDecision::eResponseTooLarge:
             return "response exceeded the configured size cap";
-        case MetadataUrlDecision::denied_origin_entry_malformed:
+        case MetadataUrlDecision::eDeniedOriginEntryMalformed:
             return "deny list entry is not a bare origin";
     }
     return "refused";
@@ -409,16 +409,16 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
     std::string scheme;
     std::string authority;
     if (!split_url(url, scheme, authority)) {
-        return MetadataUrlDecision::malformed_url;
+        return MetadataUrlDecision::eMalformedUrl;
     }
     // Userinfo is the classic way to make an allowed origin read as the prefix of a hostile one.
     if (authority.find('@') != std::string::npos) {
-        return MetadataUrlDecision::malformed_url;
+        return MetadataUrlDecision::eMalformedUrl;
     }
 
     std::string host;
     if (!authority_host(authority, host)) {
-        return MetadataUrlDecision::malformed_url;
+        return MetadataUrlDecision::eMalformedUrl;
     }
 
     // Canonicalized once, before any list or callback sees it, so a deny entry cannot be bypassed by
@@ -427,15 +427,15 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
     // this far because of a malformed port or an all-dots host is refused outright.
     const auto canonical = canonicalize_origin_parts(scheme + "://" + authority);
     if (!canonical) {
-        return MetadataUrlDecision::malformed_url;
+        return MetadataUrlDecision::eMalformedUrl;
     }
     const auto canonical_origin = format_canonical_origin(*canonical);
     if (denies_origin(policy.denied_origins, canonical_origin)) {
-        return MetadataUrlDecision::origin_denied;
+        return MetadataUrlDecision::eOriginDenied;
     }
     if (!contains_origin(policy.allowed_origins, canonical_origin) &&
         !(policy.origin_allowance && policy.origin_allowance(canonical_origin))) {
-        return MetadataUrlDecision::origin_not_allowed;
+        return MetadataUrlDecision::eOriginNotAllowed;
     }
 
     // Runs on the canonical scheme/host, matching what the origin decision and the origin_allowance
@@ -444,7 +444,7 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
         const auto loopback_opt_out = policy.allow_plain_http_loopback && canonical->scheme == "http" &&
                                       is_loopback_host(canonical->host);
         if (!loopback_opt_out) {
-            return MetadataUrlDecision::scheme_not_allowed;
+            return MetadataUrlDecision::eSchemeNotAllowed;
         }
     }
 
@@ -455,7 +455,7 @@ MetadataUrlDecision validate_metadata_url(const MetadataFetchPolicy& policy, con
     if (!error) {
         return validate_metadata_address(policy, address.to_string());
     }
-    return MetadataUrlDecision::allowed;
+    return MetadataUrlDecision::eAllowed;
 }
 
 MetadataUrlDecision validate_metadata_address(const MetadataFetchPolicy& policy,
@@ -463,7 +463,7 @@ MetadataUrlDecision validate_metadata_address(const MetadataFetchPolicy& policy,
     boost::system::error_code error;
     const auto address = net::ip::make_address(address_literal, error);
     if (error) {
-        return MetadataUrlDecision::malformed_url;
+        return MetadataUrlDecision::eMalformedUrl;
     }
     if (address.is_v6()) {
         return classify_v6(policy, address.to_v6());

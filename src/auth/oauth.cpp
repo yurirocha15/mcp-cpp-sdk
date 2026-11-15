@@ -375,10 +375,10 @@ void require_browser_safe_authorization_endpoint(const MetadataFetchPolicy& poli
         auto any_origin = policy;
         any_origin.origin_allowance = [](const std::string& /*origin*/) { return true; };
         switch (validate_metadata_url(any_origin, endpoint)) {
-            case MetadataUrlDecision::allowed:
-            case MetadataUrlDecision::address_link_local:
-            case MetadataUrlDecision::address_private:
-            case MetadataUrlDecision::address_loopback:
+            case MetadataUrlDecision::eAllowed:
+            case MetadataUrlDecision::eAddressLinkLocal:
+            case MetadataUrlDecision::eAddressPrivate:
+            case MetadataUrlDecision::eAddressLoopback:
                 break;
             default:
                 acceptable = false;
@@ -431,8 +431,8 @@ struct OAuthScopeState {
     /// the retention test: the count returning to its starting value after a churn of scopes is
     /// what says the latches were released rather than parked somewhere.
     static std::atomic<std::size_t>& live() {
-        static std::atomic<std::size_t> count{0};
-        return count;
+        static std::atomic<std::size_t> s_count{0};
+        return s_count;
     }
     static std::size_t live_count() { return live().load(std::memory_order_relaxed); }
 };
@@ -560,7 +560,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// is never resolved and no socket is opened for it.
     static void enforce_url_policy(const MetadataFetchPolicy& policy, const std::string& url) {
         const auto decision = validate_metadata_url(policy, url);
-        if (decision != MetadataUrlDecision::allowed) {
+        if (decision != MetadataUrlDecision::eAllowed) {
             throw MetadataPolicyError(decision, url);
         }
     }
@@ -572,7 +572,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         for (const auto& endpoint : endpoints) {
             auto literal = endpoint.address().to_string();
             const auto decision = validate_metadata_address(policy, literal);
-            if (decision != MetadataUrlDecision::allowed) {
+            if (decision != MetadataUrlDecision::eAllowed) {
                 throw MetadataPolicyError(decision, std::move(literal));
             }
         }
@@ -667,7 +667,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             throw_if_expired(deadline);
             if (error.code() == http::error::body_limit) {
                 // The body is abandoned mid-read rather than buffered to completion.
-                throw MetadataPolicyError(MetadataUrlDecision::response_too_large, exchange->url);
+                throw MetadataPolicyError(MetadataUrlDecision::eResponseTooLarge, exchange->url);
             }
             throw;
         }
@@ -919,7 +919,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 break;
             }
             if (redirect >= redirect_budget) {
-                throw MetadataPolicyError(MetadataUrlDecision::redirect_limit_exceeded, exchange->url);
+                throw MetadataPolicyError(MetadataUrlDecision::eRedirectLimitExceeded, exchange->url);
             }
             const auto location = exchange->response().find(http::field::location);
             if (location == exchange->response().end()) {
@@ -1834,7 +1834,7 @@ struct OAuthAuthorizationManager::Impl {
             // shorthand path: an empty issuer would make every authorization server look like
             // the one these credentials belong to.
             injected.issuer = config.client_issuer;
-            injected.source = ClientIdentitySource::pre_registered;
+            injected.source = ClientIdentitySource::ePreRegistered;
             config.client_identity.pre_registered = std::move(injected);
         }
         if (config.client_identity.metadata.redirect_uris.empty() && !config.redirect_uri.empty()) {
@@ -1964,26 +1964,26 @@ struct OAuthAuthorizationManager::Impl {
         const auto decision = select_client_identity(owner.config.client_identity, operation->facts,
                                                      operation->stored_identity);
         switch (decision) {
-            case ClientIdentityDecision::use_pre_registered: {
+            case ClientIdentityDecision::eUsePreRegistered: {
                 auto identity = *owner.config.client_identity.pre_registered;
-                identity.source = ClientIdentitySource::pre_registered;
+                identity.source = ClientIdentitySource::ePreRegistered;
                 identity.issuer = operation->facts.issuer;
                 co_return identity;
             }
-            case ClientIdentityDecision::use_client_id_metadata_document: {
+            case ClientIdentityDecision::eUseClientIdMetadataDocument: {
                 // The document URL is the client identifier itself, so there is nothing to
                 // register and nothing to persist.
                 OAuthClientInformation identity;
                 identity.client_id = *owner.config.client_identity.client_metadata_url;
                 identity.issuer = operation->facts.issuer;
-                identity.source = ClientIdentitySource::client_id_metadata_document;
+                identity.source = ClientIdentitySource::eClientIdMetadataDocument;
                 co_return identity;
             }
-            case ClientIdentityDecision::reuse_stored_registration:
+            case ClientIdentityDecision::eReuseStoredRegistration:
                 co_return *operation->stored_identity;
-            case ClientIdentityDecision::register_dynamically:
+            case ClientIdentityDecision::eRegisterDynamically:
                 break;
-            case ClientIdentityDecision::unavailable: {
+            case ClientIdentityDecision::eUnavailable: {
                 // `unavailable` covers several causes; say which one, because the unbound-secret
                 // refusal is a configuration mistake the caller can fix and the generic message
                 // would send them looking in the wrong place.
@@ -2017,7 +2017,7 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error("Client registration response omitted client_id");
         }
         registered.issuer = operation->facts.issuer;
-        registered.source = ClientIdentitySource::dynamic_registration;
+        registered.source = ClientIdentitySource::eDynamicRegistration;
         if (owner.config.credential_store) {
             owner.config.credential_store->store(operation->facts.issuer, registered);
         }

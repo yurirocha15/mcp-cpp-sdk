@@ -129,7 +129,7 @@ TEST(SealedStateTest, TruncationAtEveryLengthIsRejected) {
         }
     }
     EXPECT_EQ(opened_ok, 0U);
-    EXPECT_EQ(codec.open(std::string_view(sealed.token).substr(0, 8)).error, ss::OpenError::truncated);
+    EXPECT_EQ(codec.open(std::string_view(sealed.token).substr(0, 8)).error, ss::OpenError::eTruncated);
 }
 
 TEST(SealedStateTest, AppendedDataIsRejected) {
@@ -147,7 +147,7 @@ TEST(SealedStateTest, WrongKeyFailsAuthentication) {
     ASSERT_TRUE(sealed);
     const auto opened = other.open(sealed.token);
     EXPECT_FALSE(opened);
-    EXPECT_EQ(opened.error, ss::OpenError::authentication_failed);
+    EXPECT_EQ(opened.error, ss::OpenError::eAuthenticationFailed);
     EXPECT_TRUE(opened.payload.empty());
 }
 
@@ -156,7 +156,7 @@ TEST(SealedStateTest, UnknownKidIsReportedApartFromABadTag) {
     const auto other = ring({make_key(2, 10)});
     const auto sealed = sealer.seal(g_payload);
     ASSERT_TRUE(sealed);
-    EXPECT_EQ(other.open(sealed.token).error, ss::OpenError::unknown_kid);
+    EXPECT_EQ(other.open(sealed.token).error, ss::OpenError::eUnknownKid);
 }
 
 TEST(SealedStateTest, RotationKeepsOldTokensOpenWhileTheOldKeyIsInTheRing) {
@@ -180,20 +180,20 @@ TEST(SealedStateTest, RotationKeepsOldTokensOpenWhileTheOldKeyIsInTheRing) {
 
     const auto rejected = retired_codec.open(old_token.token);
     EXPECT_FALSE(rejected);
-    EXPECT_EQ(rejected.error, ss::OpenError::unknown_kid);
+    EXPECT_EQ(rejected.error, ss::OpenError::eUnknownKid);
 }
 
 TEST(SealedStateTest, EmptyInputIsReported) {
     const auto codec = ring({make_key(1, 10)});
-    EXPECT_EQ(codec.open("").error, ss::OpenError::empty);
+    EXPECT_EQ(codec.open("").error, ss::OpenError::eEmpty);
 }
 
 TEST(SealedStateTest, OversizedInputIsRejectedBeforeDecoding) {
     const ss::Codec codec({make_key(1, 10)}, 64);
     // Not valid base64url: only the size can explain the cause being too_large rather than
     // bad_encoding.
-    EXPECT_EQ(codec.open(std::string(65, '!')).error, ss::OpenError::too_large);
-    EXPECT_EQ(codec.open(std::string(64, '!')).error, ss::OpenError::bad_encoding);
+    EXPECT_EQ(codec.open(std::string(65, '!')).error, ss::OpenError::eTooLarge);
+    EXPECT_EQ(codec.open(std::string(64, '!')).error, ss::OpenError::eBadEncoding);
 }
 
 TEST(SealedStateTest, SealRefusesAPayloadThatWouldExceedTheCap) {
@@ -207,7 +207,7 @@ TEST(SealedStateTest, SealRefusesAPayloadThatWouldExceedTheCap) {
     for (std::size_t n = 0; n < 200; ++n) {
         const auto result = codec.seal(std::string(n, 'x'));
         if (!result) {
-            EXPECT_EQ(result.error, ss::SealError::too_large);
+            EXPECT_EQ(result.error, ss::SealError::eTooLarge);
             break;
         }
         EXPECT_LE(result.token.size(), 100U);
@@ -215,7 +215,7 @@ TEST(SealedStateTest, SealRefusesAPayloadThatWouldExceedTheCap) {
     }
     EXPECT_GT(largest, 30U);
     EXPECT_LT(largest, 199U);
-    EXPECT_EQ(codec.seal(std::string(largest + 1, 'x')).error, ss::SealError::too_large);
+    EXPECT_EQ(codec.seal(std::string(largest + 1, 'x')).error, ss::SealError::eTooLarge);
 }
 
 TEST(SealedStateTest, Base64GarbageIsRejected) {
@@ -234,9 +234,9 @@ TEST(SealedStateTest, Base64GarbageIsRejected) {
     for (const auto& text : garbage) {
         const auto opened = codec.open(text);
         EXPECT_FALSE(opened);
-        EXPECT_NE(opened.error, ss::OpenError::none);
+        EXPECT_NE(opened.error, ss::OpenError::eNone);
     }
-    EXPECT_EQ(codec.open("!!!!").error, ss::OpenError::bad_encoding);
+    EXPECT_EQ(codec.open("!!!!").error, ss::OpenError::eBadEncoding);
 }
 
 TEST(SealedStateTest, Base64UrlHasOneSpellingPerByteString) {
@@ -262,10 +262,10 @@ TEST(SealedStateTest, Base64UrlHasOneSpellingPerByteString) {
 
 TEST(SealedStateTest, AnEmptyRingCannotSealButTheCodecStillRejectsTokens) {
     const ss::Codec empty_ring({});
-    EXPECT_EQ(empty_ring.seal(g_payload).error, ss::SealError::no_key);
+    EXPECT_EQ(empty_ring.seal(g_payload).error, ss::SealError::eNoKey);
     const auto sealed = ring({make_key(1, 10)}).seal(g_payload);
     ASSERT_TRUE(sealed);
-    EXPECT_EQ(empty_ring.open(sealed.token).error, ss::OpenError::unknown_kid);
+    EXPECT_EQ(empty_ring.open(sealed.token).error, ss::OpenError::eUnknownKid);
 }
 
 TEST(SealedStateTest, DuplicateKeyIdsAreRefused) {
@@ -278,7 +278,7 @@ TEST(SealedStateTest, UnknownVersionIsReportedBeforeTheKeyLookup) {
     ASSERT_TRUE(sealed);
     auto raw = *ss::base64url_decode(sealed.token);
     raw[0] = 2;
-    EXPECT_EQ(codec.open(ss::base64url_encode(raw)).error, ss::OpenError::bad_version);
+    EXPECT_EQ(codec.open(ss::base64url_encode(raw)).error, ss::OpenError::eBadVersion);
 }
 
 TEST(SealedStateTest, KeysAreCopyableForARuntimeSwap) {

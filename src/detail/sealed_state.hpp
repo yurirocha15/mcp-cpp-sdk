@@ -48,43 +48,43 @@ class SealKey {
 };
 
 enum class SealError {
-    none,
+    eNone,
     /// The ring has no keys.
-    no_key,
+    eNoKey,
     /// The token would be longer than the cap.
-    too_large,
+    eTooLarge,
     /// OpenSSL failed (allocation, random source, cipher or KDF).
-    crypto_failure,
+    eCryptoFailure,
 };
 
 enum class OpenError {
-    none,
-    empty,
+    eNone,
+    eEmpty,
     /// Longer than the cap; checked before any decoding.
-    too_large,
+    eTooLarge,
     /// Not canonical unpadded base64url.
-    bad_encoding,
+    eBadEncoding,
     /// Decoded to fewer bytes than a header and a tag.
-    truncated,
-    bad_version,
+    eTruncated,
+    eBadVersion,
     /// The kid names no key in the ring. Counted apart from a bad tag.
-    unknown_kid,
+    eUnknownKid,
     /// The tag did not verify: tampered, truncated, or sealed under another secret.
-    authentication_failed,
+    eAuthenticationFailed,
     /// OpenSSL failed for a reason other than the tag.
-    crypto_failure,
+    eCryptoFailure,
 };
 
 struct SealResult {
     std::string token;
-    SealError error = SealError::none;
-    [[nodiscard]] explicit operator bool() const noexcept { return error == SealError::none; }
+    SealError error = SealError::eNone;
+    [[nodiscard]] explicit operator bool() const noexcept { return error == SealError::eNone; }
 };
 
 struct OpenResult {
     std::string payload;
-    OpenError error = OpenError::none;
-    [[nodiscard]] explicit operator bool() const noexcept { return error == OpenError::none; }
+    OpenError error = OpenError::eNone;
+    [[nodiscard]] explicit operator bool() const noexcept { return error == OpenError::eNone; }
 };
 
 /// Canonical unpadded base64url (RFC 4648 section 5). The decoder rejects padding, other

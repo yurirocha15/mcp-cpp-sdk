@@ -560,7 +560,7 @@ TEST_F(LegacyStreamTest, ClientCallsOverlapAndGetTheServersRequestsAndNotificati
                                                    "http://127.0.0.1:" + std::to_string(port) + "/mcp"),
         io_ctx_.get_executor(), [] {
             mcp::ClientOptions options;
-            options.protocol = mcp::ClientProtocol::Legacy();
+            options.protocol = mcp::ClientProtocol::legacy();
             return options;
         }());
     client->on_elicitation([](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
