@@ -435,7 +435,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   an application registers handlers and opens its `subscriptions/listen`
   streams again. Only an abnormal end (non-zero status or signal) restarts
   the server unless `restart_after_clean_exit` is set, and a server that ends
-  before it is connected never triggers a restart.
+  before it is connected never triggers a restart. Destroying the session shuts
+  the server down and closes its `Client`, also one the application still holds.
 - `ElicitationSchema` builds the `requestedSchema` of a form from typed
   fields: `StringSchema` (length limits, `format`, `default`), `NumberSchema`
   (`number` or `integer`, bounds, `default`), `BooleanSchema`, `EnumSchema`

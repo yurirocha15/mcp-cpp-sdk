@@ -234,6 +234,13 @@ StdioClientSession::~StdioClientSession() {
         client = std::move(impl_->current_client);
         transport = std::move(impl_->transport);
     }
+    // Closed rather than released: a Client the application still holds keeps both alive.
+    if (transport) {
+        transport->close();
+    }
+    if (client) {
+        client->close();
+    }
 }
 
 Task<ConnectResult> StdioClientSession::start() {
