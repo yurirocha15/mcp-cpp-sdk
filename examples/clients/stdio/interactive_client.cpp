@@ -17,26 +17,19 @@
 
 using namespace mcp;
 
-/// The options are taken by value: a coroutine keeps its parameters in its frame, and a reference
-/// to the caller's temporary would dangle once the coroutine first suspends.
-Task<bool> run_client(StdioProcessOptions process) {
+/// The transport is taken by value: a coroutine keeps its parameters in its frame, and a reference
+/// to the caller's object could dangle once the coroutine first suspends. Strings stay out of the
+/// frame across co_await, as docs/contributing.rst asks for GCC 11.
+Task<bool> run_client(std::shared_ptr<StdioClientTransport> transport) {
     auto executor = co_await boost::asio::this_coro::executor;
-
-    std::cerr << "Launching server: " << process.command << "..." << '\n';
-
-    // The transport starts the server process and talks to it over the process's standard input
-    // and output.
-    auto transport = std::make_shared<StdioClientTransport>(executor, std::move(process));
     Client client(transport, executor);
 
     bool ok = true;
     try {
-        Implementation info{"interactive-client", "1.0.0"};
-        ClientCapabilities capabilities;
         // The default ClientProtocol::automatic() speaks 2026-07-28 with a server that serves it
         // and falls back to initialize otherwise.
         {
-            auto connected = co_await client.connect(info, capabilities);
+            auto connected = co_await client.connect("interactive-client", "1.0.0");
             std::cerr << "Protocol version: " << connected.protocolVersion << '\n';
         }
 
@@ -48,13 +41,13 @@ Task<bool> run_client(StdioProcessOptions process) {
         }
 
         if (!tools_result.tools.empty()) {
-            std::string tool_name = tools_result.tools[0].name;
-            std::cerr << "Calling first tool: " << tool_name << "..." << '\n';
+            const auto& tool = tools_result.tools[0];
+            std::cerr << "Calling first tool: " << tool.name << "..." << '\n';
 
             // Empty arguments: a tool that requires some answers with an isError result that names
             // what is missing.
             nlohmann::json args = nlohmann::json::object();
-            auto result = co_await client.call_tool(tool_name, args);
+            auto result = co_await client.call_tool(tool.name, args);
             std::cerr << "Result: " << nlohmann::json(result).dump(2) << '\n';
         }
     } catch (const std::exception& e) {
@@ -80,11 +73,15 @@ int main(int argc, char* argv[]) {
         StdioProcessOptions process;
         process.command = argv[1];
         process.arguments = std::vector<std::string>(argv + 2, argv + argc);
+        std::cerr << "Launching server: " << process.command << "..." << '\n';
 
         boost::asio::io_context io;
+        // The transport starts the server process and talks to it over the process's standard
+        // input and output.
+        auto transport = std::make_shared<StdioClientTransport>(io.get_executor(), std::move(process));
         bool ok = false;
         boost::asio::co_spawn(
-            io, run_client(std::move(process)),
+            io, run_client(std::move(transport)),
             [&ok](const std::exception_ptr& error, bool result) { ok = !error && result; });
         io.run();
 
