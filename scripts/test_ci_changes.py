@@ -20,6 +20,9 @@ import ci_changes  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 ALL_JOBS = set(ci_changes.JOB_INPUTS)
 PACKAGES = {"package_core", "native_package", "homebrew_package", "windows_package"}
+# The package builds run on pushes and manual runs, never on pull requests.
+PACKAGE_BUILDS = PACKAGES - {"package_core"}
+PULL_REQUEST_JOBS = ALL_JOBS - PACKAGE_BUILDS
 LIBRARY_JOBS = {"code", "conan", "naming"}
 # Release modules each job starts, directly or through a script in scripts/release/.
 ENTRY_MODULES = {
@@ -148,7 +151,7 @@ class ClassifierTests(unittest.TestCase):
             "examples/features/pagination.cpp": {"code", "naming"},
             "scripts/run_examples.py": {"code", "release"},
             "scripts/check_doc_snippets.py": {"code", "release"},
-            "test_package/conanfile.py": {"conan"} | PACKAGES,
+            "test_package/conanfile.py": {"conan", "package_core"},
             "LICENSE": {"conan"},
             "benchmark/run.sh": {"benchmark"},
             "test/release/test_signing.py": {"release"},
@@ -158,6 +161,31 @@ class ClassifierTests(unittest.TestCase):
             ".github/workflows/release.yml": {"release"},
             ".github/workflows/release-candidate.yml": {"release"},
             ".github/workflows/conformance.yml": {"release"},
+            "packaging/aur/PKGBUILD.in": {"release", "package_core"},
+            "packaging/debian/control.in": {"release", "package_core"},
+            "release/native-builders/lock.json": {"release", "package_core"},
+            "packaging/homebrew/mcp-cpp-sdk.rb.in": {"release", "package_core"},
+            "scripts/release/validate_homebrew_candidate.sh": {"release", "package_core"},
+            "packaging/chocolatey/mcp-cpp-sdk.nuspec.in": {"release", "package_core"},
+            "scripts/release/build_windows.ps1": {"release", "powershell", "package_core"},
+            "scripts/release/check_powershell_syntax.ps1": {"release", "powershell"},
+            "packaging/targets.json": {"release", "package_core"},
+            "release/construct_core.py": {"release", "package_core"},
+            "scripts/package_build.py": {"release", "package_core"},
+            "CMakeLists.txt": LIBRARY_JOBS | {"release", "package_core"},
+            "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core"},
+            "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release", "package_core"},
+            "VERSION": LIBRARY_JOBS | {"release", "package_core"},
+            "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release", "package_core"},
+            ".github/workflows/ci.yml": PULL_REQUEST_JOBS,
+        }
+        for path, jobs in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(self.jobs_for_change(path), jobs)
+
+    def test_push_builds_the_packages_reading_the_path(self) -> None:
+        expected = {
+            "test_package/conanfile.py": {"conan"} | PACKAGES,
             "packaging/aur/PKGBUILD.in": {"release", "package_core"},
             "packaging/debian/control.in": {"release", "package_core", "native_package"},
             "release/native-builders/lock.json": {"release", "package_core", "native_package"},
@@ -169,7 +197,6 @@ class ClassifierTests(unittest.TestCase):
                 {"release", "package_core", "windows_package"},
             "scripts/release/build_windows.ps1":
                 {"release", "powershell", "package_core", "windows_package"},
-            "scripts/release/check_powershell_syntax.ps1": {"release", "powershell"},
             "packaging/targets.json": {"release"} | PACKAGES,
             "release/construct_core.py": {"release"} | PACKAGES,
             "scripts/package_build.py": {"release"} | PACKAGES,
@@ -182,7 +209,7 @@ class ClassifierTests(unittest.TestCase):
         }
         for path, jobs in expected.items():
             with self.subTest(path=path):
-                self.assertEqual(self.jobs_for_change(path), jobs)
+                self.assertEqual(self.jobs_for_change(path, "push"), jobs)
 
     def test_other_events_also_package_source(self) -> None:
         for path, jobs in (("src/main.cpp", LIBRARY_JOBS), ("test/core/protocol_test.cpp", {"code"}),
@@ -206,7 +233,8 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(self.jobs("pull_request", self.commit()), LIBRARY_JOBS | {"benchmark"})
 
     def test_a_file_no_list_names_runs_every_job(self) -> None:
-        self.assertEqual(self.jobs_for_change("new-directory/file.txt"), ALL_JOBS)
+        self.assertEqual(self.jobs_for_change("new-directory/file.txt", "push"), ALL_JOBS)
+        self.assertEqual(self.jobs_for_change("other-directory/file.txt"), PULL_REQUEST_JOBS)
 
     def test_manual_runs_always_need_every_job(self) -> None:
         self.write("docs/index.rst", "Index, edited\n")
@@ -218,8 +246,9 @@ class ClassifierTests(unittest.TestCase):
         head = self.git("rev-parse", "HEAD")
         for base in ("", ci_changes.ZERO_SHA, "f" * 40):
             with self.subTest(base=base):
-                self.assertEqual(self.jobs("pull_request", head, base=base), ALL_JOBS)
-        self.assertEqual(self.jobs("pull_request", self.commit()), ALL_JOBS)  # empty diff
+                self.assertEqual(self.jobs("push", head, base=base), ALL_JOBS)
+                self.assertEqual(self.jobs("pull_request", head, base=base), PULL_REQUEST_JOBS)
+        self.assertEqual(self.jobs("pull_request", self.commit()), PULL_REQUEST_JOBS)  # empty diff
 
 
 def release_modules(path: Path) -> set[str]:
@@ -286,6 +315,16 @@ class RepositoryTests(unittest.TestCase):
         used = set(re.findall(r"needs\.changes\.outputs\.(\w+)", text))
         self.assertEqual(declared, ALL_JOBS)
         self.assertEqual(used, ALL_JOBS)
+
+    def test_ci_result_needs_every_other_job(self) -> None:
+        text = (ROOT / ci_changes.CI_WORKFLOW).read_text(encoding="utf-8")
+        jobs = text[text.index("\njobs:\n"):]
+        declared = set(re.findall(r"^  ([\w-]+):$", jobs, re.MULTILINE))
+        result = re.search(r"^  result:\n(?:    .*\n|\n)*?    needs:\n((?:      - .+\n)+)", jobs,
+                           re.MULTILINE)
+        self.assertIsNotNone(result)
+        needed = set(re.findall(r"^      - ([\w-]+)$", result.group(1), re.MULTILINE))
+        self.assertEqual(needed, declared - {"result"})
 
     def test_workflow_path_filters_name_tracked_files(self) -> None:
         for workflow in ("conformance.yml", "conformance-guards.yml", "docs.yml"):

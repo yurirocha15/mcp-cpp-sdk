@@ -175,7 +175,9 @@ Aim for >80% code coverage for new features:
    # View report
    open build/coverage/coverage.html
 
-CI uploads the same report from ``build/coverage/coverage.xml`` to
+CI collects the report in its GCC sanitizer build
+(``python scripts/build.py --sanitize --coverage --test``, which writes
+``build/sanitize/coverage.xml``) and uploads it to
 `Codecov <https://app.codecov.io/gh/yurirocha15/mcp-cpp-sdk>`_, which comments
 on pull requests with the coverage of the changed lines.
 
@@ -218,9 +220,12 @@ entropy.
 Distribution Builds
 ^^^^^^^^^^^^^^^^^^^
 
-The builds above use Conan's Boost. CI also builds the native ``.deb`` and
-``.rpm`` packages for every x86_64 release route exactly as a release does:
-inside the locked release builder images (``release/native-builders/lock.json``),
+The builds above use Conan's Boost. When a push to ``main`` changes the source
+or the packaging, CI also builds the Homebrew formula, the Windows payload and
+the native ``.deb`` and ``.rpm`` packages. Pull requests skip these builds;
+running the CI workflow by hand on a branch includes them. The native packages
+cover every x86_64 release route, built exactly as a release does: inside the
+locked release builder images (``release/native-builders/lock.json``),
 with each distribution's compiler, Boost, Python and packaging flags, from
 Boost 1.74 on Ubuntu 22.04 and Debian 12 up. Each build runs the test suite,
 then builds and runs a consumer against the extracted packages and another
