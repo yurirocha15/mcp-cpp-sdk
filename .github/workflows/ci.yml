@@ -26,6 +26,7 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-24.04
     outputs:
+      naming: ${{ steps.classify.outputs.naming }}
       code: ${{ steps.classify.outputs.code }}
       conan: ${{ steps.classify.outputs.conan }}
       release: ${{ steps.classify.outputs.release }}
@@ -48,6 +49,46 @@ jobs:
         EVENT: ${{ github.event_name }}
         BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
       run: python3 scripts/ci_changes.py --event "$EVENT" --base "$BASE" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  naming:
+    # clang-tidy runs only readability-identifier-naming, over src/, include/ and examples/ (what
+    # `make lint` checks). It needs the compile database, so CMake configures against
+    # distribution packages and nothing is built.
+    name: Identifier naming
+    needs: changes
+    if: needs.changes.outputs.naming == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.12'
+
+    - name: Install clang-tidy
+      run: python3 -m pip install clang-tidy==23.1.4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libboost-dev nlohmann-json3-dev libssl-dev
+
+    - name: Configure
+      run: >-
+        cmake -S . -B build/naming -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=ON
+
+    - name: Check identifier naming
+      run: >-
+        find src examples -name '*.cpp' | sort | xargs -P 4 -n 1
+        clang-tidy -p build/naming --quiet
+        --checks='-*,readability-identifier-naming'
+        --warnings-as-errors='readability-identifier-naming'
+        --header-filter="^$PWD/(include|src|examples)/.*"
 
   build:
     name: Build (${{ matrix.os }}, C++${{ matrix.cppstd }}, ${{ matrix.linkage }})
