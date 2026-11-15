@@ -19,10 +19,13 @@
 #include <functional>
 #include <mcp/core/constants.hpp>
 #include <memory>
+#include <optional>
 #include <queue>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -265,6 +268,81 @@ class QueuedWriteTransport final : public mcp::ITransport {
     bool closed_{false};
 };
 
+/// A transport whose write of `slow/request` waits `wait` for a person and reports the wait from a
+/// thread of its own, as ITransport allows.
+class ReportsFromAnotherThreadTransport final : public mcp::ITransport {
+   public:
+    ReportsFromAnotherThreadTransport(const boost::asio::any_io_executor& executor,
+                                      std::chrono::milliseconds wait)
+        : executor_(executor), read_signal_(executor), wait_(wait) {
+        read_signal_.expires_at(std::chrono::steady_clock::time_point::max());
+    }
+
+    void set_interaction_observer(InteractionObserver observer) override {
+        observer_ = std::move(observer);
+    }
+
+    mcp::Task<std::string> read_message() override {
+        for (;;) {
+            if (!incoming_.empty()) {
+                auto message = std::move(incoming_.front());
+                incoming_.pop();
+                co_return message;
+            }
+            if (closed_) {
+                throw std::runtime_error("transport closed");
+            }
+            read_signal_.expires_at(std::chrono::steady_clock::time_point::max());
+            try {
+                co_await read_signal_.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    throw;
+                }
+            }
+        }
+    }
+
+    mcp::Task<void> write_message(std::string_view message) override {
+        const auto request = nlohmann::json::parse(message);
+        if (!request.contains("id")) {
+            co_return;
+        }
+        const auto id = request.at("id").get<std::string>();
+        const auto method = request.value("method", "");
+        if (method == "slow/request") {
+            const auto key = mcp::RequestId{id}.correlation_key();
+            report_from_another_thread(key, true);
+            boost::asio::steady_timer person(executor_, wait_);
+            co_await person.async_wait(boost::asio::use_awaitable);
+            report_from_another_thread(key, false);
+        }
+        respond(id, method == "initialize" ? make_initialize_result() : nlohmann::json{{"ok", true}});
+    }
+
+    void close() override {
+        closed_ = true;
+        read_signal_.cancel();
+    }
+
+   private:
+    void report_from_another_thread(const std::string& key, bool waiting) {
+        std::thread([this, &key, waiting] { observer_(key, waiting); }).join();
+    }
+
+    void respond(const std::string& id, const nlohmann::json& result) {
+        incoming_.push(make_result_response(id, result).dump());
+        read_signal_.cancel();
+    }
+
+    boost::asio::any_io_executor executor_;
+    boost::asio::steady_timer read_signal_;
+    std::chrono::milliseconds wait_;
+    InteractionObserver observer_;
+    std::queue<std::string> incoming_;
+    bool closed_{false};
+};
+
 void run_on_thread_pool(boost::asio::io_context& io_context, std::size_t thread_count = 4) {
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
@@ -322,6 +400,37 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
 
     EXPECT_EQ(result["answer"], 42);
     EXPECT_EQ(client.pending_request_count(), 0);
+}
+
+// A transport may report a wait for a person from any thread, and the deadline still stops for it.
+// The wait lasts as long as the deadline and starts after it, so a deadline that kept running would
+// end the request first, at any speed.
+TEST_F(ClientCoreTest, WaitReportedFromAnotherThreadStopsTheDeadline) {
+    constexpr auto deadline = std::chrono::milliseconds(3000);
+    auto transport =
+        std::make_shared<ReportsFromAnotherThreadTransport>(io_ctx_.get_executor(), deadline);
+    auto options = legacy_client_options();
+    options.request_timeout = deadline;
+    mcp::Client client(transport, io_ctx_.get_executor(), options);
+
+    nlohmann::json result;
+    std::string error;
+    boost::asio::co_spawn(
+        io_ctx_,
+        [&]() -> mcp::Task<void> {
+            try {
+                co_await client.connect("test-client", "0.1");
+                result = co_await client.send_request("slow/request", std::nullopt);
+            } catch (const std::exception& failure) {
+                error = failure.what();
+            }
+            transport->close();
+        },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    EXPECT_EQ(error, "");
+    EXPECT_EQ(result.value("ok", false), true);
 }
 
 TEST_F(ClientCoreTest, RequestsFailImmediatelyBeforeConnect) {
