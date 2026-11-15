@@ -135,6 +135,24 @@ def compiler_launcher():
     return None
 
 
+# ccache reuses a compile that included a precompiled header only with these settings (the
+# "Precompiled headers" section of the ccache manual). The test program builds with one.
+CCACHE_PCH_SLOPPINESS = ("pch_defines", "time_macros", "include_file_mtime", "include_file_ctime")
+
+
+def ccache_pch_sloppiness(current):
+    """Return ccache's sloppiness setting with the precompiled header settings added to current."""
+    settings = [item.strip() for item in current.split(",") if item.strip()]
+    settings += [item for item in CCACHE_PCH_SLOPPINESS if item not in settings]
+    return ",".join(settings)
+
+
+def allow_ccache_pch():
+    current = subprocess.run(["ccache", "--get-config", "sloppiness"], capture_output=True,
+                             text=True, check=False).stdout
+    os.environ["CCACHE_SLOPPINESS"] = ccache_pch_sloppiness(current)
+
+
 def cmake_configure(build_dir, build_type, toolchain, *extra_args):
     ensure_cmake_in_path()
     setup_msvc_env()
@@ -143,6 +161,8 @@ def cmake_configure(build_dir, build_type, toolchain, *extra_args):
     if launcher:
         launcher_args = [f"-DCMAKE_C_COMPILER_LAUNCHER={launcher}",
                          f"-DCMAKE_CXX_COMPILER_LAUNCHER={launcher}"]
+    if launcher == "ccache":
+        allow_ccache_pch()
     run(
         "cmake", "-B", build_dir,
         f"-DCMAKE_TOOLCHAIN_FILE={toolchain.resolve()}",
