@@ -12,7 +12,7 @@ Examples that ARE run:
   - example-client-stdio: Launches example-server-stdio as a child process
 
 Examples NOT run:
-  - example-interactive-client: Interactive client, waits for stdin input
+  - example-interactive-client: Needs the path of a server to launch
   - example-server-stdio: Server blocks waiting for stdio connection
   - example-server-simple: Server blocks waiting for stdio connection
   - example-debugger-server: Server, blocks waiting for a stdio or HTTP client

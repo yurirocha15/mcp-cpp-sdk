@@ -869,8 +869,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   which read the lambda's captures after it was destroyed; the server refused
   the curl commands of the llama.cpp and LLDB example READMEs; the LLDB example
   stopped answering requests while LLDB waited for the debugged process; the
-  stdio client example read its own standard input instead of launching a
-  server; `graceful_shutdown()` did not say that its watchdog keeps
+  stdio client examples read their own standard input instead of launching a
+  server, and the interactive one kept its server path as a reference to a
+  destroyed temporary; `graceful_shutdown()` did not say that its watchdog keeps
   `io_context::run()` going until the timeout unless cancelled; and several
   pages included the wrong lines of the examples.
 - With libc++, an exception of `nlohmann_json` that the shared library

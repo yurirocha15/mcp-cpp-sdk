@@ -1,83 +1,98 @@
 /// @file interactive_client.cpp
-/// @brief Minimal interactive MCP client over stdio.
+/// @brief Minimal MCP client that launches a stdio server, lists its tools and calls the first.
 ///
-/// @note On the stdio transport, stdout IS the protocol channel: StdioTransport
-///   writes JSON-RPC messages there by default. Every human-readable line in
-///   this file therefore goes to stderr. Diagnostics printed to stdout would
-///   interleave prose with JSON-RPC and corrupt the stream for the peer.
+/// Usage: example-interactive-client <server_executable_path> [server arguments...]
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <cstdlib>
 #include <iostream>
 #include <mcp/client/client.hpp>
-#include <mcp/transport/stdio.hpp>
+#include <mcp/transport/stdio_client.hpp>
+#include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace mcp;
 
-Task<void> run_client(const std::string& server_path) {
+/// The options are taken by value: a coroutine keeps its parameters in its frame, and a reference
+/// to the caller's temporary would dangle once the coroutine first suspends.
+Task<bool> run_client(StdioProcessOptions process) {
     auto executor = co_await boost::asio::this_coro::executor;
 
-    std::cerr << "Connecting to server: " << server_path << "..." << '\n';
+    std::cerr << "Launching server: " << process.command << "..." << '\n';
 
-    // Simple stdio transport for demonstration.
-    // In a real client, you would spawn the server process and connect its pipes.
-    auto transport = std::make_unique<StdioTransport>(executor);
-    Client client(std::move(transport), executor);
+    // The transport starts the server process and talks to it over the process's standard input
+    // and output.
+    auto transport = std::make_shared<StdioClientTransport>(executor, std::move(process));
+    Client client(transport, executor);
 
-    Implementation info{"interactive-client", "1.0.0"};
+    bool ok = true;
     try {
-        // The default ClientProtocol::automatic() speaks 2026-07-28 with a server that serves it and
-        // falls back to initialize otherwise.
+        Implementation info{"interactive-client", "1.0.0"};
+        ClientCapabilities capabilities;
+        // The default ClientProtocol::automatic() speaks 2026-07-28 with a server that serves it
+        // and falls back to initialize otherwise.
         {
-            auto connected = co_await client.connect(info, {});
+            auto connected = co_await client.connect(info, capabilities);
             std::cerr << "Protocol version: " << connected.protocolVersion << '\n';
         }
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to connect: " << e.what() << '\n';
-        co_return;
-    }
 
-    std::cerr << "Connected! Listing tools..." << '\n';
-
-    auto tools_result = co_await client.list_tools();
-    for (const auto& tool : tools_result.tools) {
-        std::cerr << "- " << tool.name << ": " << tool.description.value_or("(no description)") << '\n';
-    }
-
-    if (!tools_result.tools.empty()) {
-        std::string tool_name = tools_result.tools[0].name;
-        std::cerr << "Calling first tool: " << tool_name << "..." << '\n';
-
-        nlohmann::json args = nlohmann::json::object();
-        try {
-            auto result = co_await client.call_tool(tool_name, args);
-            std::cerr << "Result: " << nlohmann::json(result.content).dump(2) << '\n';
-        } catch (const std::exception& e) {
-            std::cerr << "Error calling tool: " << e.what() << '\n';
+        std::cerr << "Connected! Listing tools..." << '\n';
+        auto tools_result = co_await client.list_tools();
+        for (const auto& tool : tools_result.tools) {
+            std::cerr << "- " << tool.name << ": " << tool.description.value_or("(no description)")
+                      << '\n';
         }
+
+        if (!tools_result.tools.empty()) {
+            std::string tool_name = tools_result.tools[0].name;
+            std::cerr << "Calling first tool: " << tool_name << "..." << '\n';
+
+            // Empty arguments: a tool that requires some answers with an isError result that names
+            // what is missing.
+            nlohmann::json args = nlohmann::json::object();
+            auto result = co_await client.call_tool(tool_name, args);
+            std::cerr << "Result: " << nlohmann::json(result).dump(2) << '\n';
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << '\n';
+        ok = false;
     }
 
-    co_return;
+    // End the session, then the server process, and wait for it to exit.
+    client.close();
+    const ProcessExit exit = co_await transport->shutdown();
+    std::cerr << "Server exited with code " << exit.code << '\n';
+    co_return ok;
 }
 
 int main(int argc, char* argv[]) {
     try {
         if (argc < 2) {
-            std::cerr << "Usage: " << argv[0] << " <server_executable_path>" << '\n';
-            // return 1;
+            std::cerr << "Usage: " << argv[0] << " <server_executable_path> [server arguments...]"
+                      << '\n';
+            return EXIT_FAILURE;
         }
 
+        StdioProcessOptions process;
+        process.command = argv[1];
+        process.arguments = std::vector<std::string>(argv + 2, argv + argc);
+
         boost::asio::io_context io;
-        boost::asio::co_spawn(io, run_client(argc > 1 ? argv[1] : ""), boost::asio::detached);
+        bool ok = false;
+        boost::asio::co_spawn(
+            io, run_client(std::move(process)),
+            [&ok](const std::exception_ptr& error, bool result) { ok = !error && result; });
         io.run();
 
-        return 0;
+        return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";
-        return 1;
+        return EXIT_FAILURE;
     } catch (...) {
-        return 1;
+        return EXIT_FAILURE;
     }
 }

@@ -23,7 +23,7 @@ If you have Node.js installed, you can run it without installation:
 
 .. code-block:: bash
 
-   npx @modelcontextprotocol/inspector /path/to/your/build/examples/servers/stdio/example-server-stdio
+   npx @modelcontextprotocol/inspector /path/to/your/repo/build/release/example-server-stdio
 
 The inspector will launch a local web server (usually at ``http://localhost:3000``)
 where you can see your server's capabilities and trigger its tools.
@@ -36,11 +36,12 @@ directly from your terminal:
 
 .. code-block:: bash
 
-   ./build/example-interactive-client /path/to/your/build/examples/servers/stdio/example-server-stdio
+   ./build/release/example-interactive-client /path/to/your/repo/build/release/example-server-stdio
 
-This client will connect to your server, list its tools, and attempt to call
-the first available tool, providing an end-to-end "proof of life" for your
-transport and schema logic.
+This client launches your server as a child process, connects to it over its
+standard input and output, lists its tools, and calls the first one with empty
+arguments, providing an end-to-end "proof of life" for your transport and
+schema logic. Arguments after the server path are passed to the server.
 
 Desktop Client Integrations
 ---------------------------
@@ -62,7 +63,7 @@ To use your C++ MCP server with Claude Desktop, add it to your
    {
      "mcpServers": {
        "my-cpp-server": {
-         "command": "/path/to/your/repo/build/examples/servers/stdio/example-server-stdio",
+         "command": "/path/to/your/repo/build/release/example-server-stdio",
          "args": []
        }
      }
