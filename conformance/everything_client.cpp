@@ -1,7 +1,11 @@
-// Scenario-driven client fixture for the official MCP conformance runner.
+// Scenario-driven client fixture for the official MCP conformance runner. The 2025-11-25 scenarios
+// and the 2026-07-28 request-shape scenarios share it; MCP_CONFORMANCE_SCENARIO names the one to run.
 
+#include <mcp/auth/client_credentials.hpp>
+#include <mcp/auth/enterprise_authorization.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
+#include <mcp/client/skills.hpp>
 #include <mcp/transport/http_client.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -19,12 +23,15 @@
 #include <exception>
 #include <future>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -64,6 +71,16 @@ std::optional<std::string> optional_environment(std::string_view name) {
     return std::string(value);
 }
 
+/// The runner names the revision under test in MCP_CONFORMANCE_PROTOCOL_VERSION when it is given
+/// --spec-version. Unset, the client keeps its default protocol detection.
+mcp::ClientOptions client_options_from_environment() {
+    mcp::ClientOptions options;
+    if (const auto version = optional_environment("MCP_CONFORMANCE_PROTOCOL_VERSION")) {
+        options.protocol = mcp::ClientProtocol::pinned(*version);
+    }
+    return options;
+}
+
 nlohmann::json apply_schema_defaults(const nlohmann::json& request) {
     nlohmann::json content = nlohmann::json::object();
     if (!request.contains("requestedSchema")) {
@@ -100,7 +117,10 @@ void install_reverse_rpc_handlers(mcp::Client& client) {
     });
 }
 
-mcp::Task<mcp::InitializeResult> connect_conformance_client(mcp::Client& client) {
+/// The scenario being run; the authorization extension scenarios declare their extension.
+std::string g_scenario;
+
+mcp::Task<mcp::ConnectResult> connect_conformance_client(mcp::Client& client) {
     mcp::Implementation implementation;
     implementation.name = "mcp-cpp-sdk-conformance-client";
     implementation.version = "0.2.0";
@@ -111,6 +131,11 @@ mcp::Task<mcp::InitializeResult> connect_conformance_client(mcp::Client& client)
     capabilities.elicitation = std::move(elicitation);
     capabilities.sampling = mcp::ClientCapabilities::SamplingCapability{};
     capabilities.roots = mcp::ClientCapabilities::RootsCapability{false};
+    if (g_scenario.starts_with("auth/client-credentials")) {
+        mcp::auth::declare_client_credentials_support(capabilities);
+    } else if (g_scenario == "auth/enterprise-managed-authorization") {
+        mcp::auth::declare_enterprise_authorization_support(capabilities);
+    }
 
     return client.connect(implementation, capabilities);
 }
@@ -149,6 +174,174 @@ mcp::Task<void> run_scope_step_up(mcp::Client& client) {
     client.close();
 }
 
+/// The credentials and test values the runner hands the fixture out of band, if it handed it any.
+std::optional<nlohmann::json> conformance_context();
+
+/// Arguments that satisfy the required properties of a tool's input schema.
+nlohmann::json minimal_arguments(const nlohmann::json& schema) {
+    nlohmann::json arguments = nlohmann::json::object();
+    if (!schema.contains("required") || !schema.at("required").is_array() ||
+        !schema.contains("properties") || !schema.at("properties").is_object()) {
+        return arguments;
+    }
+    for (const auto& name : schema.at("required")) {
+        const auto& property =
+            schema.at("properties").value(name.get<std::string>(), nlohmann::json::object());
+        const auto type =
+            property.is_object() ? property.value("type", std::string("string")) : "string";
+        if (type == "integer" || type == "number") {
+            arguments[name.get<std::string>()] = 0;
+        } else if (type == "boolean") {
+            arguments[name.get<std::string>()] = false;
+        } else if (type == "array") {
+            arguments[name.get<std::string>()] = nlohmann::json::array();
+        } else if (type == "object") {
+            arguments[name.get<std::string>()] = nlohmann::json::object();
+        } else {
+            arguments[name.get<std::string>()] = "test-default";
+        }
+    }
+    return arguments;
+}
+
+/// Runs one call of a scenario and reports an error instead of ending the scenario: the scenario's
+/// mock server judges what was sent, and several scenarios answer some calls with errors.
+mcp::Task<void> try_call_tool(mcp::Client& client, std::string name, nlohmann::json arguments) {
+    try {
+        (void)co_await client.call_tool(name, arguments);
+    } catch (const std::exception& error) {
+        std::cerr << "tools/call " << name << " failed: " << error.what() << '\n';
+    }
+}
+
+/// Lists the server's tools and calls each one, then reads its resources and gets its prompts.
+/// The mock servers of the request-metadata, standard-header and invalid-tool-header scenarios judge
+/// the requests this sends; a tool the client left out of the list is never called.
+mcp::Task<void> run_server_walk(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    const auto tools = co_await client.list_tools();
+    for (const auto& tool : tools.tools) {
+        nlohmann::json arguments = minimal_arguments(tool.inputSchema);
+        co_await try_call_tool(client, tool.name, std::move(arguments));
+    }
+    try {
+        const auto resources = co_await client.list_resources();
+        for (const auto& resource : resources.resources) {
+            (void)co_await client.read_resource(resource.uri);
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "resources failed: " << error.what() << '\n';
+    }
+    try {
+        const auto prompts = co_await client.list_prompts();
+        for (const auto& prompt : prompts.prompts) {
+            (void)co_await client.get_prompt(prompt.name);
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "prompts failed: " << error.what() << '\n';
+    }
+    client.close();
+}
+
+/// Lists the tools, whose schemas carry a `$ref` the client must not fetch.
+mcp::Task<void> run_list_tools_only(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    (void)co_await client.list_tools();
+    client.close();
+}
+
+/// Calls the tools the runner names in its context with the arguments it names.
+mcp::Task<void> run_custom_headers(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    (void)co_await client.list_tools();
+    const auto context = conformance_context();
+    if (context && context->contains("toolCalls")) {
+        for (const auto& call : context->at("toolCalls")) {
+            std::string name = call.at("name").get<std::string>();
+            nlohmann::json arguments = call.value("arguments", nlohmann::json::object());
+            co_await try_call_tool(client, std::move(name), std::move(arguments));
+        }
+    }
+    client.close();
+}
+
+/// Calls the tools of the request-state scenario one after the other; each answer to a question
+/// comes from the elicitation handler.
+mcp::Task<void> run_request_state(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    (void)co_await client.list_tools();
+    const std::vector<std::string> names = {"test_mrtr_echo_state", "test_mrtr_no_state",
+                                            "test_mrtr_unrelated", "test_mrtr_no_result_type"};
+    for (const auto& name : names) {
+        nlohmann::json arguments = nlohmann::json::object();
+        co_await try_call_tool(client, name, std::move(arguments));
+    }
+    client.close();
+}
+
+/// Sends the schema of the focal tool back through the scenario's echo tool, unchanged.
+mcp::Task<void> run_schema_preservation(mcp::Client& client) {
+    (void)co_await connect_conformance_client(client);
+    const auto tools = co_await client.list_tools();
+    for (const auto& tool : tools.tools) {
+        if (tool.name == "json_schema_2020_12_tool") {
+            nlohmann::json arguments = nlohmann::json::object();
+            arguments["schema"] = tool.inputSchema;
+            co_await try_call_tool(client, "json_schema_echo", std::move(arguments));
+        }
+    }
+    client.close();
+}
+
+/// The `key: value` lines of a SKILL.md's frontmatter block, as strings.
+std::map<std::string, std::string> skill_frontmatter(const std::string& text) {
+    std::map<std::string, std::string> fields;
+    std::istringstream lines(text);
+    std::string line;
+    if (!std::getline(lines, line) || line != "---") {
+        return fields;
+    }
+    while (std::getline(lines, line) && line != "---") {
+        const auto colon = line.find(": ");
+        if (colon != std::string::npos) {
+            fields[line.substr(0, colon)] = line.substr(colon + 2);
+        }
+    }
+    return fields;
+}
+
+/// Whether the frontmatter of a fetched SKILL.md says what the skill's entry says.
+bool frontmatter_matches(const mcp::Skill& entry, const std::string& text) {
+    const auto fields = skill_frontmatter(text);
+    for (const auto& [key, value] : entry.frontmatter.items()) {
+        const auto found = fields.find(key);
+        if (found == fields.end() || !value.is_string() || found->second != value.get<std::string>()) {
+            return false;
+        }
+    }
+    return fields.size() == entry.frontmatter.size();
+}
+
+/// Lists a server's skills. Unless the scenario is the no-prefetch one, loads the first skill: reads
+/// its SKILL.md, which the SDK checks against the listed size and digest, compares the frontmatter,
+/// and reads the supporting files only when every check holds.
+mcp::Task<void> run_skills_host(mcp::Client& client, std::string_view scenario) {
+    (void)co_await connect_conformance_client(client);
+    const auto listing = co_await mcp::skills::list_skills(client);
+    if (scenario != "sep-2640-client-no-prefetch" && !listing.skills.empty()) {
+        const auto& entry = listing.skills.front();
+        const auto skill_md = co_await mcp::skills::read_skill_file(client, entry, entry.uri);
+        if (frontmatter_matches(entry, skill_md)) {
+            for (const auto& resource : entry.resources) {
+                if (resource.uri != entry.uri) {
+                    (void)co_await mcp::skills::read_skill_file(client, entry, resource.uri);
+                }
+            }
+        }
+    }
+    client.close();
+}
+
 mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
     if (scenario == "initialize") {
         return run_initialize(client);
@@ -166,6 +359,25 @@ mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
         // Kept narrow on purpose: other auth fixtures use server builders that never register
         // "test-tool", and only scope-retry-limit tolerates a client error.
         return run_scope_step_up(client);
+    }
+    if (scenario == "request-metadata" || scenario == "http-standard-headers" ||
+        scenario == "http-invalid-tool-headers") {
+        return run_server_walk(client);
+    }
+    if (scenario == "json-schema-ref-no-deref") {
+        return run_list_tools_only(client);
+    }
+    if (scenario == "http-custom-headers") {
+        return run_custom_headers(client);
+    }
+    if (scenario == "sep-2322-client-request-state") {
+        return run_request_state(client);
+    }
+    if (scenario == "json-schema-2020-12-preservation") {
+        return run_schema_preservation(client);
+    }
+    if (scenario.starts_with("sep-2640-client-")) {
+        return run_skills_host(client, scenario);
     }
     if (scenario.starts_with("auth/")) {
         // Every other authorization scenario drives the same flow: one authenticated MCP request.
@@ -185,12 +397,12 @@ mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
 
 /// The client ID metadata document this fixture publishes. It is never fetched during the flow;
 /// the URL is the client identifier itself.
-constexpr std::string_view g_client_metadata_url =
+constexpr std::string_view g_CLIENT_METADATA_URL =
     "https://conformance-test.local/client-metadata.json";
 
 /// Redirect URI registered for the flow. The authorization server only echoes it back in a
 /// `Location` header, so nothing ever connects to it.
-constexpr std::string_view g_redirect_uri = "http://127.0.0.1:8080/callback";
+constexpr std::string_view g_REDIRECT_URI = "http://127.0.0.1:8080/callback";
 
 struct RedirectLeg {
     std::string host;
@@ -361,8 +573,8 @@ mcp::auth::OAuthAuthorizationConfig make_authorization_config(boost::asio::io_co
                                                               const std::string& server_url) {
     mcp::auth::OAuthAuthorizationConfig config;
     config.server_url = server_url;
-    config.redirect_uri = std::string(g_redirect_uri);
-    config.client_identity.client_metadata_url = std::string(g_client_metadata_url);
+    config.redirect_uri = std::string(g_REDIRECT_URI);
+    config.client_identity.client_metadata_url = std::string(g_CLIENT_METADATA_URL);
     config.client_identity.metadata.client_name = "mcp-cpp-sdk-conformance-client";
     config.credential_store = std::make_shared<mcp::auth::InMemoryClientCredentialStore>();
     config.policy = make_fetch_policy(server_url);
@@ -378,11 +590,60 @@ mcp::auth::OAuthAuthorizationConfig make_authorization_config(boost::asio::io_co
             // A secret must name the issuer it belongs to or the SDK refuses to present it.
             injected.issuer = resolve_injected_issuer(io_context, server_url, *context);
         }
-        injected.source = mcp::auth::ClientIdentitySource::pre_registered;
+        injected.source = mcp::auth::ClientIdentitySource::ePreRegistered;
         config.client_identity.pre_registered = std::move(injected);
     }
 
     return config;
+}
+
+/// The authenticator of the authorization extension scenarios, which authorize without a person: the
+/// runner hands over the credentials in `MCP_CONFORMANCE_CONTEXT`. Null for every other scenario.
+std::shared_ptr<mcp::auth::Authenticator> make_machine_authenticator(
+    const boost::asio::any_io_executor& executor, std::string_view scenario,
+    const std::string& server_url) {
+    const bool client_credentials = scenario.starts_with("auth/client-credentials");
+    if (!client_credentials && scenario != "auth/enterprise-managed-authorization") {
+        return nullptr;
+    }
+    const auto context = conformance_context();
+    if (!context) {
+        throw std::runtime_error("MCP_CONFORMANCE_CONTEXT is required for " + std::string(scenario));
+    }
+    auto token_store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+
+    if (client_credentials) {
+        mcp::auth::ClientCredentialsConfig config;
+        config.server_url = server_url;
+        config.policy = make_fetch_policy(server_url);
+        config.client.client_id = context->at("client_id").get<std::string>();
+        if (context->contains("private_key_pem")) {
+            mcp::auth::PrivateKeyJwtConfig key;
+            key.private_key_pem = context->at("private_key_pem").get<std::string>();
+            if (context->contains("signing_algorithm")) {
+                key.algorithm = context->at("signing_algorithm").get<std::string>();
+            }
+            config.client.private_key_jwt = std::move(key);
+        } else {
+            config.client.client_secret = context->at("client_secret").get<std::string>();
+        }
+        return std::make_shared<mcp::auth::ClientCredentialsAuthenticator>(executor, token_store,
+                                                                           std::move(config));
+    }
+
+    mcp::auth::EnterpriseAuthorizationConfig config;
+    config.server_url = server_url;
+    config.policy = make_fetch_policy(server_url);
+    config.idp_token_endpoint = context->at("idp_token_endpoint").get<std::string>();
+    config.idp_client.client_id = context->at("idp_client_id").get<std::string>();
+    config.client.client_id = context->at("client_id").get<std::string>();
+    config.client.client_secret = context->at("client_secret").get<std::string>();
+    auto id_token = context->at("idp_id_token").get<std::string>();
+    return std::make_shared<mcp::auth::EnterpriseAuthorizationAuthenticator>(
+        executor, token_store, std::move(config),
+        [id_token]() -> mcp::Task<mcp::auth::IdentityAssertion> {
+            co_return mcp::auth::IdentityAssertion{id_token};
+        });
 }
 
 }  // namespace
@@ -395,6 +656,7 @@ int main(int argc, char** argv) {
 
     try {
         auto scenario = required_environment("MCP_CONFORMANCE_SCENARIO");
+        g_scenario = scenario;
         std::string server_url = argv[argc - 1];
 
         boost::asio::io_context io_context;
@@ -402,8 +664,9 @@ int main(int argc, char** argv) {
 
         // Built before the transport exists, because binding runner-supplied credentials to their
         // issuer may need a discovery round trip that drives this io_context to completion first.
+        auto machine_authenticator = make_machine_authenticator(executor, scenario, server_url);
         std::optional<mcp::auth::OAuthAuthorizationConfig> authorization_config;
-        if (std::string_view(scenario).starts_with("auth/")) {
+        if (!machine_authenticator && std::string_view(scenario).starts_with("auth/")) {
             authorization_config = make_authorization_config(io_context, server_url);
         }
 
@@ -417,7 +680,12 @@ int main(int argc, char** argv) {
             transport = std::make_shared<mcp::auth::OAuthClientTransport>(transport, manager);
         }
 
-        mcp::Client client(transport, executor);
+        if (machine_authenticator) {
+            transport =
+                std::make_shared<mcp::auth::OAuthClientTransport>(transport, machine_authenticator);
+        }
+
+        mcp::Client client(transport, executor, client_options_from_environment());
         install_reverse_rpc_handlers(client);
 
         auto completion =

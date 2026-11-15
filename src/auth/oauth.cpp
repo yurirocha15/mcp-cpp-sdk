@@ -1,5 +1,6 @@
 #include <mcp/auth/oauth.hpp>
 
+#include "../detail/constants.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/socket_deadline.hpp"
@@ -11,6 +12,8 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include <mcp/core/constants.hpp>
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 
 #include <algorithm>
@@ -49,6 +52,8 @@
 #include <utility>
 #include <vector>
 
+namespace jsonrpc = mcp::constants::jsonrpc;
+
 // GCC 11 SSO Coroutine Safety -- see docs/contributing.rst "Known Issues".
 // Strings and string-containing protocol values that cross a suspension point
 // live in shared operation state rather than directly in coroutine frames.
@@ -66,23 +71,28 @@ std::string base64_encode(const unsigned char* data, std::size_t len) {
     result.reserve(((len + 2) / 3) * 4);
 
     for (std::size_t i = 0; i < len; i += 3) {
-        unsigned int value = static_cast<unsigned int>(data[i]) << constants::g_shift16;
+        unsigned int value = static_cast<unsigned int>(data[i])
+                             << mcp::detail::constants::encoding::g_SHIFT_16;
         if (i + 1 < len) {
-            value |= static_cast<unsigned int>(data[i + 1]) << constants::g_shift8;
+            value |= static_cast<unsigned int>(data[i + 1])
+                     << mcp::detail::constants::encoding::g_SHIFT_8;
         }
         if (i + 2 < len) {
             value |= static_cast<unsigned int>(data[i + 2]);
         }
 
-        result.push_back(
-            mcp::constants::g_alphabet[(value >> constants::g_shift18) & constants::g_mask0x3F]);
-        result.push_back(
-            mcp::constants::g_alphabet[(value >> constants::g_shift12) & constants::g_mask0x3F]);
-        result.push_back(
-            (i + 1 < len)
-                ? mcp::constants::g_alphabet[(value >> constants::g_shift6) & constants::g_mask0x3F]
-                : '=');
-        result.push_back((i + 2 < len) ? mcp::constants::g_alphabet[value & constants::g_mask0x3F]
+        result.push_back(mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                             [(value >> mcp::detail::constants::encoding::g_SHIFT_18) &
+                              mcp::detail::constants::encoding::g_MASK_0X3F]);
+        result.push_back(mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                             [(value >> mcp::detail::constants::encoding::g_SHIFT_12) &
+                              mcp::detail::constants::encoding::g_MASK_0X3F]);
+        result.push_back((i + 1 < len) ? mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                                             [(value >> mcp::detail::constants::encoding::g_SHIFT_6) &
+                                              mcp::detail::constants::encoding::g_MASK_0X3F]
+                                       : '=');
+        result.push_back((i + 2 < len) ? mcp::detail::constants::encoding::g_BASE64_ALPHABET
+                                             [value & mcp::detail::constants::encoding::g_MASK_0X3F]
                                        : '=');
     }
 
@@ -103,8 +113,9 @@ std::string base64url_encode(const unsigned char* data, std::size_t len) {
     return encoded;
 }
 
-std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input) {
-    std::array<unsigned char, constants::g_sha256_digest_length> digest{};
+std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> sha256(
+    const std::string& input) {
+    std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> digest{};
     unsigned int digest_len = 0;
 
     std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
@@ -118,7 +129,8 @@ std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::s
 }
 
 std::string generate_random_string(std::size_t length) {
-    static const std::size_t s_charset_size = mcp::constants::g_unreserved_chars.size();
+    static const std::size_t s_charset_size =
+        mcp::detail::constants::encoding::g_UNRESERVED_CHARS.size();
     static const auto s_bias_limit =
         static_cast<unsigned char>((256 / s_charset_size) * s_charset_size);
 
@@ -130,7 +142,8 @@ std::string generate_random_string(std::size_t length) {
             throw std::runtime_error("RAND_bytes failed");
         }
         if (byte < s_bias_limit) {
-            result.push_back(mcp::constants::g_unreserved_chars[byte % s_charset_size]);
+            result.push_back(
+                mcp::detail::constants::encoding::g_UNRESERVED_CHARS[byte % s_charset_size]);
         }
     }
     return result;
@@ -146,8 +159,10 @@ std::string url_encode(const std::string& value) {
             result.push_back(static_cast<char>(ch));
         } else {
             result.push_back('%');
-            result.push_back(mcp::constants::g_hex_digits_upper[ch >> constants::g_shift4]);
-            result.push_back(mcp::constants::g_hex_digits_upper[ch & constants::g_mask0x0F]);
+            result.push_back(mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER
+                                 [ch >> mcp::detail::constants::encoding::g_SHIFT_4]);
+            result.push_back(mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER
+                                 [ch & mcp::detail::constants::encoding::g_MASK_0X0F]);
         }
     }
     return result;
@@ -167,8 +182,8 @@ std::string build_form_body(const KeyValuePairList& params) {
 }  // namespace detail
 
 PkcePair generate_pkce_pair(std::size_t verifier_length) {
-    if (verifier_length < constants::g_min_verifier_length ||
-        verifier_length > constants::g_max_verifier_length) {
+    if (verifier_length < mcp::constants::oauth::g_MIN_VERIFIER_LENGTH ||
+        verifier_length > mcp::constants::oauth::g_MAX_VERIFIER_LENGTH) {
         throw std::invalid_argument("PKCE verifier length must be 43-128 characters");
     }
 
@@ -246,8 +261,6 @@ void InMemoryTokenStore::remove(const std::string& server_url) {
 }
 
 namespace {
-
-constexpr std::string_view g_https_prefix = "https://";
 
 /// Flattens peer-controlled text -- control characters, bidi overrides and ill-formed UTF-8 -- and
 /// caps it, so a value a peer chose cannot forge or reorder a line of a diagnostic. Every throw
@@ -344,6 +357,40 @@ bool resource_identifies_server(const std::string& resource, const std::string& 
            server_path[resource_path.size()] == '/';
 }
 
+/// Throws unless `endpoint` is fit to hand the application as the authorization URL, which it opens
+/// in a browser. The server names it, so it must be an absolute `https` URL (`http` only on loopback,
+/// when the policy allows plain HTTP there), outside the policy's denied origins, without a fragment
+/// (RFC 6749 §3.1), and made only of characters a URI may contain (RFC 3986 §2). A different origin
+/// from the other endpoints is allowed: the SDK never connects to this one, the browser does.
+void require_browser_safe_authorization_endpoint(const MetadataFetchPolicy& policy,
+                                                 const std::string& endpoint) {
+    const auto uri_character = [](unsigned char character) {
+        return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+               (character >= '0' && character <= '9') ||
+               std::string_view("-._~:/?[]@!$&'()*+,;=%").find(static_cast<char>(character)) !=
+                   std::string_view::npos;
+    };
+    bool acceptable = !endpoint.empty() && std::all_of(endpoint.begin(), endpoint.end(), uri_character);
+    if (acceptable) {
+        auto any_origin = policy;
+        any_origin.origin_allowance = [](const std::string& /*origin*/) { return true; };
+        switch (validate_metadata_url(any_origin, endpoint)) {
+            case MetadataUrlDecision::eAllowed:
+            case MetadataUrlDecision::eAddressLinkLocal:
+            case MetadataUrlDecision::eAddressPrivate:
+            case MetadataUrlDecision::eAddressLoopback:
+                break;
+            default:
+                acceptable = false;
+        }
+    }
+    if (!acceptable) {
+        throw std::runtime_error(
+            "Authorization server metadata named an authorization endpoint that is not a plain https "
+            "URL");
+    }
+}
+
 /// Throws unless `resource` is present and identifies `server_url`.
 ///
 /// Called before the SDK contacts anything the protected-resource document names, so a document
@@ -384,8 +431,8 @@ struct OAuthScopeState {
     /// the retention test: the count returning to its starting value after a churn of scopes is
     /// what says the latches were released rather than parked somewhere.
     static std::atomic<std::size_t>& live() {
-        static std::atomic<std::size_t> count{0};
-        return count;
+        static std::atomic<std::size_t> s_count{0};
+        return s_count;
     }
     static std::size_t live_count() { return live().load(std::memory_order_relaxed); }
 };
@@ -453,14 +500,14 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         std::string scheme;
         std::string default_port;
         std::size_t prefix_length = 0;
-        if (url.starts_with(mcp::constants::g_http_prefix)) {
+        if (url.starts_with(mcp::detail::constants::url::g_HTTP_PREFIX)) {
             scheme = "http";
             default_port = "80";
-            prefix_length = mcp::constants::g_http_prefix.size();
-        } else if (url.starts_with(g_https_prefix)) {
+            prefix_length = mcp::detail::constants::url::g_HTTP_PREFIX.size();
+        } else if (url.starts_with(mcp::detail::constants::url::g_HTTPS_PREFIX)) {
             scheme = "https";
             default_port = "443";
-            prefix_length = g_https_prefix.size();
+            prefix_length = mcp::detail::constants::url::g_HTTPS_PREFIX.size();
         } else {
             throw std::invalid_argument(
                 "OAuth HTTP client URL must use the http:// or https:// scheme");
@@ -513,7 +560,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// is never resolved and no socket is opened for it.
     static void enforce_url_policy(const MetadataFetchPolicy& policy, const std::string& url) {
         const auto decision = validate_metadata_url(policy, url);
-        if (decision != MetadataUrlDecision::allowed) {
+        if (decision != MetadataUrlDecision::eAllowed) {
             throw MetadataPolicyError(decision, url);
         }
     }
@@ -525,7 +572,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         for (const auto& endpoint : endpoints) {
             auto literal = endpoint.address().to_string();
             const auto decision = validate_metadata_address(policy, literal);
-            if (decision != MetadataUrlDecision::allowed) {
+            if (decision != MetadataUrlDecision::eAllowed) {
                 throw MetadataPolicyError(decision, std::move(literal));
             }
         }
@@ -575,7 +622,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         // exchange, so a name that resolves differently later cannot redirect it.
         const mcp::detail::SocketDeadline deadline(
             exchange->stream->get_executor(), exchange->stream->socket(),
-            std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
         try {
             co_await exchange->stream->async_connect(exchange->endpoints, net::use_awaitable);
         } catch (const boost::system::system_error&) {
@@ -598,7 +645,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
         const mcp::detail::SocketDeadline deadline(
             exchange->stream->get_executor(), exchange->stream->socket(),
-            std::chrono::seconds(mcp::constants::g_http_timeout_seconds));
+            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
         try {
             co_await http::async_write(*exchange->stream, request, net::use_awaitable);
         } catch (const boost::system::system_error&) {
@@ -620,7 +667,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             throw_if_expired(deadline);
             if (error.code() == http::error::body_limit) {
                 // The body is abandoned mid-read rather than buffered to completion.
-                throw MetadataPolicyError(MetadataUrlDecision::response_too_large, exchange->url);
+                throw MetadataPolicyError(MetadataUrlDecision::eResponseTooLarge, exchange->url);
             }
             throw;
         }
@@ -828,6 +875,16 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                   std::move(authorization)));
     }
 
+    Task<nlohmann::json> post_form(std::string url, const KeyValuePairList& params,
+                                   std::string authorization,
+                                   std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
+        return on_strand(strand,
+                         run_post_json(make_exchange(std::move(url), std::move(scope)),
+                                       std::make_shared<std::string>(detail::build_form_body(params)),
+                                       "application/x-www-form-urlencoded", "Token request",
+                                       std::move(authorization)));
+    }
+
     Task<nlohmann::json> post_json(std::string url, std::string body,
                                    std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
         // Sanitized where the label is built, not where it is thrown: `url` is moved into the
@@ -852,7 +909,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             exchange->reset();
 
             http::request<http::empty_body> request(http::verb::get, exchange->parsed.path,
-                                                    mcp::constants::g_http_version_11);
+                                                    mcp::detail::constants::http_client::g_VERSION_11);
             request.set(http::field::host, exchange->parsed.host_header);
             request.set(http::field::accept, "application/json");
             co_await exchange_once(exchange, request);
@@ -862,7 +919,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 break;
             }
             if (redirect >= redirect_budget) {
-                throw MetadataPolicyError(MetadataUrlDecision::redirect_limit_exceeded, exchange->url);
+                throw MetadataPolicyError(MetadataUrlDecision::eRedirectLimitExceeded, exchange->url);
             }
             const auto location = exchange->response().find(http::field::location);
             if (location == exchange->response().end()) {
@@ -872,7 +929,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             exchange->url = resolve_redirect_target(exchange->url, std::string(location->value()));
         }
 
-        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
+        if (exchange->response().result_int() >=
+            mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST) {
             throw std::runtime_error("HTTP GET " + sanitize_for_diagnostics(exchange->url) +
                                      " failed with status " +
                                      std::to_string(exchange->response().result_int()));
@@ -901,7 +959,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         exchange->reset();
 
         http::request<http::string_body> request(http::verb::post, exchange->parsed.path,
-                                                 mcp::constants::g_http_version_11);
+                                                 mcp::detail::constants::http_client::g_VERSION_11);
         request.set(http::field::host, exchange->parsed.host_header);
         request.set(http::field::content_type, content_type);
         request.set(http::field::accept, "application/json");
@@ -912,7 +970,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         request.prepare_payload();
         co_await exchange_once(exchange, request);
 
-        if (exchange->response().result_int() >= mcp::constants::g_http_bad_request) {
+        if (exchange->response().result_int() >=
+            mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST) {
             throw std::runtime_error(failure_label + " failed with status " +
                                      std::to_string(exchange->response().result_int()) + ": " +
                                      sanitize_for_diagnostics(exchange->response().body()));
@@ -1077,6 +1136,11 @@ Task<nlohmann::json> OAuthHttpClient::post_json(const std::string& url, const nl
     return impl_->post_json(url, body.dump());
 }
 
+Task<nlohmann::json> OAuthHttpClient::post_form(const std::string& url, const KeyValuePairList& params,
+                                                const std::string& authorization) {
+    return impl_->post_form(url, params, authorization);
+}
+
 namespace internal {
 
 std::size_t live_scope_latch_count() { return detail::OAuthScopeState::live_count(); }
@@ -1113,6 +1177,12 @@ Task<nlohmann::json> OAuthHttpClientScope::get_json(const std::string& url) {
 Task<nlohmann::json> OAuthHttpClientScope::post_json(const std::string& url,
                                                      const nlohmann::json& body) {
     return impl_->post_json(url, body.dump(), state_);
+}
+
+Task<nlohmann::json> OAuthHttpClientScope::post_form(const std::string& url,
+                                                     const KeyValuePairList& params,
+                                                     const std::string& authorization) {
+    return impl_->post_form(url, params, authorization, state_);
 }
 
 void OAuthHttpClientScope::abort() { impl_->abort_matching(state_); }
@@ -1406,6 +1476,12 @@ Task<ProtectedResourceMetadata> OAuthDiscoveryClient::discover_protected_resourc
 
 Task<AuthServerMetadata> OAuthDiscoveryClient::discover_auth_server(const std::string& issuer_url) {
     return Impl::discover_auth_server(impl_, issuer_url);
+}
+
+void OAuthDiscoveryClient::forget_protected_resource(
+    const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url) {
+    std::lock_guard lock(impl_->cache_mutex);
+    impl_->resource_cache.erase(challenge_metadata_url.value_or(resource_url));
 }
 
 void OAuthDiscoveryClient::clear_cache() {
@@ -1758,7 +1834,7 @@ struct OAuthAuthorizationManager::Impl {
             // shorthand path: an empty issuer would make every authorization server look like
             // the one these credentials belong to.
             injected.issuer = config.client_issuer;
-            injected.source = ClientIdentitySource::pre_registered;
+            injected.source = ClientIdentitySource::ePreRegistered;
             config.client_identity.pre_registered = std::move(injected);
         }
         if (config.client_identity.metadata.redirect_uris.empty() && !config.redirect_uri.empty()) {
@@ -1794,9 +1870,11 @@ struct OAuthAuthorizationManager::Impl {
     /// requested at all. An explicit configured scope overrides both. The two sources are never
     /// merged with each other: the spec forbids assuming any set relationship between them. Scope
     /// already granted by an earlier authorization *is* merged in, because a 403 step-up challenge
-    /// names only what the refused operation needed.
+    /// names only what the refused operation needed; only what `issuer` itself granted, since a
+    /// scope means nothing to another authorization server.
     static std::optional<std::string> select_scope(const Impl& owner, const BearerChallenge& challenge,
-                                                   const ProtectedResourceMetadata& resource) {
+                                                   const ProtectedResourceMetadata& resource,
+                                                   const std::string& issuer) {
         if (owner.config.scope) {
             return owner.config.scope;
         }
@@ -1809,9 +1887,42 @@ struct OAuthAuthorizationManager::Impl {
         std::optional<std::string> granted;
         {
             std::lock_guard lock(owner.state_mutex);
-            granted = owner.granted_scope;
+            granted = granted_scope_for(owner, issuer);
         }
         return union_scopes(selected, granted);
+    }
+
+    /// The scope `issuer` granted, held under `state_mutex`, which the caller holds.
+    static std::optional<std::string> granted_scope_for(const Impl& owner, const std::string& issuer) {
+        if (owner.granted && owner.granted->issuer == issuer) {
+            return owner.granted->scope;
+        }
+        return std::nullopt;
+    }
+
+    /// Whether `challenge` is an insufficient-scope refusal whose every scope `issuer` already
+    /// granted. Authorizing again would ask for what the token carries, so the user would be
+    /// prompted for a grant the server has just shown it does not honor. Only a literal match
+    /// counts: a scope the server grants under another spelling, or through a hierarchy, is not
+    /// recognised here, and then the challenge is acted on as usual.
+    static bool adds_no_new_scope(const Impl& owner, const BearerChallenge& challenge,
+                                  const std::string& issuer) {
+        if (challenge.error != "insufficient_scope" || !challenge.scope || challenge.scope->empty()) {
+            return false;
+        }
+        std::optional<std::string> granted;
+        {
+            std::lock_guard lock(owner.state_mutex);
+            granted = granted_scope_for(owner, issuer);
+        }
+        if (!granted) {
+            return false;
+        }
+        const auto held = split_scopes(*granted);
+        const auto wanted = split_scopes(*challenge.scope);
+        return !wanted.empty() && std::all_of(wanted.begin(), wanted.end(), [&held](const auto& scope) {
+            return std::find(held.begin(), held.end(), scope) != held.end();
+        });
     }
 
     /// Record the four authorization-server facts client identity selection turns on.
@@ -1853,26 +1964,26 @@ struct OAuthAuthorizationManager::Impl {
         const auto decision = select_client_identity(owner.config.client_identity, operation->facts,
                                                      operation->stored_identity);
         switch (decision) {
-            case ClientIdentityDecision::use_pre_registered: {
+            case ClientIdentityDecision::eUsePreRegistered: {
                 auto identity = *owner.config.client_identity.pre_registered;
-                identity.source = ClientIdentitySource::pre_registered;
+                identity.source = ClientIdentitySource::ePreRegistered;
                 identity.issuer = operation->facts.issuer;
                 co_return identity;
             }
-            case ClientIdentityDecision::use_client_id_metadata_document: {
+            case ClientIdentityDecision::eUseClientIdMetadataDocument: {
                 // The document URL is the client identifier itself, so there is nothing to
                 // register and nothing to persist.
                 OAuthClientInformation identity;
                 identity.client_id = *owner.config.client_identity.client_metadata_url;
                 identity.issuer = operation->facts.issuer;
-                identity.source = ClientIdentitySource::client_id_metadata_document;
+                identity.source = ClientIdentitySource::eClientIdMetadataDocument;
                 co_return identity;
             }
-            case ClientIdentityDecision::reuse_stored_registration:
+            case ClientIdentityDecision::eReuseStoredRegistration:
                 co_return *operation->stored_identity;
-            case ClientIdentityDecision::register_dynamically:
+            case ClientIdentityDecision::eRegisterDynamically:
                 break;
-            case ClientIdentityDecision::unavailable: {
+            case ClientIdentityDecision::eUnavailable: {
                 // `unavailable` covers several causes; say which one, because the unbound-secret
                 // refusal is a configuration mistake the caller can fix and the generic message
                 // would send them looking in the wrong place.
@@ -1906,7 +2017,7 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error("Client registration response omitted client_id");
         }
         registered.issuer = operation->facts.issuer;
-        registered.source = ClientIdentitySource::dynamic_registration;
+        registered.source = ClientIdentitySource::eDynamicRegistration;
         if (owner.config.credential_store) {
             owner.config.credential_store->store(operation->facts.issuer, registered);
         }
@@ -1930,7 +2041,16 @@ struct OAuthAuthorizationManager::Impl {
             auth_server.authorization_response_iss_parameter_supported.value_or(false);
         request.client_id = identity.client_id;
         request.redirect_uri = owner.config.redirect_uri;
-        request.scope = select_scope(owner, challenge, resource);
+        request.scope = select_scope(owner, challenge, resource, auth_server.issuer);
+        // Added after selection so it never enters a step-up union as if a challenge had named it,
+        // and only when the server lists it: a client must not assume a refresh token is issued.
+        // A scope the application configured is used as it is.
+        if (owner.config.request_offline_access && !owner.config.scope &&
+            auth_server.scopes_supported &&
+            std::find(auth_server.scopes_supported->begin(), auth_server.scopes_supported->end(),
+                      "offline_access") != auth_server.scopes_supported->end()) {
+            request.scope = union_scopes(request.scope, std::string("offline_access"));
+        }
         // Defence in depth: `run_challenge` already rejected an unidentified resource before any
         // outbound request. Re-checking here is a pure string comparison that cannot fail on that
         // path, and keeps `build_request` correct if a second caller ever appears.
@@ -1993,12 +2113,27 @@ struct OAuthAuthorizationManager::Impl {
             require_resource_identifies_server(resource.resource, owner->config.server_url);
         };
 
-        // The challenge's own metadata URL wins over the well-known fallback order.
-        operation->resource_metadata = co_await operation->discovery->discover_protected_resource(
-            owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
+        // A challenge means the token in hand was refused, so the resource may have moved to another
+        // authorization server since the metadata was cached. Reading it again is what lets the
+        // client notice and authorize, with credentials of its own, at the server named now.
+        operation->discovery->forget_protected_resource(owner.config.server_url,
+                                                        operation->challenge.resource_metadata);
 
-        operation->auth_metadata = co_await operation->discovery->discover_auth_server(
-            operation->resource_metadata->authorization_servers.front());
+        // The challenge's own metadata URL wins over the well-known fallback order. A fetch that
+        // fails because cancel() aborted it is reported as the cancellation it is.
+        try {
+            operation->resource_metadata = co_await operation->discovery->discover_protected_resource(
+                owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
+
+            operation->auth_metadata = co_await operation->discovery->discover_auth_server(
+                operation->resource_metadata->authorization_servers.front());
+        } catch (...) {
+            std::lock_guard lock(owner.state_mutex);
+            if (operation->flight->cancelled) {
+                throw std::runtime_error("OAuth authorization attempt was cancelled");
+            }
+            throw;
+        }
         // RFC 8414 §3.3: the issuer a metadata document claims MUST be the location it was fetched
         // from, compared byte-exact. Normalizing here would re-open the AS mix-up this closes.
         if (operation->auth_metadata->issuer.empty() ||
@@ -2013,6 +2148,8 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error(
                 "Authorization server metadata omitted an authorization or token endpoint");
         }
+        require_browser_safe_authorization_endpoint(owner.config.policy,
+                                                    operation->auth_metadata->authorization_endpoint);
         // MCP authorization: PKCE support is known only from the metadata, and a server that does
         // not list S256 in code_challenge_methods_supported must not receive an authorization
         // request.
@@ -2022,6 +2159,11 @@ struct OAuthAuthorizationManager::Impl {
             throw std::runtime_error(
                 "Authorization server metadata does not list S256 in "
                 "code_challenge_methods_supported");
+        }
+
+        // After the issuer is known and before anything is registered or asked of the user.
+        if (adds_no_new_scope(owner, operation->challenge, operation->auth_metadata->issuer)) {
+            co_return false;
         }
 
         operation->facts = server_facts(*operation->auth_metadata);
@@ -2061,8 +2203,9 @@ struct OAuthAuthorizationManager::Impl {
             owner.token_config = operation->token_config;
             // What the server actually granted, falling back to what was asked for when the token
             // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
-            owner.granted_scope =
+            const auto& granted_scope =
                 operation->token.scope ? operation->token.scope : operation->request.scope;
+            owner.granted = GrantedScope{operation->request.issuer, granted_scope};
         }
         owner.token_store->store(owner.config.server_url, operation->token);
         co_return true;
@@ -2367,7 +2510,12 @@ struct OAuthAuthorizationManager::Impl {
     std::optional<AuthorizationRequest> last_request;
     std::optional<OAuthClientInformation> last_identity;
     std::optional<OAuthConfig> token_config;
-    std::optional<std::string> granted_scope;
+    /// The scope the last successful authorization was granted, with the issuer that granted it.
+    struct GrantedScope {
+        std::string issuer;
+        std::optional<std::string> scope;
+    };
+    std::optional<GrantedScope> granted;
     /// Non-null exactly while one authorization flow is running; cancelling it releases the
     /// requests that coalesced onto it.
     std::shared_ptr<Flight> flight;
@@ -2433,6 +2581,46 @@ struct OAuthAuthorizationManager::Impl {
     }
 };
 
+namespace {
+
+/// A client metadata document URL must use https (the scheme is case-insensitive) and carry a
+/// path, without a fragment, a username or password, or single-dot and double-dot path segments:
+/// any of them would make it a different client identifier than the one the document names.
+bool is_valid_client_metadata_url(const std::string& url) {
+    constexpr std::string_view scheme = "https://";
+    if (url.size() < scheme.size() || url.find('#') != std::string::npos ||
+        !std::equal(scheme.begin(), scheme.end(), url.begin(), [](char expected, char actual) {
+            return std::tolower(static_cast<unsigned char>(actual)) == expected;
+        })) {
+        return false;
+    }
+    const auto authority_end = url.find_first_of("/?", scheme.size());
+    if (authority_end == std::string::npos || authority_end == scheme.size() ||
+        url[authority_end] != '/') {
+        return false;
+    }
+    if (url.find('@', scheme.size()) < authority_end) {
+        return false;
+    }
+    const auto path_end = std::min(url.find('?', authority_end), url.size());
+    const std::string_view path(url.data() + authority_end + 1, path_end - authority_end - 1);
+    for (std::size_t start = 0; start <= path.size();) {
+        const auto slash = path.find('/', start);
+        const auto segment =
+            path.substr(start, slash == std::string_view::npos ? slash : slash - start);
+        if (segment == "." || segment == "..") {
+            return false;
+        }
+        if (slash == std::string_view::npos) {
+            break;
+        }
+        start = slash + 1;
+    }
+    return true;
+}
+
+}  // namespace
+
 OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
                                                      std::shared_ptr<TokenStore> token_store,
                                                      OAuthAuthorizationConfig config,
@@ -2448,6 +2636,13 @@ OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor&
         throw std::invalid_argument(
             "OAuthAuthorizationConfig sets client_id, client_secret or client_issuer alongside "
             "client_identity.pre_registered; set only one of them");
+    }
+    const auto& metadata_url = config.client_identity.client_metadata_url;
+    if (metadata_url && !metadata_url->empty() && !is_valid_client_metadata_url(*metadata_url)) {
+        throw std::invalid_argument(
+            "client_identity.client_metadata_url must be an https URL with a path and no "
+            "fragment: " +
+            sanitize_for_diagnostics(*metadata_url));
     }
     impl_ = std::make_shared<Impl>(executor, std::move(token_store), std::move(config),
                                    std::move(callback));
@@ -2511,6 +2706,43 @@ struct OAuthClientTransport::Impl {
         // user to authorize again would not change that.
         bool authorized_after_unauthorized{false};
         int authorization_attempts{0};
+        std::size_t step_ups{0};
+    };
+
+    /// Reports that `operation`'s write is waiting for the authenticator to handle a challenge, and
+    /// that it has stopped, to the observer the caller of the transport installed. It holds only
+    /// shared pointers, so it is safe to keep in a coroutine frame.
+    class InteractionScope {
+       public:
+        InteractionScope(std::shared_ptr<Impl> owner, std::shared_ptr<WriteOperation> operation)
+            : owner_(std::move(owner)), operation_(std::move(operation)) {
+            notify(true);
+        }
+        InteractionScope(const InteractionScope&) = delete;
+        InteractionScope& operator=(const InteractionScope&) = delete;
+        ~InteractionScope() { notify(false); }
+
+       private:
+        void notify(bool waiting) noexcept {
+            if (!operation_->request_key) {
+                return;
+            }
+            try {
+                ITransport::InteractionObserver observer;
+                {
+                    std::lock_guard lock(owner_->observer_mutex);
+                    observer = owner_->interaction_observer;
+                }
+                if (observer) {
+                    observer(*operation_->request_key, waiting);
+                }
+            } catch (...) {
+                // An observer that throws must not turn a finished write into a crash.
+            }
+        }
+
+        std::shared_ptr<Impl> owner_;
+        std::shared_ptr<WriteOperation> operation_;
     };
 
     /// At most three authorization challenges are honoured per logical request, so a server that
@@ -2624,7 +2856,7 @@ struct OAuthClientTransport::Impl {
     static std::string inject_token(const std::shared_ptr<Impl>& owner, JSONRPCRequest request) {
         const auto token = owner->authenticator->get_access_token();
         if (token.empty()) {
-            return nlohmann::json(request).dump();
+            return mcp::detail::dump_json(nlohmann::json(request));
         }
         if (!request.params) {
             request.params = nlohmann::json::object();
@@ -2637,7 +2869,7 @@ struct OAuthClientTransport::Impl {
             params["_meta"] = nlohmann::json::object();
         }
         params["_meta"]["auth_token"] = token;
-        return nlohmann::json(request).dump();
+        return mcp::detail::dump_json(nlohmann::json(request));
     }
 
     static std::shared_ptr<WriteOperation> prepare_write(std::shared_ptr<Impl> owner,
@@ -2773,6 +3005,14 @@ struct OAuthClientTransport::Impl {
                 (operation->refresh_allowed && operation->authorized_after_unauthorized)) {
                 break;
             }
+            // A step-up asks for consent to a wider scope, which a server could ask for without
+            // end; the application sets how many one request may cost.
+            if (!operation->refresh_allowed) {
+                if (operation->step_ups >= operation->owner->options.max_step_ups_per_request) {
+                    break;
+                }
+                ++operation->step_ups;
+            }
             ++operation->authorization_attempts;
 
             bool authorized = false;
@@ -2791,6 +3031,7 @@ struct OAuthClientTransport::Impl {
                     operation->authorized_after_unauthorized =
                         operation->authorized_after_unauthorized || operation->refresh_allowed;
                     throw_if_closed(*operation->owner);
+                    InteractionScope waiting_for_person(operation->owner, operation);
                     authorized = co_await await_unless_closed(
                         operation->owner, operation->owner->authenticator->try_handle_challenge(
                                               operation->authenticate_challenge));
@@ -2824,7 +3065,7 @@ struct OAuthClientTransport::Impl {
             } else if (const auto* error = std::get_if<JSONRPCErrorResponse>(&message);
                        error && error->id) {
                 key = error->id->correlation_key();
-                unauthorized = error->error.code == g_UNAUTHORIZED;
+                unauthorized = error->error.code == jsonrpc::g_UNAUTHORIZED;
             }
             if (!key) {
                 return {};
@@ -2882,6 +3123,8 @@ struct OAuthClientTransport::Impl {
     std::uint64_t next_generation{0};
     bool closed{false};
     bool uses_http_authorization_header{false};
+    std::mutex observer_mutex;
+    ITransport::InteractionObserver interaction_observer;
 };
 
 OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
@@ -2908,6 +3151,15 @@ OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
 }
 
 Task<std::string> OAuthClientTransport::read_message() { return Impl::read(impl_); }
+
+bool OAuthClientTransport::overlapping_writes() const noexcept {
+    return impl_->inner->overlapping_writes();
+}
+
+void OAuthClientTransport::set_interaction_observer(InteractionObserver observer) {
+    std::lock_guard lock(impl_->observer_mutex);
+    impl_->interaction_observer = std::move(observer);
+}
 
 Task<void> OAuthClientTransport::write_message(std::string_view message) {
     return Impl::write(impl_, std::make_shared<const std::string>(message));

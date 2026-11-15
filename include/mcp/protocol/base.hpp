@@ -1,7 +1,10 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <mcp/core/constants.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -39,69 +42,9 @@ inline bool has_json_value(const nlohmann::json& json_obj, const char* key) {
 
 // MCP Protocol Constants
 
-/**
- * @brief JSON-RPC error code for unauthorized request.
- */
-inline constexpr int g_UNAUTHORIZED = -32000;
-
-/**
- * @brief JSON-RPC error code for request timeout.
- */
-inline constexpr int g_REQUEST_TIMEOUT = -32001;
-
-/**
- * @brief JSON-RPC-compatible client error code used when the transport closes.
- */
-inline constexpr int g_CONNECTION_CLOSED = -32002;
-
 // Error-code allocation policy: -32000..-32019 is a grandfathered legacy band
 // (pre-existing codes above); -32020..-32099 is the spec-reserved band for
 // codes introduced by newer MCP spec revisions, such as the ones below.
-
-/**
- * @brief JSON-RPC error code for a mismatched or missing required header.
- */
-inline constexpr int g_HEADER_MISMATCH = -32020;
-
-/**
- * @brief JSON-RPC error code for a missing required client capability.
- */
-inline constexpr int g_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
-
-/**
- * @brief JSON-RPC error code for an unsupported protocol version.
- */
-inline constexpr int g_UNSUPPORTED_PROTOCOL_VERSION = -32022;
-
-/**
- * @brief JSON-RPC error code for invalid requests.
- */
-inline constexpr int g_INVALID_REQUEST = -32600;
-
-/**
- * @brief JSON-RPC error code for method not found.
- */
-inline constexpr int g_METHOD_NOT_FOUND = -32601;
-
-/**
- * @brief JSON-RPC error code for invalid parameters.
- */
-inline constexpr int g_INVALID_PARAMS = -32602;
-
-/**
- * @brief JSON-RPC error code for internal errors.
- */
-inline constexpr int g_INTERNAL_ERROR = -32603;
-
-/**
- * @brief JSON-RPC error code for parse errors.
- */
-inline constexpr int g_PARSE_ERROR = -32700;
-
-/**
- * @brief JSON-RPC error code for request cancelled.
- */
-inline constexpr int g_REQUEST_CANCELLED = -32800;
 
 /**
  * @brief The sender or recipient of messages and data in a conversation.
@@ -173,13 +116,28 @@ inline void to_json(nlohmann::json& json_obj, const RequestId& id) {
     std::visit([&json_obj](auto&& val) { json_obj = val; }, id.value);
 }
 
+namespace detail {
+
+/// Whether @p value can be a request id: a string, or an integer that fits in int64_t. A larger one
+/// could not be echoed back unchanged, so its answer would never be matched to the request.
+[[nodiscard]] inline bool is_request_id(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() <=
+               static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    }
+    return value.is_string() || value.is_number_integer();
+}
+
+}  // namespace detail
+
 inline void from_json(const nlohmann::json& json_obj, RequestId& id) {
+    if (!detail::is_request_id(json_obj)) {
+        throw std::invalid_argument("RequestId must be a string or an integer within int64_t");
+    }
     if (json_obj.is_string()) {
         id.value = json_obj.get<std::string>();
-    } else if (json_obj.is_number_integer()) {
-        id.value = json_obj.get<int64_t>();
     } else {
-        throw std::invalid_argument("RequestId must be a string or integer");
+        id.value = json_obj.get<int64_t>();
     }
 }
 
@@ -195,6 +153,29 @@ struct Error {
     std::optional<nlohmann::json> data;  ///< Additional information about the error.
 };
 
+namespace detail {
+
+/// Whether @p value is a number that is not an integer in the range of int. JSON does not tell
+/// -32601 from -32601.0, so a float with no fraction counts as an integer.
+[[nodiscard]] inline bool is_number_outside_int(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    }
+    if (value.is_number_integer()) {
+        const auto number = value.get<std::int64_t>();
+        return number < std::numeric_limits<int>::min() || number > std::numeric_limits<int>::max();
+    }
+    if (value.is_number_float()) {
+        const auto number = value.get<double>();
+        return !(number >= static_cast<double>(std::numeric_limits<int>::min()) &&
+                 number <= static_cast<double>(std::numeric_limits<int>::max()) &&
+                 number == std::trunc(number));
+    }
+    return false;
+}
+
+}  // namespace detail
+
 inline void to_json(nlohmann::json& json_obj, const Error& error) {
     json_obj = nlohmann::json{{"code", error.code}, {"message", error.message}};
     if (error.data) {
@@ -203,7 +184,13 @@ inline void to_json(nlohmann::json& json_obj, const Error& error) {
 }
 
 inline void from_json(const nlohmann::json& json_obj, Error& error) {
-    json_obj.at("code").get_to(error.code);
+    // A numeric code that does not fit is still an error: converting it would be undefined
+    // behaviour, and refusing it would leave the caller waiting for an answer.
+    if (detail::is_number_outside_int(json_obj.at("code"))) {
+        error.code = mcp::constants::jsonrpc::g_INTERNAL_ERROR;
+    } else {
+        json_obj.at("code").get_to(error.code);
+    }
     // JSON-RPC 2.0 requires `message`, but a peer that omits it or sends it as null has still
     // told us which error occurred. Decoding to an empty message keeps `code` -- the part a
     // caller acts on -- rather than discarding the whole error object.
@@ -228,57 +215,43 @@ enum class TaskStatus : std::uint8_t {
     eWorking         ///< Task is currently in progress.
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(TaskStatus, {{TaskStatus::eCancelled, "cancelled"},
-                                          {TaskStatus::eCompleted, "completed"},
-                                          {TaskStatus::eFailed, "failed"},
-                                          {TaskStatus::eInputRequired, "input_required"},
-                                          {TaskStatus::eWorking, "working"}})
-
-/**
- * @brief Metadata about a related task.
- */
-struct RelatedTaskMetadata {
-    std::string id;                    ///< The ID of the related task.
-    std::optional<std::string> title;  ///< An optional title.
-};
-
-inline void to_json(nlohmann::json& j, const RelatedTaskMetadata& t) {
-    j = nlohmann::json{{"id", t.id}};
-    if (t.title) {
-        j["title"] = *t.title;
+inline void to_json(nlohmann::json& json_obj, const TaskStatus& status) {
+    switch (status) {
+        case TaskStatus::eCancelled:
+            json_obj = "cancelled";
+            return;
+        case TaskStatus::eCompleted:
+            json_obj = "completed";
+            return;
+        case TaskStatus::eFailed:
+            json_obj = "failed";
+            return;
+        case TaskStatus::eInputRequired:
+            json_obj = "input_required";
+            return;
+        case TaskStatus::eWorking:
+            json_obj = "working";
+            return;
     }
-}
-inline void from_json(const nlohmann::json& j, RelatedTaskMetadata& t) {
-    j.at("id").get_to(t.id);
-    if (detail::has_json_value(j, "title")) {
-        t.title = j.at("title").get<std::string>();
-    }
+    throw std::invalid_argument("Unknown task status");
 }
 
-/**
- * @brief Metadata for augmenting a request with task execution.
- */
-struct TaskMetadata {
-    std::optional<int64_t> ttl;  ///< Requested retention duration from creation in milliseconds.
-    std::optional<std::vector<RelatedTaskMetadata>> relatedTasks;  ///< Related tasks.
-};
-
-inline void to_json(nlohmann::json& json_obj, const TaskMetadata& meta) {
-    json_obj = nlohmann::json::object();
-    if (meta.ttl) {
-        json_obj["ttl"] = *meta.ttl;
-    }
-    if (meta.relatedTasks) {
-        json_obj["relatedTasks"] = *meta.relatedTasks;
-    }
-}
-
-inline void from_json(const nlohmann::json& json_obj, TaskMetadata& meta) {
-    if (detail::has_json_value(json_obj, "ttl")) {
-        meta.ttl = json_obj.at("ttl").get<int64_t>();
-    }
-    if (detail::has_json_value(json_obj, "relatedTasks")) {
-        meta.relatedTasks = json_obj.at("relatedTasks").get<std::vector<RelatedTaskMetadata>>();
+/// Not NLOHMANN_JSON_SERIALIZE_ENUM, which gives a value it does not know the first entry: a task
+/// from a server that sends something else would then read as cancelled.
+inline void from_json(const nlohmann::json& json_obj, TaskStatus& status) {
+    const auto& text = json_obj.get_ref<const std::string&>();
+    if (text == "cancelled") {
+        status = TaskStatus::eCancelled;
+    } else if (text == "completed") {
+        status = TaskStatus::eCompleted;
+    } else if (text == "failed") {
+        status = TaskStatus::eFailed;
+    } else if (text == "input_required") {
+        status = TaskStatus::eInputRequired;
+    } else if (text == "working") {
+        status = TaskStatus::eWorking;
+    } else {
+        throw std::invalid_argument("Unknown task status");
     }
 }
 
@@ -366,13 +339,14 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& res
 struct JSONRPCErrorResponse {
     Error error;                  ///< The error object.
     std::string jsonrpc = "2.0";  ///< JSON-RPC version (always "2.0").
-    std::optional<RequestId> id;  ///< The request ID, or no value when it cannot be determined.
+    /// The request ID, or no value when it cannot be determined. Then `id` is left out, as MCP's
+    /// schema has it; a null id is read as no value.
+    std::optional<RequestId> id;
 };
 
 inline void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) {
     json_obj = nlohmann::json::object();
     json_obj["error"] = resp.error;
-    json_obj["id"] = nullptr;
     json_obj["jsonrpc"] = resp.jsonrpc;
     if (resp.id) {
         json_obj["id"] = *resp.id;

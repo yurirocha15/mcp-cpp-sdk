@@ -1,3 +1,5 @@
+#include "../../src/detail/strand_executor.hpp"
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "mcp/core/context.hpp"
@@ -6,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -22,6 +25,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -29,6 +33,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -88,8 +93,9 @@ void run_server_io_on_thread_pool(boost::asio::io_context& io_context, std::size
 }
 
 mcp::Task<void> verify_memory_transport_parse_recovery(
-    std::shared_ptr<mcp::ITransport> client_transport, std::vector<nlohmann::json>* responses) {
-    const auto malformed_wire = std::make_shared<const std::string>("{");
+    std::shared_ptr<mcp::ITransport> client_transport, std::vector<nlohmann::json>* responses,
+    std::string malformed = "{") {
+    const auto malformed_wire = std::make_shared<const std::string>(std::move(malformed));
     co_await client_transport->write_message(*malformed_wire);
     {
         auto response_wire = co_await client_transport->read_message();
@@ -102,6 +108,21 @@ mcp::Task<void> verify_memory_transport_parse_recovery(
     {
         auto response_wire = co_await client_transport->read_message();
         responses->push_back(nlohmann::json::parse(response_wire));
+    }
+    client_transport->close();
+}
+
+/// Sends @p request_count pings, one after the answer to the last, then closes the transport.
+mcp::Task<void> ping_memory_transport(std::shared_ptr<mcp::ITransport> client_transport,
+                                      int request_count, std::vector<nlohmann::json>* responses) {
+    for (int id = 1; id <= request_count; ++id) {
+        const auto ping_wire = std::make_shared<const std::string>(
+            nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"method", "ping"}}.dump());
+        co_await client_transport->write_message(*ping_wire);
+        {
+            auto response_wire = co_await client_transport->read_message();
+            responses->push_back(nlohmann::json::parse(response_wire));
+        }
     }
     client_transport->close();
 }
@@ -149,7 +170,8 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     EXPECT_EQ(response["jsonrpc"], "2.0");
 
     auto result = response["result"];
-    EXPECT_EQ(result["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(result["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(result["serverInfo"]["name"], "test-server");
     EXPECT_EQ(result["serverInfo"]["version"], "1.0");
     ASSERT_TRUE(result["capabilities"].contains("tools"));
@@ -263,7 +285,7 @@ TEST_F(ServerCoreTest, UnknownMethodReturnsError) {
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("error"));
     EXPECT_EQ(responses[1]["id"], "42");
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
     EXPECT_TRUE(responses[1]["error"]["message"].get<std::string>().find("nonexistent/method") !=
                 std::string::npos);
 }
@@ -455,12 +477,12 @@ TEST_F(ServerCoreTest, RequestsRequireCompletedInitializationHandshake) {
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 6);
-    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_TRUE(responses[1].contains("result"));
-    EXPECT_EQ(responses[2]["error"]["code"], mcp::g_INVALID_REQUEST);
-    EXPECT_EQ(responses[3]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[2]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[3]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_TRUE(responses[4]["result"]["tools"].empty());
-    EXPECT_EQ(responses[5]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[5]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_TRUE(server.is_initialized());
 }
 
@@ -529,7 +551,7 @@ TEST_F(ServerCoreTest, NotificationWithNonObjectParamsIsStillRejected) {
 
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("error"));
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
 }
 
 TEST_F(ServerCoreTest, FailedSessionTeardownDoesNotStrandTheServer) {
@@ -606,8 +628,126 @@ TEST_F(ServerCoreTest, InvalidJsonRpcEnvelopesAreRejected) {
 
     ASSERT_EQ(responses.size(), 4);
     for (const auto& response : responses) {
-        EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_REQUEST);
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
     }
+}
+
+namespace {
+
+/// Request envelopes the server refuses, each with the message its -32600 answer carries.
+std::vector<std::pair<nlohmann::json, std::string>> refused_envelopes() {
+    return {
+        {{{"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", 2.0}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", "2.0 "}, {"id", 1}, {"method", "ping"}}, R"(jsonrpc must be "2.0")"},
+        {{{"jsonrpc", "2.0"}, {"id", 1.5}, {"method", "ping"}},
+         "JSON-RPC request id must be a string or integer"},
+        {{{"jsonrpc", "2.0"}, {"id", nullptr}, {"method", "ping"}},
+         "JSON-RPC request id must be a string or integer"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}}, "JSON-RPC request method must be a string"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", 7}}, "JSON-RPC request method must be a string"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"result", nullptr}},
+         "JSON-RPC request must not contain result or error"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"error", {{"code", 1}}}},
+         "JSON-RPC request must not contain result or error"},
+        {{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"params", nlohmann::json::array()}},
+         "MCP request params must be an object"},
+    };
+}
+
+}  // namespace
+
+TEST_F(ServerCoreTest, EachEnvelopeRefusalNamesWhatIsWrong) {
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+    for (const auto& [request, message] : refused_envelopes()) {
+        std::string wire;
+        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(request),
+                              [&wire](const std::exception_ptr& error, std::string answer) {
+                                  if (!error) {
+                                      wire = std::move(answer);
+                                  }
+                              });
+        io_ctx_.restart();
+        io_ctx_.run();
+        const auto response = nlohmann::json::parse(wire);
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST)
+            << request.dump();
+        EXPECT_EQ(response["error"]["message"], message) << request.dump();
+    }
+
+    // A null error is no error, so the request is served.
+    std::string wire;
+    boost::asio::co_spawn(io_ctx_,
+                          server.dispatch_request_direct(
+                              {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}, {"error", nullptr}}),
+                          [&wire](const std::exception_ptr& error, std::string answer) {
+                              if (!error) {
+                                  wire = std::move(answer);
+                              }
+                          });
+    io_ctx_.restart();
+    io_ctx_.run();
+    EXPECT_TRUE(nlohmann::json::parse(wire).contains("result")) << wire;
+}
+
+TEST_F(ServerCoreTest, SessionRefusesEachInvalidEnvelopeAndServesBothEras) {
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    const auto refused = refused_envelopes();
+    const std::size_t expected = refused.size() + 2;
+
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport, expected](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.size() == expected) {
+            raw_transport->close();
+        }
+    });
+    for (const auto& [request, message] : refused) {
+        raw_transport->enqueue_message(request.dump());
+    }
+    // A 2026-07-28 request, served without initialize, then a legacy one.
+    const nlohmann::json discover = {
+        {"jsonrpc", "2.0"},
+        {"id", "modern"},
+        {"method", "server/discover"},
+        {"params",
+         {{"_meta",
+           {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+            {"io.modelcontextprotocol/clientInfo", {{"name", "probe-client"}, {"version", "0.1"}}},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}};
+    raw_transport->enqueue_message(discover.dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "legacy"}, {"method", "ping"}}.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), expected);
+    // Requests of a session can be answered in any order, so the answers are matched by content.
+    std::vector<std::string> refusal_messages;
+    std::vector<std::string> expected_messages;
+    for (const auto& [request, message] : refused) {
+        expected_messages.push_back(message);
+    }
+    for (auto& response : responses) {
+        if (response["id"] == "modern") {
+            EXPECT_EQ(response["result"]["resultType"], "complete") << response.dump();
+        } else if (response["id"] == "legacy") {
+            EXPECT_EQ(response["result"], nlohmann::json::object()) << response.dump();
+        } else {
+            EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST)
+                << response.dump();
+            refusal_messages.push_back(response["error"]["message"].get<std::string>());
+        }
+    }
+    std::sort(refusal_messages.begin(), refusal_messages.end());
+    std::sort(expected_messages.begin(), expected_messages.end());
+    EXPECT_EQ(refusal_messages, expected_messages);
+    EXPECT_FALSE(server.is_initialized());
 }
 
 TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidRequest) {
@@ -634,12 +774,42 @@ TEST_F(ServerCoreTest, MalformedAndNonObjectMessagesReturnErrorsThenAcceptValidR
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 3);
-    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_REQUEST);
-    EXPECT_TRUE(responses[1]["id"].is_null());
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_PARSE_ERROR);
+    EXPECT_FALSE(responses[0].contains("id"));
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_FALSE(responses[1].contains("id"));
     EXPECT_EQ(responses[2]["id"], "ping");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
+}
+
+// A number past the range of a double cannot be parsed: it is answered as a parse error, and the
+// session goes on.
+TEST_F(ServerCoreTest, MemoryTransportRecoversFromANumberOutOfRange) {
+    mcp::Server server({"validation-server", "1.0"}, mcp::ServerCapabilities{});
+    auto [server_transport, client_transport] =
+        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+
+    std::vector<nlohmann::json> responses;
+    std::exception_ptr server_error;
+    std::exception_ptr client_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(server_transport, io_ctx_.get_executor()),
+        [&server_error](std::exception_ptr error) { server_error = std::move(error); });
+    boost::asio::co_spawn(
+        io_ctx_,
+        verify_memory_transport_parse_recovery(
+            client_transport, &responses,
+            R"({"jsonrpc":"2.0","id":3,"method":"ping","params":{"x":1e400}})"),
+        [&client_error](std::exception_ptr error) { client_error = std::move(error); });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(server_error, nullptr);
+    EXPECT_EQ(client_error, nullptr);
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_PARSE_ERROR);
+    EXPECT_EQ(responses[1]["id"], 7);
+    EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 }
 
 TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
@@ -662,10 +832,41 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromMalformedJson) {
     EXPECT_EQ(server_error, nullptr);
     EXPECT_EQ(client_error, nullptr);
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[0]["error"]["code"], mcp::g_PARSE_ERROR);
-    EXPECT_TRUE(responses[0]["id"].is_null());
+    EXPECT_EQ(responses[0]["error"]["code"], mcp::constants::jsonrpc::g_PARSE_ERROR);
+    EXPECT_FALSE(responses[0].contains("id"));
     EXPECT_EQ(responses[1]["id"], 7);
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
+}
+
+// A Server given a strand to run on, over memory transports on that same strand, reads, writes
+// and answers without any of those crossing to another strand.
+TEST_F(ServerCoreTest, ServesMemoryTransportsThatShareTheStrandItRunsOn) {
+    constexpr int request_count = 25;
+
+    mcp::Server server({"shared-strand-server", "1.0"}, mcp::ServerCapabilities{});
+    const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
+    auto [server_transport, client_transport] = mcp::create_memory_transport_pair(strand);
+
+    std::vector<nlohmann::json> responses;
+    std::exception_ptr server_error;
+    std::exception_ptr client_error;
+    boost::asio::co_spawn(
+        io_ctx_, server.run(server_transport, strand),
+        [&server_error](std::exception_ptr error) { server_error = std::move(error); });
+    boost::asio::co_spawn(
+        strand, ping_memory_transport(client_transport, request_count, &responses),
+        [&client_error](std::exception_ptr error) { client_error = std::move(error); });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(server_error, nullptr);
+    EXPECT_EQ(client_error, nullptr);
+    ASSERT_EQ(responses.size(), static_cast<std::size_t>(request_count));
+    for (int id = 1; id <= request_count; ++id) {
+        const auto& response = responses[static_cast<std::size_t>(id - 1)];
+        EXPECT_EQ(response["id"], id);
+        EXPECT_EQ(response["result"], nlohmann::json::object());
+    }
 }
 
 TEST_F(ServerCoreTest, ParameterDecodingErrorsRemainDistinctFromHandlerFailures) {
@@ -727,9 +928,9 @@ TEST_F(ServerCoreTest, ParameterDecodingErrorsRemainDistinctFromHandlerFailures)
     EXPECT_EQ(dispatch_error, nullptr);
     ASSERT_EQ(responses.size(), requests.size());
     for (std::size_t index = 0; index + 1 < responses.size(); ++index) {
-        EXPECT_EQ(responses[index]["error"]["code"], mcp::g_INVALID_PARAMS);
+        EXPECT_EQ(responses[index]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     }
-    EXPECT_EQ(responses.back()["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(responses.back()["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_EQ(responses.back()["error"]["message"], "resource handler failed");
 }
 
@@ -780,7 +981,7 @@ TEST_F(ServerCoreTest, InitializeRequiresCompleteTypedParameters) {
 
     EXPECT_EQ(error, nullptr);
     EXPECT_EQ(response["id"], "init");
-    EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(ServerCoreTest, ToolArgumentsMustBeAnObject) {
@@ -805,7 +1006,7 @@ TEST_F(ServerCoreTest, ToolArgumentsMustBeAnObject) {
 
     EXPECT_EQ(error, nullptr);
     EXPECT_EQ(response["id"], "tool");
-    EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
 }
 
 TEST_F(ServerCoreTest, RunWaitsForDispatchedHandlersBeforeReturning) {
@@ -936,7 +1137,7 @@ TEST_F(ServerCoreTest, ReverseRequestResponseCarryingNullErrorIsAccepted) {
     };
     launch();
 
-    io_ctx_.run_for(5s);
+    io_ctx_.run_for(g_hang_guard);
 
     ASSERT_TRUE(completed) << "the reverse request never correlated with its response";
     EXPECT_EQ(reverse_result["ok"], true);
@@ -1022,7 +1223,7 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     // Wide for the same reason as in the client's twin of this test: a sanitizer can stop every
     // thread for seconds, and the bound only ends a run that has gone wrong.
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(60s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait(
         [&completed, &stop_poll, client_transport](const boost::system::error_code& error) {
             if (!error && completed.load(std::memory_order_acquire) != request_count) {
@@ -1084,7 +1285,7 @@ TEST_F(ServerCoreTest, DiscoverWithoutInitializeReturnsFullPayload) {
         raw_transport->close();
     });
 
-    nlohmann::json discover_req = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json discover_req = make_discover_request("d1");
     raw_transport->enqueue_message(discover_req.dump());
 
     boost::asio::co_spawn(
@@ -1134,7 +1335,7 @@ TEST_F(ServerCoreTest, DiscoverThenInitializeStillNegotiatesLegacyVersionsUnchan
         }
     });
 
-    nlohmann::json discover_req = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
+    nlohmann::json discover_req = make_discover_request("d1");
     nlohmann::json init_req = make_initialize_request("i1");
     // An unknown/unsupported protocol version must still negotiate to the latest legacy
     // version, byte-identical to pre-discover behavior.
@@ -1155,9 +1356,73 @@ TEST_F(ServerCoreTest, DiscoverThenInitializeStillNegotiatesLegacyVersionsUnchan
 
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_EQ(responses[1]["result"]["protocolVersion"], "2025-11-25");
-    EXPECT_EQ(responses[1]["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(responses[1]["result"]["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
 
     EXPECT_TRUE(server.is_initialized());
+}
+
+TEST_F(ServerCoreTest, InitializeRequesting2026NegotiatesLegacyWhileDiscoverAdvertisesIt) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::Server server({"test-server", "1.0"}, mcp::ServerCapabilities{});
+
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 2) {
+            raw_transport->close();
+        }
+    });
+
+    nlohmann::json discover_req = make_discover_request("d1");
+    nlohmann::json init_req = make_initialize_request("i1");
+    init_req["params"]["protocolVersion"] = "2026-07-28";
+    raw_transport->enqueue_message(discover_req.dump());
+    raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 2);
+    const auto advertised =
+        responses[0].at("result").at("supportedVersions").get<std::vector<std::string>>();
+    EXPECT_NE(std::find(advertised.begin(), advertised.end(), "2026-07-28"), advertised.end());
+    EXPECT_EQ(responses[1].at("result").at("protocolVersion"), "2025-11-25");
+}
+
+TEST_F(ServerCoreTest, InitializeResultPayloadIsUnchanged) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server({"test-server", "1.0"}, std::move(caps));
+
+    std::string response;
+    raw_transport->set_on_write([&response, raw_transport](std::string_view msg) {
+        response = std::string(msg);
+        raw_transport->close();
+    });
+
+    nlohmann::json init_req = make_initialize_request("i1");
+    init_req["params"]["protocolVersion"] = "2025-06-18";
+    raw_transport->enqueue_message(init_req.dump());
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+
+    io_ctx_.run();
+
+    EXPECT_EQ(
+        response,
+        R"({"id":"i1","jsonrpc":"2.0","result":{"capabilities":{"tools":{}},)"
+        R"("protocolVersion":"2025-06-18","serverInfo":{"name":"test-server","version":"1.0"}}})");
 }
 
 TEST_F(ServerCoreTest, DiscoverAcceptsMetaWithoutMutatingLifecycle) {
@@ -1193,57 +1458,47 @@ TEST_F(ServerCoreTest, DiscoverAcceptsMetaWithoutMutatingLifecycle) {
     EXPECT_FALSE(server.is_initialized());
 }
 
-TEST_F(ServerCoreTest, DiscoverAcceptsAbsentOrEmptyParamsButRejectsNonObjectParams) {
+TEST_F(ServerCoreTest, DiscoverWithoutPerRequestMetaIsInvalidParams) {
     mcp::Server server({"params-server", "1.0"}, mcp::ServerCapabilities{});
 
-    // params absent entirely.
-    nlohmann::json response_no_params;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
-                          [&response_no_params](std::exception_ptr error, std::string wire) {
-                              EXPECT_EQ(error, nullptr);
-                              response_no_params = nlohmann::json::parse(wire);
-                          });
-    io_ctx_.run();
-    ASSERT_TRUE(response_no_params.contains("result"));
-    EXPECT_EQ(response_no_params["result"]["resultType"], "complete");
+    const auto dispatch = [this, &server](nlohmann::json request) {
+        nlohmann::json response;
+        boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(std::move(request)),
+                              [&response](std::exception_ptr error, std::string wire) {
+                                  EXPECT_EQ(error, nullptr);
+                                  response = nlohmann::json::parse(wire);
+                              });
+        io_ctx_.restart();
+        io_ctx_.run();
+        return response;
+    };
 
-    io_ctx_.restart();
-
-    // params present but an empty object.
-    nlohmann::json response_empty_params;
-    boost::asio::co_spawn(
-        io_ctx_,
-        server.dispatch_request_direct(nlohmann::json{{"jsonrpc", "2.0"},
-                                                      {"id", "d2"},
-                                                      {"method", "server/discover"},
-                                                      {"params", nlohmann::json::object()}}),
-        [&response_empty_params](std::exception_ptr error, std::string wire) {
-            EXPECT_EQ(error, nullptr);
-            response_empty_params = nlohmann::json::parse(wire);
-        });
-    io_ctx_.run();
-    ASSERT_TRUE(response_empty_params.contains("result"));
-    EXPECT_EQ(response_empty_params["result"]["resultType"], "complete");
-
-    io_ctx_.restart();
+    // server/discover is a 2026-07-28 request and requires the per-request fields: without
+    // params, with empty params, or with a _meta naming no protocol version, it is malformed.
+    auto no_params = dispatch({{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}});
+    auto empty_params = dispatch({{"jsonrpc", "2.0"},
+                                  {"id", "d2"},
+                                  {"method", "server/discover"},
+                                  {"params", nlohmann::json::object()}});
+    auto meta_without_version = dispatch(
+        {{"jsonrpc", "2.0"},
+         {"id", "d3"},
+         {"method", "server/discover"},
+         {"params",
+          {{"_meta", {{"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()}}}}}});
+    for (const auto& response : {no_params, empty_params, meta_without_version}) {
+        ASSERT_TRUE(response.contains("error")) << response;
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << response;
+    }
 
     // params present but not an object: rejected pre-dispatch as an invalid request, the same
     // as for any other method (see validate_request_envelope).
-    nlohmann::json response_bad_params;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{{"jsonrpc", "2.0"},
-                                                                        {"id", "d3"},
-                                                                        {"method", "server/discover"},
-                                                                        {"params", "not-an-object"}}),
-                          [&response_bad_params](std::exception_ptr error, std::string wire) {
-                              EXPECT_EQ(error, nullptr);
-                              response_bad_params = nlohmann::json::parse(wire);
-                          });
-    io_ctx_.run();
-    ASSERT_TRUE(response_bad_params.contains("error"));
-    EXPECT_EQ(response_bad_params["error"]["code"], mcp::g_INVALID_REQUEST);
+    auto bad_params = dispatch(
+        {{"jsonrpc", "2.0"}, {"id", "d4"}, {"method", "server/discover"}, {"params", "not-an-object"}});
+    ASSERT_TRUE(bad_params.contains("error"));
+    EXPECT_EQ(bad_params["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
+
+    EXPECT_EQ(server.protocol_rejection_stats().legacy_shaped, 3u);
 }
 
 // server/utilities/caching.md requires servers to include caching hints on every "complete"
@@ -1254,9 +1509,7 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     mcp::Server default_server({"default-server", "1.0"}, mcp::ServerCapabilities{});
 
     nlohmann::json default_response;
-    boost::asio::co_spawn(io_ctx_,
-                          default_server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, default_server.dispatch_request_direct(make_discover_request("d1")),
                           [&default_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               default_response = nlohmann::json::parse(wire);
@@ -1272,13 +1525,12 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     io_ctx_.restart();
 
     mcp::Server configured_server({"configured-server", "1.0"}, mcp::ServerCapabilities{});
-    configured_server.set_discover_ttl_ms(3600000);
-    configured_server.set_discover_cache_scope(mcp::CacheScope::ePublic);
+    configured_server.set_cache_hints(mcp::CacheTarget::eDiscover,
+                                      mcp::CacheHint{3600000, mcp::CacheScope::ePublic});
 
     nlohmann::json configured_response;
     boost::asio::co_spawn(io_ctx_,
-                          configured_server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d2"}, {"method", "server/discover"}}),
+                          configured_server.dispatch_request_direct(make_discover_request("d2")),
                           [&configured_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               configured_response = nlohmann::json::parse(wire);
@@ -1296,12 +1548,12 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     // Explicitly configuring CacheScope::ePrivate must also serialize correctly, distinct from
     // it merely being the unconfigured default asserted above.
     mcp::Server explicit_private_server({"explicit-private-server", "1.0"}, mcp::ServerCapabilities{});
-    explicit_private_server.set_discover_cache_scope(mcp::CacheScope::ePrivate);
+    explicit_private_server.set_cache_hints(mcp::CacheTarget::eDiscover,
+                                            mcp::CacheHint{60000, mcp::CacheScope::ePrivate});
 
     nlohmann::json explicit_private_response;
     boost::asio::co_spawn(io_ctx_,
-                          explicit_private_server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d3"}, {"method", "server/discover"}}),
+                          explicit_private_server.dispatch_request_direct(make_discover_request("d3")),
                           [&explicit_private_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               explicit_private_response = nlohmann::json::parse(wire);
@@ -1311,11 +1563,15 @@ TEST_F(ServerCoreTest, DiscoverCachingHintsPresentWithDefaultsOverriddenWhenConf
     ASSERT_TRUE(explicit_private_response.contains("result"));
     ASSERT_TRUE(explicit_private_response["result"].contains("cacheScope"));
     EXPECT_EQ(explicit_private_response["result"]["cacheScope"], "private");
+    EXPECT_EQ(explicit_private_response["result"]["ttlMs"], 60000);
 }
 
-TEST_F(ServerCoreTest, SetDiscoverTtlMsRejectsNegativeValues) {
+TEST_F(ServerCoreTest, SetCacheHintsRejectsNegativeTtl) {
     mcp::Server server({"negative-ttl-server", "1.0"}, mcp::ServerCapabilities{});
-    EXPECT_THROW(server.set_discover_ttl_ms(-1), std::invalid_argument);
+    EXPECT_THROW(server.set_cache_hints(mcp::CacheTarget::eDiscover, mcp::CacheHint{-1}),
+                 std::invalid_argument);
+    EXPECT_THROW(server.set_cache_hints(mcp::CacheTarget::eResourcesRead, mcp::CacheHint{-1}),
+                 std::invalid_argument);
 }
 
 TEST_F(ServerCoreTest, InstructionsAppearInBothInitializeAndDiscoverWhenSet) {
@@ -1323,9 +1579,7 @@ TEST_F(ServerCoreTest, InstructionsAppearInBothInitializeAndDiscoverWhenSet) {
     server.set_instructions("Use the tools wisely.");
 
     nlohmann::json discover_response;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_discover_request("d1")),
                           [&discover_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               discover_response = nlohmann::json::parse(wire);
@@ -1353,9 +1607,7 @@ TEST_F(ServerCoreTest, InstructionsOmittedFromBothInitializeAndDiscoverWhenUnset
     mcp::Server server({"uninstructed-server", "1.0"}, mcp::ServerCapabilities{});
 
     nlohmann::json discover_response;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_discover_request("d1")),
                           [&discover_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               discover_response = nlohmann::json::parse(wire);
@@ -1394,9 +1646,7 @@ TEST_F(ServerCoreTest, DiscoverCapabilitiesMatchInitializeCapabilitiesForNonTriv
     mcp::Server server({"capable-server", "1.0"}, caps);
 
     nlohmann::json discover_response;
-    boost::asio::co_spawn(io_ctx_,
-                          server.dispatch_request_direct(nlohmann::json{
-                              {"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}}),
+    boost::asio::co_spawn(io_ctx_, server.dispatch_request_direct(make_discover_request("d1")),
                           [&discover_response](std::exception_ptr error, std::string wire) {
                               EXPECT_EQ(error, nullptr);
                               discover_response = nlohmann::json::parse(wire);
@@ -1443,8 +1693,8 @@ TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
         }
     });
 
-    nlohmann::json discover_req_1 = {{"jsonrpc", "2.0"}, {"id", "d1"}, {"method", "server/discover"}};
-    nlohmann::json discover_req_2 = {{"jsonrpc", "2.0"}, {"id", "d2"}, {"method", "server/discover"}};
+    nlohmann::json discover_req_1 = make_discover_request("d1");
+    nlohmann::json discover_req_2 = make_discover_request("d2");
     nlohmann::json ping_req = {{"jsonrpc", "2.0"}, {"id", "p1"}, {"method", "ping"}};
 
     raw_transport->enqueue_message(make_initialize_request("i1").dump());
@@ -1540,8 +1790,8 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
                     continue;
                 }
                 co_await client_transport->write_message(
-                    make_error_response(request.at("id").get<std::string>(), mcp::g_INTERNAL_ERROR,
-                                        peer_message)
+                    make_error_response(request.at("id").get<std::string>(),
+                                        mcp::constants::jsonrpc::g_INTERNAL_ERROR, peer_message)
                         .dump());
                 co_return;
             }
@@ -1549,7 +1799,7 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
         boost::asio::detached);
 
     boost::asio::steady_timer watchdog(io_ctx);
-    watchdog.expires_after(10s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([client_transport](const boost::system::error_code& error) {
         if (!error) {
             client_transport->close();
@@ -1560,14 +1810,15 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
         io_ctx,
         [&io_ctx, &server, &outcome, &session_ready, &watchdog, client_transport]() -> mcp::Task<void> {
             boost::asio::steady_timer poll(io_ctx);
-            for (int attempt = 0; attempt < 5000 && !session_ready.load(std::memory_order_acquire);
-                 ++attempt) {
+            const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+            while (!session_ready.load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < give_up) {
                 poll.expires_after(1ms);
                 co_await poll.async_wait(boost::asio::use_awaitable);
             }
             co_await capture_reverse_request_error(server, outcome);
             // Cancelled rather than left pending: an armed watchdog is outstanding work, and
-            // io_context::run() would sit on it for the full ten seconds after the test is done.
+            // io_context::run() would sit on it until it ran out after the test is done.
             watchdog.cancel();
             client_transport->close();
         },
@@ -1599,7 +1850,8 @@ TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticFlattensThePeerChosenMessage
     // cannot hide.
     ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
     ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
-    ASSERT_NE(outcome.what.find(std::to_string(mcp::g_INTERNAL_ERROR)), std::string::npos)
+    ASSERT_NE(outcome.what.find(std::to_string(mcp::constants::jsonrpc::g_INTERNAL_ERROR)),
+              std::string::npos)
         << "actual what(): " << outcome.what;
     ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
 

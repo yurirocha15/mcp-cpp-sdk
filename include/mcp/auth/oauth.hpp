@@ -27,31 +27,13 @@ namespace mcp::auth {
 
 namespace net = boost::asio;
 
-namespace constants {
-
-constexpr int g_default_token_lifetime_safety_margin_seconds = 30;
-constexpr std::size_t g_buffer_size = 4096;
-constexpr int g_shift4 = 4;
-constexpr int g_shift6 = 6;
-constexpr int g_shift8 = 8;
-constexpr int g_shift12 = 12;
-constexpr int g_shift16 = 16;
-constexpr int g_shift18 = 18;
-constexpr unsigned int g_mask0x3F = 0x3F;
-constexpr std::size_t g_min_verifier_length = 43;
-constexpr std::size_t g_max_verifier_length = 128;
-constexpr unsigned int g_mask0x0F = 0x0F;
-constexpr std::size_t g_sha256_digest_length = 32;
-constexpr std::size_t g_default_verifier_length = 64;
-constexpr std::size_t g_default_cache_ttl_seconds = 300;
-}  // namespace constants
-
 namespace detail {
 MCP_API std::string base64_encode(const unsigned char* data, std::size_t len);
 MCP_API std::string base64url_encode(const unsigned char* data, std::size_t len);
 
 /// SHA-256 via OpenSSL EVP interface.
-MCP_API std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input);
+MCP_API std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> sha256(
+    const std::string& input);
 
 MCP_API std::string generate_random_string(std::size_t length);
 MCP_API std::string url_encode(const std::string& value);
@@ -74,7 +56,8 @@ struct PkcePair {
  * @param verifier_length Length of the verifier string, between 43 and 128 characters.
  * @return A PKCE pair suitable for OAuth 2.1 authorization code flows.
  */
-MCP_API PkcePair generate_pkce_pair(std::size_t verifier_length = constants::g_default_verifier_length);
+MCP_API PkcePair
+generate_pkce_pair(std::size_t verifier_length = mcp::constants::oauth::g_DEFAULT_VERIFIER_LENGTH);
 
 /**
  * @brief OAuth token response data returned by an authorization server.
@@ -95,7 +78,7 @@ struct TokenResponse {
      * @return True when the token is expired or within the safety margin.
      */
     [[nodiscard]] MCP_API bool is_expired(
-        int margin = constants::g_default_token_lifetime_safety_margin_seconds) const;
+        int margin = mcp::constants::oauth::g_DEFAULT_TOKEN_LIFETIME_SAFETY_MARGIN_SECONDS) const;
 };
 
 /**
@@ -327,6 +310,21 @@ class MCP_API OAuthHttpClient {
     Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
 
     /**
+     * @brief Post a form to a token endpoint and read the JSON reply.
+     *
+     * @param url Token endpoint URL.
+     * @param params Form parameters, sent as `application/x-www-form-urlencoded`.
+     * @param authorization Value of the `Authorization` header, or empty to send none.
+     * @return A task resolving to the parsed JSON reply.
+     *
+     * @details For grants the client does not build itself, such as client credentials, token
+     * exchange and the JWT bearer grant. The target is validated against the fetch policy like every
+     * other request, redirects are not followed, and an HTTP error status fails the request.
+     */
+    Task<nlohmann::json> post_form(const std::string& url, const KeyValuePairList& params,
+                                   const std::string& authorization = {});
+
+    /**
      * @brief Abort every HTTP exchange currently in flight on this client, and refuse every one
      *        issued afterward.
      *
@@ -381,6 +379,10 @@ class MCP_API OAuthHttpClientScope {
 
     /** @see OAuthHttpClient::post_json */
     Task<nlohmann::json> post_json(const std::string& url, const nlohmann::json& body);
+
+    /** @see OAuthHttpClient::post_form */
+    Task<nlohmann::json> post_form(const std::string& url, const KeyValuePairList& params,
+                                   const std::string& authorization = {});
 
     /**
      * @brief Abort this scope's in-flight exchanges and refuse every one issued through it after.
@@ -482,9 +484,9 @@ class MCP_API OAuthDiscoveryClient {
      * @param http_client HTTP helper used to fetch discovery documents.
      * @param cache_ttl Time-to-live for cached discovery responses.
      */
-    explicit OAuthDiscoveryClient(
-        std::shared_ptr<OAuthHttpClient> http_client,
-        std::chrono::seconds cache_ttl = std::chrono::seconds(constants::g_default_cache_ttl_seconds));
+    explicit OAuthDiscoveryClient(std::shared_ptr<OAuthHttpClient> http_client,
+                                  std::chrono::seconds cache_ttl = std::chrono::seconds(
+                                      mcp::constants::oauth::g_DEFAULT_CACHE_TTL_SECONDS));
 
     OAuthDiscoveryClient(const OAuthDiscoveryClient&) = delete;
     OAuthDiscoveryClient& operator=(const OAuthDiscoveryClient&) = delete;
@@ -528,6 +530,20 @@ class MCP_API OAuthDiscoveryClient {
     Task<ProtectedResourceMetadata> discover_protected_resource(
         const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url,
         ProtectedResourceAcceptor accept);
+
+    /**
+     * @brief Drop the cached protected-resource metadata for one resource.
+     *
+     * @param resource_url Resource URL the metadata was discovered for.
+     * @param challenge_metadata_url `resource_metadata` URL of the challenge the metadata was
+     *        discovered through, when it supplied one.
+     *
+     * @details The next discover_protected_resource() call for the same arguments fetches the
+     * document again. A client that has just been challenged uses this so the authorization server
+     * it authorizes at is the one the resource names now, not the one the cached copy named.
+     */
+    void forget_protected_resource(const std::string& resource_url,
+                                   const std::optional<std::string>& challenge_metadata_url);
 
     /**
      * @brief Discover metadata for an authorization server.
@@ -704,6 +720,12 @@ struct OAuthAuthorizationConfig {
     /// Scope override. When set it wins over both the challenge scope and the resource metadata;
     /// when unset the challenge scope is preferred, then `scopes_supported`, then no scope at all.
     std::optional<std::string> scope;
+    /// Add `offline_access` to the scope of the authorization request when the authorization
+    /// server lists it in `scopes_supported`, so it may issue a refresh token. Applies on top of
+    /// the challenge and resource metadata scope sources; an explicit `scope` is used as it is. A
+    /// server that does not list it is never sent it. Set to false to request exactly the
+    /// selected scope.
+    bool request_offline_access{true};
     /// Client identity inputs consulted when no `client_id` was supplied: a published client ID
     /// metadata document URL, injected credentials, and the metadata used for registration.
     ClientIdentityConfig client_identity;
@@ -841,6 +863,11 @@ struct OAuthClientTransportOptions {
     std::size_t max_pending_requests{256};                    ///< Maximum retained request count.
     std::size_t max_pending_request_bytes{16 * 1024 * 1024};  ///< Approximate retained wire/key bytes.
     std::chrono::milliseconds pending_request_ttl{std::chrono::minutes(5)};  ///< Replay eligibility.
+    /// Step-up authorizations per request: each answers a 403 whose challenge says
+    /// `insufficient_scope` by asking the authenticator, and so usually the user, to authorize the
+    /// wider scope. Past it the request fails with that 403. Zero leaves every such 403 to the
+    /// caller, as an HttpStatusError carrying the challenge.
+    std::size_t max_step_ups_per_request{1};
 };
 
 /**
@@ -861,7 +888,9 @@ class MCP_API OAuthClientTransport final : public ITransport {
      * @brief Construct an authenticated transport wrapper.
      *
      * @param inner Underlying transport used for MCP message exchange.
-     * @param authenticator Authenticator used to retrieve and refresh tokens.
+     * @param authenticator Authenticator used to retrieve and refresh tokens. Its tokens go to the
+     *        server @p inner talks to, which is not compared with any URL the authenticator holds,
+     *        so it must be the authenticator for that server alone.
      */
     OAuthClientTransport(std::shared_ptr<ITransport> inner,
                          std::shared_ptr<Authenticator> authenticator);
@@ -870,7 +899,9 @@ class MCP_API OAuthClientTransport final : public ITransport {
      * @brief Construct an authenticated transport wrapper with replay-correlation limits.
      *
      * @param inner Underlying transport used for MCP message exchange.
-     * @param authenticator Authenticator used to retrieve and refresh tokens.
+     * @param authenticator Authenticator used to retrieve and refresh tokens. Its tokens go to the
+     *        server @p inner talks to, which is not compared with any URL the authenticator holds,
+     *        so it must be the authenticator for that server alone.
      * @param options Bounds and TTL for retaining outstanding request wires.
      */
     OAuthClientTransport(std::shared_ptr<ITransport> inner,
@@ -907,6 +938,19 @@ class MCP_API OAuthClientTransport final : public ITransport {
      * close() was running is cancelled through Authenticator::cancel_pending() and waited for.
      */
     void close() override;
+
+    /** @brief What the wrapped transport does. */
+    [[nodiscard]] bool overlapping_writes() const noexcept override;
+
+    /**
+     * @brief Report to @p observer while a write waits for Authenticator::try_handle_challenge().
+     *
+     * @details The challenge can run an interactive authorization, whose time is the user's and not
+     * the request's. The observer is told when a write begins and ends that wait, keyed by the
+     * request's correlation key; Client uses it to stop the request's deadline while it lasts. A
+     * refresh runs no such prompt and is not reported.
+     */
+    void set_interaction_observer(InteractionObserver observer) override;
 
    private:
     struct Impl;

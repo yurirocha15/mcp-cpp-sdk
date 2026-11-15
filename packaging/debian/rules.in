@@ -1,16 +1,27 @@
 #!/usr/bin/make -f
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+# The packages ship stripped files and no debug symbol packages, so the build makes no debug
+# information: with it, the test objects alone would fill most of the build space.
+export DEB_CXXFLAGS_MAINT_STRIP = -g
+
+include /usr/share/dpkg/architecture.mk
 
 %:
 	dh $@ --buildsystem=cmake+ninja
 
 override_dh_auto_configure:
-	dh_auto_configure -- -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
+	dh_auto_configure -- -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
 
 # The release publishes the runtime, development and static packages only.
 override_dh_strip:
 	dh_strip --no-automatic-dbgsym
 
+# The tests are not packaged. Their objects go once the test program is linked, as in the RPM
+# build, and the program once the tests pass, which leaves the build space to the packaging tests,
+# the installed files and their copies in each package. The install target does not depend on
+# `all`, so the install does not build them again.
 override_dh_auto_test:
+	rm -rf obj-$(DEB_HOST_GNU_TYPE)/CMakeFiles/mcp-sdk-tests.dir
 	CTEST_OUTPUT_ON_FAILURE=1 dh_auto_test
+	rm -f obj-$(DEB_HOST_GNU_TYPE)/mcp-sdk-tests

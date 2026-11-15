@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 
 #include <cstddef>
@@ -10,13 +11,6 @@
 #include <vector>
 
 namespace mcp::auth {
-
-namespace constants {
-
-constexpr std::size_t g_default_max_metadata_bytes = 256 * 1024;
-constexpr std::size_t g_default_max_metadata_redirects = 3;
-
-}  // namespace constants
 
 namespace detail {
 
@@ -44,22 +38,22 @@ namespace detail {
  * before host resolution, so a refused target is never contacted.
  */
 enum class MetadataUrlDecision {
-    allowed,        ///< Target passed every configured control.
-    malformed_url,  ///< URL could not be decomposed into scheme, host and port, including a
-                    ///< port that is not a plain decimal number or a host that is nothing but dots.
-    scheme_not_allowed,  ///< Scheme is not `https`, and the plain-HTTP loopback opt-out did not apply.
-    origin_denied,       ///< Origin matched the application's deny list.
-    origin_not_allowed,  ///< Origin is not present in the application's allow list.
-    address_link_local,  ///< Address is IPv4 link-local (169.254.0.0/16) or IPv6 link-local.
-    address_private,     ///< Address is in an RFC 1918 or IPv6 unique-local range.
-    address_loopback,    ///< Address is loopback and the loopback opt-out is not enabled.
-    address_multicast,   ///< Address is multicast or broadcast.
-    address_reserved,    ///< Address is otherwise reserved, unspecified or non-routable.
-    redirect_limit_exceeded,        ///< Redirect chain exceeded the configured bound.
-    response_too_large,             ///< Response body exceeded the configured size cap.
-    denied_origin_entry_malformed,  ///< A `denied_origins` entry is not a bare origin, so the rule
-                                    ///< it states cannot be applied. Reported against the offending
-                                    ///< entry, not against the target.
+    eAllowed,           ///< Target passed every configured control.
+    eMalformedUrl,      ///< URL could not be decomposed into scheme, host and port, including a
+                        ///< port that is not a plain decimal number or a host that is nothing but dots.
+    eSchemeNotAllowed,  ///< Scheme is not `https`, and the plain-HTTP loopback opt-out did not apply.
+    eOriginDenied,      ///< Origin matched the application's deny list.
+    eOriginNotAllowed,  ///< Origin is not present in the application's allow list.
+    eAddressLinkLocal,  ///< Address is IPv4 link-local (169.254.0.0/16) or IPv6 link-local.
+    eAddressPrivate,    ///< Address is in an RFC 1918 or IPv6 unique-local range.
+    eAddressLoopback,   ///< Address is loopback and the loopback opt-out is not enabled.
+    eAddressMulticast,  ///< Address is multicast or broadcast.
+    eAddressReserved,   ///< Address is otherwise reserved, unspecified or non-routable.
+    eRedirectLimitExceeded,       ///< Redirect chain exceeded the configured bound.
+    eResponseTooLarge,            ///< Response body exceeded the configured size cap.
+    eDeniedOriginEntryMalformed,  ///< A `denied_origins` entry is not a bare origin, so the rule
+                                  ///< it states cannot be applied. Reported against the offending
+                                  ///< entry, not against the target.
 };
 
 /**
@@ -95,7 +89,7 @@ struct MetadataFetchPolicy {
     /// Every entry must be a bare origin. Unlike `allowed_origins`, an entry that is not one -- it
     /// carries a path (a lone trailing `/` included), a query or a fragment, or its port is not a
     /// plain in-range decimal number -- is rejected rather than ignored: `validate_metadata_url`
-    /// throws `MetadataPolicyError` with `MetadataUrlDecision::denied_origin_entry_malformed`, naming
+    /// throws `MetadataPolicyError` with `MetadataUrlDecision::eDeniedOriginEntryMalformed`, naming
     /// the offending entry, and refuses every target until the entry is corrected.
     std::vector<std::string> denied_origins;
 
@@ -114,10 +108,10 @@ struct MetadataFetchPolicy {
 
     /// Maximum number of response body bytes accepted from a metadata or token endpoint. A
     /// response that exceeds the cap is rejected without being fully buffered.
-    std::size_t max_response_bytes{constants::g_default_max_metadata_bytes};
+    std::size_t max_response_bytes{mcp::constants::metadata_policy::g_DEFAULT_MAX_BYTES};
 
     /// Maximum number of HTTP redirects followed. Each redirect target is validated afresh.
-    std::size_t max_redirects{constants::g_default_max_metadata_redirects};
+    std::size_t max_redirects{mcp::constants::metadata_policy::g_DEFAULT_MAX_REDIRECTS};
 };
 
 /**
@@ -136,10 +130,10 @@ struct MetadataFetchPolicy {
  *
  * @param policy Application policy to apply.
  * @param url Absolute URL that the SDK is about to fetch.
- * @return `MetadataUrlDecision::allowed` when the URL may be resolved, otherwise the refusal
+ * @return `MetadataUrlDecision::eAllowed` when the URL may be resolved, otherwise the refusal
  *         reason.
  *
- * @throws MetadataPolicyError With `MetadataUrlDecision::denied_origin_entry_malformed` when any
+ * @throws MetadataPolicyError With `MetadataUrlDecision::eDeniedOriginEntryMalformed` when any
  *         `MetadataFetchPolicy::denied_origins` entry is not a bare origin. The deny list is
  *         examined first, so such a policy refuses every target. The error names the offending
  *         entry rather than the URL.
@@ -160,7 +154,7 @@ struct MetadataFetchPolicy {
  *
  * @param policy Application policy to apply.
  * @param address_literal Resolved address in textual form.
- * @return `MetadataUrlDecision::allowed` when the address may be connected to, otherwise the
+ * @return `MetadataUrlDecision::eAllowed` when the address may be connected to, otherwise the
  *         refusal reason.
  *
  * @details Applied to every address produced by resolution. The SDK connects only to addresses that
@@ -174,7 +168,7 @@ struct MetadataFetchPolicy {
  *
  * @details Thrown instead of performing the request: for a URL or origin decision the host is never
  * resolved, and for an address decision the address is never connected to. For
- * `MetadataUrlDecision::denied_origin_entry_malformed`, `target()` is the offending `denied_origins`
+ * `MetadataUrlDecision::eDeniedOriginEntryMalformed`, `target()` is the offending `denied_origins`
  * entry rather than the request target.
  */
 class MCP_API MetadataPolicyError : public std::runtime_error {

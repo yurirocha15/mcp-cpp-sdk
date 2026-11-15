@@ -1,13 +1,13 @@
 name: CI
 
 on:
-  # Manual runs only. The automatic triggers below stay scoped to `main` on purpose; this
-  # lets a feature branch be checked on the full matrix without spending CI on every push.
+  # A manual run checks any branch. Pull requests are checked whatever branch they target,
+  # so a pull request stacked on another one gets the same checks; pushes only on main.
   workflow_dispatch:
   push:
     branches: [ main ]
   pull_request:
-    branches: [ main ]
+    branches: ['**']
 
 permissions:
   contents: read
@@ -26,6 +26,7 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-24.04
     outputs:
+      naming: ${{ steps.classify.outputs.naming }}
       code: ${{ steps.classify.outputs.code }}
       conan: ${{ steps.classify.outputs.conan }}
       release: ${{ steps.classify.outputs.release }}
@@ -48,6 +49,46 @@ jobs:
         EVENT: ${{ github.event_name }}
         BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
       run: python3 scripts/ci_changes.py --event "$EVENT" --base "$BASE" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  naming:
+    # clang-tidy runs only readability-identifier-naming, over src/, include/ and examples/ (what
+    # `make lint` checks). It needs the compile database, so CMake configures against
+    # distribution packages and nothing is built.
+    name: Identifier naming
+    needs: changes
+    if: needs.changes.outputs.naming == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.12'
+
+    - name: Install clang-tidy
+      run: python3 -m pip install clang-tidy==23.1.4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libboost-dev nlohmann-json3-dev libssl-dev
+
+    - name: Configure
+      run: >-
+        cmake -S . -B build/naming -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=ON
+
+    - name: Check identifier naming
+      run: >-
+        find src examples -name '*.cpp' | sort | xargs -P 4 -n 1
+        clang-tidy -p build/naming --quiet
+        --checks='-*,readability-identifier-naming'
+        --warnings-as-errors='readability-identifier-naming'
+        --header-filter="^$PWD/(include|src|examples)/.*"
 
   build:
     name: Build (${{ matrix.os }}, C++${{ matrix.cppstd }}, ${{ matrix.linkage }})
@@ -117,7 +158,7 @@ jobs:
 
     - name: Setup ccache
       if: needs.changes.outputs.code == 'true'
-      uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
       with:
         key: ${{ matrix.os }}-cxx${{ matrix.cppstd }}-${{ matrix.linkage }}-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -144,6 +185,14 @@ jobs:
     - name: Compile README snippets
       if: needs.changes.outputs.code == 'true' && (runner.os != 'Windows')
       run: python scripts/check_readme_snippets.py
+
+    # The reStructuredText guides carry complete programs too. Same compiler and
+    # flags as the README check; code-blocks without a main are reported as skipped.
+    - name: Compile documentation snippets
+      if: needs.changes.outputs.code == 'true' && (runner.os != 'Windows')
+      run: |
+        PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_doc_snippets
+        python scripts/check_doc_snippets.py
 
     - name: Run Examples
       if: needs.changes.outputs.code == 'true'
@@ -206,7 +255,7 @@ jobs:
       run: python scripts/init.py
 
     - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
       with:
         key: ubuntu-24.04-sanitize-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -270,7 +319,7 @@ jobs:
       run: python scripts/init.py
 
     - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
       with:
         key: ubuntu-24.04-tsan-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -412,7 +461,7 @@ jobs:
       run: python scripts/init.py
 
     - name: Setup ccache
-      uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
       with:
         key: ubuntu-24.04-msan-ccache-${{ github.ref }}
         save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}

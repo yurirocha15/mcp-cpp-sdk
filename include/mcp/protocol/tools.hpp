@@ -69,15 +69,6 @@ inline void from_json(const nlohmann::json& json_obj, ToolAnnotations& annotatio
 }
 
 /**
- * @brief Describes the execution support of a tool.
- */
-struct ToolExecution {
-    std::string taskSupport;  ///< "forbidden" | "optional" | "required"
-};
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ToolExecution, taskSupport)
-
-/**
  * @brief Represents a tool definition.
  */
 struct Tool {
@@ -90,7 +81,6 @@ struct Tool {
     std::optional<nlohmann::json> outputSchema;  ///< Optional JSON Schema object for the output.
     std::optional<std::string> title;            ///< Human-readable title for the tool.
     std::optional<std::vector<Icon>> icons;      ///< Icons for the tool.
-    std::optional<ToolExecution> execution;      ///< Tool execution requirements.
 };
 
 /**
@@ -118,9 +108,6 @@ inline void to_json(nlohmann::json& json_obj, const Tool& tool) {
     }
     if (tool.icons) {
         json_obj["icons"] = *tool.icons;
-    }
-    if (tool.execution) {
-        json_obj["execution"] = *tool.execution;
     }
 }
 
@@ -150,9 +137,6 @@ inline void from_json(const nlohmann::json& json_obj, Tool& tool) {
     }
     if (detail::has_json_value(json_obj, "icons")) {
         tool.icons = json_obj.at("icons").get<std::vector<Icon>>();
-    }
-    if (detail::has_json_value(json_obj, "execution")) {
-        tool.execution = json_obj.at("execution").get<ToolExecution>();
     }
 }
 
@@ -213,15 +197,16 @@ MCP_API CallToolResult make_tool_error_result(std::string message);
 /**
  * @brief Create a successful tool result containing structured output.
  *
- * The structured value must be a JSON object, as required by MCP. A JSON
- * serialization is also emitted as text for clients that do not consume
- * structuredContent.
+ * The structured value may be any JSON value, as 2026-07-28 allows. A server
+ * sends a value that is not an object only in response to a 2026-07-28
+ * request; earlier revisions require an object, and the server refuses a result
+ * that holds anything else. A JSON serialization is also emitted as text for
+ * clients that do not consume structuredContent.
  *
  * @param structured_content Structured tool output.
  * @param text Optional human-readable representation. When omitted, the
  *             structured value is serialized as JSON.
  * @return A protocol-valid CallToolResult.
- * @throws std::invalid_argument If structured_content is not a JSON object.
  */
 MCP_API CallToolResult make_tool_structured_result(nlohmann::json structured_content,
                                                    std::optional<std::string> text = std::nullopt);
@@ -242,6 +227,34 @@ inline void to_json(nlohmann::json& json_obj, const CallToolResult& result) {
     }
     if (result.structuredContent) {
         json_obj["structuredContent"] = *result.structuredContent;
+    }
+}
+
+/**
+ * @brief Serializes CallToolResult to JSON, moving what it holds into the result.
+ *
+ * The output is that of the overload above; the result is not copied.
+ *
+ * @param json_obj The JSON object to populate.
+ * @param result The CallToolResult object to serialize; left in an unspecified state.
+ */
+inline void to_json(nlohmann::json& json_obj, CallToolResult&& result) {
+    nlohmann::json content = nlohmann::json::array();
+    for (auto& block : result.content) {
+        nlohmann::json serialized;
+        to_json(serialized, std::move(block));
+        content.push_back(std::move(serialized));
+    }
+    json_obj = nlohmann::json::object();
+    json_obj["content"] = std::move(content);
+    if (result.isError) {
+        json_obj["isError"] = *result.isError;
+    }
+    if (result.meta) {
+        json_obj["_meta"] = std::move(*result.meta);
+    }
+    if (result.structuredContent) {
+        json_obj["structuredContent"] = std::move(*result.structuredContent);
     }
 }
 
@@ -318,6 +331,8 @@ struct ListToolsResult {
     std::vector<Tool> tools;                ///< The list of tools in the current page.
     std::optional<std::string> nextCursor;  ///< Pagination cursor for the next page.
     std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+    std::optional<std::int64_t> ttlMs;      ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;   ///< Caching scope hint (2026-07-28).
 };
 inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
     j = nlohmann::json{{"tools", r.tools}};
@@ -327,6 +342,7 @@ inline void to_json(nlohmann::json& j, const ListToolsResult& r) {
     if (r.meta) {
         j["_meta"] = *r.meta;
     }
+    detail::write_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     j.at("tools").get_to(r.tools);
@@ -336,6 +352,7 @@ inline void from_json(const nlohmann::json& j, ListToolsResult& r) {
     if (j.contains("_meta")) {
         r.meta = j.at("_meta");
     }
+    detail::read_cache_hints(j, r.ttlMs, r.cacheScope);
 }
 
 }  // namespace mcp

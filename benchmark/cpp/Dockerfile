@@ -30,7 +30,9 @@ RUN cmake ../benchmark/cpp \
     -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_STANDARD=20
-RUN cmake --build . -j$(nproc)
+# Compile jobs; the machine builds one image at a time and each translation unit needs gigabytes.
+ARG BUILD_JOBS=4
+RUN cmake --build . -j${BUILD_JOBS}
 
 FROM ubuntu:24.04
 

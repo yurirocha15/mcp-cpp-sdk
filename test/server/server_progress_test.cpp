@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -218,4 +219,78 @@ TEST_F(ServerProgressTest, MultipleProgressNotifications) {
     // Final tool result
     EXPECT_EQ(responses[4]["id"], "2");
     ASSERT_TRUE(responses[4].contains("result"));
+}
+
+// Each request's log and progress notifications reach the client in the order its handler sent
+// them, and before its result, also while another request's handler writes at the same time.
+TEST_F(ServerProgressTest, NotificationsOfEachRequestPrecedeItsResultInOrder) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, std::move(caps));
+
+    static constexpr int steps = 5;
+    server.add_tool<NoopParams, NoopResult>(
+        "chatty", "Logs and reports progress", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& ctx, NoopParams /*params*/) -> mcp::Task<NoopResult> {
+            for (int step = 0; step < steps; ++step) {
+                co_await ctx.log_info("step " + std::to_string(step));
+                co_await ctx.report_progress(step, steps);
+            }
+            co_return NoopResult{true};
+        });
+
+    // initialize + two calls, each with 2 * steps notifications and a result.
+    constexpr std::size_t expected_messages = 1 + 2 * (2 * steps + 1);
+    std::vector<nlohmann::json> written;
+    raw_transport->set_on_write([&written, raw_transport](std::string_view message) {
+        written.push_back(nlohmann::json::parse(message));
+        if (written.size() == expected_messages) {
+            raw_transport->close();
+        }
+    });
+
+    raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    for (const auto* id : {"a", "b"}) {
+        nlohmann::json call;
+        call["jsonrpc"] = "2.0";
+        call["id"] = id;
+        call["method"] = "tools/call";
+        call["params"] = nlohmann::json{
+            {"name", "chatty"}, {"arguments", {{"dummy", 0}}}, {"_meta", {{"progressToken", id}}}};
+        raw_transport->enqueue_message(call.dump());
+    }
+
+    boost::asio::co_spawn(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
+        boost::asio::detached);
+    io_ctx_.run();
+
+    ASSERT_EQ(written.size(), expected_messages);
+    // Log messages carry no request id, so each request's progress and result are checked, and
+    // the log messages overall.
+    for (const std::string id : {"a", "b"}) {
+        std::vector<double> progress;
+        bool answered = false;
+        for (const auto& message : written) {
+            if (message.value("method", "") == "notifications/progress" &&
+                message["params"]["progressToken"] == id) {
+                EXPECT_FALSE(answered) << "progress after the result of " << id;
+                progress.push_back(message["params"]["progress"].get<double>());
+            } else if (message.contains("id") && message["id"] == id) {
+                EXPECT_TRUE(message.contains("result")) << message;
+                answered = true;
+            }
+        }
+        EXPECT_TRUE(answered) << id;
+        EXPECT_EQ(progress, (std::vector<double>{0, 1, 2, 3, 4})) << id;
+    }
+    std::size_t logs = 0;
+    for (const auto& message : written) {
+        logs += message.value("method", "") == "notifications/message" ? 1U : 0U;
+    }
+    EXPECT_EQ(logs, 2U * steps);
 }

@@ -1,22 +1,32 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/base.hpp>
+
+#include <cstdint>
+#include <map>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace mcp {
 
 /**
- * @brief Data associated with a task.
+ * @brief The state a task carries in every message that describes it.
  *
  * Named TaskData to avoid conflict with mcp::Task (boost::asio::awaitable) in core.hpp.
  */
 struct TaskData {
     std::string taskId;                        ///< The task identifier.
-    TaskStatus status;                         ///< Current task state.
+    TaskStatus status = TaskStatus::eWorking;  ///< Current task state.
+    std::optional<std::string> statusMessage;  ///< Human-readable message describing current state.
     std::string createdAt;                     ///< ISO 8601 timestamp when the task was created.
     std::string lastUpdatedAt;                 ///< ISO 8601 timestamp when the task was last updated.
-    int64_t ttl;                               ///< Retention duration from creation in milliseconds.
-    std::optional<int64_t> pollInterval;       ///< Suggested polling interval in milliseconds.
-    std::optional<std::string> statusMessage;  ///< Human-readable message describing current state.
+    /// Time to live from creation in milliseconds; null (nullopt) means the task is kept
+    /// without limit.
+    std::optional<std::int64_t> ttlMs;
+    std::optional<std::int64_t> pollIntervalMs;  ///< Suggested polling interval in milliseconds.
 };
 
 inline void to_json(nlohmann::json& json_obj, const TaskData& task) {
@@ -24,12 +34,12 @@ inline void to_json(nlohmann::json& json_obj, const TaskData& task) {
                               {"status", task.status},
                               {"createdAt", task.createdAt},
                               {"lastUpdatedAt", task.lastUpdatedAt},
-                              {"ttl", task.ttl}};
-    if (task.pollInterval) {
-        json_obj["pollInterval"] = *task.pollInterval;
-    }
+                              {"ttlMs", task.ttlMs ? nlohmann::json(*task.ttlMs) : nlohmann::json()}};
     if (task.statusMessage) {
         json_obj["statusMessage"] = *task.statusMessage;
+    }
+    if (task.pollIntervalMs) {
+        json_obj["pollIntervalMs"] = *task.pollIntervalMs;
     }
 }
 
@@ -38,241 +48,136 @@ inline void from_json(const nlohmann::json& json_obj, TaskData& task) {
     json_obj.at("status").get_to(task.status);
     json_obj.at("createdAt").get_to(task.createdAt);
     json_obj.at("lastUpdatedAt").get_to(task.lastUpdatedAt);
-    json_obj.at("ttl").get_to(task.ttl);
-    if (detail::has_json_value(json_obj, "pollInterval")) {
-        task.pollInterval = json_obj.at("pollInterval").get<int64_t>();
-    }
+    const auto& ttl = json_obj.at("ttlMs");
+    task.ttlMs = ttl.is_null() ? std::nullopt : std::optional<std::int64_t>(ttl.get<std::int64_t>());
+    task.statusMessage.reset();
     if (detail::has_json_value(json_obj, "statusMessage")) {
         task.statusMessage = json_obj.at("statusMessage").get<std::string>();
     }
+    task.pollIntervalMs.reset();
+    if (detail::has_json_value(json_obj, "pollIntervalMs")) {
+        task.pollIntervalMs = json_obj.at("pollIntervalMs").get<std::int64_t>();
+    }
 }
 
 /**
- * @brief The result returned for a task-augmented request.
+ * @brief A task together with the payload its status carries: the DetailedTask of the
+ * specification, which `tasks/get` answers with and `notifications/tasks` carries.
+ *
+ * @details The status decides which payload member is set: `input_required` carries
+ * `inputRequests`, `completed` the `result`, and `failed` the JSON-RPC `error`. Parsing a task
+ * whose status lacks its payload member throws.
+ */
+struct DetailedTask {
+    TaskData task;  ///< The task's id, status and timing members.
+    /// The outstanding server-to-client requests, keyed by identifier, of an `input_required` task.
+    std::optional<nlohmann::json> inputRequests;
+    /// The result of the original request, of a `completed` task.
+    std::optional<nlohmann::json> result;
+    /// The JSON-RPC error object the request failed with, of a `failed` task.
+    std::optional<nlohmann::json> error;
+};
+
+inline void to_json(nlohmann::json& json_obj, const DetailedTask& detailed) {
+    json_obj = detailed.task;
+    if (detailed.task.status == TaskStatus::eInputRequired && detailed.inputRequests) {
+        json_obj["inputRequests"] = *detailed.inputRequests;
+    }
+    if (detailed.task.status == TaskStatus::eCompleted && detailed.result) {
+        json_obj["result"] = *detailed.result;
+    }
+    if (detailed.task.status == TaskStatus::eFailed && detailed.error) {
+        json_obj["error"] = *detailed.error;
+    }
+}
+
+inline void from_json(const nlohmann::json& json_obj, DetailedTask& detailed) {
+    json_obj.get_to(detailed.task);
+    detailed.inputRequests.reset();
+    detailed.result.reset();
+    detailed.error.reset();
+    const auto payload = [&json_obj](const char* name) -> const nlohmann::json& {
+        const auto found = json_obj.find(name);
+        if (found == json_obj.end() || !found->is_object()) {
+            throw std::invalid_argument(std::string("task is missing its ") + name + " object");
+        }
+        return *found;
+    };
+    switch (detailed.task.status) {
+        case TaskStatus::eInputRequired:
+            detailed.inputRequests = payload("inputRequests");
+            break;
+        case TaskStatus::eCompleted:
+            detailed.result = payload("result");
+            break;
+        case TaskStatus::eFailed:
+            detailed.error = payload("error");
+            break;
+        case TaskStatus::eWorking:
+        case TaskStatus::eCancelled:
+            break;
+    }
+}
+
+/// @brief The result of `tasks/get`.
+using GetTaskResult = DetailedTask;
+
+/**
+ * @brief The result a server returns in place of a tool result to start a task.
+ *
+ * @details On the wire the task's members sit beside `resultType: "task"`.
  */
 struct CreateTaskResult {
-    TaskData task;                       ///< The task data.
-    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
+    TaskData task;  ///< The task that was created.
 };
 
 inline void to_json(nlohmann::json& json_obj, const CreateTaskResult& result) {
-    json_obj = nlohmann::json{{"task", result.task}};
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
+    json_obj = result.task;
+    json_obj["resultType"] = mcp::constants::tasks::g_RESULT_TYPE_TASK;
 }
 
 inline void from_json(const nlohmann::json& json_obj, CreateTaskResult& result) {
-    json_obj.at("task").get_to(result.task);
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
+    if (json_obj.value("resultType", "") != mcp::constants::tasks::g_RESULT_TYPE_TASK) {
+        throw std::invalid_argument("result is not a task");
     }
+    json_obj.get_to(result.task);
 }
 
-/**
- * @brief The result returned for a tasks/get request.
- *
- * Merges Result (_meta) and Task fields per schema allOf.
- */
-struct GetTaskResult {
-    std::string taskId;                        ///< The task identifier.
-    TaskStatus status;                         ///< Current task state.
-    std::string createdAt;                     ///< ISO 8601 timestamp when the task was created.
-    std::string lastUpdatedAt;                 ///< ISO 8601 timestamp when the task was last updated.
-    int64_t ttl;                               ///< Retention duration from creation in milliseconds.
-    std::optional<int64_t> pollInterval;       ///< Suggested polling interval in milliseconds.
-    std::optional<std::string> statusMessage;  ///< Human-readable message describing current state.
-    std::optional<nlohmann::json> meta;        ///< Reserved for protocol use.
-};
-
-inline void to_json(nlohmann::json& json_obj, const GetTaskResult& result) {
-    json_obj = nlohmann::json{{"taskId", result.taskId},
-                              {"status", result.status},
-                              {"createdAt", result.createdAt},
-                              {"lastUpdatedAt", result.lastUpdatedAt},
-                              {"ttl", result.ttl}};
-    if (result.pollInterval) {
-        json_obj["pollInterval"] = *result.pollInterval;
-    }
-    if (result.statusMessage) {
-        json_obj["statusMessage"] = *result.statusMessage;
-    }
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-}
-
-inline void from_json(const nlohmann::json& json_obj, GetTaskResult& result) {
-    json_obj.at("taskId").get_to(result.taskId);
-    json_obj.at("status").get_to(result.status);
-    json_obj.at("createdAt").get_to(result.createdAt);
-    json_obj.at("lastUpdatedAt").get_to(result.lastUpdatedAt);
-    json_obj.at("ttl").get_to(result.ttl);
-    if (detail::has_json_value(json_obj, "pollInterval")) {
-        result.pollInterval = json_obj.at("pollInterval").get<int64_t>();
-    }
-    if (detail::has_json_value(json_obj, "statusMessage")) {
-        result.statusMessage = json_obj.at("statusMessage").get<std::string>();
-    }
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
-
-/**
- * @brief The result returned for a tasks/list request.
- */
-struct ListTasksResult {
-    std::vector<TaskData> tasks;            ///< The list of tasks.
-    std::optional<std::string> nextCursor;  ///< Pagination position after last returned result.
-    std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
-};
-
-inline void to_json(nlohmann::json& json_obj, const ListTasksResult& result) {
-    json_obj = nlohmann::json{{"tasks", result.tasks}};
-    if (result.nextCursor) {
-        json_obj["nextCursor"] = *result.nextCursor;
-    }
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-}
-
-inline void from_json(const nlohmann::json& json_obj, ListTasksResult& result) {
-    json_obj.at("tasks").get_to(result.tasks);
-    if (detail::has_json_value(json_obj, "nextCursor")) {
-        result.nextCursor = json_obj.at("nextCursor").get<std::string>();
-    }
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
-
-/**
- * @brief Parameters for retrieving a task by ID.
- */
+/// @brief Parameters of `tasks/get`.
 struct GetTaskRequestParams {
-    std::string id;  ///< Task identifier to fetch.
+    std::string taskId;  ///< The task to query.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequestParams, id)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequestParams, taskId)
 
-/**
- * @brief A request to get a task by its ID.
- */
-struct GetTaskRequest {
-    std::string method = "tasks/get";  ///< The method name.
-    GetTaskRequestParams params;       ///< The request parameters.
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskRequest, method, params)
-
-/**
- * @brief Parameters for cancelling a task.
- */
+/// @brief Parameters of `tasks/cancel`.
 struct CancelTaskRequestParams {
-    std::string id;  ///< Task identifier to cancel.
+    std::string taskId;  ///< The task to cancel.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequestParams, id)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequestParams, taskId)
+
+/// @brief Parameters of `tasks/update`.
+struct UpdateTaskRequestParams {
+    std::string taskId;                                    ///< The task to answer.
+    std::map<std::string, nlohmann::json> inputResponses;  ///< Responses to its inputRequests, by key.
+};
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(UpdateTaskRequestParams, taskId, inputResponses)
 
 /**
- * @brief A request to cancel a task.
+ * @brief A notification that carries a task's current state, for a client that listened for it
+ * with `notifications.taskIds` on subscriptions/listen.
  */
-struct CancelTaskRequest {
-    std::string method = "tasks/cancel";  ///< The method name.
-    CancelTaskRequestParams params;       ///< The request parameters.
+struct TaskStatusNotification {
+    std::string method = "notifications/tasks";  ///< The method name.
+    DetailedTask params;                         ///< The task as `tasks/get` would return it.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelTaskRequest, method, params)
 
-/**
- * @brief Result of a task cancellation request.
- */
-struct CancelTaskResult {
-    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
-};
-inline void to_json(nlohmann::json& j, const CancelTaskResult& r) {
-    j = nlohmann::json::object();
-    if (r.meta) {
-        j["_meta"] = *r.meta;
-    }
-}
-inline void from_json(const nlohmann::json& j, CancelTaskResult& r) {
-    if (j.contains("_meta")) {
-        r.meta = j.at("_meta");
-    }
+inline void to_json(nlohmann::json& json_obj, const TaskStatusNotification& notification) {
+    json_obj = nlohmann::json{{"method", notification.method}, {"params", notification.params}};
 }
 
-/**
- * @brief Parameters for listing tasks.
- */
-struct ListTasksRequestParams {
-    std::optional<std::string> cursor;  ///< Optional pagination cursor.
-};
-inline void to_json(nlohmann::json& j, const ListTasksRequestParams& p) {
-    j = nlohmann::json::object();
-    if (p.cursor) {
-        j["cursor"] = *p.cursor;
-    }
-}
-inline void from_json(const nlohmann::json& j, ListTasksRequestParams& p) {
-    if (detail::has_json_value(j, "cursor")) {
-        p.cursor = j.at("cursor").get<std::string>();
-    }
-}
-
-/**
- * @brief A request to list all tasks.
- */
-struct ListTasksRequest {
-    std::string method = "tasks/list";             ///< The method name.
-    std::optional<ListTasksRequestParams> params;  ///< Optional request parameters.
-};
-inline void to_json(nlohmann::json& j, const ListTasksRequest& r) {
-    j = nlohmann::json{{"method", r.method}};
-    if (r.params) {
-        j["params"] = *r.params;
-    }
-}
-inline void from_json(const nlohmann::json& j, ListTasksRequest& r) {
-    j.at("method").get_to(r.method);
-    if (j.contains("params")) {
-        r.params = j.at("params").get<ListTasksRequestParams>();
-    }
-}
-
-/**
- * @brief Parameters for retrieving a task's payload.
- */
-struct GetTaskPayloadRequestParams {
-    std::string id;  ///< Task identifier whose payload should be fetched.
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskPayloadRequestParams, id)
-
-/**
- * @brief A request to get a task's payload.
- */
-struct GetTaskPayloadRequest {
-    std::string method = "tasks/getPayload";  ///< The method name.
-    GetTaskPayloadRequestParams params;       ///< The request parameters.
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetTaskPayloadRequest, method, params)
-
-/**
- * @brief Result containing a task's payload data.
- */
-struct GetTaskPayloadResult {
-    nlohmann::json payload;              ///< Payload associated with the task.
-    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
-};
-inline void to_json(nlohmann::json& j, const GetTaskPayloadResult& r) {
-    j = nlohmann::json{{"payload", r.payload}};
-    if (r.meta) {
-        j["_meta"] = *r.meta;
-    }
-}
-inline void from_json(const nlohmann::json& j, GetTaskPayloadResult& r) {
-    j.at("payload").get_to(r.payload);
-    if (j.contains("_meta")) {
-        r.meta = j.at("_meta");
-    }
+inline void from_json(const nlohmann::json& json_obj, TaskStatusNotification& notification) {
+    json_obj.at("method").get_to(notification.method);
+    json_obj.at("params").get_to(notification.params);
 }
 
 }  // namespace mcp

@@ -200,6 +200,8 @@ struct ListPromptsResult {
     std::vector<Prompt> prompts;            ///< The list of prompts.
     std::optional<std::string> nextCursor;  ///< An opaque token representing the pagination position.
     std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+    std::optional<std::int64_t> ttlMs;      ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;   ///< Caching scope hint (2026-07-28).
 };
 
 inline void to_json(nlohmann::json& json_obj, const ListPromptsResult& result) {
@@ -210,6 +212,7 @@ inline void to_json(nlohmann::json& json_obj, const ListPromptsResult& result) {
     if (result.meta) {
         json_obj["_meta"] = *result.meta;
     }
+    detail::write_cache_hints(json_obj, result.ttlMs, result.cacheScope);
 }
 
 inline void from_json(const nlohmann::json& json_obj, ListPromptsResult& result) {
@@ -220,6 +223,7 @@ inline void from_json(const nlohmann::json& json_obj, ListPromptsResult& result)
     if (json_obj.contains("_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
+    detail::read_cache_hints(json_obj, result.ttlMs, result.cacheScope);
 }
 
 }  // namespace mcp

@@ -1,5 +1,6 @@
 #include <mcp/transport/websocket.hpp>
 
+#include "../detail/constants.hpp"
 #include "../detail/socket_deadline.hpp"
 
 #include <algorithm>
@@ -50,11 +51,9 @@ std::chrono::milliseconds effective_connect_timeout(std::chrono::milliseconds re
     return requested > longest ? std::chrono::milliseconds::zero() : requested;
 }
 
-constexpr auto kNever = std::chrono::steady_clock::time_point::max();
-
 struct OperationWaiter {
     explicit OperationWaiter(const asio::any_io_executor& executor) : signal(executor) {
-        signal.expires_at(kNever);
+        signal.expires_at(mcp::detail::constants::websocket::g_NEVER);
     }
 
     void wake() noexcept { signal.cancel(); }
@@ -175,26 +174,31 @@ class SerializedWriteGate {
 
 struct WebSocketServerTransport::Impl {
     enum class HandshakeState {
-        Pending,
-        Accepting,
-        Open,
-        Failed,
+        ePending,
+        eAccepting,
+        eOpen,
+        eFailed,
     };
 
     WsStream ws;
     asio::strand<asio::any_io_executor> strand;
     std::atomic<bool> closed{false};
-    HandshakeState handshake_state{HandshakeState::Pending};
+    HandshakeState handshake_state{HandshakeState::ePending};
     std::exception_ptr handshake_error;
     std::vector<std::shared_ptr<OperationWaiter>> handshake_waiters;
     SerializedWriteGate write_gate;
     bool read_active{false};
+    /// Copied from the configuration on the strand once the handshake is done.
+    std::chrono::milliseconds effective_idle_timeout{};
 
     mutable std::mutex configuration_mutex;
     std::unordered_set<std::string> allowed_origins;
     bool allow_all_origins{false};
-    /// Set once the handshake starts; the Origin policy is fixed from then on.
+    /// Set once the handshake starts; the Origin policy and the limits are fixed from then on.
     bool configuration_locked{false};
+    std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
+    std::chrono::milliseconds idle_timeout{std::chrono::minutes(5)};
+    std::size_t max_message_bytes{mcp::detail::constants::websocket::g_DEFAULT_MAX_MESSAGE_BYTES};
 
     explicit Impl(asio::ip::tcp::socket socket)
         : ws(std::move(socket)),
@@ -210,7 +214,7 @@ struct WebSocketServerTransport::Impl {
     void ensure_configurable() const {
         if (configuration_locked || closed.load(std::memory_order_acquire)) {
             throw std::logic_error(
-                "WebSocketServerTransport origins must be set before the first read or write");
+                "WebSocketServerTransport must be configured before the first read or write");
         }
     }
 
@@ -226,6 +230,22 @@ struct WebSocketServerTransport::Impl {
     /// page's Origin with the upgrade and applies no cross-origin check to WebSockets itself, so
     /// without this any web page could open a connection to a local server.
     static Task<void> accept_upgrade(std::shared_ptr<Impl> state) {
+        std::optional<detail::SocketDeadline> deadline;
+        if (const auto timeout = effective_connect_timeout(state->handshake_timeout);
+            timeout > std::chrono::milliseconds::zero()) {
+            deadline.emplace(state->strand, state->ws.next_layer().socket(), timeout);
+        }
+        try {
+            co_await read_and_answer_upgrade(state);
+        } catch (...) {
+            if (deadline && deadline->expired()) {
+                throw boost::system::system_error(beast::error::timeout);
+            }
+            throw;
+        }
+    }
+
+    static Task<void> read_and_answer_upgrade(std::shared_ptr<Impl> state) {
         beast::flat_buffer buffer;
         beast::http::request<beast::http::string_body> upgrade;
         co_await beast::http::async_read(state->ws.next_layer(), buffer, upgrade, asio::use_awaitable);
@@ -244,6 +264,18 @@ struct WebSocketServerTransport::Impl {
                                      *origin);
         }
         co_await state->ws.async_accept(upgrade, asio::use_awaitable);
+        std::lock_guard lock(state->configuration_mutex);
+        state->ws.read_message_max(state->max_message_bytes);
+        state->effective_idle_timeout = effective_connect_timeout(state->idle_timeout);
+        // A peer that answers the pings stays connected however quiet the session is.
+        beast::websocket::stream_base::timeout timeouts{};
+        timeouts.handshake_timeout = beast::websocket::stream_base::none();
+        timeouts.idle_timeout = state->effective_idle_timeout > std::chrono::milliseconds::zero()
+                                    ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                          state->effective_idle_timeout)
+                                    : beast::websocket::stream_base::none();
+        timeouts.keep_alive_pings = true;
+        state->ws.set_option(timeouts);
     }
 
     static void notify_handshake_waiters(const std::shared_ptr<Impl>& state) {
@@ -262,7 +294,7 @@ struct WebSocketServerTransport::Impl {
         }
 
         throw_if_closed(state);
-        if (state->handshake_state == HandshakeState::Open) {
+        if (state->handshake_state == HandshakeState::eOpen) {
             co_return;
         }
         if (state->handshake_error) {
@@ -273,25 +305,25 @@ struct WebSocketServerTransport::Impl {
 
     static Task<void> ensure_handshake(std::shared_ptr<Impl> state) {
         throw_if_closed(state);
-        if (state->handshake_state == HandshakeState::Open) {
+        if (state->handshake_state == HandshakeState::eOpen) {
             co_return;
         }
-        if (state->handshake_state == HandshakeState::Accepting) {
+        if (state->handshake_state == HandshakeState::eAccepting) {
             co_await wait_for_handshake(std::move(state));
             co_return;
         }
-        if (state->handshake_state == HandshakeState::Failed) {
+        if (state->handshake_state == HandshakeState::eFailed) {
             std::rethrow_exception(state->handshake_error);
         }
 
-        state->handshake_state = HandshakeState::Accepting;
+        state->handshake_state = HandshakeState::eAccepting;
         try {
             co_await accept_upgrade(state);
             throw_if_closed(state);
-            state->handshake_state = HandshakeState::Open;
+            state->handshake_state = HandshakeState::eOpen;
         } catch (...) {
             state->handshake_error = std::current_exception();
-            state->handshake_state = HandshakeState::Failed;
+            state->handshake_state = HandshakeState::eFailed;
             notify_handshake_waiters(state);
             throw;
         }
@@ -316,18 +348,27 @@ struct WebSocketServerTransport::Impl {
         throw_if_closed(state);
         co_await ensure_handshake(state);
         co_await state->write_gate.acquire();
+        // A peer that stopped reading answers no ping either, but the read that notices may not be
+        // running: the server stops reading at its limit on requests in flight.
+        std::optional<detail::SocketDeadline> deadline;
+        if (state->effective_idle_timeout > std::chrono::milliseconds::zero()) {
+            deadline.emplace(state->strand, state->ws.next_layer().socket(),
+                             state->effective_idle_timeout);
+        }
         try {
             co_await state->ws.async_write(asio::buffer(message), asio::use_awaitable);
         } catch (...) {
+            deadline.reset();
             state->write_gate.release();
             throw;
         }
+        deadline.reset();
         state->write_gate.release();
     }
 
     static void close_on_strand(const std::shared_ptr<Impl>& state) {
         state->handshake_error = closed_error("WebSocketServerTransport");
-        state->handshake_state = HandshakeState::Failed;
+        state->handshake_state = HandshakeState::eFailed;
         notify_handshake_waiters(state);
         state->write_gate.cancel();
         close_socket(state->ws);
@@ -375,6 +416,24 @@ void WebSocketServerTransport::set_allow_all_origins(bool allow_all) {
     impl_->allow_all_origins = allow_all;
 }
 
+void WebSocketServerTransport::set_handshake_timeout(std::chrono::milliseconds timeout) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->handshake_timeout = timeout;
+}
+
+void WebSocketServerTransport::set_idle_timeout(std::chrono::milliseconds timeout) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->idle_timeout = timeout;
+}
+
+void WebSocketServerTransport::set_max_message_bytes(std::size_t bytes) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->max_message_bytes = bytes;
+}
+
 void WebSocketServerTransport::close() {
     auto state = impl_;
     if (state->closed.exchange(true, std::memory_order_acq_rel)) {
@@ -389,10 +448,10 @@ void WebSocketServerTransport::close() {
 
 struct WebSocketClientTransport::Impl {
     enum class ConnectionState {
-        Disconnected,
-        Connecting,
-        Connected,
-        Failed,
+        eDisconnected,
+        eConnecting,
+        eConnected,
+        eFailed,
     };
 
     std::chrono::milliseconds connect_timeout;
@@ -403,11 +462,13 @@ struct WebSocketClientTransport::Impl {
     std::string port;
     std::string path;
     std::atomic<bool> closed{false};
-    ConnectionState connection_state{ConnectionState::Disconnected};
+    ConnectionState connection_state{ConnectionState::eDisconnected};
     std::exception_ptr connect_error;
     std::vector<std::shared_ptr<OperationWaiter>> connection_waiters;
     SerializedWriteGate write_gate;
     bool read_active{false};
+    std::atomic<std::size_t> max_message_bytes{
+        mcp::detail::constants::websocket::g_DEFAULT_MAX_MESSAGE_BYTES};
 
     Impl(const asio::any_io_executor& executor, std::string host_arg, std::string port_arg,
          std::string path_arg, std::chrono::milliseconds connect_timeout_arg)
@@ -441,7 +502,7 @@ struct WebSocketClientTransport::Impl {
         }
 
         throw_if_closed(state);
-        if (state->connection_state == ConnectionState::Connected) {
+        if (state->connection_state == ConnectionState::eConnected) {
             co_return;
         }
         if (state->connect_error) {
@@ -452,18 +513,18 @@ struct WebSocketClientTransport::Impl {
 
     static Task<void> ensure_connected(std::shared_ptr<Impl> state) {
         throw_if_closed(state);
-        if (state->connection_state == ConnectionState::Connected) {
+        if (state->connection_state == ConnectionState::eConnected) {
             co_return;
         }
-        if (state->connection_state == ConnectionState::Connecting) {
+        if (state->connection_state == ConnectionState::eConnecting) {
             co_await wait_for_connection(std::move(state));
             co_return;
         }
-        if (state->connection_state == ConnectionState::Failed) {
+        if (state->connection_state == ConnectionState::eFailed) {
             std::rethrow_exception(state->connect_error);
         }
 
-        state->connection_state = ConnectionState::Connecting;
+        state->connection_state = ConnectionState::eConnecting;
         state->connect_error = nullptr;
         std::optional<detail::SocketDeadline> deadline;
         try {
@@ -484,14 +545,15 @@ struct WebSocketClientTransport::Impl {
                                                asio::use_awaitable);
             deadline.reset();
             throw_if_closed(state);
-            state->connection_state = ConnectionState::Connected;
+            state->ws.read_message_max(state->max_message_bytes.load(std::memory_order_acquire));
+            state->connection_state = ConnectionState::eConnected;
         } catch (...) {
             const bool timed_out = deadline && deadline->expired();
             deadline.reset();
             state->connect_error =
                 timed_out ? std::make_exception_ptr(boost::system::system_error(beast::error::timeout))
                           : std::current_exception();
-            state->connection_state = ConnectionState::Failed;
+            state->connection_state = ConnectionState::eFailed;
             notify_connection_waiters(state);
             std::rethrow_exception(state->connect_error);
         }
@@ -527,7 +589,7 @@ struct WebSocketClientTransport::Impl {
 
     static void close_on_strand(const std::shared_ptr<Impl>& state) {
         state->connect_error = closed_error("WebSocketClientTransport");
-        state->connection_state = ConnectionState::Failed;
+        state->connection_state = ConnectionState::eFailed;
         notify_connection_waiters(state);
         state->write_gate.cancel();
         state->resolver.cancel();
@@ -560,6 +622,10 @@ Task<void> WebSocketClientTransport::write_message(std::string_view message) {
     auto owned_message = std::string(message);
     return asio::co_spawn(state->strand, Impl::write(state, std::move(owned_message)),
                           asio::use_awaitable);
+}
+
+void WebSocketClientTransport::set_max_message_bytes(std::size_t bytes) {
+    impl_->max_message_bytes.store(bytes, std::memory_order_release);
 }
 
 void WebSocketClientTransport::close() {

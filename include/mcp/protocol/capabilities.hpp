@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/base.hpp>
 
 #include <algorithm>
@@ -14,82 +15,59 @@
 namespace mcp {
 
 /**
- * @brief Protocol version 2024-11-05.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2024_11_05 = "2024-11-05";
-
-/**
- * @brief Protocol version 2025-03-26.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2025_03_26 = "2025-03-26";
-
-/**
- * @brief Protocol version 2025-06-18.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
-
-/**
- * @brief Protocol version 2025-11-25.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
-
-/**
- * @brief Protocol version 2026-07-28 (stateless protocol revision).
+ * @brief Check whether a protocol version is listed in
+ * mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS, in either era.
  *
- * @details Deliberately absent from g_SUPPORTED_PROTOCOL_VERSIONS: legacy initialize
- * negotiation must only resolve to versions whose semantics this SDK fully serves. It is
- * listed only in g_DISCOVERABLE_PROTOCOL_VERSIONS.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
-
-/**
- * @brief The latest supported protocol version.
- */
-constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
-
-/**
- * @brief List of all supported protocol versions.
- */
-constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
-    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
-    g_PROTOCOL_VERSION_2025_11_25};
-
-/**
- * @brief Protocol versions a server/discover response advertises.
- *
- * @details Deliberately distinct from g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs
- * legacy initialize negotiation. Listing a version here makes no promise to the negotiation
- * path: a legacy peer requesting 2026-07-28 in initialize still negotiates
- * g_LATEST_PROTOCOL_VERSION.
- */
-constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
-    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
-    g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
-
-/**
- * @brief Check whether a protocol version is supported by this SDK.
+ * @details initialize negotiation does not use it; see is_legacy_protocol_version().
  *
  * @param version The protocol version to check.
- * @return true if the version is present in g_SUPPORTED_PROTOCOL_VERSIONS.
+ * @return true if the version is present in mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.
  */
 [[nodiscard]] constexpr bool is_supported_protocol_version(std::string_view version) {
-    return std::find(g_SUPPORTED_PROTOCOL_VERSIONS.begin(), g_SUPPORTED_PROTOCOL_VERSIONS.end(),
-                     version) != g_SUPPORTED_PROTOCOL_VERSIONS.end();
+    return std::find(mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
+                     mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end(),
+                     version) != mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end();
 }
 
 /**
- * @brief Negotiate the protocol version to use for a session.
+ * @brief Check whether a protocol version starts a session with initialize.
  *
- * @details If the requested version is supported, it is selected. Otherwise,
- * the latest supported version is used as a fallback.
+ * @param version The protocol version to check.
+ * @return true if the version is present in mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_legacy_protocol_version(std::string_view version) {
+    return std::find(mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.begin(),
+                     mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end(),
+                     version) != mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Check whether a protocol version is served per request, without initialize.
+ *
+ * @param version The protocol version to check.
+ * @return true if the version is present in mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_modern_protocol_version(std::string_view version) {
+    return std::find(mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.begin(),
+                     mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end(),
+                     version) != mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Negotiate the protocol version of an initialize request.
+ *
+ * @details A requested version that starts a session with initialize is selected. Any other
+ * version, including one served per request such as 2026-07-28, falls back to
+ * mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION.
  *
  * @param requested_version The version requested by the peer.
  * @return The negotiated protocol version.
  */
 [[nodiscard]] constexpr std::string_view negotiate_protocol_version(
     std::string_view requested_version) {
-    return is_supported_protocol_version(requested_version) ? requested_version
-                                                            : g_LATEST_PROTOCOL_VERSION;
+    return is_legacy_protocol_version(requested_version)
+               ? requested_version
+               : mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION;
 }
 
 /**
@@ -284,42 +262,10 @@ struct ClientCapabilities {
         std::optional<nlohmann::json> tools;    ///< Whether the client supports tool use.
     };
 
-    /**
-     * @brief Client support for task-augmented reverse-RPC request types.
-     */
-    struct TaskRequestsCapability {
-        /**
-         * @brief Task support for elicitation request creation.
-         */
-        struct ElicitationTaskCapability {
-            std::optional<nlohmann::json> create;  ///< Support for creating elicitation tasks.
-        };
-        /**
-         * @brief Task support for sampling request creation.
-         */
-        struct SamplingTaskCapability {
-            std::optional<nlohmann::json> createMessage;  ///< Support for creating sampling tasks.
-        };
-
-        std::optional<ElicitationTaskCapability>
-            elicitation;                                 ///< Task support for elicitation requests.
-        std::optional<SamplingTaskCapability> sampling;  ///< Task support for sampling requests.
-    };
-
-    /**
-     * @brief Client support for task lifecycle endpoints.
-     */
-    struct TasksCapability {
-        std::optional<nlohmann::json> cancel;            ///< Whether the client supports tasks/cancel.
-        std::optional<nlohmann::json> list;              ///< Whether the client supports tasks/list.
-        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
-    };
-
     std::optional<ElicitationCapability> elicitation;  ///< Support for elicitation requests.
     std::optional<nlohmann::json> experimental;  ///< Implementation-defined experimental capabilities.
     std::optional<RootsCapability> roots;        ///< Support for roots/list requests.
     std::optional<SamplingCapability> sampling;  ///< Support for sampling/createMessage requests.
-    std::optional<TasksCapability> tasks;        ///< Support for task lifecycle endpoints.
     std::optional<std::map<std::string, nlohmann::json>>
         extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
@@ -375,83 +321,6 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities::SamplingCapab
     }
 }
 
-inline void to_json(nlohmann::json& j,
-                    const ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.create) {
-        j["create"] = *cap.create;
-    }
-}
-
-inline void from_json(const nlohmann::json& j,
-                      ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
-    if (j.contains("create")) {
-        cap.create = j.at("create");
-    }
-}
-
-inline void to_json(nlohmann::json& j,
-                    const ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.createMessage) {
-        j["createMessage"] = *cap.createMessage;
-    }
-}
-
-inline void from_json(const nlohmann::json& j,
-                      ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
-    if (j.contains("createMessage")) {
-        cap.createMessage = j.at("createMessage");
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ClientCapabilities::TaskRequestsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.elicitation) {
-        j["elicitation"] = *cap.elicitation;
-    }
-    if (cap.sampling) {
-        j["sampling"] = *cap.sampling;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ClientCapabilities::TaskRequestsCapability& cap) {
-    if (j.contains("elicitation")) {
-        cap.elicitation =
-            j.at("elicitation")
-                .get<ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability>();
-    }
-    if (j.contains("sampling")) {
-        cap.sampling =
-            j.at("sampling").get<ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ClientCapabilities::TasksCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.cancel) {
-        j["cancel"] = *cap.cancel;
-    }
-    if (cap.list) {
-        j["list"] = *cap.list;
-    }
-    if (cap.requests) {
-        j["requests"] = *cap.requests;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ClientCapabilities::TasksCapability& cap) {
-    if (j.contains("cancel")) {
-        cap.cancel = j.at("cancel");
-    }
-    if (j.contains("list")) {
-        cap.list = j.at("list");
-    }
-    if (j.contains("requests")) {
-        cap.requests = j.at("requests").get<ClientCapabilities::TaskRequestsCapability>();
-    }
-}
-
 inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
     j = nlohmann::json::object();
     if (cap.elicitation) {
@@ -465,9 +334,6 @@ inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
     }
     if (cap.sampling) {
         j["sampling"] = *cap.sampling;
-    }
-    if (cap.tasks) {
-        j["tasks"] = *cap.tasks;
     }
     if (cap.extensions) {
         j["extensions"] = *cap.extensions;
@@ -486,9 +352,6 @@ inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
     }
     if (j.contains("sampling")) {
         cap.sampling = j.at("sampling").get<ClientCapabilities::SamplingCapability>();
-    }
-    if (j.contains("tasks")) {
-        cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
     }
     if (detail::has_json_value(j, "extensions")) {
         cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
@@ -521,29 +384,6 @@ struct ServerCapabilities {
     };
 
     /**
-     * @brief Server support for task-augmented request types.
-     */
-    struct TaskRequestsCapability {
-        /**
-         * @brief Task support for tool invocation requests.
-         */
-        struct ToolsTaskCapability {
-            std::optional<nlohmann::json> call;  ///< Support for task-augmented tool calls.
-        };
-
-        std::optional<ToolsTaskCapability> tools;  ///< Task support for tool-related requests.
-    };
-
-    /**
-     * @brief Server support for task lifecycle endpoints.
-     */
-    struct TasksCapability {
-        std::optional<nlohmann::json> cancel;            ///< Whether the server supports tasks/cancel.
-        std::optional<nlohmann::json> list;              ///< Whether the server supports tasks/list.
-        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
-    };
-
-    /**
      * @brief Server support for tool listing change notifications.
      */
     struct ToolsCapability {
@@ -556,7 +396,6 @@ struct ServerCapabilities {
     std::optional<nlohmann::json> logging;       ///< Support for logging/setLevel.
     std::optional<PromptsCapability> prompts;    ///< Support for prompt endpoints.
     std::optional<ResourcesCapability> resources;  ///< Support for resource endpoints.
-    std::optional<TasksCapability> tasks;          ///< Support for task lifecycle endpoints.
     std::optional<ToolsCapability> tools;          ///< Support for tool endpoints.
     std::optional<std::map<std::string, nlohmann::json>>
         extensions;  ///< Extension capability negotiation, keyed by extension name.
@@ -594,60 +433,6 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities::ResourcesCapa
     }
 }
 
-inline void to_json(nlohmann::json& j,
-                    const ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.call) {
-        j["call"] = *cap.call;
-    }
-}
-
-inline void from_json(const nlohmann::json& j,
-                      ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
-    if (j.contains("call")) {
-        cap.call = j.at("call");
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ServerCapabilities::TaskRequestsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.tools) {
-        j["tools"] = *cap.tools;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ServerCapabilities::TaskRequestsCapability& cap) {
-    if (j.contains("tools")) {
-        cap.tools =
-            j.at("tools").get<ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ServerCapabilities::TasksCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.cancel) {
-        j["cancel"] = *cap.cancel;
-    }
-    if (cap.list) {
-        j["list"] = *cap.list;
-    }
-    if (cap.requests) {
-        j["requests"] = *cap.requests;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ServerCapabilities::TasksCapability& cap) {
-    if (j.contains("cancel")) {
-        cap.cancel = j.at("cancel");
-    }
-    if (j.contains("list")) {
-        cap.list = j.at("list");
-    }
-    if (j.contains("requests")) {
-        cap.requests = j.at("requests").get<ServerCapabilities::TaskRequestsCapability>();
-    }
-}
-
 inline void to_json(nlohmann::json& j, const ServerCapabilities::ToolsCapability& cap) {
     j = nlohmann::json::object();
     if (cap.listChanged) {
@@ -678,9 +463,6 @@ inline void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
     if (cap.resources) {
         j["resources"] = *cap.resources;
     }
-    if (cap.tasks) {
-        j["tasks"] = *cap.tasks;
-    }
     if (cap.tools) {
         j["tools"] = *cap.tools;
     }
@@ -704,9 +486,6 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
     }
     if (j.contains("resources")) {
         cap.resources = j.at("resources").get<ServerCapabilities::ResourcesCapability>();
-    }
-    if (j.contains("tasks")) {
-        cap.tasks = j.at("tasks").get<ServerCapabilities::TasksCapability>();
     }
     if (j.contains("tools")) {
         cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
@@ -812,6 +591,38 @@ enum class CacheScope : std::uint8_t {
 NLOHMANN_JSON_SERIALIZE_ENUM(CacheScope,
                              {{CacheScope::ePublic, "public"}, {CacheScope::ePrivate, "private"}})
 
+namespace detail {
+
+/// Reads the `ttlMs` and `cacheScope` caching hints of a result. A `cacheScope` this SDK does not
+/// recognise is left unset: the enum's JSON conversion would read it as "public", the scope that
+/// lets a cache share the result across callers.
+inline void read_cache_hints(const nlohmann::json& json_obj, std::optional<std::int64_t>& ttl_ms,
+                             std::optional<CacheScope>& cache_scope) {
+    if (has_json_value(json_obj, "ttlMs")) {
+        ttl_ms = json_obj.at("ttlMs").get<std::int64_t>();
+    }
+    if (const auto scope = json_obj.find("cacheScope"); scope != json_obj.end() && scope->is_string()) {
+        if (*scope == "public") {
+            cache_scope = CacheScope::ePublic;
+        } else if (*scope == "private") {
+            cache_scope = CacheScope::ePrivate;
+        }
+    }
+}
+
+/// Writes the `ttlMs` and `cacheScope` caching hints of a result, each only when it is set.
+inline void write_cache_hints(nlohmann::json& json_obj, const std::optional<std::int64_t>& ttl_ms,
+                              const std::optional<CacheScope>& cache_scope) {
+    if (ttl_ms) {
+        json_obj["ttlMs"] = *ttl_ms;
+    }
+    if (cache_scope) {
+        json_obj["cacheScope"] = *cache_scope;
+    }
+}
+
+}  // namespace detail
+
 /**
  * @brief Represents the result of a server/discover request.
  *
@@ -821,7 +632,7 @@ struct DiscoverResult {
     std::string resultType = "complete";         ///< Always "complete" for this result.
     std::vector<std::string> supportedVersions;  ///< Protocol versions the server supports.
     ServerCapabilities capabilities;             ///< The capabilities supported by the server.
-    ServerInfo serverInfo;                    ///< Server identity, carried under `_meta` on the wire.
+    std::optional<ServerInfo> serverInfo;     ///< Server identity, carried under `_meta` on the wire.
     std::optional<std::string> instructions;  ///< Optional instructions for the client.
     std::optional<std::int64_t> ttlMs;        ///< Optional caching TTL hint, in milliseconds.
     std::optional<CacheScope> cacheScope;     ///< Optional caching scope hint.
@@ -838,17 +649,14 @@ inline void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
         {"resultType", res.resultType},
         {"supportedVersions", res.supportedVersions},
         {"capabilities", res.capabilities},
-        {"_meta", {{"io.modelcontextprotocol/serverInfo", res.serverInfo}}},
     };
+    if (res.serverInfo) {
+        json_obj["_meta"] = {{"io.modelcontextprotocol/serverInfo", *res.serverInfo}};
+    }
     if (res.instructions) {
         json_obj["instructions"] = *res.instructions;
     }
-    if (res.ttlMs) {
-        json_obj["ttlMs"] = *res.ttlMs;
-    }
-    if (res.cacheScope) {
-        json_obj["cacheScope"] = *res.cacheScope;
-    }
+    detail::write_cache_hints(json_obj, res.ttlMs, res.cacheScope);
 }
 
 /**
@@ -862,18 +670,14 @@ inline void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
     json_obj.at("supportedVersions").get_to(res.supportedVersions);
     json_obj.at("capabilities").get_to(res.capabilities);
     if (json_obj.contains("_meta") &&
-        json_obj.at("_meta").contains("io.modelcontextprotocol/serverInfo")) {
-        json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get_to(res.serverInfo);
+        detail::has_json_value(json_obj.at("_meta"), "io.modelcontextprotocol/serverInfo")) {
+        res.serverInfo =
+            json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get<ServerInfo>();
     }
     if (detail::has_json_value(json_obj, "instructions")) {
         res.instructions = json_obj.at("instructions").get<std::string>();
     }
-    if (detail::has_json_value(json_obj, "ttlMs")) {
-        res.ttlMs = json_obj.at("ttlMs").get<std::int64_t>();
-    }
-    if (json_obj.contains("cacheScope")) {
-        res.cacheScope = json_obj.at("cacheScope").get<CacheScope>();
-    }
+    detail::read_cache_hints(json_obj, res.ttlMs, res.cacheScope);
 }
 
 }  // namespace mcp

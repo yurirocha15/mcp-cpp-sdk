@@ -4,6 +4,8 @@
 // socket_gate.cpp), which is how a test parks an Asio connect at the point its socket is opened.
 #ifdef __linux__
 
+#include "hang_guard.hpp"
+
 #include <sys/socket.h>
 #include <atomic>
 #include <chrono>
@@ -57,7 +59,7 @@ class SocketGate final {
         changed_.notify_all();
         // Longer than any wait in the test, and still bounded: a test that fails without
         // releasing cannot leave an io thread parked forever.
-        changed_.wait_for(lock, std::chrono::seconds(30), [this]() { return released_; });
+        changed_.wait_for(lock, g_release_guard, [this]() { return released_; });
     }
 
    private:

@@ -10,7 +10,9 @@
 #include <boost/beast/http.hpp>
 #include <mcp/transport/http_types.hpp>
 
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -18,6 +20,18 @@
 #include <vector>
 
 namespace mcp {
+
+/** @brief What a StreamableHttpSessionManager holds for clients it has not heard from. */
+struct SessionLimits {
+    /// Sessions at once. An initialize past it is answered 503. A session costs about 31 KiB
+    /// before it does anything, so this bounds what an unauthenticated client can make a server
+    /// hold; a bearer token validator refuses such a client before any session exists.
+    std::size_t max_sessions{10000};
+    /// How long a session lives after its last request, unless a request of it is still running,
+    /// or zero to keep it until its DELETE. A client that leaves without one is otherwise kept
+    /// until the process ends.
+    std::chrono::milliseconds idle_timeout{std::chrono::minutes(5)};
+};
 
 /**
  * @brief Multi-session HTTP endpoint for MCP Streamable HTTP.
@@ -30,6 +44,17 @@ namespace mcp {
  * This matches the behavior of Python's StreamableHTTPSessionManager and
  * Go's StreamableHTTPServer: session creation on initialize, 404 on unknown
  * sessions, DELETE for session teardown.
+ *
+ * A request of protocol revision 2026-07-28 needs no session. Its answer is plain JSON unless a
+ * handler sends a notification (a log message, progress) while serving it and the client accepts
+ * `text/event-stream`: then the answer becomes an SSE stream carrying those notifications and
+ * finally the response. A client that accepts `text/event-stream` and half-closes its connection
+ * while the request runs gets an SSE stream as well, carrying comments that probe whether the
+ * client is still there, and then the response: a client that closed cleanly cannot be told from
+ * one that only half-closed until a write fails. The HTTP status of such an answer is 200 even for
+ * an error, which the JSON-RPC body still carries. A client that disconnects while its request
+ * runs cancels it, and so does a reset after a half-close. Notifications wait in a queue limited
+ * by StreamOptions::max_queued_notifications and max_queued_bytes.
  *
  * This class is NOT an ITransport. It owns the HTTP listener and manages
  * the full lifecycle of per-session Server instances.
@@ -74,7 +99,7 @@ class MCP_API StreamableHttpSessionManager {
     StreamableHttpSessionManager(
         const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
         ServerFactory factory,
-        std::size_t event_store_capacity = constants::g_event_store_default_capacity);
+        std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~StreamableHttpSessionManager();
 
@@ -118,7 +143,12 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers of requests served without a
+     * session see it as Context::principal(). A session belongs to the principal that created it:
+     * another principal gets 404. Without a named principal a token counts as one by itself, so a
+     * client that refreshes its token starts a new session; naming the principal avoids that.
+     * Without a validator, a session is not bound to the Authorization header.
      *
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
@@ -135,7 +165,12 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers of requests served without a
+     * session see it as Context::principal(). A session belongs to the principal that created it:
+     * another principal gets 404. Without a named principal a token counts as one by itself, so a
+     * client that refreshes its token starts a new session; naming the principal avoids that.
+     * Without a validator, a session is not bound to the Authorization header.
      *
      * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
      *         already been called or the manager is closed.
@@ -147,8 +182,8 @@ class MCP_API StreamableHttpSessionManager {
      *
      * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection is
      * closed; it never reaches MCP dispatch. Defaults to
-     * mcp::constants::g_default_max_request_body_bytes. Binary content travels as base64 inside the
-     * JSON body, so a cap near the size of the raw content rejects it.
+     * mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES. Binary content travels as base64
+     * inside the JSON body, so a cap near the size of the raw content rejects it.
      *
      * The body is read, up to this cap, before the origin and bearer token are checked, so the cap
      * is also what one unauthenticated connection can make the transport buffer. The body is parsed
@@ -174,6 +209,34 @@ class MCP_API StreamableHttpSessionManager {
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_bearer_challenge(BearerChallengeConfig challenge);
+
+    /**
+     * @brief Name the scopes each request needs, so a token without them is answered 403.
+     *
+     * @details After a validator accepts a token, the provider is asked about every POSTed JSON-RPC
+     * message that has a method (see ScopeRequirementProvider). When the token's scopes
+     * (TokenValidation::scopes) lack one the provider named, the message is not dispatched and no
+     * response stream is opened: the answer is `403` with a
+     * `WWW-Authenticate: Bearer error="insufficient_scope", scope="...", resource_metadata="..."`
+     * challenge naming every scope the operation needs, which a client such as
+     * OAuthClientTransport answers by authorizing again with the wider scope. The challenge keeps
+     * the realm and metadata URL of set_bearer_challenge() and set_protected_resource_metadata().
+     * A validator that reports no scopes grants none, so a request that needs a scope is refused.
+     * Requests that carry no JSON-RPC method (answers to the server's own requests, GET and DELETE)
+     * are not checked.
+     *
+     * The scopes the provider returns are written into the challenge as quoted header text, so
+     * each must consist of printable ASCII (0x20-0x7E); a provider that returns anything else is
+     * answered `500` with no challenge, as one that throws is.
+     *
+     * Passing an empty provider removes the check. Configure it before listen() starts.
+     * A provider needs a token validator to report the scopes a token holds, so
+     * listen() throws when one is set without the other, whichever was set first.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed. listen()
+     * also throws it when a provider is set and no validator is.
+     */
+    void set_scope_requirements(ScopeRequirementProvider provider);
 
     /**
      * @brief Serve an RFC 9728 protected-resource metadata document.
@@ -215,6 +278,25 @@ class MCP_API StreamableHttpSessionManager {
     [[nodiscard]] std::size_t session_count() const;
 
     /**
+     * @brief Set what the manager holds for clients it has not heard from.
+     *
+     * @param limits The limits. They apply from the next session and the next sweep.
+     * @throws std::invalid_argument If `limits.max_sessions` is 0.
+     */
+    void set_session_limits(const SessionLimits& limits);
+
+    /**
+     * @brief Set what the connections and requests of this endpoint may hold at once.
+     *
+     * @details The headers of a request are read first, and the Origin and bearer token checks
+     * run on them, so a request they refuse never has its body read. See HttpConnectionLimits for
+     * the defaults.
+     *
+     * @throws std::invalid_argument If `max_requests` or `max_request_bytes` is 0.
+     */
+    void set_connection_limits(const HttpConnectionLimits& limits);
+
+    /**
      * @brief Enable or disable JSON-only responses for managed sessions.
      *
      * When enabled, POST responses always use `application/json` and session
@@ -254,7 +336,62 @@ class MCP_API StreamableHttpSessionManager {
     void set_tool_executor(const boost::asio::any_io_executor& exec);
 
     /**
+     * @brief Choose which protocol revisions the endpoint serves.
+     *
+     * @details Applied to every Server the manager builds from its factory: each session's, the
+     * stateless one and the shared modern server (unless set_modern_server() supplied it). When
+     * legacy clients are not served, no session is created: initialize is answered `404` with
+     * `mcp::constants::jsonrpc::g_METHOD_NOT_FOUND` naming the versions served, and GET and DELETE
+     * `405`.
+     *
+     * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_protocol_policy(ServerProtocolPolicy policy);
+
+    /**
+     * @brief Serve every 2026-07-28 request with @p server.
+     *
+     * @details A 2026-07-28 request belongs to no session, so one Server answers all of them on
+     * this endpoint, alongside the per-session Servers of legacy clients. Without this call it is
+     * built from the factory on the first such request. Its tools, resources and prompts are what
+     * every 2026-07-28 client sees, so they must not depend on the connection.
+     *
+     * @throws std::invalid_argument If @p server is null.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_modern_server(std::shared_ptr<Server> server);
+
+    /**
+     * @brief The Server that answers 2026-07-28 requests.
+     *
+     * @return The server given to set_modern_server(), or the one built from the factory, which
+     *         this call builds if no request has yet. Called before listen(), it lets the server
+     *         be configured before the first request.
+     */
+    [[nodiscard]] std::shared_ptr<Server> modern_server();
+
+    /// 2026-07-28 requests refused with `mcp::constants::jsonrpc::g_HEADER_MISMATCH` because their
+    /// MCP-Protocol-Version, Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed or did
+    /// not match the body.
+    [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
+
+    /**
+     * @brief Set how the answers to 2026-07-28 requests are streamed.
+     *
+     * @throws std::invalid_argument If an interval is not positive or the queue limit is 0.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_stream_options(StreamOptions options);
+
+    /// What the 2026-07-28 streams have done so far.
+    [[nodiscard]] StreamStats stream_stats() const;
+
+    /**
      * @brief Close the manager and all sessions.
+     *
+     * @details The handlers of 2026-07-28 requests that wait for a retry on the modern server are
+     * given up (Server::abandon_waiting_handlers()).
      */
     void close();
 

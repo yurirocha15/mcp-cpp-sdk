@@ -5,14 +5,19 @@
 // Pattern used here:
 //   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/core.hpp>
+#include <mcp/detail/json_dump.hpp>
 #include <mcp/protocol/protocol.hpp>
+#include <mcp/protocol/request_meta.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -20,10 +25,34 @@
 namespace mcp {
 
 /// @brief Type alias for a function that sends a JSON-RPC request and returns the result.
-using RequestSender = std::function<Task<nlohmann::json>(std::string, std::optional<nlohmann::json>)>;
+///
+/// The third argument is the key a handler chose for a question of a multi round-trip request, or
+/// empty when the SDK names it; senders of other requests ignore it.
+using RequestSender = std::function<Task<nlohmann::json>(std::string, std::optional<nlohmann::json>,
+                                                         std::optional<std::string>)>;
+
+/// @brief How a handler's question to the client is named in a multi round-trip request.
+struct InputOptions {
+    /// The key of the question in the result's `inputRequests` and in the client's
+    /// `inputResponses`. When unset, the SDK names it `elicitation-N`, `sampling-N` or `roots-N`,
+    /// counting the questions it names. A key must not be empty, must not look like one of those
+    /// names and must be unused by any other question of the request, or the call throws
+    /// std::invalid_argument. Requests before 2026-07-28 send each question as a request of its
+    /// own and ignore the key. Pass the options as a named variable, not a braced temporary, to a
+    /// co_await expression: GCC 11 mishandles the temporary.
+    std::optional<std::string> key;
+    /// Used by Context::elicit() only: whether an accepted form answer is checked against the
+    /// request's `requestedSchema`. When false the answer is returned as the client sent it.
+    bool validate_content = true;
+};
 
 /// @brief Type alias for a function that serializes outbound notification writes.
 using MessageSender = std::function<Task<void>(std::string_view)>;
+
+/// @brief Receives the progress a handler reports, without suspending the handler (see
+/// Context::report_progress_sync()).
+using ProgressSink = std::function<void(double progress, std::optional<double> total,
+                                        const std::optional<std::string>& message)>;
 
 /**
  * @brief Request-scoped context provided to server handlers.
@@ -64,16 +93,69 @@ class Context {
      * @param log_level Pointer to the server's current log level (shared across all contexts).
      * @param message_sender Optional serialized notification sender. When omitted, Context writes
      *                       directly to the transport.
+     * @param request_meta The per-request protocol fields of a 2026-07-28 request, or null for a
+     *                     request of an earlier revision.
+     * @param principal Who sent the request, or null when unknown.
+     * @param replaying True while the handler re-executes work an earlier round of the request
+     *                  already did, or null when it never does.
      */
     Context(ITransport& transport, RequestSender sender, std::shared_ptr<std::atomic<bool>> cancelled,
             std::optional<ProgressToken> progress_token, const std::atomic<LoggingLevel>* log_level,
-            MessageSender message_sender = {})
+            MessageSender message_sender = {},
+            std::shared_ptr<const RequestMetadata> request_meta = nullptr,
+            std::shared_ptr<const std::string> principal = nullptr,
+            std::shared_ptr<const std::atomic<bool>> replaying = nullptr)
         : transport_(transport),
           sender_(std::move(sender)),
           cancelled_(std::move(cancelled)),
           progress_token_(std::move(progress_token)),
           log_level_(log_level),
-          message_sender_(std::move(message_sender)) {}
+          message_sender_(std::move(message_sender)),
+          request_meta_(std::move(request_meta)),
+          principal_(std::move(principal)),
+          replaying_(std::move(replaying)) {}
+
+    /**
+     * @brief The per-request protocol fields of this request.
+     *
+     * @return The protocol version, client capabilities, client info, log level and whole `_meta`
+     *         of a 2026-07-28 request, or null for a request of an earlier revision, which
+     *         negotiated these at initialize.
+     */
+    [[nodiscard]] const RequestMetadata* request_meta() const { return request_meta_.get(); }
+
+    /**
+     * @brief Who sent this request.
+     *
+     * @details Over HTTP with a bearer token validator, this is the principal the validator named
+     * in its TokenValidation; without one, `h:` followed by the hex SHA-256 of the request's
+     * Authorization header, which never reveals the token and changes when the token does. It is
+     * empty for a transport that does not authenticate its peer (stdio, WebSocket, memory), for a
+     * request without an Authorization header, and for the requests of a
+     * StreamableHttpSessionManager session, which are attributed to the session.
+     *
+     * @return The principal, or an empty view when it is unknown.
+     */
+    [[nodiscard]] std::string_view principal() const {
+        return principal_ ? std::string_view(*principal_) : std::string_view{};
+    }
+
+    /**
+     * @brief Whether the handler is re-executing work an earlier round of the request did.
+     *
+     * @details With sealed request state (MrtrStateMode::eSealed) every retry of a multi
+     * round-trip request runs the handler again from the start, and the questions earlier rounds
+     * answered return their answers at once. This is true from the start of such a run until the
+     * handler has taken the last of those answers or asks a question they do not answer; what the
+     * handler does after that is new. A handler that does not ask again sees true until it ends.
+     * Guard side effects, such as writes or charges, with `if (!ctx.is_replay())`. It is always false
+     * for a first run, for stored request state, and for every other kind of request.
+     *
+     * @return True while the handler is replaying.
+     */
+    [[nodiscard]] bool is_replay() const {
+        return replaying_ && replaying_->load(std::memory_order_relaxed);
+    }
 
     /**
      * @brief Sends an informational log message to the client.
@@ -91,6 +173,9 @@ class Context {
      * LoggingLevel ordering: Emergency(0) < Alert(1) < ... < Debug(7).
      * A message is sent only if its level <= current server log level.
      *
+     * A 2026-07-28 request has no session level: its threshold is the
+     * `io.modelcontextprotocol/logLevel` in its `_meta`, and without one nothing is sent.
+     *
      * @param level The severity level of the log message.
      * @param msg The log message to send.
      * @param logger Optional logger name.
@@ -98,7 +183,12 @@ class Context {
      */
     Task<void> log(LoggingLevel level, std::string_view msg,
                    const std::optional<std::string>& logger = std::nullopt) {
-        if (log_level_ != nullptr) {
+        if (request_meta_) {
+            if (!request_meta_->logLevel ||
+                static_cast<uint8_t>(level) > static_cast<uint8_t>(*request_meta_->logLevel)) {
+                co_return;
+            }
+        } else if (log_level_ != nullptr) {
             auto current = log_level_->load(std::memory_order_relaxed);
             if (static_cast<uint8_t>(level) > static_cast<uint8_t>(current)) {
                 co_return;
@@ -116,7 +206,8 @@ class Context {
             JSONRPCNotification notification;
             notification.method = "notifications/message";
             notification.params = nlohmann::json(std::move(params));
-            wire = std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
+            wire = std::make_shared<const std::string>(
+                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
         }
         if (message_sender_) {
             co_await message_sender_(*wire);
@@ -128,7 +219,10 @@ class Context {
     /**
      * @brief Check whether the current request has been cancelled.
      *
-     * @return true if a notifications/cancelled was received for this request's ID.
+     * @return true once the request has been cancelled: by notifications/cancelled for this
+     * request's ID, by the client disconnecting while a 2026-07-28 request runs on
+     * StreamableHttpSessionManager, or through the cancellation flag given to
+     * Server::dispatch_request_direct().
      */
     [[nodiscard]] bool is_cancelled() const {
         if (cancelled_) {
@@ -148,9 +242,16 @@ class Context {
      * @param total Optional total progress value.
      * @param message Optional human-readable progress message.
      * @return A task that completes when the notification is sent.
+     *
+     * In a task (see Server::enable_tasks()) the progress becomes the task's status message
+     * instead, and no notification is sent.
      */
     Task<void> report_progress(double progress, std::optional<double> total = std::nullopt,
                                const std::optional<std::string>& message = std::nullopt) {
+        if (progress_sink_) {
+            progress_sink_(progress, total, message);
+            co_return;
+        }
         if (!progress_token_) {
             co_return;
         }
@@ -167,7 +268,8 @@ class Context {
             JSONRPCNotification notification;
             notification.method = "notifications/progress";
             notification.params = nlohmann::json(std::move(params));
-            wire = std::make_shared<const std::string>(nlohmann::json(std::move(notification)).dump());
+            wire = std::make_shared<const std::string>(
+                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
         }
         if (message_sender_) {
             co_await message_sender_(*wire);
@@ -177,23 +279,67 @@ class Context {
     }
 
     /**
+     * @brief Report progress without suspending, for a handler that is not a coroutine.
+     *
+     * @details In a task (see Server::enable_tasks()) the progress becomes the task's status
+     * message, as report_progress() does. Elsewhere the report would need a write, which a call
+     * that does not suspend cannot make, so nothing is sent: use report_progress().
+     *
+     * @param progress The current progress value.
+     * @param total Optional total progress value.
+     * @param message Optional human-readable progress message.
+     * @return Whether the progress was reported.
+     */
+    bool report_progress_sync(double progress, std::optional<double> total = std::nullopt,
+                              const std::optional<std::string>& message = std::nullopt) {
+        if (!progress_sink_) {
+            return false;
+        }
+        progress_sink_(progress, total, message);
+        return true;
+    }
+
+    /**
+     * @brief Sets where this context's progress goes instead of the client, which the server does
+     * for the handler of a task.
+     */
+    void set_progress_sink(ProgressSink sink) { progress_sink_ = std::move(sink); }
+
+    /**
      * @brief Request the client to sample an LLM (reverse RPC).
+     *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
      *
      * @details Sends a "sampling/createMessage" request to the client
      * and awaits the response. Requires the Context to be constructed
      * with a RequestSender.
      *
      * @param request The sampling request parameters.
+     * @param options How the question is named in a multi round-trip request; see InputOptions.
      * @return A task that resolves to the client's CreateMessageResult.
      * @throws std::runtime_error If no request sender is available.
+     * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
+     *         2026-07-28 request (other requests ignore the key).
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
+     * when the client never retries in time; the handler's own answer then goes nowhere. Any other
+     * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request) {
+    Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request,
+                                         InputOptions options = {}) {
         if (!sender_) {
             throw std::runtime_error("Context has no request sender for reverse RPC");
         }
 
         nlohmann::json params = request;
-        auto result_json = co_await sender_("sampling/createMessage", std::move(params));
+        auto result_json =
+            co_await sender_("sampling/createMessage", std::move(params), std::move(options.key));
         co_return result_json.get<CreateMessageResult>();
     }
 
@@ -204,45 +350,119 @@ class Context {
      * Supports both form mode (ElicitRequestFormParams) and URL mode (ElicitRequestURLParams)
      * via the ElicitRequestParams variant.
      *
+     * Before 2026-07-28 a URL-mode request needs an `elicitationId`, and one is generated when
+     * the request leaves it unset; a 2026-07-28 question carries none.
+     *
+     * A form-mode answer with action `accept` is checked against the request's `requestedSchema`
+     * before it is returned, as the specification asks servers to do; a URL-mode answer carries no
+     * content and is not checked.
+     *
      * @param params The elicitation request parameters (form or URL mode).
+     * @param options How the question is named in a multi round-trip request, and whether an
+     *        accepted form answer is checked; see InputOptions.
      * @return A task that resolves to the client's ElicitResult.
-     * @throws std::runtime_error If no request sender is available.
+     * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
+     *         2026-07-28 request (other requests ignore the key).
+     * @throws std::runtime_error If no request sender is available, or the accepted content does
+     *         not conform to the schema (the message lists the violations). A schema the SDK
+     *         cannot compile leaves the content unchecked.
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
+     * when the client never retries in time; the handler's own answer then goes nowhere. Any other
+     * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<ElicitResult> elicit(const ElicitRequestParams& params) {
+    Task<ElicitResult> elicit(const ElicitRequestParams& params, InputOptions options = {}) {
         if (!sender_) {
             throw std::runtime_error("Context has no request sender for reverse RPC");
         }
 
         nlohmann::json json_params = params;
-        auto result_json = co_await sender_("elicitation/create", std::move(json_params));
-        co_return result_json.get<ElicitResult>();
+        if (json_params.value("mode", "") == "url" && !json_params.contains("elicitationId")) {
+            // Before 2026-07-28 the field is required on the wire.
+            json_params["elicitationId"] = generate_elicitation_id();
+        }
+        auto result_json =
+            co_await sender_("elicitation/create", std::move(json_params), std::move(options.key));
+        auto result = result_json.get<ElicitResult>();
+        if (options.validate_content) {
+            check_form_content(params, result);
+        }
+        co_return result;
     }
 
     /**
      * @brief Request the list of roots from the client (reverse RPC).
      *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
+     *
      * @details Sends a "roots/list" request to the client and awaits
      * the response. The client provides its configured root URIs.
      *
+     * @param options How the question is named in a multi round-trip request; see InputOptions.
      * @return A task that resolves to the client's ListRootsResult.
      * @throws std::runtime_error If no request sender is available.
+     * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
+     *         2026-07-28 request (other requests ignore the key).
+     *
+     * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
+     * client in the request's `input_required` result, and the call returns once the client
+     * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
+     * declare the capability the question needs, the request is answered with
+     * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
+     * when the client never retries in time; the handler's own answer then goes nowhere. Any other
+     * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<ListRootsResult> request_roots() {
+    Task<ListRootsResult> request_roots(InputOptions options = {}) {
         if (!sender_) {
             throw std::runtime_error("Context has no request sender for reverse RPC");
         }
 
-        auto result_json = co_await sender_("roots/list", std::nullopt);
+        auto result_json = co_await sender_("roots/list", std::nullopt, std::move(options.key));
         co_return result_json.get<ListRootsResult>();
     }
 
    private:
+    /// Throws when @p result accepts the form request @p params with content its schema rejects.
+    static void check_form_content(const ElicitRequestParams& params, const ElicitResult& result) {
+        const auto* form = std::get_if<ElicitRequestFormParams>(&params);
+        if (form == nullptr || result.action != ElicitAction::eAccept) {
+            return;
+        }
+        ValidationResult validation;
+        try {
+            validation = validate_elicitation_content(form->requestedSchema, result.content);
+        } catch (const SchemaError&) {
+            return;
+        }
+        if (!validation.valid) {
+            throw std::runtime_error("The elicitation content does not match the requested schema: " +
+                                     describe_violations(validation));
+        }
+    }
+
+    /// A fresh, process-unique identifier for a legacy URL-mode elicitation.
+    static std::string generate_elicitation_id() {
+        static std::atomic<std::uint64_t> s_counter{0};
+        static const std::uint64_t s_seed = std::random_device{}();
+        return "elicit-" + std::to_string(s_seed) + "-" + std::to_string(s_counter.fetch_add(1));
+    }
+
     ITransport& transport_;
     RequestSender sender_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
     std::optional<ProgressToken> progress_token_;
     const std::atomic<LoggingLevel>* log_level_ = nullptr;
     MessageSender message_sender_;
+    std::shared_ptr<const RequestMetadata> request_meta_;
+    std::shared_ptr<const std::string> principal_;
+    std::shared_ptr<const std::atomic<bool>> replaying_;
+    ProgressSink progress_sink_;
 };
 
 }  // namespace mcp

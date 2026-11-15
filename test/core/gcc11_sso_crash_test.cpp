@@ -35,6 +35,7 @@
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <queue>
 #include <string>
@@ -114,13 +115,20 @@ nlohmann::json make_init_response(const std::string& id) {
     return {{"jsonrpc", "2.0"},
             {"id", id},
             {"result",
-             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
               {"capabilities", nlohmann::json::object()},
               {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}}}};
 }
 
 nlohmann::json make_result_response(const std::string& id, nlohmann::json result) {
     return {{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}};
+}
+
+/// These clients talk to a scripted peer that answers initialize.
+mcp::ClientOptions legacy_client_options() {
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    return options;
 }
 
 }  // namespace
@@ -137,7 +145,7 @@ class GCC11SSOCrashTest : public ::testing::Test {
 TEST_F(GCC11SSOCrashTest, PatternA_Connect_SSO_ClientInfo) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     int write_count = 0;
     raw->set_on_write([&](std::string_view msg) {
@@ -174,7 +182,7 @@ TEST_F(GCC11SSOCrashTest, PatternA_Connect_SSO_ClientInfo) {
 TEST_F(GCC11SSOCrashTest, PatternB_SendRequest_SSO_Method_Ping) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     int write_count = 0;
     raw->set_on_write([&](std::string_view msg) {
@@ -221,7 +229,7 @@ TEST_F(GCC11SSOCrashTest, PatternB_SendRequest_SSO_Method_Ping) {
 TEST_F(GCC11SSOCrashTest, PatternB2_SendRequest_SSO_Method_Short) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     int write_count = 0;
     raw->set_on_write([&](std::string_view msg) {
@@ -267,7 +275,7 @@ TEST_F(GCC11SSOCrashTest, PatternB2_SendRequest_SSO_Method_Short) {
 TEST_F(GCC11SSOCrashTest, PatternC_DispatchIncomingRequest_SSO_IdAndMethod) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::vector<std::string> writes;
     int write_count = 0;
@@ -305,13 +313,14 @@ TEST_F(GCC11SSOCrashTest, PatternC_DispatchIncomingRequest_SSO_IdAndMethod) {
 }
 
 // ---------------------------------------------------------------------------
-// Pattern C2: dispatch_incoming_request() — unknown method (g_METHOD_NOT_FOUND).
-// exercises send_error_response() with SSO id and short error message.
+// Pattern C2: dispatch_incoming_request() — unknown method
+// (mcp::constants::jsonrpc::g_METHOD_NOT_FOUND). exercises send_error_response() with SSO id and short
+// error message.
 // ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorResponse) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::vector<std::string> writes;
     int write_count = 0;
@@ -344,18 +353,18 @@ TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorR
     auto response = nlohmann::json::parse(writes[2]);
     EXPECT_EQ(response["id"], "x");
     EXPECT_TRUE(response.contains("error"));
-    EXPECT_EQ(response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 // ---------------------------------------------------------------------------
 // Pattern C3: dispatch_incoming_request() — registered handler throws,
-// exercises send_error_response() with g_INTERNAL_ERROR (-32603).
+// exercises send_error_response() with mcp::constants::jsonrpc::g_INTERNAL_ERROR (-32603).
 // Error message comes from e.what() which can be short (SSO).
 // ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_InternalError) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     client.on_request("test/method", [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
         throw std::runtime_error("oops");  // 4 chars — SSO
@@ -393,7 +402,7 @@ TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_Intern
     auto response = nlohmann::json::parse(writes[2]);
     EXPECT_EQ(response["id"], "e1");
     EXPECT_TRUE(response.contains("error"));
-    EXPECT_EQ(response["error"]["code"], mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +413,7 @@ TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_Intern
 TEST_F(GCC11SSOCrashTest, PatternD_SendNotification_SSO_Method) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     // Register a handler that sends a short notification back
     // (the client sends a cancellation notification via cancel())

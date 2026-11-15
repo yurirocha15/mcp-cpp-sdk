@@ -1,5 +1,6 @@
 #include "native_schema.hpp"
 
+#include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
 
 #include <mcp/detail/regex.hpp>
@@ -43,13 +44,11 @@ namespace {
 
 using Node = NativeSchema::Node;
 
-constexpr std::string_view g_dialect = "https://json-schema.org/draft/2020-12/schema";
-
 /// Keywords jsoncons implements for 2020-12 that the native evaluation does not. A schema using
 /// one is left to jsoncons; any keyword in neither list is one jsoncons ignores, and so is ignored
 /// here.
 bool is_unsupported_keyword(std::string_view keyword) {
-    static constexpr std::array<std::string_view, 26> unsupported = {
+    static constexpr std::array<std::string_view, 26> s_unsupported = {
         "$anchor",
         "$defs",
         "$dynamicAnchor",
@@ -77,7 +76,7 @@ bool is_unsupported_keyword(std::string_view keyword) {
         "unevaluatedItems",
         "unevaluatedProperties",
     };
-    return std::find(unsupported.begin(), unsupported.end(), keyword) != unsupported.end();
+    return std::find(s_unsupported.begin(), s_unsupported.end(), keyword) != s_unsupported.end();
 }
 
 /// A size keyword's value. The metaschema has checked that it is a non-negative integer; one
@@ -122,7 +121,7 @@ bool compile_into(const nlohmann::json& schema, bool root, Node& node) {
             if (!uri.empty() && uri.back() == '#') {
                 uri.remove_suffix(1);
             }
-            if (uri != g_dialect) {
+            if (uri != mcp::detail::constants::native_schema::g_DIALECT) {
                 return false;
             }
         } else if (is_unsupported_keyword(keyword)) {
@@ -316,10 +315,33 @@ int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
     return a < b ? -1 : (a > b ? 1 : 0);
 }
 
+/// Thrown when comparing values needs more work than the validation's budget holds.
+struct WorkBudgetExceeded {};
+
 /// JSON Schema equality: numbers are equal when their values are, whatever their representation.
 /// nlohmann's operator== converts an unsigned integer to a signed one when comparing the two, so
 /// it finds -1 equal to 18446744073709551615.
-bool json_equal(const nlohmann::json& left, const nlohmann::json& right) {
+///
+/// A comparison costs @p work, which pays for values as large as the schema and the instance
+/// together: an enum of many long values compared with a long value is quadratic otherwise.
+bool json_equal(const nlohmann::json& left, const nlohmann::json& right, std::size_t& work) {
+    constexpr std::size_t g_comparison_units = 8;  // What the vendored validator charges for one.
+    constexpr std::size_t g_string_bytes_per_unit = 64;
+    const auto cost =
+        g_comparison_units +
+        (left.is_string() ? left.get_ref<const std::string&>().size() / g_string_bytes_per_unit : 0);
+    if (work < cost) {
+        throw WorkBudgetExceeded{};
+    }
+    work -= cost;
+    // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what the peer
+    // receives, so one nested in the value compares as null, as check() treats one at the top.
+    const auto non_finite = [](const nlohmann::json& value) {
+        return value.is_number_float() && !std::isfinite(value.get<double>());
+    };
+    if (non_finite(left) || non_finite(right)) {
+        return (non_finite(left) || left.is_null()) && (non_finite(right) || right.is_null());
+    }
     if (left.is_number() && right.is_number()) {
         return compare_numbers(left, right) == 0;
     }
@@ -327,7 +349,10 @@ bool json_equal(const nlohmann::json& left, const nlohmann::json& right) {
         return false;
     }
     if (left.is_array()) {
-        return std::equal(left.begin(), left.end(), right.begin(), right.end(), json_equal);
+        return std::equal(left.begin(), left.end(), right.begin(), right.end(),
+                          [&work](const nlohmann::json& one, const nlohmann::json& other) {
+                              return json_equal(one, other, work);
+                          });
     }
     if (left.is_object()) {
         if (left.size() != right.size()) {
@@ -335,7 +360,7 @@ bool json_equal(const nlohmann::json& left, const nlohmann::json& right) {
         }
         for (const auto& [name, member] : left.items()) {
             const auto other = right.find(name);
-            if (other == right.end() || !json_equal(member, *other)) {
+            if (other == right.end() || !json_equal(member, *other, work)) {
                 return false;
             }
         }
@@ -344,29 +369,26 @@ bool json_equal(const nlohmann::json& left, const nlohmann::json& right) {
     return left == right;
 }
 
-/// Number of code points in UTF-8 @p text.
-std::size_t code_points(std::string_view text) {
-    return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](char byte) {
-        return (static_cast<unsigned char>(byte) & 0xC0U) != 0x80U;
-    }));
-}
-
 /// One evaluation of a value against a NativeSchema.
 /// Thrown when pattern matching needs more steps than the validation's budget holds.
 struct PatternBudgetExceeded {};
 
 class Evaluation {
    public:
-    Evaluation(std::size_t max_violations, std::size_t& pattern_steps, ValidationResult& result)
-        : max_violations_(max_violations), pattern_steps_(pattern_steps), result_(result) {}
+    Evaluation(std::size_t max_violations, std::size_t& pattern_steps, std::size_t& work,
+               ValidationResult& result)
+        : max_violations_(max_violations),
+          pattern_steps_(pattern_steps),
+          work_(work),
+          result_(result) {}
 
     /// Checks @p value against @p node; false once enough violations are recorded.
     bool check(const Node& node, const nlohmann::json& value) {
         if (value.is_number_float() && !std::isfinite(value.get<double>())) {
             // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what the
             // peer would receive, so that is what is checked.
-            static const nlohmann::json null_value;
-            return check(node, null_value);
+            static const nlohmann::json s_null_value;
+            return check(node, s_null_value);
         }
         if (node.reject_all) {
             return report("No value is allowed here");
@@ -378,14 +400,15 @@ class Evaluation {
                 return false;
             }
         }
-        if (node.enum_values &&
-            std::none_of(node.enum_values->begin(), node.enum_values->end(),
-                         [&](const nlohmann::json& allowed) { return json_equal(allowed, value); })) {
+        if (node.enum_values && std::none_of(node.enum_values->begin(), node.enum_values->end(),
+                                             [&](const nlohmann::json& allowed) {
+                                                 return json_equal(allowed, value, work_);
+                                             })) {
             if (!report("Value is not one of the values the enum lists")) {
                 return false;
             }
         }
-        if (node.const_value && !json_equal(value, *node.const_value)) {
+        if (node.const_value && !json_equal(value, *node.const_value, work_)) {
             if (!report("Value is not the const value")) {
                 return false;
             }
@@ -445,7 +468,7 @@ class Evaluation {
 
     bool check_string(const Node& node, const std::string& text) {
         if (node.min_length || node.max_length) {
-            const auto length = code_points(text);
+            const auto length = code_point_count(text);
             if (node.min_length && length < *node.min_length &&
                 !report("Number of characters must be at least " + std::to_string(*node.min_length))) {
                 return false;
@@ -563,6 +586,7 @@ class Evaluation {
 
     std::size_t max_violations_;
     std::size_t& pattern_steps_;
+    std::size_t& work_;
     ValidationResult& result_;
     std::string path_;
 };
@@ -580,13 +604,18 @@ std::optional<NativeSchema> NativeSchema::compile(const nlohmann::json& schema) 
 }
 
 void NativeSchema::validate(const nlohmann::json& instance, std::size_t max_violations,
-                            std::size_t pattern_steps, ValidationResult& result) const {
+                            std::size_t pattern_steps, std::size_t work,
+                            ValidationResult& result) const {
     try {
-        Evaluation(max_violations, pattern_steps, result).check(*root_, instance);
+        Evaluation(max_violations, pattern_steps, work, result).check(*root_, instance);
     } catch (const PatternBudgetExceeded&) {
         result.valid = false;
         result.violations.clear();
         result.violations.push_back({"", "validation stopped: pattern matching takes too many steps"});
+    } catch (const WorkBudgetExceeded&) {
+        result.valid = false;
+        result.violations.clear();
+        result.violations.push_back({"", "validation stopped: comparing values takes too much work"});
     }
 }
 

@@ -30,6 +30,11 @@
 #include <thread>
 #include <vector>
 
+#include "../../src/detail/constants.hpp"
+#include "../support/hang_guard.hpp"
+
+namespace encoding = mcp::detail::constants::encoding;
+
 namespace {
 
 namespace asio = boost::asio;
@@ -43,8 +48,8 @@ std::string hex_encode(const unsigned char* data, std::size_t len) {
     std::string result;
     result.reserve(len * 2);
     for (std::size_t i = 0; i < len; ++i) {
-        result.push_back(mcp::constants::g_hex_digits[data[i] >> 4]);
-        result.push_back(mcp::constants::g_hex_digits[data[i] & 0x0F]);
+        result.push_back(encoding::g_HEX_DIGITS[data[i] >> 4]);
+        result.push_back(encoding::g_HEX_DIGITS[data[i] & 0x0F]);
     }
     return result;
 }
@@ -1129,7 +1134,7 @@ TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopback
         });
 
     bool threw = false;
-    auto decision = mcp::auth::MetadataUrlDecision::allowed;
+    auto decision = mcp::auth::MetadataUrlDecision::eAllowed;
 
     asio::co_spawn(
         io_ctx,
@@ -1146,8 +1151,8 @@ TEST(AuthOAuthHttpClientDefaultPolicyTest, PolicyLessClientRefusesAnHttpLoopback
     io_ctx.run();
 
     EXPECT_TRUE(threw);
-    EXPECT_TRUE(decision == mcp::auth::MetadataUrlDecision::origin_not_allowed ||
-                decision == mcp::auth::MetadataUrlDecision::scheme_not_allowed)
+    EXPECT_TRUE(decision == mcp::auth::MetadataUrlDecision::eOriginNotAllowed ||
+                decision == mcp::auth::MetadataUrlDecision::eSchemeNotAllowed)
         << "unexpected decision: " << mcp::auth::describe(decision);
     EXPECT_EQ(resolver_calls, 0);
 }
@@ -1357,7 +1362,7 @@ Observed classify_exchange(const std::exception_ptr& failure, const json& body) 
     try {
         std::rethrow_exception(failure);
     } catch (const mcp::auth::MetadataPolicyError& error) {
-        return error.decision() == mcp::auth::MetadataUrlDecision::origin_not_allowed
+        return error.decision() == mcp::auth::MetadataUrlDecision::eOriginNotAllowed
                    ? Observed::refused_origin
                    : Observed::other;
     } catch (const std::exception&) {
@@ -1532,7 +1537,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
         }
     });
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
     while (std::chrono::steady_clock::now() < deadline) {
         if (transitions.load() >= 25 && old_server.load() >= 25 && refused.load() >= 25) {
             break;
@@ -1573,7 +1578,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
 
     stop.store(true);
     writer.join();
-    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto drain_deadline = std::chrono::steady_clock::now() + g_hang_guard;
     while (in_flight.load() > 0 && std::chrono::steady_clock::now() < drain_deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }

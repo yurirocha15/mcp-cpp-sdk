@@ -1,5 +1,11 @@
 /// @file server_with_sampling.cpp
 /// @brief MCP server demonstrating reverse RPC via Context::sample_llm().
+///
+/// Sampling is a deprecated feature in protocol revision 2026-07-28: the specification keeps it
+/// but advises new implementations against adopting it (its deprecated features registry points
+/// to integrating directly with LLM provider APIs). It still works. In a 2026-07-28 session the
+/// server asks the client with an input_required result and the client answers on the retry of the
+/// tools/call; a client of an earlier revision receives a sampling/createMessage request instead.
 
 #include <mcp/server/server.hpp>
 #include <mcp/transport/stdio.hpp>

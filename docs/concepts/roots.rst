@@ -26,10 +26,15 @@ The ``set_roots`` method also takes an optional ``notify`` parameter. If set to
 initialization capabilities advertised ``roots.listChanged=true``. This is a
 client capability; servers do not advertise roots support.
 
+In a 2026-07-28 session there is no ``notifications/roots/list_changed``, and
+``set_roots()`` sends nothing even with ``notify`` set. The client declares the
+``roots`` capability in each request instead, when a ``roots/list`` handler
+exists.
+
 Server-side Discovery
 ---------------------
 
-Servers can discover client roots at any time using the ``request_roots()`` method available in the :doc:`context`. This is a "reverse RPC" call where the server sends a request to the client.
+Servers can discover client roots at any time using the ``request_roots()`` method available in the :doc:`context`. This is a "reverse RPC" call where the server sends a request to the client. In a 2026-07-28 session the server asks through an ``input_required`` result and the client answers on a retry of its request (see :doc:`protocol`); this works in the handler of a ``tools/call``, ``prompts/get`` or ``resources/read``.
 
 .. literalinclude:: ../../examples/features/roots.cpp
    :language: cpp

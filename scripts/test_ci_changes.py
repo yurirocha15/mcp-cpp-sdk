@@ -20,7 +20,7 @@ import ci_changes  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 ALL_JOBS = set(ci_changes.JOB_INPUTS)
 PACKAGES = {"package_core", "native_package", "homebrew_package", "windows_package"}
-LIBRARY_JOBS = {"code", "conan"}
+LIBRARY_JOBS = {"code", "conan", "naming"}
 # Release modules each job starts, directly or through a script in scripts/release/.
 ENTRY_MODULES = {
     "package_core": ("release/construct_core.py",),
@@ -38,6 +38,19 @@ Prose.
 int main() { return 0; }
 ```
 """
+GUIDE = """Guide
+=====
+
+Prose.
+
+.. code-block:: cpp
+
+   int main() { return 0; }
+
+.. code-block:: cpp
+
+   client.ping();
+"""
 
 
 class ClassifierTests(unittest.TestCase):
@@ -52,6 +65,7 @@ class ClassifierTests(unittest.TestCase):
         self.git("config", "commit.gpgsign", "false")
         self.write("README.md", README)
         self.write("docs/index.rst", "Index\n")
+        self.write("docs/guide.rst", GUIDE)
         self.write("src/main.cpp", "int x;\n")
         self.base = self.commit()
 
@@ -107,20 +121,40 @@ class ClassifierTests(unittest.TestCase):
         self.write("README.md", README.replace("return 0;", "return 1;"))
         self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
 
+    def test_doc_prose_and_fragments_run_nothing(self) -> None:
+        self.write("docs/guide.rst",
+                   GUIDE.replace("Prose.", "Better prose.").replace("ping", "close"))
+        self.assertEqual(self.jobs("pull_request", self.commit()), set())
+
+    def test_doc_program_runs_code_jobs(self) -> None:
+        self.write("docs/guide.rst", GUIDE.replace("return 0;", "return 1;"))
+        self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
+
+    def test_new_doc_program_runs_code_jobs(self) -> None:
+        self.write("docs/other.rst", GUIDE)
+        self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
+
+    def test_removed_doc_page_runs_nothing(self) -> None:
+        self.git("rm", "-q", "docs/index.rst")
+        self.assertEqual(self.jobs("pull_request", self.commit()), set())
+
     def test_pull_request_runs_only_the_jobs_reading_the_path(self) -> None:
         expected = {
             "src/main.cpp": LIBRARY_JOBS,
             "include/mcp/sdk.hpp": LIBRARY_JOBS,
             "test/core/protocol_test.cpp": {"code"},
             "test/data/json-schema/suite.json": {"code", "release"},
-            "examples/features/pagination.cpp": {"code"},
+            "test/pipe_stream.hpp": {"code"},
+            "examples/features/pagination.cpp": {"code", "naming"},
             "scripts/run_examples.py": {"code", "release"},
+            "scripts/check_doc_snippets.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
             "LICENSE": {"conan"},
             "benchmark/run.sh": {"benchmark"},
             "test/release/test_signing.py": {"release"},
             "release/github_anchor.py": {"release"},
-            "scripts/ci_changes.py": {"release"},
+            "scripts/ci_changes.py": {"release", "naming"},
+            ".clang-tidy": {"naming"},
             ".github/workflows/release.yml": {"release"},
             ".github/workflows/release-candidate.yml": {"release"},
             ".github/workflows/conformance.yml": {"release"},
@@ -141,7 +175,7 @@ class ClassifierTests(unittest.TestCase):
             "scripts/package_build.py": {"release"} | PACKAGES,
             "CMakeLists.txt": LIBRARY_JOBS | {"release"} | PACKAGES,
             "cmake/config.cmake.in": LIBRARY_JOBS | PACKAGES,
-            "conanfile.py": LIBRARY_JOBS | {"release"} | PACKAGES,
+            "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release"} | PACKAGES,
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
             "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
@@ -152,7 +186,8 @@ class ClassifierTests(unittest.TestCase):
 
     def test_other_events_also_package_source(self) -> None:
         for path, jobs in (("src/main.cpp", LIBRARY_JOBS), ("test/core/protocol_test.cpp", {"code"}),
-                           ("examples/features/pagination.cpp", {"code"}), ("LICENSE", {"conan"})):
+                           ("examples/features/pagination.cpp", {"code", "naming"}),
+                           ("LICENSE", {"conan"})):
             with self.subTest(path=path):
                 self.assertEqual(self.jobs_for_change(path, "push"), jobs | PACKAGES)
 

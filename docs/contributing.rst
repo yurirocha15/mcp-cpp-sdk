@@ -54,15 +54,25 @@ Follow these guidelines:
 Naming Conventions
 ^^^^^^^^^^^^^^^^^^
 
-Follow these naming conventions:
+Follow these naming conventions, which ``.clang-tidy`` enforces with
+``readability-identifier-naming``:
 
-* **Classes/Structs**: ``PascalCase`` (e.g., ``Server``, ``ITransport``, ``CallToolRequest``)
-* **Functions/Methods**: ``snake_case`` (e.g., ``add_tool()``, ``call_tool()``, ``log_info()``)
-* **Variables**: ``snake_case`` (e.g., ``request_id``, ``tool_name``, ``json_result``)
-* **Private members**: ``snake_case_`` with trailing underscore (e.g., ``transport_``, ``strand_``)
-* **Constants**: ``kPascalCase`` (e.g., ``kDefaultTimeout``)
-* **Template parameters**: ``PascalCase`` (e.g., ``template <typename T>``)
-* **Namespaces**: ``snake_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
+* **Classes/Structs/Enums/Unions/Concepts**: ``CamelCase`` (e.g., ``Server``, ``ITransport``, ``CallToolRequest``)
+* **Functions/Methods**: ``lower_case`` (e.g., ``add_tool()``, ``call_tool()``, ``log_info()``)
+* **Variables**: ``lower_case`` (e.g., ``request_id``, ``tool_name``, ``json_result``)
+* **Class members**: ``lower_case_`` with a trailing underscore (e.g., ``transport_``, ``strand_``)
+* **Global variables and namespace-scope constants**: ``g_`` prefix; constants are ``g_UPPER_CASE``
+  (e.g., ``g_INVALID_PARAMS``), declared in ``mcp/core/constants.hpp`` or ``src/detail/constants.hpp``
+* **Static variables**: ``s_`` prefix (e.g., ``s_cache`` for a function-local static)
+* **Enum values**: ``eCamelCase`` (e.g., ``eServerError``)
+* **Class constants** (static data members): ``lower_case`` (e.g., ``max_repeat_count``)
+* **Macros**: ``UPPER_CASE`` (e.g., ``MCP_DEPRECATED``)
+* **Namespaces**: ``lower_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
+
+``make lint`` runs the check locally. The CI ``Identifier naming`` job runs only
+``readability-identifier-naming`` over ``src/``, ``include/`` and ``examples/``,
+the directories ``make lint`` checks, and fails on any violation. It runs when a
+change touches those directories, ``.clang-tidy`` or the CMake files.
 
 Code Formatting
 ^^^^^^^^^^^^^^^
@@ -198,7 +208,8 @@ MemorySanitizer reports a read of any memory that uninstrumented code wrote,
 so ``--msan`` builds its own libc++ from a pinned LLVM commit into
 ``build/msan-libcxx`` on first use, and has Conan rebuild Boost, OpenSSL and
 GoogleTest against it. The first run is slow; later runs reuse both. It needs
-``clang-18`` and ``git``.
+``clang-18`` and ``git``. Its tests run many times slower than in a debug
+build, so each may take 600 seconds instead of 120.
 
 The ThreadSanitizer and MemorySanitizer builds run under ``setarch -R`` where
 it is available, because neither can start on kernels with a high ASLR
@@ -441,6 +452,19 @@ argument instead of storing it in a named local, so no SSO string ever enters th
 
    // DO NOT: auto input = params.get<In>();  // named local stays in frame
    Out output = co_await handler(ctx, params.get<In>());  // direct: never in frame
+
+**Named aggregate arguments**: GCC releases before 13 can destroy a temporary
+built inside a ``co_await`` expression twice
+(`GCC Bug #101367 <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101367>`_).
+On GCC 11 this hits braced aggregates (``T{...}``, ``T{.field = ...}`` or a bare
+``{...}``) and the result of a conditional expression passed as coroutine
+arguments. Build such an argument as a named local and move it in.
+
+.. code-block:: cpp
+
+   // DO NOT: co_await dispatch(msg, RequestScope{nullptr, std::move(cancelled)});
+   RequestScope scope{nullptr, std::move(cancelled)};
+   co_await dispatch(msg, std::move(scope));
 
 **Rule for wire builders**: ``make_result_wire()`` and ``make_error_wire()`` are
 **synchronous** static helpers. Do NOT convert them to ``Task<void>`` coroutines —

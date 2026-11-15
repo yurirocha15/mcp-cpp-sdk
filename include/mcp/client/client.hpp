@@ -12,6 +12,7 @@
 //                        do NOT convert them to Task<T> coroutines.
 
 #include <mcp/core/concepts.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
@@ -19,6 +20,7 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -27,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace mcp {
@@ -67,26 +70,179 @@ class MCP_API McpError : public std::runtime_error {
  * @brief Thrown by Client::call_tool() when the `structuredContent` of a successful result does not
  * conform to the output schema the tool declared (see ClientOptions::validate_tool_schemas).
  *
- * code() is g_INTERNAL_ERROR; data() is `{"violations": [{"instancePath": ..., "message": ...}]}`.
+ * code() is mcp::constants::jsonrpc::g_INTERNAL_ERROR; data() is `{"violations": [{"instancePath": ...,
+ * "message": ...}]}`.
  */
 class MCP_API StructuredContentError : public McpError {
    public:
     using McpError::McpError;
 };
 
+/**
+ * @brief Thrown instead of sending an accepted form answer that does not conform to the request's
+ * `requestedSchema` (see ClientOptions::validate_elicitation_content).
+ *
+ * code() is mcp::constants::jsonrpc::g_INVALID_PARAMS; data() is `{"violations": [{"instancePath": ...,
+ * "message": ...}]}`.
+ */
+class MCP_API ElicitationContentError : public McpError {
+   public:
+    using McpError::McpError;
+};
+
+/** @brief The protocol era a client session speaks. */
+enum class ProtocolEra : std::uint8_t {
+    eLegacy,  ///< 2025-11-25 and earlier: an initialize handshake starts a session.
+    eModern,  ///< 2026-07-28 and later: every request carries its protocol fields in `_meta`.
+};
+
+/**
+ * @brief Which protocol a Client speaks, chosen with one of the factory functions.
+ *
+ * @details One value instead of a mode plus a version, so a contradictory combination (a modern
+ * mode with a legacy version) cannot be written.
+ */
+class MCP_API ClientProtocol {
+   public:
+    /** @brief What the value selects. */
+    enum class Kind : std::uint8_t {
+        eAuto,     ///< Probe with server/discover, fall back to initialize.
+        eLegacy,   ///< initialize with the newest legacy version, no probe.
+        eVersion,  ///< Exactly the version named, no probe.
+    };
+
+    /** @brief Equivalent to automatic(). */
+    ClientProtocol() = default;
+
+    /**
+     * @brief Detect the server's era: send server/discover first, fall back to initialize.
+     *
+     * @details The server is modern when it answers with a DiscoverResult or with a modern
+     * protocol error (mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+     * mcp::constants::jsonrpc::g_HEADER_MISMATCH,
+     * mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY); any other error, a reply that is
+     * not JSON, or no reply within ClientOptions::probe_timeout makes it legacy, and the client sends
+     * initialize. A server that exits when it receives the probe fails the connect with an error that
+     * names legacy() as the remedy.
+     *
+     * Over HTTP the probe is a 2026-07-28 POST. A legacy server answers it with an error status
+     * (400 without a modern protocol error in the body, 404 or 405), and the client falls back to
+     * initialize.
+     */
+    [[nodiscard]] static ClientProtocol automatic();
+
+    /** @brief initialize with the newest legacy version (2025-11-25); sends no probe. */
+    [[nodiscard]] static ClientProtocol legacy();
+
+    /**
+     * @brief Speak exactly one version.
+     *
+     * @details "2025-11-25", "2025-06-18", "2025-03-26" and "2024-11-05" start a legacy session
+     * with initialize naming that version. "2026-07-28" speaks the modern protocol; connect()
+     * then sends one server/discover to fill ConnectResult and never falls back to initialize.
+     *
+     * @throws std::invalid_argument For any other string.
+     */
+    [[nodiscard]] static ClientProtocol pinned(std::string version);
+
+    /** @brief What this value selects. */
+    [[nodiscard]] Kind kind() const noexcept { return kind_; }
+
+    /** @brief The pinned version for pinned(), the newest legacy version for legacy(), else empty. */
+    [[nodiscard]] const std::string& version() const noexcept { return version_; }
+
+   private:
+    ClientProtocol(Kind kind, std::string version) : kind_(kind), version_(std::move(version)) {}
+
+    Kind kind_{Kind::eAuto};
+    std::string version_;
+};
+
+/** @brief Why connect() settled on an era. */
+enum class EraReason : std::uint8_t {
+    ePinned,                  ///< ClientOptions::protocol named the era; nothing was probed.
+    eDiscoverOk,              ///< server/discover returned a DiscoverResult.
+    eModernErrorRetry,        ///< server/discover returned a modern protocol error.
+    eFallbackNonModernError,  ///< server/discover failed with an error that is not a modern one.
+    eFallbackTimeout,         ///< The server did not answer server/discover in time.
+    eReprobeAfterInitializeRejected,  ///< initialize was rejected naming modern versions; probed again.
+};
+
+/** @brief One era decision of connect(), as reported to ClientOptions::on_era_decision. */
+struct EraDecision {
+    ProtocolEra era;                    ///< The era the client goes on to speak.
+    EraReason reason;                   ///< What led to it.
+    std::chrono::milliseconds elapsed;  ///< Time from the start of connect() to the decision.
+};
+
+/** @brief What connect() learned about the server. */
+struct ConnectResult {
+    ProtocolEra era{
+        ProtocolEra::eLegacy};  ///< The era of this session; fixed for the client's lifetime.
+    /// The version in use: the one initialize negotiated (legacy) or the one every request names.
+    std::string protocolVersion;
+    ServerCapabilities capabilities;           ///< Capabilities the server declared.
+    std::optional<Implementation> serverInfo;  ///< The server's identity, when it sent one.
+    std::optional<std::string> instructions;   ///< The server's instructions, when it sent any.
+    /// Versions the server listed in server/discover or in a protocol error; empty when it was
+    /// never asked or did not say.
+    std::vector<std::string> supportedVersions;
+};
+
+/** @brief Whether the client takes part in the tasks extension (see ClientOptions::tasks). */
+enum class ClientTaskMode : std::uint8_t {
+    /// The client does not declare the extension, so a server never answers it with a task.
+    eOff,
+    /// The client declares the extension with every request of a 2026-07-28 session, and
+    /// Client::call_tool() follows a task the server starts until it finishes.
+    eAuto,
+};
+
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
+    /**
+     * @brief Which protocol to speak; automatic() unless set.
+     *
+     * @details See ClientProtocol. Construction throws std::invalid_argument for a value that
+     * names a version the SDK does not know.
+     */
+    ClientProtocol protocol{ClientProtocol::automatic()};
+    /**
+     * @brief How long ClientProtocol::automatic() waits for the answer to server/discover.
+     *
+     * @details The timer starts when the client starts probing, once the transport is ready.
+     * A legacy server that ignores the unknown request is the case it exists for. Must be
+     * positive. A modern server that needs longer to start than this is not misclassified for
+     * good: when it then rejects initialize naming modern versions, the client probes once more.
+     */
+    std::chrono::milliseconds probe_timeout{std::chrono::milliseconds(3000)};
+    /**
+     * @brief Invoked each time connect() decides an era.
+     *
+     * @details Runs on the connecting coroutine, so it must not block. It can run twice in one
+     * connect(): a probe that timed out decides legacy, and a later re-probe may decide modern.
+     * An exception thrown from it is discarded.
+     */
+    std::function<void(const EraDecision&)> on_era_decision;
     /**
      * @brief Default time limit for outgoing requests. Thirty seconds unless set.
      *
      * Every request the client issues carries this deadline, including the typed helpers such
      * as call_tool() and read_resource(), which accept no per-request override. A request that
-     * outlives it fails with McpError g_REQUEST_TIMEOUT while the peer may still be running it,
-     * so raise this for a client whose tools legitimately take longer. Must be positive: the
-     * constructor throws std::invalid_argument otherwise, and there is no value that disables
-     * the deadline.
+     * outlives it fails with McpError mcp::constants::jsonrpc::g_REQUEST_TIMEOUT while the peer may
+     * still be running it, so raise this for a client whose tools legitimately take longer. Must be
+     * positive: the constructor throws std::invalid_argument otherwise, and there is no value that
+     * disables the deadline.
      */
     std::chrono::milliseconds request_timeout{std::chrono::seconds(30)};
+    /**
+     * @brief Memory the server's requests being answered, and the answers not yet written, may
+     * take before the client stops reading. 256 MiB unless set; must be positive.
+     *
+     * A request is counted as its parsed JSON takes memory, which can be far more than its text.
+     * The client also stops reading while it answers 1024 requests of the server.
+     */
+    std::size_t max_incoming_request_bytes{std::size_t{256} * 1024 * 1024};
     /** @brief Reject malformed JSON-RPC envelopes received from the peer. */
     bool strict_protocol_validation{true};
     /**
@@ -94,31 +250,86 @@ struct ClientOptions {
      *
      * Reports two things, neither of which ends the session and neither of which the
      * application can otherwise observe:
-     * - a message the peer sent that the client could not decode, as g_PARSE_ERROR;
-     * - an exception thrown by an application notification callback, as g_INTERNAL_ERROR,
-     *   with the notification method in the message.
+     * - a message the peer sent that the client could not decode, as
+     * mcp::constants::jsonrpc::g_PARSE_ERROR;
+     * - an exception thrown by an application notification callback, as
+     * mcp::constants::jsonrpc::g_INTERNAL_ERROR, with the notification method in the message.
      *
      * Runs on the client's read loop, so it must not block. An exception thrown from it is
      * discarded: there is nowhere left to report a failure of the reporting path itself.
      */
     std::function<void(const Error&)> on_protocol_error;
     /**
+     * @brief Whether the client declares the tasks extension and follows its tasks; off unless set.
+     *
+     * @details With ClientTaskMode::eAuto, a 2026-07-28 session declares
+     * `io.modelcontextprotocol/tasks` in the capabilities of each request, and call_tool() that
+     * is answered with a task polls `tasks/get` until the task finishes, honoring the server's
+     * `pollIntervalMs`, answers the task's `inputRequests` with the registered elicitation,
+     * sampling and roots handlers, and returns the tool's result as if the call had run in the
+     * request. A task that failed throws the McpError it failed with, and one that was cancelled
+     * throws an McpError. start_tool() and task_handle() take part in the extension whatever this
+     * is set to. A legacy session has no tasks and ignores it.
+     */
+    ClientTaskMode tasks{ClientTaskMode::eOff};
+    /**
+     * @brief How often the client polls a task whose state names no interval. One second unless
+     * set; must be positive.
+     */
+    std::chrono::milliseconds task_poll_interval{std::chrono::seconds(1)};
+    /**
+     * @brief How long call_tool() and TaskHandle::wait() follow one task before they give up with
+     * mcp::constants::jsonrpc::g_REQUEST_TIMEOUT. Thirty minutes unless set; must be positive.
+     *
+     * @details A TaskHandle::wait() that gives up leaves the task running on the server, and the
+     * handle can pick it up again. A call_tool() that gives up, for this timeout or because a
+     * handler for the task's input requests failed, sends `tasks/cancel` for the task before it
+     * throws, since nothing else holds the task; the cancel is best effort. Each poll is limited
+     * by request_timeout like any other request, and call_tool() takes no per-request options.
+     */
+    std::chrono::milliseconds task_timeout{std::chrono::minutes(30)};
+    /**
      * @brief Check the schemas of the tools the server lists.
      *
-     * list_tools() compiles each tool's `inputSchema` and `outputSchema` and leaves out a tool
-     * whose schema is not one CompiledSchema accepts (invalid, an unsupported dialect, or a `$ref`
-     * outside the document), reporting it through on_tool_schema_error. call_tool() then checks the
+     * list_tools() lists every tool the server names and compiles each `outputSchema`, reporting
+     * one it cannot use through on_tool_schema_error. call_tool() then checks the
      * `structuredContent` of a successful result against the output schema from the most recent
      * list_tools() result that included the tool, and throws StructuredContentError when it does
-     * not conform. A tool the client has not seen listed is not checked.
+     * not conform. A call of a tool whose output schema is invalid, in an unsupported dialect or
+     * has a `$ref` outside the document throws that SchemaError. A schema that only uses a pattern
+     * the matcher cannot run, such as a lookahead, leaves that tool's results unchecked. A tool the
+     * client has not seen listed is not checked. The server enforces `inputSchema`, so the client
+     * does not compile it.
      */
     bool validate_tool_schemas{true};
     /**
-     * @brief Invoked for each tool list_tools() leaves out because its schema cannot be used.
+     * @brief Invoked for each tool whose output schema list_tools() found it cannot use.
      *
      * Runs inside list_tools(), so it must not block. An exception thrown from it is discarded.
      */
     std::function<void(const Tool&, const SchemaError&)> on_tool_schema_error;
+    /**
+     * @brief Check the content an on_elicitation() handler accepts against the request's schema.
+     *
+     * @details When the handler returns action `accept` for a form-mode request, its `content` is
+     * validated against the request's `requestedSchema` before anything is sent, in both
+     * protocol eras. Content that does not conform is not sent: the handler's call fails with
+     * ElicitationContentError. A legacy `elicitation/create` request is then answered with a
+     * JSON-RPC error, and a 2026-07-28 request fails the call that asked the question with that
+     * exception. A schema the SDK cannot compile leaves the content unchecked. Applies to handlers
+     * registered with on_elicitation(), not to a raw on_request("elicitation/create") handler.
+     * Turn it off for an application that validates the content itself.
+     */
+    bool validate_elicitation_content{true};
+    /**
+     * @brief How many notifications a Subscription holds for the application to read.
+     *
+     * @details A subscription queues the notifications of its stream until Subscription::next()
+     * takes them. When the queue is full the oldest one is dropped and counted by
+     * Subscription::dropped_events(). Must be positive: the constructor throws
+     * std::invalid_argument otherwise.
+     */
+    std::size_t subscription_queue_limit{1024};
 };
 
 /** @brief Overrides for one outgoing request. */
@@ -131,6 +342,248 @@ struct RequestOptions {
      * though the caller receives a timeout, as with any network request deadline.
      */
     std::optional<std::chrono::milliseconds> timeout;
+    /**
+     * @brief Minimum log level the server should emit for this request.
+     *
+     * @details Sent as `io.modelcontextprotocol/logLevel` in the request's `_meta` when the
+     * session is modern. A legacy session sets its level with logging/setLevel instead, and this
+     * member has no effect there.
+     */
+    std::optional<LoggingLevel> log_level;
+    /**
+     * @brief Most retries one modern tools/call, prompts/get or resources/read may make.
+     *
+     * @details When the server answers such a request with an `input_required` result, the client
+     * runs its registered elicitation, sampling and roots handlers for the questions and sends the
+     * request again with the answers. Each retry counts against this limit; a server that still asks
+     * after the last one fails the call with an McpError. Legacy sessions ignore it.
+     */
+    int max_input_rounds = 8;
+    /**
+     * @brief Most questions one `input_required` result may ask.
+     *
+     * @details Each question runs a registered handler, which may mean asking a person. A server
+     * that asks more fails the call with an McpError.
+     */
+    int max_input_requests = 32;
+};
+
+/**
+ * @brief The notification types a subscriptions/listen stream asks for (protocol revision
+ * 2026-07-28 and later).
+ *
+ * @details A member left at its default asks for nothing of that type. The server answers with the
+ * subset it honors, see Subscription::acknowledged().
+ */
+struct SubscriptionFilter {
+    bool toolsListChanged{false};      ///< notifications/tools/list_changed
+    bool promptsListChanged{false};    ///< notifications/prompts/list_changed
+    bool resourcesListChanged{false};  ///< notifications/resources/list_changed
+    /// URIs for which notifications/resources/updated is wanted.
+    std::vector<std::string> resourceSubscriptions;
+    /// Tasks for which notifications/tasks is wanted. Asking needs the tasks extension, which the
+    /// request then declares whatever ClientOptions::tasks is set to.
+    std::vector<std::string> taskIds;
+
+    /// Filters are equal when they ask for the same notifications and the same URIs, in order.
+    bool operator==(const SubscriptionFilter&) const = default;
+};
+
+/** @brief Serializes only the members that ask for something, as the wire `notifications` object. */
+inline void to_json(nlohmann::json& json_obj, const SubscriptionFilter& filter) {
+    json_obj = nlohmann::json::object();
+    if (filter.toolsListChanged) {
+        json_obj["toolsListChanged"] = true;
+    }
+    if (filter.promptsListChanged) {
+        json_obj["promptsListChanged"] = true;
+    }
+    if (filter.resourcesListChanged) {
+        json_obj["resourcesListChanged"] = true;
+    }
+    if (!filter.resourceSubscriptions.empty()) {
+        json_obj["resourceSubscriptions"] = filter.resourceSubscriptions;
+    }
+    if (!filter.taskIds.empty()) {
+        json_obj["taskIds"] = filter.taskIds;
+    }
+}
+
+/** @brief Reads a wire `notifications` object; a member that is absent asks for nothing. */
+inline void from_json(const nlohmann::json& json_obj, SubscriptionFilter& filter) {
+    filter = SubscriptionFilter{};
+    filter.toolsListChanged = json_obj.value("toolsListChanged", false);
+    filter.promptsListChanged = json_obj.value("promptsListChanged", false);
+    filter.resourcesListChanged = json_obj.value("resourcesListChanged", false);
+    if (const auto found = json_obj.find("resourceSubscriptions");
+        found != json_obj.end() && !found->is_null()) {
+        found->get_to(filter.resourceSubscriptions);
+    }
+    if (const auto found = json_obj.find("taskIds"); found != json_obj.end() && !found->is_null()) {
+        found->get_to(filter.taskIds);
+    }
+}
+
+/** @brief How a subscription ended. */
+enum class SubscriptionEnd : std::uint8_t {
+    eServerClosed,  ///< The server ended it with the empty result: a graceful end.
+    eCancelled,     ///< Subscription::close() ended it.
+    eDropped,       ///< The connection ended without that result: an unexpected disconnect.
+    eFailed,        ///< The server answered the request with an error after acknowledging it.
+};
+
+/** @brief One notification delivered on a subscription. */
+struct SubscriptionEvent {
+    std::string method;     ///< The notification method, such as "notifications/tools/list_changed".
+    nlohmann::json params;  ///< Its params, including `_meta` with the subscription id.
+};
+
+namespace detail {
+struct SubscriptionState;
+}  // namespace detail
+
+/**
+ * @brief A subscriptions/listen stream opened with Client::listen().
+ *
+ * @details A copy refers to the same stream. Notifications that carry this stream's id arrive
+ * through next(); a notification of another stream never does. The handle does not close the
+ * stream when it is destroyed: call close(), or the stream stays open (and queues notifications up
+ * to ClientOptions::subscription_queue_limit) until the connection ends.
+ *
+ * Reconnecting is the application's job: after a transport drop, connect a new client and call
+ * Client::listen() again; the server keeps no subscription across connections.
+ */
+class MCP_API Subscription {
+   public:
+    /** @brief A handle that is not attached to a stream; it reads as cancelled and next() yields
+     * nothing. */
+    Subscription();
+
+    /** @brief For Client::listen(); applications do not call this. */
+    explicit Subscription(std::shared_ptr<detail::SubscriptionState> state);
+
+    /** @brief The JSON-RPC id of the subscriptions/listen request, which is the subscription id. */
+    [[nodiscard]] RequestId id() const;
+
+    /** @brief The filter that was asked for. */
+    [[nodiscard]] SubscriptionFilter requested() const;
+
+    /** @brief The subset the server agreed to honor, from its acknowledgment. */
+    [[nodiscard]] SubscriptionFilter acknowledged() const;
+
+    /**
+     * @brief The part of requested() that acknowledged() leaves out.
+     *
+     * @details Empty (equal to a default SubscriptionFilter) when the server honors everything.
+     */
+    [[nodiscard]] SubscriptionFilter unhonored() const;
+
+    /**
+     * @brief Wait for the next notification of this stream.
+     *
+     * @details Notifications are returned in arrival order, including those that arrived while
+     * nobody was waiting. When the stream has ended and the queue is empty, resolves to nothing;
+     * end_reason() then says how it ended. Only one next() may be outstanding at a time.
+     */
+    Task<std::optional<SubscriptionEvent>> next();
+
+    /**
+     * @brief End the stream by sending `notifications/cancelled` for the listen request.
+     *
+     * @details The server answers a cancelled stream with nothing. Does nothing when the stream
+     * has already ended. A next() that is waiting resolves to nothing.
+     */
+    Task<void> close();
+
+    /** @brief How the stream ended, or nothing while it is open. */
+    [[nodiscard]] std::optional<SubscriptionEnd> end_reason() const;
+
+    /** @brief The error behind SubscriptionEnd::eFailed or eDropped, when there is one. */
+    [[nodiscard]] std::optional<Error> end_error() const;
+
+    /** @brief How many notifications were discarded because the queue was full. */
+    [[nodiscard]] std::uint64_t dropped_events() const;
+
+   private:
+    std::shared_ptr<detail::SubscriptionState> state_;
+};
+
+/**
+ * @brief A task a server started for a tool call (the tasks extension, protocol revision
+ * 2026-07-28), which the application can follow, answer and cancel.
+ *
+ * @details Client::start_tool() returns one when the server answers with a task, and
+ * Client::task_handle() makes one from a task id kept from an earlier session of the server. A
+ * copy refers to the same task. Every call needs the Client that made the handle to be alive and
+ * connected. Each request carries the extension in its capabilities, whatever
+ * ClientOptions::tasks is set to.
+ */
+class MCP_API TaskHandle {
+   public:
+    /** @brief A handle that is not attached to a task; every call on it throws McpError. */
+    TaskHandle() = default;
+
+    /** @brief For Client; applications do not call this. */
+    TaskHandle(std::shared_ptr<void> client, TaskData created, std::optional<std::string> tool);
+
+    /** @brief The task's identifier, which an application may keep to resume it later. */
+    [[nodiscard]] const std::string& id() const { return created_.taskId; }
+
+    /** @brief The state the task had when the server created it. */
+    [[nodiscard]] const TaskData& created() const { return created_; }
+
+    /**
+     * @brief Fetch the task's current state with `tasks/get`.
+     *
+     * @throws McpError With mcp::constants::jsonrpc::g_INVALID_PARAMS when the server no longer knows
+     * the task.
+     */
+    Task<DetailedTask> get(const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief Answer the requests of an `input_required` task with `tasks/update`.
+     *
+     * @param input_responses An object holding the answer to each request of the task's
+     *        `inputRequests` that is answered, under the same key.
+     * @param request_options Per-call options of the `tasks/update` request.
+     */
+    Task<void> update(const nlohmann::json& input_responses,
+                      const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief Ask the server to cancel the task with `tasks/cancel`.
+     *
+     * @details The server decides whether and when the task stops: the task may still finish
+     * with another status.
+     */
+    Task<void> cancel(const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief Poll the task until it has finished and return its final state.
+     *
+     * @details Polls as ClientOptions::task_poll_interval and the task's `pollIntervalMs` say, and
+     * answers the task's `inputRequests` with the handlers registered for elicitation, sampling
+     * and roots, each question once.
+     *
+     * @throws McpError With mcp::constants::jsonrpc::g_REQUEST_TIMEOUT after
+     * ClientOptions::task_timeout.
+     */
+    Task<DetailedTask> wait(const RequestOptions& request_options = {}) const;
+
+    /**
+     * @brief wait(), then the tool's result.
+     *
+     * @return The CallToolResult of a `completed` task, checked against the tool's output schema
+     *         as call_tool() does when the handle comes from start_tool().
+     * @throws McpError The error a `failed` task carries, or mcp::constants::jsonrpc::g_INVALID_REQUEST
+     * for a task that was cancelled.
+     */
+    Task<CallToolResult> result(const RequestOptions& request_options = {}) const;
+
+   private:
+    std::shared_ptr<void> client_;
+    TaskData created_;
+    std::optional<std::string> tool_;
 };
 
 /**
@@ -138,9 +591,10 @@ struct RequestOptions {
  *
  * @details Manages the JSON-RPC request/response lifecycle, including
  * an asynchronous read loop that dispatches incoming responses to their
- * corresponding pending requests. The client initiates the MCP handshake
- * via connect(), which sends an initialize request followed by an
- * initialized notification.
+ * corresponding pending requests. connect() settles on a protocol era
+ * (ClientOptions::protocol): a legacy session starts with an initialize request
+ * followed by an initialized notification, a modern one sends no handshake and
+ * carries its protocol fields in each request's `_meta`.
  *
  * Runtime I/O and request state are serialized on a boost::asio::strand.
  */
@@ -168,26 +622,37 @@ class MCP_API Client {
     Client& operator=(Client&&) = delete;
 
     /**
-     * @brief Perform the MCP initialization handshake with default capabilities.
+     * @brief Connect with default capabilities.
      * @param name Client implementation name.
      * @param version Client implementation version.
-     * @return A task that resolves to the server's InitializeResult.
+     * @return A task that resolves to what the server declared; see the overload below.
      */
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    Task<InitializeResult> connect(std::string_view name, std::string_view version);
+    Task<ConnectResult> connect(std::string_view name, std::string_view version);
 
     /**
-     * @brief Perform the MCP initialization handshake.
+     * @brief Connect to the server and settle on a protocol era.
      *
-     * @details Starts the read loop, sends initialize, waits for the server
-     * response, and then sends notifications/initialized.
+     * @details Starts the read loop, then follows ClientOptions::protocol. A legacy session
+     * sends initialize and then notifications/initialized. A modern session sends
+     * server/discover once to learn the server's capabilities and sends nothing else; from then
+     * on every request carries `io.modelcontextprotocol/protocolVersion`, the capabilities
+     * (@p capabilities plus what the registered handlers imply, such as roots when a roots/list
+     * handler exists) and @p client_info in its `_meta`, merged with the `_meta` entries the
+     * caller supplied. The era is fixed for the client's lifetime.
+     *
+     * In a modern session ping() and the removed subscription and log-level methods fail
+     * locally, set_roots() sends no list-changed notification, and a result whose `resultType`
+     * is neither absent nor "complete" fails with McpError.
      *
      * @param client_info Information about this client implementation.
      * @param capabilities Capabilities supported by this client.
-     * @return A task that resolves to the server's InitializeResult.
+     * @return A task that resolves to what the server declared.
+     * @throws McpError If the server cannot be reached, closes the connection while it is probed
+     *         (pin ClientProtocol::legacy() for such a server), or shares no protocol version.
      */
-    Task<InitializeResult> connect(const Implementation& client_info,
-                                   const ClientCapabilities& capabilities);
+    Task<ConnectResult> connect(const Implementation& client_info,
+                                const ClientCapabilities& capabilities);
 
     /**
      * @brief Send a JSON-RPC request and await its response.
@@ -211,6 +676,31 @@ class MCP_API Client {
     Task<nlohmann::json> send_request(std::string_view method,
                                       const std::optional<nlohmann::json>& params,
                                       const RequestOptions& request_options);
+
+    /**
+     * @brief Open a subscriptions/listen stream (protocol revision 2026-07-28 and later).
+     *
+     * @details Sends the request and waits for the server's
+     * `notifications/subscriptions/acknowledged`, then returns a handle for the stream. The
+     * acknowledged filter may be a subset of @p filter; see Subscription::unhonored(). The
+     * request is never answered while the stream is open, so ClientOptions::request_timeout (or
+     * RequestOptions::timeout) limits only the wait for the acknowledgment. Any number of
+     * streams may be open at once; each receives only the notifications that carry its id.
+     * The handlers registered with on_notification() still run for these notifications as well.
+     *
+     * @param filter The notification types wanted.
+     * @return A task that resolves to the open stream.
+     * @throws McpError mcp::constants::jsonrpc::g_METHOD_NOT_FOUND when the session is not modern (a
+     * legacy session, or connect() has not finished), mcp::constants::jsonrpc::g_INVALID_REQUEST before
+     * connect(), mcp::constants::jsonrpc::g_REQUEST_TIMEOUT when no acknowledgment arrives in time,
+     * mcp::constants::jsonrpc::g_CONNECTION_CLOSED when the connection ends first, or the server's
+     * error (for example mcp::constants::jsonrpc::g_INVALID_PARAMS for a malformed filter,
+     * mcp::constants::jsonrpc::g_METHOD_NOT_FOUND for a server or transport without streams).
+     */
+    Task<Subscription> listen(const SubscriptionFilter& filter);
+
+    /** @brief As above, with a per-request deadline for the acknowledgment. */
+    Task<Subscription> listen(const SubscriptionFilter& filter, const RequestOptions& request_options);
 
     /**
      * @brief Send a JSON-RPC notification (no response expected).
@@ -253,6 +743,35 @@ class MCP_API Client {
         call_params.arguments = nlohmann::json(arguments);
         return call_tool_with(std::move(call_params));
     }
+
+    /**
+     * @brief Call a tool, taking a task if the server starts one (protocol revision 2026-07-28).
+     *
+     * @details Declares the tasks extension for this call whatever ClientOptions::tasks is set
+     * to. The server decides whether the call becomes a task.
+     *
+     * @tparam Args A JsonSerializable type for the tool arguments.
+     * @return The tool's result when the server ran the call to its end, or a TaskHandle when it
+     *         answered with a task. A legacy session always gets the result.
+     * @throws StructuredContentError as call_tool() does for a result.
+     */
+    template <JsonSerializable Args>
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool(const std::string& name,
+                                                              const Args& arguments) {
+        // [gcc11-sso: not-a-coroutine]
+        CallToolParams call_params;
+        call_params.name = name;
+        call_params.arguments = nlohmann::json(arguments);
+        return start_tool_with(std::move(call_params));
+    }
+
+    /**
+     * @brief A handle to a task by its id, for a task started earlier.
+     *
+     * @details The handle's created() holds nothing but the id until get() or wait() fetches the
+     * task's state.
+     */
+    [[nodiscard]] TaskHandle task_handle(std::string id);
 
     /**
      * @brief List available tools from the server.
@@ -319,6 +838,9 @@ class MCP_API Client {
     /**
      * @brief Send a ping request to the connected server.
      *
+     * @details Fails with McpError (mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) without sending
+     * anything in a modern session: protocol revision 2026-07-28 has no ping.
+     *
      * @return A task that completes once the ping round-trip succeeds.
      */
     Task<void> ping();
@@ -376,7 +898,8 @@ class MCP_API Client {
      * @brief Register a handler for incoming elicitation requests from the server.
      *
      * @details Convenience wrapper that registers a request handler for "elicitation/create".
-     * The handler receives ElicitRequestParams and returns ElicitResult.
+     * The handler receives ElicitRequestParams and returns ElicitResult. Accepted form content is
+     * checked against the request's schema first, see ClientOptions::validate_elicitation_content.
      *
      * @param handler Async handler: receives ElicitRequestParams, returns ElicitResult.
      */
@@ -387,7 +910,8 @@ class MCP_API Client {
      *
      * @details Stores the given roots and registers a request handler for
      * "roots/list" that returns them. If notify is true, sends a
-     * notifications/roots/list_changed notification to inform the server.
+     * notifications/roots/list_changed notification to inform the server. A modern session has
+     * no such notification, and nothing is sent.
      *
      * @param roots The list of roots to provide.
      * @param notify Whether to send a roots-changed notification.
@@ -402,7 +926,10 @@ class MCP_API Client {
     void on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler);
 
    private:
+    friend class TaskHandle;
+
     Task<CallToolResult> call_tool_with(CallToolParams params);
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(CallToolParams params);
 
     // [gcc11-sso: string_view] nlohmann::json is heap-allocated; string_view is trivially copyable.
     template <typename Result>

@@ -686,6 +686,18 @@ class TemplateTests(unittest.TestCase):
         debian_rules = (packaging / "debian/rules.in").read_text(encoding="utf-8")
         self.assertIn("CTEST_OUTPUT_ON_FAILURE=1 dh_auto_test", debian_rules)
         self.assertNotIn("ARGS=", debian_rules)
+        # The test objects go before the tests run, and the install does not build them again.
+        self.assertLess(
+            debian_rules.index("rm -rf obj-$(DEB_HOST_GNU_TYPE)/CMakeFiles/mcp-sdk-tests.dir"),
+            debian_rules.index("CTEST_OUTPUT_ON_FAILURE=1 dh_auto_test"),
+        )
+        self.assertIn("-DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON", debian_rules)
+        # No debug information: the packages ship stripped files and no debug symbol packages.
+        self.assertIn("export DEB_CXXFLAGS_MAINT_STRIP = -g\n", debian_rules)
+        self.assertIn("-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG ", debian_rules)
+        rpm_spec = (packaging / "rpm/mcp-cpp-sdk.spec.in").read_text(encoding="utf-8")
+        self.assertIn("%global optflags %{optflags} -g0\n", rpm_spec)
+        self.assertIn("-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG\n", rpm_spec)
         self.assertEqual(
             (packaging / "debian/not-installed.in").read_text(encoding="utf-8"),
             "usr/share/licenses/mcp-cpp-sdk/LICENSE\n",

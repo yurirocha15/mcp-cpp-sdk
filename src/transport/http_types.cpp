@@ -1,16 +1,19 @@
 #include <mcp/transport/http_types.hpp>
 
 #include <nlohmann/json.hpp>
+
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
+#include "../detail/constants.hpp"
+
+namespace url = mcp::detail::constants::url;
 
 namespace mcp {
 
 namespace {
-
-constexpr std::string_view g_well_known_prefix = "/.well-known/oauth-protected-resource";
 
 /// @brief The origin and path components of an absolute resource URL.
 struct SplitResource {
@@ -117,7 +120,10 @@ std::string_view http_bearer_token(std::string_view authorization_header) {
             return {};
         }
     }
-    return authorization_header.substr(scheme.size());
+    // RFC 6750 allows more than one space after the scheme.
+    auto token = authorization_header.substr(scheme.size());
+    token.remove_prefix(std::min(token.find_first_not_of(' '), token.size()));
+    return token;
 }
 
 std::string_view http_request_path(std::string_view target) {
@@ -181,7 +187,7 @@ std::string protected_resource_metadata_path(const ProtectedResourceMetadataConf
     while (!resource_path.empty() && resource_path.back() == '/') {
         resource_path.remove_suffix(1);
     }
-    return std::string(g_well_known_prefix) + std::string(resource_path);
+    return std::string(url::g_WELL_KNOWN_PREFIX) + std::string(resource_path);
 }
 
 std::string protected_resource_metadata_url(const ProtectedResourceMetadataConfig& metadata) {

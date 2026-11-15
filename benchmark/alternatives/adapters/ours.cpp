@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -20,6 +21,13 @@ constexpr std::size_t kIoThreadCount = 2;
 unsigned short port() {
     const char* value = std::getenv("PORT");
     return value ? static_cast<unsigned short>(std::stoi(value)) : 8080;
+}
+
+// MCP_SESSION_MODE=stateless serves older protocol revisions without sessions; anything else keeps
+// the default, which issues a session per client.
+bool stateless() {
+    const char* value = std::getenv("MCP_SESSION_MODE");
+    return value != nullptr && std::string_view(value) == "stateless";
 }
 
 struct ToolSchemas {
@@ -66,6 +74,7 @@ int main() {
     mcp::StreamableHttpSessionManager manager(
         io_context.get_executor(), "0.0.0.0", port(),
         [workload, schemas](const asio::any_io_executor&) { return make_server(workload, *schemas); });
+    manager.set_stateless_json_mode(stateless());
     manager.set_tool_executor(handler_pool.get_executor());
 
     const auto io_work = asio::make_work_guard(io_context);

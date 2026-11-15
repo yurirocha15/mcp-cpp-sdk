@@ -39,6 +39,7 @@ struct TextResourceContents {
     std::string uri;                      ///< The URI of this resource.
     std::string text;                     ///< The text of the item.
     std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+    std::optional<nlohmann::json> meta;   ///< Reserved for protocol use (`_meta`).
 };
 
 /**
@@ -48,6 +49,7 @@ struct BlobResourceContents {
     std::string uri;                      ///< The URI of this resource.
     std::string blob;                     ///< The base64-encoded binary data.
     std::optional<std::string> mimeType;  ///< The MIME type of this resource.
+    std::optional<nlohmann::json> meta;   ///< Reserved for protocol use (`_meta`).
 };
 
 /**
@@ -60,6 +62,9 @@ inline void to_json(nlohmann::json& json_obj, const TextResourceContents& conten
     if (content.mimeType) {
         json_obj["mimeType"] = *content.mimeType;
     }
+    if (content.meta) {
+        json_obj["_meta"] = *content.meta;
+    }
 }
 
 inline void from_json(const nlohmann::json& json_obj, TextResourceContents& content) {
@@ -68,12 +73,18 @@ inline void from_json(const nlohmann::json& json_obj, TextResourceContents& cont
     if (detail::has_json_value(json_obj, "mimeType")) {
         content.mimeType = json_obj.at("mimeType").get<std::string>();
     }
+    if (detail::has_json_value(json_obj, "_meta")) {
+        content.meta = json_obj.at("_meta");
+    }
 }
 
 inline void to_json(nlohmann::json& json_obj, const BlobResourceContents& content) {
     json_obj = nlohmann::json{{"uri", content.uri}, {"blob", content.blob}};
     if (content.mimeType) {
         json_obj["mimeType"] = *content.mimeType;
+    }
+    if (content.meta) {
+        json_obj["_meta"] = *content.meta;
     }
 }
 
@@ -82,6 +93,9 @@ inline void from_json(const nlohmann::json& json_obj, BlobResourceContents& cont
     json_obj.at("blob").get_to(content.blob);
     if (detail::has_json_value(json_obj, "mimeType")) {
         content.mimeType = json_obj.at("mimeType").get<std::string>();
+    }
+    if (detail::has_json_value(json_obj, "_meta")) {
+        content.meta = json_obj.at("_meta");
     }
 }
 
@@ -292,6 +306,18 @@ inline void to_json(nlohmann::json& json_obj, const TextContent& content) {
 }
 
 /**
+ * @brief Serializes TextContent to JSON, moving its text into the result.
+ *
+ * @param json_obj The JSON object to populate.
+ * @param content The TextContent object to serialize; left with an unspecified text.
+ */
+inline void to_json(nlohmann::json& json_obj, TextContent&& content) {
+    json_obj = nlohmann::json::object();
+    json_obj["type"] = std::move(content.type);
+    json_obj["text"] = std::move(content.text);
+}
+
+/**
  * @brief Deserializes TextContent from JSON.
  *
  * @param json_obj The JSON object to read from.
@@ -365,6 +391,20 @@ using ContentBlock = std::variant<TextContent, ImageContent, AudioContent, Resou
  */
 inline void to_json(nlohmann::json& json_obj, const ContentBlock& content) {
     std::visit([&json_obj](auto&& arg) { json_obj = arg; }, content);
+}
+
+/**
+ * @brief Serializes a Content variant to JSON, moving what it holds into the result.
+ *
+ * @param json_obj The JSON object to populate.
+ * @param content The Content variant to serialize; left in an unspecified state.
+ */
+inline void to_json(nlohmann::json& json_obj, ContentBlock&& content) {
+    if (auto* text = std::get_if<TextContent>(&content)) {
+        to_json(json_obj, std::move(*text));
+        return;
+    }
+    to_json(json_obj, static_cast<const ContentBlock&>(content));
 }
 
 /**

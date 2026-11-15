@@ -209,11 +209,9 @@ server and calls a tool:
        boost::asio::co_spawn(
            io,
            [&]() -> Task<void> {
-               // Connect and initialize
-               Implementation info;
-               info.name = "math-client";
-               info.version = "1.0.0";
-               co_await client.connect(info, {});
+               // Connect. The client detects the protocol revision the server speaks.
+               ConnectResult connected = co_await client.connect("math-client", "1.0.0");
+               std::cout << "Protocol: " << connected.protocolVersion << std::endl;
 
                // Call the "add" tool
                nlohmann::json args = {{"a", 5}, {"b", 7}};
@@ -227,6 +225,14 @@ server and calls a tool:
 
        io.run();
    }
+
+``connect()`` returns a ``ConnectResult`` with the ``era`` of the session
+(``ProtocolEra::eModern`` for protocol revision 2026-07-28 or ``eLegacy`` for
+2025-11-25 and earlier), the negotiated ``protocolVersion`` and what the server
+declared (``capabilities``, ``serverInfo``, ``instructions``). By default the
+client sends ``server/discover`` first and falls back to ``initialize`` for an
+older server. To keep speaking an older revision, or to skip that probe, set
+``ClientOptions::protocol``; see :doc:`guides/older-protocols`.
 
 .. important::
 

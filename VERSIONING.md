@@ -41,6 +41,14 @@ whichever is longer. Protocol features follow the MCP feature lifecycle;
 deprecated features remain available for their required compatibility window
 and include migration guidance.
 
+A deprecated declaration is marked `MCP_DEPRECATED("use X; removal no earlier
+than Y")`, so users get a compiler warning, and has an `@deprecated` Doxygen tag.
+CI rejects an `@deprecated` tag without the attribute. A protocol feature that
+peers of an older revision still need is deprecated in its documentation only,
+with `doc-only` after the tag, until the first release after the earliest
+removal date the protocol revision gives. Every deprecation is listed under
+`Deprecated` in `CHANGELOG.md` with the release that may remove it.
+
 ## Release evidence
 
 The release gate requires an updated `CHANGELOG.md`, passing platform and

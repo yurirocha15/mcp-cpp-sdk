@@ -9,6 +9,11 @@ const EXPECTED_PROTOCOL_VERSION = __ENV.EXPECTED_PROTOCOL_VERSION || null;
 const MODE = (__ENV.BENCHMARK_MODE || 'measurement').toLowerCase();
 const BENCHMARK_CONTRACT = __ENV.BENCHMARK_CONTRACT || 'upstream-v2-strict-mcp-v1';
 
+// Pause after each iteration, in seconds. The default paces every virtual user; 0 removes the
+// ceiling that pacing sets on the rate.
+const THINK_TIME_TEXT = __ENV.BENCHMARK_THINK_TIME === undefined ? '0.05' : __ENV.BENCHMARK_THINK_TIME;
+const THINK_TIME_SECONDS = THINK_TIME_TEXT.trim() === '' ? Number.NaN : Number(THINK_TIME_TEXT);
+
 const VUS = Number.parseInt(__ENV.BENCHMARK_VUS || '50', 10);
 const WARMUP_RAMP_DURATION = __ENV.BENCHMARK_RAMP_DURATION || '15s';
 const WARMUP_LOAD_DURATION = __ENV.BENCHMARK_WARMUP_DURATION || '60s';
@@ -16,6 +21,10 @@ const MEASUREMENT_DURATION = __ENV.BENCHMARK_MEASURE_DURATION || '5m';
 
 if (!Number.isInteger(VUS) || VUS <= 0) {
     throw new Error(`BENCHMARK_VUS must be a positive integer, got "${__ENV.BENCHMARK_VUS}"`);
+}
+
+if (!Number.isFinite(THINK_TIME_SECONDS) || THINK_TIME_SECONDS < 0) {
+    throw new Error(`BENCHMARK_THINK_TIME must be a non-negative number, got "${THINK_TIME_TEXT}"`);
 }
 
 if (MODE !== 'warmup' && MODE !== 'measurement') {
@@ -436,7 +445,8 @@ export default function() {
     for (const tool of toolsForUser(userId))
         callTool(tool);
     listTools();
-    sleep(0.05);
+    if (THINK_TIME_SECONDS > 0)
+        sleep(THINK_TIME_SECONDS);
 }
 
 function metricValue(data, metricName, valueName, fallback = 0) {
@@ -501,6 +511,7 @@ export function handleSummary(data) {
             expected_negotiated_protocol_version: EXPECTED_PROTOCOL_VERSION,
             eligibility_contract: BENCHMARK_CONTRACT,
             vus: VUS,
+            think_time_seconds: THINK_TIME_SECONDS,
             executor: scenario.executor,
             ramp_duration: MODE === 'warmup' ? WARMUP_RAMP_DURATION : null,
             warmup_load_duration: MODE === 'warmup' ? WARMUP_LOAD_DURATION : null,

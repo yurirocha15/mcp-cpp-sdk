@@ -7,8 +7,8 @@ application operations for every comparable C++ SDK.
 The application workload is based on
 [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2), pinned
 to commit `8a9a5f8ef505f46b6079072ef4603304ca672e33`. That repository supplies the API
-service, Redis seeder, and the Go and Rust baseline server sources. The Python
-baseline is its Python server ported to the official Python SDK 2.x; see
+service and Redis seeder. The Python, Go and Rust baselines are its servers ported
+to the official SDKs; see
 [Language baselines](#language-baselines). Load generation uses the audited
 local profile in `alternatives/benchmark.js`; it does not use the upstream k6
 script.
@@ -39,12 +39,15 @@ cd benchmark
 # Run the language baselines as a diagnostic (not a publishable ranking).
 ./run.sh baseline
 
-# Run the C++ SDKs, their TCP_NODELAY builds, and the language baselines
-# in one counterbalanced run.
+# Run the C++ SDKs, ours-coroutines, their TCP_NODELAY builds, and the language
+# baselines in one counterbalanced run.
 ./run.sh full
 
 # Run selected servers.
-./run.sh ours-comparable hkr04
+./run.sh ours-comparable-stateful hkr04
+
+# Compare this SDK's thread-based and coroutine-based workloads.
+./run.sh ours-comparable-stateful ours-coroutines-stateful
 ```
 
 The publishable C++ comparison uses the production defaults: three measured
@@ -62,12 +65,16 @@ profile:
 |---|---|---|
 | `./run.sh cpp-sdks` with exact defaults | `production` | Publishable candidate after every gate passes |
 | `./run.sh baseline` with exact defaults | `baseline-diagnostic` | Diagnostic only; never an equal-work ranking |
-| `./run.sh full` with exact defaults | `production-full` | Publishable candidate for the five C++ SDKs; the TCP_NODELAY builds and language baselines in it stay diagnostic |
+| `./run.sh full` with exact defaults | `production-full` | Publishable candidate after every gate passes; the pause per iteration caps the offered load at 4,000 operations per second |
+| `BENCHMARK_LOAD_MODEL=capacity ./run.sh full` with exact defaults | `capacity-full` | Publishable candidate after every gate passes; the target's CPU limit sets each cell's throughput |
 | Any parameter override or other server selection | `smoke` | Harness validation only |
+| `BENCHMARK_LOAD_MODEL=capacity` with any parameter override or other server selection | `capacity-smoke` | Harness validation only |
 
 `publishable_candidate` remains false while a run is in progress and after any
-failure. It becomes true only when the exact production profile reaches
-`status: "complete"`; consumers must require both fields. Generated result
+failure. It becomes true only when a run of the `production`, `production-full`
+or `capacity-full` profile reaches `status: "complete"`; consumers must require
+both fields and check `failed_cells`, since a capacity run whose only failures
+are cell failures still ends `complete` with exit 0. Generated result
 directories are ignored by default so retaining or publishing an audited bundle
 requires an explicit action.
 
@@ -77,11 +84,15 @@ requires an explicit action.
 
 | Benchmark name | SDK | Host port |
 |---|---|---:|
-| `ours-comparable` | this SDK | 8089 |
+| `ours-comparable-stateful`, `ours-comparable-stateless` | this SDK | 8089 |
 | `hkr04` | hkr04/cpp-mcp | 8084 |
 | `fastmcpp` | FastMCPP | 8085 |
 | `cxxmcp` | cxxmcp | 8086 |
 | `neumann` | Neumann-Labs/mcp-cpp | 8087 |
+
+`ours-coroutines-stateful` and `ours-coroutines-stateless` (host port 8098) are not part of `cpp-sdks`. It is a second build
+of this SDK's adapter whose tool handlers are C++20 coroutines; see
+[Coroutine workload](#coroutine-workload). Select it by name or through `full`.
 
 External source repositories and exact commits are recorded in
 `alternatives/sources.tsv`. The adapters use each SDK's public API. They do not
@@ -99,6 +110,53 @@ Streamable HTTP endpoint exercised here, so including it would test a different
 transport contract. cxxmcp is included: the local client sends the required
 negotiated protocol-version header after initialization.
 
+## Session modes
+
+A server name carries the session mode the server runs older protocol revisions in. Protocol
+`2026-07-28` has no sessions, so the mode only matters for the revisions before it. `run.sh` passes
+the mode to the server as `MCP_SESSION_MODE` (`stateful` or `stateless`) when it starts the service,
+records it in `run_manifest.json` under `session_modes`, and prints it in `comparison.txt`.
+Both keys of an SDK start the same container.
+
+| SDK | Stateful | Stateless |
+|---|---|---|
+| this SDK (threads, coroutines) | `ours-comparable-stateful`, `ours-coroutines-stateful` | `ours-comparable-stateless`, `ours-coroutines-stateless` |
+| Rust (`rmcp`) | `rust-stateful` | `rust-stateless` |
+| Go | `go-stateful` | `go-stateless` |
+| Python | none | `python-stateless` |
+| hkr04, FastMCPP, cxxmcp, Neumann and their TCP_NODELAY builds | `hkr04`, `fastmcpp`, `cxxmcp`, `neumann` (and `-nodelay`) | none |
+
+Protocol `2026-07-28` runs under the names `ours-comparable-modern`, `ours-coroutines-modern`,
+`python-modern`, `go-modern` and `rust-modern`. They start the same containers, request that
+revision through `alternatives/benchmark_modern.js` and the verifier's `--protocol-version
+2026-07-28` (a `server/discover` check, then self-contained requests), and show `sessionless` in the
+Mode column. Every request of `benchmark_modern.js` carries its own id, built from the number of the virtual user
+and a counter of that user's requests, so no two requests of one k6 process share one except the
+single request in `setup()`, which uses id 1; the warmup and the measurement are separate processes. cxxmcp serves the
+revision from v1.3.0 and has the keys `cxxmcp-modern` and `cxxmcp-nodelay-modern`; with a fixed id it
+answered 562 of 800 requests of 20 concurrent clients with `"duplicate client request id"`.
+hkr04, FastMCPP and Neumann-Labs answer every `initialize` with an older revision, including when it
+asks for `2026-07-28`, so they have no key for it (checked against the pinned commits).
+
+A server that has no switch for a mode has no name for it, so it is left out of that comparison
+rather than approximated. The reasons, read from each SDK's source at the pinned commit and, for
+Python, observed on the benchmark container:
+
+- hkr04, FastMCPP and Neumann-Labs only serve sessions: a request without a known session id is
+  rejected.
+- cxxmcp can serve stateless requests, but only those that carry the protocol version, client
+  information and capabilities in `_meta`. The k6 profile does not send them, so the harness
+  does not offer that mode.
+- The Python container runs four uvicorn workers. Sessions live in the memory of one worker, so
+  the session id of a later request reaches a worker that does not hold it and the server answers
+  404. A stateful run would need a single worker, which is a different deployment from the
+  stateless run.
+
+Each server answers `initialize` with the revision it chooses, so the stateful runs do not share
+one revision. By their source, hkr04 answers `2025-03-26`, FastMCPP `2024-11-05` and Neumann-Labs
+`2025-11-25` whatever the client requests. `comparison.txt` records the revision each row
+measured.
+
 ## Language baselines
 
 The baseline group is separate from the comparable C++ group. Each baseline is
@@ -107,12 +165,12 @@ SDK, not an adapter over the shared C++ workload:
 
 | Benchmark name | SDK | Host port |
 |---|---|---:|
-| `python` | Python SDK (`mcp` 2.3.0) | 8081 |
-| `go` | Go SDK (`github.com/modelcontextprotocol/go-sdk`) | 8082 |
-| `rust` | Rust SDK (`rmcp`) | 8083 |
+| `python-stateless` | Python SDK (`mcp` 2.3.0) | 8081 |
+| `go-stateful`, `go-stateless` | Go SDK (`github.com/modelcontextprotocol/go-sdk` v1.8.0) | 8082 |
+| `rust-stateful`, `rust-stateless` | Rust SDK (`rmcp` 3.8.0) | 8083 |
 
-The pinned upstream repository supplies the Go and Rust servers and the shared
-infrastructure. Its Python server was written for the 1.x `mcp` API, which the
+The pinned upstream repository supplies the shared infrastructure; the three servers are the
+copies under `baselines/`. The upstream Python server was written for the 1.x `mcp` API, which the
 2.x releases removed, and its version ranges now resolve to 2.x. The
 `baselines/python-server` copy makes only the changes 2.x requires: `FastMCP`
 became `MCPServer`, the stateless JSON transport options moved to
@@ -121,12 +179,12 @@ own because 2.x no longer fills it in. It also pins its dependencies and base
 image. The optimized `cpp` baseline is retained as a separate application
 implementation and must not be presented as an SDK-adapter result.
 
-Python, Go, and Rust are rerun after harness changes, but their results remain
-diagnostic. The Go and Rust upstream Docker builds contain floating inputs: Go
-regenerates dependency resolution during the image build, Rust does not copy its
-lockfile into the build, and both Dockerfiles use unpinned base-image tags.
-Exact built image identities are retained with every run, but these inputs
-prevent a source commit from defining a bit-for-bit rebuild.
+Python, Go, and Rust are rerun after harness changes. The Python, Go and Rust copies pin their
+dependencies (`constraints.txt`, `go.sum`, `Cargo.lock`) and their base images by digest.
+`baselines/go-server` is the upstream Go server built against the Go SDK release that serves
+`2026-07-28`; the workload is unchanged. The Rust copy also sets `TCP_NODELAY` on the connections
+its listener accepts, as the Go server does; the upstream Rust server sets it only on its outbound
+HTTP client. Exact built image identities are retained with every run.
 
 Every target uses the same `upstream-v2-strict-mcp-v1` measurement eligibility
 contract. It preserves the pinned benchmark's observable business predicates
@@ -135,16 +193,15 @@ gates. The five C++ adapters also must pass `adapter-exact-v1` during preflight
 and postflight because their glue and shared workload are controlled here; that
 supplemental check does not execute in the measured k6 path.
 
-The supplemental diagnostics intentionally expose two upstream limitations
-without excluding otherwise working language baselines. Python accepts the
-canonical checkout call but advertises unconstrained array elements for its
-untyped `items: list` parameter. Rust executes all three Redis mutations in one
-pipeline, but returns the pipeline's `ZADD` result as `rate_limit_count` instead
-of the `INCR` result. Both pass the inherited observable predicates and the
-direct Redis side-effect gate; Python and Rust simply record the corresponding
-`adapter-exact-v1` diagnostic as false. These interface, build, and execution
-differences are why language baselines must not appear in the publishable C++
-SDK ranking.
+The supplemental diagnostics do not exclude otherwise working language
+baselines. Python advertises unconstrained array elements for its untyped
+`items: list` parameter, and the `checkout` schema the Go SDK derives from the
+Go server's argument types differs from the adapters' exact schema. Both accept
+the canonical checkout call, pass the inherited observable predicates and the
+direct Redis side-effect gate, and record the corresponding `adapter-exact-v1`
+diagnostic as false. Because each baseline is its own application, the language
+baselines are reported in their own table next to this SDK rather than in the
+C++ SDK ranking.
 
 ## TCP_NODELAY builds
 
@@ -179,6 +236,78 @@ tool also reported separately.
 This is an end-to-end Redis/HTTP workload. It is not a parser-only,
 serialization-only, or in-process SDK microbenchmark.
 
+## Coroutine workload
+
+`ours-comparable` runs the shared, synchronous `benchmark_workload`: each tool
+handler blocks on libcurl and hiredis, submits its parallel steps to a 64-thread
+pool, and runs on a 50-thread handler pool. `ours-coroutines` runs the same
+tools as coroutines. `common/async_workload.cpp` reaches the API service and
+Redis through asio sockets (a Beast HTTP client and a small RESP client), a
+handler suspends while it waits, and the parallel steps of one tool call run
+concurrently without extra threads. It sets no handler pool; the two I/O threads
+run the handlers.
+
+The Redis commands, HTTP requests, and result shape match the shared workload,
+and `ours-coroutines` must pass the same `upstream-v2-strict-mcp-v1` and
+`adapter-exact-v1` checks as `ours-comparable`. Two differences remain: the
+shared workload gives each HTTP request a 10 s timeout and a 2 s connect
+timeout, and the coroutine workload sets neither; and the coroutine workload
+retries a request once on a fresh connection when a pooled one was closed by
+the peer while idle.
+
+Because the two builds run different application code, `ours-coroutines` is
+reported next to `ours-comparable` and is never ranked against the other SDKs'
+shared-workload adapters. The build is chosen with the `OURS_MODEL` build
+argument of `alternatives/Dockerfile.ours` (`threads`, the default, or
+`coroutines`).
+
+## Protocol revision 2026-07-28
+
+`run.sh` measures with `alternatives/benchmark.js`, which negotiates protocol
+`2024-11-05`, for the stateful and stateless server keys. For the `*-modern` keys it
+measures with `alternatives/benchmark_modern.js`, which runs the same workload and
+checks over protocol `2026-07-28`, where each request stands alone and no session is
+created. It reads these environment variables, which `run.sh` sets for each cell:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SERVER_URL` | `http://localhost:8080/mcp` | Endpoint under test |
+| `SERVER_NAME` | `unknown` | Label in the summary |
+| `MCP_PROTOCOL_VERSION` | `2026-07-28` | Revision requested |
+| `BENCHMARK_MODE` | `measurement` | `warmup` or `measurement` |
+| `BENCHMARK_VUS` | `50` | Virtual users |
+| `BENCHMARK_THINK_TIME` | `0.05` | Seconds each virtual user sleeps per iteration; a finite number of at least 0 |
+| `BENCHMARK_RAMP_DURATION` | `15s` | Warmup ramp |
+| `BENCHMARK_WARMUP_DURATION` | `60s` | Warmup load |
+| `BENCHMARK_MEASURE_DURATION` | `5m` | Measurement load |
+| `OUTPUT_PATH` | `<SERVER_NAME>_<mode>_summary.json` | Summary file |
+
+To measure one cell of it, name its key:
+
+```bash
+cd benchmark
+./run.sh ours-coroutines-modern
+```
+
+`baselines/rust-server` is the Rust server of the pinned upstream benchmark
+ported to `rmcp` 3.8.0, a release that serves `2026-07-28`. Its dependency
+set (`Cargo.lock`), its compiler and runtime images, and `rmcp` itself are
+pinned. The workload is the upstream one, except that `checkout` returns the
+result of the `INCR` command as `rate_limit_count`, as the C++ servers do. It
+listens on port 8095 inside its container, so publish it with `-p 8089:8095`:
+
+```bash
+docker build -t rmcp-3.8 benchmark/baselines/rust-server
+docker run -d --name modern-server --network benchmark_mcp-network -p 8089:8095 \
+  -e REDIS_URL=redis://redis:6379 -e API_SERVICE_URL=http://api-service:8100 rmcp-3.8
+```
+
+On older protocol revisions the server serves no sessions unless `MCP_SESSION_MODE=stateful` is set;
+`2026-07-28` requests never have one.
+
+Compare servers at the same `BENCHMARK_THINK_TIME`. The API service is shared by every server and
+saturates before the servers do when `BENCHMARK_THINK_TIME=0`.
+
 ## Concurrency and resource controls
 
 Each comparable server container is limited to 2 CPUs and 2 GiB of memory.
@@ -203,6 +332,32 @@ Redis is limited to 0.5 CPU and 512 MiB, the API service to 2 CPUs and 2 GiB,
 and k6 to 4 CPUs and 2 GiB. Every measured container is constrained to the same
 host CPU-affinity set inherited by the harness. The preflight rejects a Docker
 or effective cgroup CPU set that differs from that recorded set.
+
+These are the limits of the paced load model, `BENCHMARK_LOAD_MODEL=paced`, which
+is the default. Each virtual user sleeps 50 ms per iteration of 4 operations, so
+50 virtual users cannot exceed 4,000 operations per second whatever the target
+can do. `BENCHMARK_LOAD_MODEL=capacity` removes that ceiling: the think time is 0,
+k6 gets 8 CPUs and 4 GiB, the API service 8 CPUs, and Redis 1 CPU, while the target
+keeps 2 CPUs and 2 GiB. The model is fixed per run: `BENCHMARK_THINK_TIME` and the
+limits above are not read from the environment by `run.sh`. A capacity run is
+labeled `capacity-full` when it selects `full` with the production round and
+duration settings and `capacity-smoke` otherwise; it is never labeled `production`
+or `production-full`. A complete `capacity-full` run is a publishable candidate and
+`capacity-smoke` is harness validation only. The preflight requires a
+host CPU set at least as large as the sum of all limits: 9 CPUs for the paced
+model and 19 for the capacity model.
+
+A capacity run records a cell that crosses a k6 threshold (k6 exit code 99 in the
+warmup or the measurement) as failed and continues; a paced run still stops at the
+first failure. `run.sh` fixes this per run from the load model and records it as
+`parameters.cell_failures_allowed`. The failed cell's server is stopped, its
+`docker logs` are saved, and it is skipped in later rounds. Each failure is appended
+to `failed_cells.json` with `server`, `round`, `stage`, `reason`, `evidence_log` and
+`k6_exit`, and the manifest's `failed_cells` array carries the same entries (`[]`
+when there are none). `comparison.txt` lists a failed server with `FAILED` in the
+Ops/s column and `-` in the other numeric columns, followed by a "Failed cells"
+section. Any other failure, including any other k6 exit code, a collector, headroom
+or protocol check, startup, or capture, still stops the run.
 
 One-second collectors cover the target, Redis, API service, k6, and host for
 the measurement window. Collector audit files must show complete sampling,

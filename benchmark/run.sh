@@ -9,9 +9,12 @@ UPSTREAM_BENCHMARK_DIR="$SCRIPT_DIR/benchmark-mcp-servers-v2"
 UPSTREAM_BENCHMARK_REPO="https://github.com/thiagomendes/benchmark-mcp-servers-v2.git"
 UPSTREAM_BENCHMARK_COMMIT="8a9a5f8ef505f46b6079072ef4603304ca672e33"
 K6_SCRIPT="$SCRIPT_DIR/alternatives/benchmark.js"
+K6_MODERN_SCRIPT="$SCRIPT_DIR/alternatives/benchmark_modern.js"
 K6_RUNTIME_SCRIPT_DIR="$SCRIPT_DIR/alternatives"
 RUNTIME_COMPOSE_SHA256=""
 RUNTIME_K6_SHA256=""
+RUNTIME_K6_MODERN_SHA256=""
+MODERN_PROTOCOL_VERSION="2026-07-28"
 ALTERNATIVE_MANIFEST="$SCRIPT_DIR/alternatives/sources.tsv"
 ALTERNATIVE_SOURCE_DIR="$SCRIPT_DIR/alternative-sdks"
 MCP_PROTOCOL_VERSION="2024-11-05"
@@ -27,10 +30,46 @@ BENCHMARK_WARMUP_DURATION="${BENCHMARK_WARMUP_DURATION:-60s}"
 BENCHMARK_MEASURE_DURATION="${BENCHMARK_MEASURE_DURATION:-5m}"
 BENCHMARK_ORDER_SEED="${BENCHMARK_ORDER_SEED:-$(date +%s)}"
 # The load-generator contract is fixed so a run cannot be labeled publishable
-# while silently using limits that differ from the recorded expectations.
-readonly BENCHMARK_K6_CPUS=4
-readonly BENCHMARK_K6_MEMORY="2g"
-readonly BENCHMARK_K6_MEMORY_BYTES=2147483648
+# while silently using limits that differ from the recorded expectations. The
+# paced model is the production load. The capacity model removes the think time
+# and gives the load generator, the API service, and Redis the cores they need
+# to keep a target busy; the target keeps its 2 CPUs and 2 GiB.
+BENCHMARK_LOAD_MODEL="${BENCHMARK_LOAD_MODEL:-paced}"
+BENCHMARK_K6_LOAD_ENV=()
+case "$BENCHMARK_LOAD_MODEL" in
+    paced)
+        readonly BENCHMARK_K6_CPUS=4
+        readonly BENCHMARK_K6_MEMORY="2g"
+        readonly BENCHMARK_K6_MEMORY_BYTES=2147483648
+        readonly BENCHMARK_API_CPUS="2.0"
+        readonly BENCHMARK_REDIS_CPUS="0.5"
+        readonly BENCHMARK_THINK_TIME_SECONDS="0.05"
+        readonly CELL_FAILURES_ALLOWED=0
+        ;;
+    capacity)
+        readonly BENCHMARK_K6_CPUS=8
+        readonly BENCHMARK_K6_MEMORY="4g"
+        readonly BENCHMARK_K6_MEMORY_BYTES=4294967296
+        readonly BENCHMARK_API_CPUS="8.0"
+        readonly BENCHMARK_REDIS_CPUS="1.0"
+        readonly BENCHMARK_THINK_TIME_SECONDS="0"
+        # A capacity run records a cell that crosses a k6 threshold as failed
+        # and continues; a paced run stops at the first failure.
+        readonly CELL_FAILURES_ALLOWED=1
+        BENCHMARK_K6_LOAD_ENV=(-e "BENCHMARK_THINK_TIME=$BENCHMARK_THINK_TIME_SECONDS")
+        ;;
+    *)
+        printf '[ERROR] BENCHMARK_LOAD_MODEL must be "paced" or "capacity", got "%s"\n' \
+            "$BENCHMARK_LOAD_MODEL" >&2
+        exit 1
+        ;;
+esac
+# The compose file reads these limits; the same values go to the checks below.
+export BENCHMARK_API_CPUS BENCHMARK_REDIS_CPUS
+# The checks take CPU limits in their shortest form.
+API_CPUS_ARG="$(printf '%g' "$BENCHMARK_API_CPUS")"
+REDIS_CPUS_ARG="$(printf '%g' "$BENCHMARK_REDIS_CPUS")"
+readonly API_CPUS_ARG REDIS_CPUS_ARG
 readonly BENCHMARK_REQUEST_CONCURRENCY=50
 readonly BENCHMARK_LOCK_FILE="/tmp/mcp-cpp-sdk-benchmark.lock"
 RESULTS_DIR=""
@@ -45,6 +84,8 @@ HOST_CPUSET=""
 FAILURE_STAGE=""
 FAILURE_REASON=""
 FAILURE_EVIDENCE_LOG=""
+CELL_FAILED=0
+declare -A FAILED_SERVERS=()
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -78,6 +119,7 @@ declare -A SERVICE_NAME=(
     [hkr04-nodelay]="hkr04-nodelay-server"
     [cpp]="cpp-server"
     [ours-comparable]="ours-comparable-server"
+    [ours-coroutines]="ours-coroutines-server"
     [python]="python-server"
     [go]="go-server"
     [rust]="rust-server"
@@ -94,6 +136,7 @@ declare -A CONTAINER_NAME=(
     [hkr04-nodelay]="mcp-hkr04-nodelay-server"
     [cpp]="mcp-cpp-server"
     [ours-comparable]="mcp-ours-comparable-server"
+    [ours-coroutines]="mcp-ours-coroutines-server"
     [python]="mcp-python-server"
     [go]="mcp-go-server"
     [rust]="mcp-rust-server"
@@ -110,6 +153,7 @@ declare -A MCP_URL=(
     [hkr04-nodelay]="http://localhost:8094/mcp"
     [cpp]="http://localhost:8080/mcp"
     [ours-comparable]="http://localhost:8089/mcp"
+    [ours-coroutines]="http://localhost:8098/mcp"
     [python]="http://localhost:8081/mcp"
     [go]="http://localhost:8082/mcp"
     [rust]="http://localhost:8083/mcp"
@@ -126,6 +170,7 @@ declare -A HEALTH_URL=(
     [hkr04-nodelay]="http://localhost:8094/mcp"
     [cpp]="http://localhost:8080/health"
     [ours-comparable]="http://localhost:8089/mcp"
+    [ours-coroutines]="http://localhost:8098/mcp"
     [python]="http://localhost:8081/health"
     [go]="http://localhost:8082/health"
     [rust]="http://localhost:8083/health"
@@ -142,6 +187,7 @@ declare -A HEALTH_KIND=(
     [hkr04-nodelay]="mcp"
     [cpp]="get"
     [ours-comparable]="mcp"
+    [ours-coroutines]="mcp"
     [python]="get"
     [go]="get"
     [rust]="get"
@@ -158,6 +204,7 @@ declare -A EXPECTED_SERVER_TYPE=(
     [hkr04-nodelay]="cpp-sdk"
     [cpp]="cpp"
     [ours-comparable]="cpp-sdk"
+    [ours-coroutines]="cpp-sdk"
     [hkr04]="cpp-sdk"
     [fastmcpp]="cpp-sdk"
     [cxxmcp]="cpp-sdk"
@@ -168,14 +215,40 @@ declare -A EXPECTED_SERVER_TYPE=(
 )
 
 ALL_MCP_SERVICES=(
-    cpp-server ours-comparable-server python-server go-server rust-server
+    cpp-server ours-comparable-server ours-coroutines-server python-server go-server rust-server
     hkr04-server fastmcpp-server cxxmcp-server neumann-server
     hkr04-nodelay-server fastmcpp-nodelay-server cxxmcp-nodelay-server neumann-nodelay-server
 )
-CPP_SDK_SERVERS=(ours-comparable hkr04 fastmcpp cxxmcp neumann)
-NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay neumann-nodelay)
-BASELINE_SERVERS=(python go rust)
-FULL_SERVERS=("${CPP_SDK_SERVERS[@]}" "${NODELAY_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
+declare -A SESSION_MODE=(
+    [hkr04]=stateful [fastmcpp]=stateful [cxxmcp]=stateful [neumann]=stateful
+    [hkr04-nodelay]=stateful [fastmcpp-nodelay]=stateful [cxxmcp-nodelay]=stateful
+    [neumann-nodelay]=stateful
+)
+
+# Copies the table rows of an SDK to the key of one of its session modes. Both keys of an SDK
+# share one service; run.sh passes the mode to it as MCP_SESSION_MODE when it starts the service.
+register_session_mode() {
+    local sdk="$1" mode="$2" key="$1-$2"
+    SERVICE_NAME[$key]="${SERVICE_NAME[$sdk]}"
+    CONTAINER_NAME[$key]="${CONTAINER_NAME[$sdk]}"
+    MCP_URL[$key]="${MCP_URL[$sdk]}"
+    HEALTH_URL[$key]="${HEALTH_URL[$sdk]}"
+    HEALTH_KIND[$key]="${HEALTH_KIND[$sdk]}"
+    EXPECTED_SERVER_TYPE[$key]="${EXPECTED_SERVER_TYPE[$sdk]}"
+    SESSION_MODE[$key]="$mode"
+    if [[ -n "${REQUIRE_SUPPLEMENTAL[$sdk]:-}" ]]; then
+        REQUIRE_SUPPLEMENTAL[$key]="${REQUIRE_SUPPLEMENTAL[$sdk]}"
+    fi
+}
+
+# A server key names the SDK and the session mode it serves older protocol revisions in. Protocol
+# 2026-07-28 has no sessions, so the mode only matters for the revisions that do. An SDK that has no
+# switch for a mode has no key for it.
+CPP_SDK_SERVERS=(ours-comparable-stateful ours-comparable-stateless ours-comparable-modern hkr04 fastmcpp cxxmcp cxxmcp-modern neumann)
+NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay cxxmcp-nodelay-modern neumann-nodelay)
+VARIANT_SERVERS=(ours-coroutines-stateful ours-coroutines-stateless ours-coroutines-modern)
+BASELINE_SERVERS=(python-stateless python-modern go-stateless go-stateful go-modern rust-stateless rust-stateful rust-modern)
+FULL_SERVERS=("${CPP_SDK_SERVERS[@]}" "${VARIANT_SERVERS[@]}" "${NODELAY_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
 
 declare -A REQUIRE_SUPPLEMENTAL=(
     [neumann-nodelay]=1
@@ -183,11 +256,54 @@ declare -A REQUIRE_SUPPLEMENTAL=(
     [fastmcpp-nodelay]=1
     [hkr04-nodelay]=1
     [ours-comparable]=1
+    [ours-coroutines]=1
     [hkr04]=1
     [fastmcpp]=1
     [cxxmcp]=1
     [neumann]=1
 )
+
+for sdk in ours-comparable ours-coroutines; do
+    register_session_mode "$sdk" stateful
+    register_session_mode "$sdk" stateless
+done
+# Python has no stateful key: its sessions live in the memory of one uvicorn worker, and the
+# container runs four, so the session id of a later request reaches a worker that does not hold it.
+register_session_mode python stateless
+register_session_mode rust stateful
+register_session_mode rust stateless
+register_session_mode go stateful
+register_session_mode go stateless
+
+# Protocol 2026-07-28 has no sessions, so each SDK that serves it has one key for it. The key
+# starts the same container as its older-revision keys.
+declare -A REQUESTED_PROTOCOL=()
+register_modern() {
+    local sdk="$1" key="$1-modern"
+    SERVICE_NAME[$key]="${SERVICE_NAME[$sdk]}"
+    CONTAINER_NAME[$key]="${CONTAINER_NAME[$sdk]}"
+    MCP_URL[$key]="${MCP_URL[$sdk]}"
+    HEALTH_URL[$key]="${HEALTH_URL[$sdk]}"
+    HEALTH_KIND[$key]="${HEALTH_KIND[$sdk]}"
+    EXPECTED_SERVER_TYPE[$key]="${EXPECTED_SERVER_TYPE[$sdk]}"
+    SESSION_MODE[$key]="sessionless"
+    REQUESTED_PROTOCOL[$key]="$MODERN_PROTOCOL_VERSION"
+    if [[ -n "${REQUIRE_SUPPLEMENTAL[$sdk]:-}" ]]; then
+        REQUIRE_SUPPLEMENTAL[$key]="${REQUIRE_SUPPLEMENTAL[$sdk]}"
+    fi
+}
+for sdk in ours-comparable ours-coroutines python go rust cxxmcp cxxmcp-nodelay; do
+    register_modern "$sdk"
+done
+
+requested_protocol() { printf '%s' "${REQUESTED_PROTOCOL[$1]:-$MCP_PROTOCOL_VERSION}"; }
+k6_script_name() {
+    if [[ "$(requested_protocol "$1")" == "$MODERN_PROTOCOL_VERSION" ]]; then
+        printf 'benchmark_modern.js'
+    else
+        printf 'benchmark.js'
+    fi
+}
 
 declare -A ALTERNATIVE_REPO=()
 declare -A ALTERNATIVE_COMMIT=()
@@ -198,28 +314,40 @@ collector_ready_files=()
 usage() {
     cat <<'USAGE'
 Usage:
-  ./run.sh                  # five comparable C++ SDKs
-  ./run.sh cpp-sdks         # five comparable C++ SDKs
+  ./run.sh                  # the comparable C++ SDKs
+  ./run.sh cpp-sdks         # the comparable C++ SDKs
   ./run.sh baseline         # Python, Go, and Rust baselines
   ./run.sh all              # all corrected C++ and language baselines
-  ./run.sh full             # C++ SDKs, their TCP_NODELAY builds, and baselines
-  ./run.sh python go rust   # selected servers
+  ./run.sh full             # C++ SDKs, ours-coroutines, their TCP_NODELAY builds, and baselines
+  ./run.sh ours-comparable-stateful ours-coroutines-stateful  # thread-based and coroutine-based workload of this SDK
+  ./run.sh python-stateless go-stateful rust-stateless        # selected servers
   ./run.sh hkr04,cxxmcp     # selected servers (comma-separated)
 
 Production profile: 3 rounds, 50 VUs, 15s ramp + 60s warmup, then a
 separate constant-50-VU 5m measurement. `full` with the same settings is
 labeled production-full. Any override is labeled smoke and is never a
 publishable result.
+
+BENCHMARK_LOAD_MODEL=paced (the default) is the production load: every virtual
+user sleeps 50 ms per iteration, k6 gets 4 CPUs and 2 GiB, the API service
+2 CPUs, and Redis 0.5 CPU. BENCHMARK_LOAD_MODEL=capacity removes the sleep and
+gives k6 8 CPUs and 4 GiB, the API service 8 CPUs, and Redis 1 CPU; the target
+keeps 2 CPUs and 2 GiB. A capacity run is labeled capacity-full (the `full`
+selection with the settings above) or capacity-smoke, and is never labeled
+production or production-full. A complete capacity-full run is a publishable
+candidate; capacity-smoke is harness validation only.
 USAGE
 }
 
 verify_runtime_harness() {
     [[ -n "$RUNTIME_COMPOSE_SHA256" && -n "$RUNTIME_K6_SHA256" ]] || return 0
-    local compose_sha256 k6_sha256
+    local compose_sha256 k6_sha256 k6_modern_sha256
     compose_sha256="$(sha256sum "$RUNTIME_COMPOSE_FILE" | awk '{print $1}')"
     k6_sha256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" | awk '{print $1}')"
+    k6_modern_sha256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark_modern.js" | awk '{print $1}')"
     [[ "$compose_sha256" == "$RUNTIME_COMPOSE_SHA256" \
-        && "$k6_sha256" == "$RUNTIME_K6_SHA256" ]] || {
+        && "$k6_sha256" == "$RUNTIME_K6_SHA256" \
+        && "$k6_modern_sha256" == "$RUNTIME_K6_MODERN_SHA256" ]] || {
         error "Immutable runtime harness changed during the benchmark"
         return 1
     }
@@ -256,14 +384,20 @@ finalize_manifest() {
         status="complete"
     fi
     local temporary="$RESULTS_DIR/run_manifest.json.tmp"
+    local failed_cells_json='[]'
+    if [[ -f "$RESULTS_DIR/failed_cells.json" ]]; then
+        failed_cells_json="$(cat "$RESULTS_DIR/failed_cells.json")"
+    fi
     jq --arg status "$status" --arg completed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg failure_stage "$FAILURE_STAGE" \
         --arg failure_reason "$FAILURE_REASON" \
         --arg failure_log "$FAILURE_EVIDENCE_LOG" \
         --argjson exit_code "$exit_code" \
+        --argjson failed_cells "$failed_cells_json" \
         '.status = $status | .completed_at = $completed_at
+        | .failed_cells = $failed_cells
         | .publishable_candidate = ($status == "complete"
-            and (.profile == "production" or .profile == "production-full"))
+            and (.profile == "production" or .profile == "production-full" or .profile == "capacity-full"))
         | if $status == "failed" then
             .failure = {
               exit_code: $exit_code,
@@ -295,6 +429,29 @@ record_failure_from_log() {
         final_line="$(awk 'NF { line = $0 } END { print line }' "$log_file")"
     fi
     FAILURE_REASON="${final_line:-$fallback_reason}"
+}
+
+# Appends the failure that record_failure_from_log just captured to
+# failed_cells.json. Only a capacity run reaches this.
+record_cell_failure() {
+    local server="$1"
+    local run_idx="$2"
+    local stage="$3"
+    local k6_exit="$4"
+    local cells_file="$RESULTS_DIR/failed_cells.json"
+    local temporary="$RESULTS_DIR/failed_cells.json.tmp"
+    local current='[]'
+
+    if [[ -f "$cells_file" ]]; then
+        current="$(cat "$cells_file")"
+    fi
+    jq --arg server "$server" --argjson round "$run_idx" --arg stage "$stage" \
+        --arg reason "$FAILURE_REASON" --arg evidence_log "$FAILURE_EVIDENCE_LOG" \
+        --argjson k6_exit "$k6_exit" \
+        '. + [{server: $server, round: $round, stage: $stage, reason: $reason,
+               evidence_log: $evidence_log, k6_exit: $k6_exit}]' \
+        <<< "$current" > "$temporary"
+    mv "$temporary" "$cells_file"
 }
 
 record_collector_failure() {
@@ -498,7 +655,8 @@ wait_for_mcp() {
     info "Waiting for $name MCP initialize at $url"
     while true; do
         if python3 "$SCRIPT_DIR/verify_server.py" "$url" \
-            --name "$name-readiness" --initialize-only >/dev/null 2>&1; then
+            --name "$name-readiness" --initialize-only \
+            --protocol-version "$(requested_protocol "$name")" >/dev/null 2>&1; then
             ok "$name is accepting MCP requests"
             return 0
         fi
@@ -616,21 +774,30 @@ run_k6_warmup() {
         -v "$server_results:/results" \
         -e SERVER_URL="$server_url" \
         -e SERVER_NAME="$server" \
-        -e MCP_PROTOCOL_VERSION="$MCP_PROTOCOL_VERSION" \
+        -e MCP_PROTOCOL_VERSION="$(requested_protocol "$server")" \
         -e EXPECTED_PROTOCOL_VERSION="$negotiated_protocol_version" \
         -e BENCHMARK_CONTRACT="$ELIGIBILITY_CONTRACT" \
         -e BENCHMARK_MODE=warmup \
         -e BENCHMARK_VUS="$BENCHMARK_VUS" \
+        ${BENCHMARK_K6_LOAD_ENV[@]+"${BENCHMARK_K6_LOAD_ENV[@]}"} \
         -e BENCHMARK_RAMP_DURATION="$BENCHMARK_RAMP_DURATION" \
         -e BENCHMARK_WARMUP_DURATION="$BENCHMARK_WARMUP_DURATION" \
         -e OUTPUT_PATH="/results/warmup_summary_run${run_idx}.json" \
-        "$K6_IMAGE" run /scripts/benchmark.js \
+        "$K6_IMAGE" run "/scripts/$(k6_script_name "$server")" \
         2>&1 | tee "$log_file"
     pipeline_status=("${PIPESTATUS[@]}")
     set -e
     CURRENT_K6_CONTAINER=""
     k6_exit="${pipeline_status[0]}"
     tee_exit="${pipeline_status[1]}"
+    if [[ "$k6_exit" -eq 99 && "$tee_exit" -eq 0 && "$CELL_FAILURES_ALLOWED" -eq 1 ]]; then
+        record_failure_from_log "warmup:$server:run$run_idx" "$log_file" \
+            "k6 warmup failed correctness or load thresholds"
+        record_cell_failure "$server" "$run_idx" warmup "$k6_exit"
+        CELL_FAILED=1
+        clear_failure_context
+        return 0
+    fi
     if [[ "$k6_exit" -ne 0 || "$tee_exit" -ne 0 ]]; then
         record_failure_from_log "warmup:$server:run$run_idx" "$log_file" \
             "k6 warmup failed correctness or load thresholds"
@@ -669,14 +836,15 @@ run_k6_measurement() {
         -v "$server_results:/results" \
         -e SERVER_URL="$server_url" \
         -e SERVER_NAME="$server" \
-        -e MCP_PROTOCOL_VERSION="$MCP_PROTOCOL_VERSION" \
+        -e MCP_PROTOCOL_VERSION="$(requested_protocol "$server")" \
         -e EXPECTED_PROTOCOL_VERSION="$negotiated_protocol_version" \
         -e BENCHMARK_CONTRACT="$ELIGIBILITY_CONTRACT" \
         -e BENCHMARK_MODE=measurement \
         -e BENCHMARK_VUS="$BENCHMARK_VUS" \
+        ${BENCHMARK_K6_LOAD_ENV[@]+"${BENCHMARK_K6_LOAD_ENV[@]}"} \
         -e BENCHMARK_MEASURE_DURATION="$BENCHMARK_MEASURE_DURATION" \
         -e OUTPUT_PATH="/results/k6_summary_run${run_idx}.json" \
-        "$K6_IMAGE" run --paused --address 127.0.0.1:6565 /scripts/benchmark.js \
+        "$K6_IMAGE" run --paused --address 127.0.0.1:6565 "/scripts/$(k6_script_name "$server")" \
         2>&1 | tee "$log_file" &
     k6_pid=$!
 
@@ -720,6 +888,14 @@ run_k6_measurement() {
     docker rm "$container" >/dev/null
     CURRENT_K6_CONTAINER=""
 
+    if [[ "$k6_exit" -eq 99 && "$CELL_FAILURES_ALLOWED" -eq 1 ]]; then
+        record_failure_from_log "measurement:$server:run$run_idx" "$log_file" \
+            "k6 measurement failed correctness or load thresholds"
+        record_cell_failure "$server" "$run_idx" measurement "$k6_exit"
+        CELL_FAILED=1
+        clear_failure_context
+        return 0
+    fi
     if [[ "$k6_exit" -ne 0 ]]; then
         record_failure_from_log "measurement:$server:run$run_idx" "$log_file" \
             "k6 measurement failed correctness or load thresholds"
@@ -738,9 +914,9 @@ run_k6_measurement() {
         "$server_results/resource_headroom_run${run_idx}.json" \
         --expected-duration "$BENCHMARK_MEASURE_DURATION" \
         --observed-resource "server:$server_results/stats_run${run_idx}.json:2:2147483648" \
-        --resource "redis:$server_results/redis_stats_run${run_idx}.json:0.5:536870912" \
-        --resource "api_service:$server_results/api_stats_run${run_idx}.json:2:2147483648" \
-        --resource "load_generator:$server_results/k6_stats_run${run_idx}.json:4:2147483648" \
+        --resource "redis:$server_results/redis_stats_run${run_idx}.json:${REDIS_CPUS_ARG}:536870912" \
+        --resource "api_service:$server_results/api_stats_run${run_idx}.json:${API_CPUS_ARG}:2147483648" \
+        --resource "load_generator:$server_results/k6_stats_run${run_idx}.json:${BENCHMARK_K6_CPUS}:${BENCHMARK_K6_MEMORY_BYTES}" \
         --resource "host:$server_results/host_stats_run${run_idx}.json:$HOST_CPU_LIMIT:$HOST_MEMORY_BYTES" \
         2>&1 | tee "$resource_log"
     resource_pipeline_status=("${PIPESTATUS[@]}")
@@ -792,6 +968,17 @@ write_run_manifest() {
           else error("compose images did not contain the exact selected container set with immutable IDs")
           end
     ' > "$RESULTS_DIR/compose_images.json"
+    local session_modes_json='{}' requested_protocols_json='{}'
+    for target in "${selected_servers[@]}"; do
+        requested_protocols_json="$(
+            jq -c --arg target "$target" --arg version "$(requested_protocol "$target")" \
+                '. + {($target): $version}' <<< "$requested_protocols_json"
+        )"
+        session_modes_json="$(
+            jq -c --arg target "$target" --arg mode "${SESSION_MODE[$target]:-}" \
+                '. + {($target): $mode}' <<< "$session_modes_json"
+        )"
+    done
     jq -n \
         --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg profile "$RUN_PROFILE" \
@@ -806,8 +993,16 @@ write_run_manifest() {
         --arg supplemental_contract "$SUPPLEMENTAL_CONTRACT" \
         --arg host_network_policy "$HOST_NETWORK_POLICY" \
         --argjson supplemental_targets "$supplemental_targets_json" \
+        --argjson session_modes "$session_modes_json" \
+        --argjson requested_protocols "$requested_protocols_json" \
         --argjson k6_cpus "$BENCHMARK_K6_CPUS" \
         --argjson k6_memory_bytes "$BENCHMARK_K6_MEMORY_BYTES" \
+        --arg load_model "$BENCHMARK_LOAD_MODEL" \
+        --argjson think_time_seconds "$BENCHMARK_THINK_TIME_SECONDS" \
+        --argjson api_service_cpus "$API_CPUS_ARG" \
+        --argjson redis_cpus "$REDIS_CPUS_ARG" \
+        --argjson cell_failures_allowed \
+            "$([[ "$CELL_FAILURES_ALLOWED" -eq 1 ]] && echo true || echo false)" \
         --slurpfile schedule "$RESULTS_DIR/run_order.json" \
         --slurpfile images "$RESULTS_DIR/compose_images.json" \
         '{schema_version: 2, status: "running", started_at: $started_at,
@@ -815,7 +1010,10 @@ write_run_manifest() {
           parameters: {runs: $runs, vus: $vus,
             request_concurrency: $request_concurrency, ramp_duration: $ramp,
             warmup_duration: $warmup, measurement_duration: $measurement,
-            k6_cpus: $k6_cpus, k6_memory_bytes: $k6_memory_bytes},
+            k6_cpus: $k6_cpus, k6_memory_bytes: $k6_memory_bytes,
+            load_model: $load_model, think_time_seconds: $think_time_seconds,
+            api_service_cpus: $api_service_cpus, redis_cpus: $redis_cpus,
+            cell_failures_allowed: $cell_failures_allowed},
           contracts: {
             eligibility: $eligibility_contract,
             supplemental: {
@@ -823,6 +1021,8 @@ write_run_manifest() {
               required_targets: $supplemental_targets
             }
           },
+          session_modes: $session_modes,
+          requested_protocols: $requested_protocols,
           resource_collection: {host_network_policy: $host_network_policy},
           k6_image: $k6_image, schedule: $schedule[0], images: $images[0]}' \
         > "$RESULTS_DIR/run_manifest.json"
@@ -833,20 +1033,24 @@ generate_comparison() {
     {
         printf "Benchmark comparison (%s profile)\n" "$RUN_PROFILE"
         printf "Only separate constant-VU measurement invocations are reported.\n"
-        printf "Requested MCP revision: %s; each row records the server-selected revision.\n" \
-            "$MCP_PROTOCOL_VERSION"
+        printf "Each row records the MCP revision the server selected; run_manifest.json records the one requested.\n"
         printf "Eligibility contract: %s (identical measured predicates for every row).\n" \
             "$ELIGIBILITY_CONTRACT"
         printf "Supplemental adapter contract: %s (out-of-band evidence).\n" \
             "$SUPPLEMENTAL_CONTRACT"
         printf "Results: %s\n\n" "${RESULTS_DIR#"$(dirname "$SCRIPT_DIR")/"}"
-        printf "%-18s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
-            "Server" "Protocol" "Operations" "Ops/s" "CV%" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
-        printf "%-18s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
-            "------------------" "------------" "------------" "----------" "--------" \
+        printf "%-28s %-12s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+            "Server" "Mode" "Protocol" "Operations" "Ops/s" "CV%" "p50(ms)" "p95(ms)" "p99(ms)" "ErrorRate"
+        printf "%-28s %-12s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+            "----------------------------" "------------" "------------" "------------" "----------" "--------" \
             "------------" "------------" "------------" "------------"
         local server summary multi_stats protocol operations rps p50 p95 p99 err_rate cv_pct
         for server in "${selected_servers[@]}"; do
+            if [[ -n "${FAILED_SERVERS[$server]:-}" ]]; then
+                printf "%-28s %-12s %-12s %-12s %-10s %-8s %-12s %-12s %-12s %-12s\n" \
+                    "$server" "${SESSION_MODE[$server]:-}" "-" "-" "FAILED" "-" "-" "-" "-" "-"
+                continue
+            fi
             summary="$RESULTS_DIR/$server/k6_summary.json"
             multi_stats="$RESULTS_DIR/$server/k6_multi_run_stats.json"
             operations="$(jq -r '.rates.operations.count' "$summary")"
@@ -857,10 +1061,32 @@ generate_comparison() {
             p99="$(jq -r '.latency.combined_tool_call.p99_ms' "$summary")"
             err_rate="$(jq -r '.errors.mcp_rate' "$summary")"
             cv_pct="$(jq -r '.sample_cv_pct' "$multi_stats")"
-            printf "%-18s %-12s %-12s %-10.2f %-8.2f %-12.2f %-12.2f %-12.2f %-12.4f\n" \
-                "$server" "$protocol" "$operations" "$rps" "$cv_pct" "$p50" "$p95" "$p99" "$err_rate"
+            printf "%-28s %-12s %-12s %-12s %-10.2f %-8.2f %-12.2f %-12.2f %-12.2f %-12.4f\n" \
+                "$server" "${SESSION_MODE[$server]:-}" "$protocol" "$operations" "$rps" "$cv_pct" \
+                "$p50" "$p95" "$p99" "$err_rate"
         done
+        if [[ -f "$RESULTS_DIR/failed_cells.json" ]]; then
+            printf "\nFailed cells (server, round, stage, reason, evidence log):\n"
+            jq -r '.[] | "  \(.server) round \(.round) \(.stage): \(.reason) [\(.evidence_log)]"' \
+                "$RESULTS_DIR/failed_cells.json"
+        fi
     } | tee "$comparison_file"
+}
+
+# The main loop skips the rest of a cell that run_k6_warmup or
+# run_k6_measurement recorded as failed, then moves on to the next cell.
+abandon_failed_cell() {
+    local server="$1"
+    local run_idx="$2"
+    local stage="$3"
+
+    docker logs "${CONTAINER_NAME[$server]}" > "$RESULTS_DIR/$server/server_run${run_idx}.log" 2>&1
+    compose stop "${SERVICE_NAME[$server]}" >/dev/null
+    CURRENT_SERVER=""
+    CURRENT_SERVER_RESULTS=""
+    error "[$server] round $run_idx $stage failed; recorded in failed_cells.json, the run continues"
+    FAILED_SERVERS[$server]=1
+    CELL_FAILED=0
 }
 
 selected_servers=()
@@ -885,8 +1111,12 @@ load_alternative_manifest
 declare -A seen_servers=()
 for server in "${selected_servers[@]}"; do
     case "$server" in
-        cpp|ours-comparable|python|go|rust|hkr04|fastmcpp|cxxmcp|neumann) ;;
-        hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|neumann-nodelay) ;;
+        cpp|hkr04|fastmcpp|cxxmcp|cxxmcp-modern|neumann) ;;
+        hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|cxxmcp-nodelay-modern|neumann-nodelay) ;;
+        ours-comparable-stateful|ours-comparable-stateless|ours-comparable-modern) ;;
+        ours-coroutines-stateful|ours-coroutines-stateless|ours-coroutines-modern) ;;
+        python-stateless|python-modern|rust-stateful|rust-stateless|rust-modern) ;;
+        go-stateful|go-stateless|go-modern) ;;
         gopher-mcp)
             error "gopher-mcp exposes legacy HTTP+SSE rather than the shared /mcp Streamable HTTP contract"
             exit 2
@@ -929,7 +1159,8 @@ RUN_PROFILE="smoke"
 baseline_selection=true
 for server in "${selected_servers[@]}"; do
     case "$server" in
-        python|go|rust) ;;
+        python-stateless|python-modern|go-stateful|go-stateless|go-modern) ;;
+        rust-stateful|rust-stateless|rust-modern) ;;
         *) baseline_selection=false ;;
     esac
 done
@@ -944,6 +1175,14 @@ if [[ "$BENCHMARK_RUNS" -eq 3 \
         RUN_PROFILE="production-full"
     elif [[ "$baseline_selection" == true ]]; then
         RUN_PROFILE="baseline-diagnostic"
+    fi
+fi
+if [[ "$BENCHMARK_LOAD_MODEL" == "capacity" ]]; then
+    # A capacity run is never a production run, whatever it selects.
+    if [[ "$RUN_PROFILE" == "production-full" ]]; then
+        RUN_PROFILE="capacity-full"
+    else
+        RUN_PROFILE="capacity-smoke"
     fi
 fi
 if [[ "$RUN_PROFILE" == production* \
@@ -976,12 +1215,16 @@ HOST_MEMORY_BYTES="$(awk '/^MemTotal:/ {printf "%.0f", $2 * 1024; exit}' /proc/m
 [[ "$HOST_MEMORY_BYTES" =~ ^[1-9][0-9]*$ ]] || { error "Could not determine host memory"; exit 1; }
 [[ -n "$HOST_CPUSET" ]] || { error "Could not determine host CPU set"; exit 1; }
 export BENCHMARK_CPUSET="$HOST_CPUSET"
-if [[ "$RUN_PROFILE" != "smoke" && "$HOST_CPU_LIMIT" -lt 9 ]]; then
-    error "Full-duration runs require at least 9 host CPUs for 8.5 CPUs of configured limits"
+configured_cpus="$(awk -v k6="$BENCHMARK_K6_CPUS" -v api="$BENCHMARK_API_CPUS" \
+    -v redis="$BENCHMARK_REDIS_CPUS" 'BEGIN {printf "%g", k6 + api + redis + 2}')"
+required_host_cpus="$(awk -v n="$configured_cpus" 'BEGIN {c = int(n); if (c < n) c++; print c}')"
+if [[ "$RUN_PROFILE" != "smoke" && "$HOST_CPU_LIMIT" -lt "$required_host_cpus" ]]; then
+    error "Full-duration runs require at least $required_host_cpus host CPUs for $configured_cpus CPUs of configured limits"
     exit 1
 fi
 compose version >/dev/null
 [[ -f "$K6_SCRIPT" ]] || { error "Missing local k6 profile: $K6_SCRIPT"; exit 1; }
+[[ -f "$K6_MODERN_SCRIPT" ]] || { error "Missing local k6 profile: $K6_MODERN_SCRIPT"; exit 1; }
 for helper in benchmark_order.py capture_container.py capture_environment.py \
     collect_stats.py select_median_run.py summarize_collector_failures.py \
     validate_resource_headroom.py verify_server.py; do
@@ -991,20 +1234,24 @@ done
 mkdir -p "$RESULTS_DIR/harness"
 cp "$COMPOSE_FILE" "$RESULTS_DIR/harness/docker-compose.yml"
 cp "$K6_SCRIPT" "$RESULTS_DIR/harness/benchmark.js"
+cp "$K6_MODERN_SCRIPT" "$RESULTS_DIR/harness/benchmark_modern.js"
 (
     cd "$RESULTS_DIR/harness"
-    sha256sum benchmark.js docker-compose.yml > SHA256SUMS
+    sha256sum benchmark.js benchmark_modern.js docker-compose.yml > SHA256SUMS
 )
 RUNTIME_COMPOSE_FILE="$RESULTS_DIR/harness/docker-compose.yml"
 K6_RUNTIME_SCRIPT_DIR="$RESULTS_DIR/harness"
 RUNTIME_COMPOSE_SHA256="$(sha256sum "$RUNTIME_COMPOSE_FILE" | awk '{print $1}')"
 RUNTIME_K6_SHA256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" | awk '{print $1}')"
+RUNTIME_K6_MODERN_SHA256="$(sha256sum "$K6_RUNTIME_SCRIPT_DIR/benchmark_modern.js" | awk '{print $1}')"
 chmod 0444 "$RUNTIME_COMPOSE_FILE" "$K6_RUNTIME_SCRIPT_DIR/benchmark.js" \
+    "$K6_RUNTIME_SCRIPT_DIR/benchmark_modern.js" \
     "$K6_RUNTIME_SCRIPT_DIR/SHA256SUMS"
 
 ensure_upstream_sources
 for server in "${selected_servers[@]}"; do
-    source_id="${server%-nodelay}"
+    source_id="${server%-modern}"
+    source_id="${source_id%-nodelay}"
     if [[ -n "${ALTERNATIVE_REPO[$source_id]:-}" ]]; then
         [[ "${ALTERNATIVE_STATUS[$source_id]}" == "supported" ]] || {
             error "$server is not runnable: ${ALTERNATIVE_STATUS[$source_id]}"
@@ -1046,7 +1293,8 @@ python3 "$SCRIPT_DIR/capture_environment.py" "${environment_args[@]}"
 
 build_services=(api-service redis-seeder)
 for server in "${selected_servers[@]}"; do
-    build_services+=("${SERVICE_NAME[$server]}")
+    [[ " ${build_services[*]} " == *" ${SERVICE_NAME[$server]} "* ]] \
+        || build_services+=("${SERVICE_NAME[$server]}")
 done
 info "Building every selected server once before the schedule"
 compose build "${build_services[@]}" 2>&1 | tee "$RESULTS_DIR/build.log"
@@ -1058,8 +1306,10 @@ python3 "$SCRIPT_DIR/capture_environment.py" \
 image_services=(redis api-service)
 expected_image_containers=(mcp-redis mcp-api-service mcp-redis-seeder)
 for server in "${selected_servers[@]}"; do
-    image_services+=("${SERVICE_NAME[$server]}")
-    expected_image_containers+=("${CONTAINER_NAME[$server]}")
+    [[ " ${image_services[*]} " == *" ${SERVICE_NAME[$server]} "* ]] || {
+        image_services+=("${SERVICE_NAME[$server]}")
+        expected_image_containers+=("${CONTAINER_NAME[$server]}")
+    }
 done
 compose --profile seeder create "${image_services[@]}" redis-seeder >/dev/null
 
@@ -1081,12 +1331,12 @@ done
 mkdir -p "$RESULTS_DIR/shared/redis" "$RESULTS_DIR/shared/api_service"
 python3 "$SCRIPT_DIR/capture_container.py" \
     --container mcp-redis --run 1 --output-dir "$RESULTS_DIR/shared/redis" \
-    --expected-cpus 0.5 --expected-memory-bytes 536870912 \
+    --expected-cpus "$REDIS_CPUS_ARG" --expected-memory-bytes 536870912 \
     --expected-cpuset "$HOST_CPUSET"
 python3 "$SCRIPT_DIR/capture_container.py" \
     --container mcp-api-service --run 1 \
     --output-dir "$RESULTS_DIR/shared/api_service" \
-    --expected-cpus 2 --expected-memory-bytes 2147483648 \
+    --expected-cpus "$API_CPUS_ARG" --expected-memory-bytes 2147483648 \
     --expected-cpuset "$HOST_CPUSET"
 
 sequence_index=0
@@ -1098,6 +1348,10 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
     )
     for server in "${round_servers[@]}"; do
         sequence_index=$((sequence_index + 1))
+        if [[ -n "${FAILED_SERVERS[$server]:-}" ]]; then
+            info "[$sequence_index] $server round $run_idx: skipped, the cell failed in an earlier round"
+            continue
+        fi
         service="${SERVICE_NAME[$server]}"
         container="${CONTAINER_NAME[$server]}"
         server_url="${MCP_URL[$server]}"
@@ -1108,6 +1362,7 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
 
         info "[$sequence_index] $server round $run_idx: recreate target"
         compose stop "${ALL_MCP_SERVICES[@]}" >/dev/null
+        export MCP_SESSION_MODE="${SESSION_MODE[$server]}"
         compose up -d --force-recreate --no-deps "$service"
         if [[ "${HEALTH_KIND[$server]}" == "mcp" ]]; then
             wait_for_mcp "$server" "${HEALTH_URL[$server]}" 90
@@ -1123,6 +1378,7 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
         reset_redis_dataset
         info "[$server] correctness and negotiation gate"
         verifier_contract_args=(
+            --protocol-version "$(requested_protocol "$server")"
             --eligibility-contract "$ELIGIBILITY_CONTRACT"
             --redis-url "redis://127.0.0.1:6379/0"
         )
@@ -1145,6 +1401,10 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
         info "[$server] separate warmup (round $run_idx)"
         run_k6_warmup "$server" "$server_url" "$server_results" "$run_idx" \
             "$negotiated_protocol_version"
+        if [[ "$CELL_FAILED" -eq 1 ]]; then
+            abandon_failed_cell "$server" "$run_idx" warmup
+            continue
+        fi
 
         # Warmup mutates checkout history and rate-limit state. Keep the process
         # alive for warm runtime caches, but restore the canonical dataset.
@@ -1153,6 +1413,10 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
         info "[$server] measured constant-VU run $run_idx/$BENCHMARK_RUNS"
         run_k6_measurement "$server" "$server_url" "$server_results" "$run_idx" \
             "$negotiated_protocol_version"
+        if [[ "$CELL_FAILED" -eq 1 ]]; then
+            abandon_failed_cell "$server" "$run_idx" measurement
+            continue
+        fi
 
         # Re-seed before the postflight so the universal workload contract and
         # supplemental diagnostics are evaluated from the same canonical state.
@@ -1176,6 +1440,7 @@ done
 python3 "$SCRIPT_DIR/capture_environment.py" \
     --verify-source "$RESULTS_DIR/environment.json" --project-dir "$PROJECT_DIR"
 for server in "${selected_servers[@]}"; do
+    [[ -z "${FAILED_SERVERS[$server]:-}" ]] || continue
     python3 "$SCRIPT_DIR/select_median_run.py" "$RESULTS_DIR/$server" "$BENCHMARK_RUNS"
 done
 

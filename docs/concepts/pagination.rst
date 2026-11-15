@@ -22,7 +22,7 @@ The following example demonstrates setting a page size of 3:
 
 .. literalinclude:: ../../examples/features/pagination.cpp
    :language: cpp
-   :lines: 45-47
+   :lines: 47-49
 
 Cursor-based Pagination
 -----------------------
@@ -43,7 +43,7 @@ The following example shows how a client can paginate through a list of tools:
 
 .. literalinclude:: ../../examples/features/pagination.cpp
    :language: cpp
-   :lines: 108-147
+   :lines: 121-167
 
 Key components of the client-side loop:
 
