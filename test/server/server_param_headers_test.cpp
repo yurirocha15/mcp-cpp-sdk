@@ -15,6 +15,8 @@
 #include <utility>
 #include <vector>
 
+namespace server_param_headers_test {
+
 namespace {
 
 using nlohmann::json;
@@ -396,3 +398,5 @@ TEST_F(ServerParamHeadersDispatch, LegacyRequestsAreNeverChecked) {
 }
 
 }  // namespace
+
+}  // namespace server_param_headers_test

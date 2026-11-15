@@ -42,6 +42,8 @@
 #include <string_view>
 #include <vector>
 
+namespace gcc11_sso_crash_test {
+
 namespace {
 
 // ---------------------------------------------------------------------------
@@ -449,3 +451,5 @@ TEST_F(GCC11SSOCrashTest, PatternD_SendNotification_SSO_Method) {
     io_ctx_.run();
     EXPECT_TRUE(done);
 }
+
+}  // namespace gcc11_sso_crash_test

@@ -27,6 +27,8 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+namespace auth_token_endpoint_auth_test {
+
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -316,3 +318,5 @@ TEST(AuthTokenEndpointAuthNegativeLogTest,
     // The raw Basic-auth header value must not appear either, since decoding it recovers the secret.
     EXPECT_EQ(message.find(expected_basic_header(client_id, client_secret)), std::string::npos);
 }
+
+}  // namespace auth_token_endpoint_auth_test

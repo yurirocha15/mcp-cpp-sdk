@@ -39,6 +39,8 @@
 #include <utility>
 #include <vector>
 
+namespace e2e_matrix_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -747,3 +749,5 @@ TEST(E2eParamHeaders, IntegralFloatArgumentCarriesTheIntegerHeader) {
 }
 
 }  // namespace
+
+}  // namespace e2e_matrix_test

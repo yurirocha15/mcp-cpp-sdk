@@ -25,6 +25,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_tasks_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -224,3 +226,5 @@ TEST_F(HttpTasksTest, TheHttpClientFollowsATaskThroughTheServer) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_tasks_test

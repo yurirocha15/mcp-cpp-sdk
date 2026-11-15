@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+namespace server_tool_test {
+
 class ServerToolTest : public ::testing::Test {
    protected:
     boost::asio::io_context io_ctx_;
@@ -1255,3 +1257,5 @@ TEST_F(ToolsStructured, OutputSchemaArrayAndScalarValidated) {
         }
     }
 }
+
+}  // namespace server_tool_test

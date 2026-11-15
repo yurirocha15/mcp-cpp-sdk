@@ -20,6 +20,8 @@
 #include <string_view>
 #include <vector>
 
+namespace client_notifications_test {
+
 namespace {
 
 // Returns just the result object (not a full JSON-RPC response) —
@@ -513,3 +515,5 @@ TEST_F(ClientNotificationsTest, ThrowingNotificationCallbackDoesNotStopReadLoop)
     EXPECT_NE(outcome.reported.front().message.find("callback blew up"), std::string::npos)
         << "actual: " << outcome.reported.front().message;
 }
+
+}  // namespace client_notifications_test

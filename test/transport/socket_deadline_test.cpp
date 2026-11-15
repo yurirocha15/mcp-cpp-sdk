@@ -26,6 +26,8 @@
 #include <string>
 #include <thread>
 
+namespace socket_deadline_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -134,3 +136,5 @@ TEST(SocketDeadlineTest, AnExchangeThatCompletesInTimeKeepsItsSocket) {
     EXPECT_FALSE(outcome.expired);
     EXPECT_TRUE(outcome.socket_open);
 }
+
+}  // namespace socket_deadline_test

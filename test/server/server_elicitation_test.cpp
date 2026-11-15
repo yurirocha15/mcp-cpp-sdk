@@ -14,6 +14,8 @@
 #include <variant>
 #include <vector>
 
+namespace server_elicitation_test {
+
 namespace {
 
 struct DummyInput {
@@ -571,3 +573,5 @@ TEST_F(ElicitationModern, RequestNeverEmitsElicitationIdOrCompletion) {
     EXPECT_EQ(written[0]["result"]["resultType"], "input_required") << written[0];
     EXPECT_EQ(written[0]["result"]["inputRequests"].begin().value()["params"]["mode"], "url");
 }
+
+}  // namespace server_elicitation_test

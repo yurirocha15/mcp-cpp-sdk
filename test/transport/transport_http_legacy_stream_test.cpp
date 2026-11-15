@@ -33,6 +33,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_legacy_stream_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -665,3 +667,5 @@ TEST_F(LegacyStreamTest, HttpServerTransportRefusesAGetThatDoesNotAcceptEventStr
 }
 
 }  // namespace
+
+}  // namespace transport_http_legacy_stream_test

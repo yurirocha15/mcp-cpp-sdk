@@ -20,6 +20,8 @@
 #include <optional>
 #include <string>
 
+namespace auth_enterprise_authorization_test {
+
 namespace asio = boost::asio;
 namespace http = boost::beast::http;
 using json = nlohmann::json;
@@ -452,3 +454,5 @@ TEST(EnterpriseAuthorizationCapabilityTest, BothSidesDeclareTheExtension) {
 }
 
 }  // namespace
+
+}  // namespace auth_enterprise_authorization_test

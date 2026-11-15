@@ -32,6 +32,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_client_modern_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -2101,3 +2103,5 @@ TEST(HttpClientLegacyStream, StreamWithAnEventIsOpenedAgainNoSoonerThanTheFloor)
             << "between GET " << index << " and the one before";
     }
 }
+
+}  // namespace transport_http_client_modern_test

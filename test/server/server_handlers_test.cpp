@@ -21,6 +21,8 @@
 #include <utility>
 #include <vector>
 
+namespace server_handlers_test {
+
 namespace protocol = mcp::constants::protocol;
 
 struct AddParams {
@@ -2037,3 +2039,5 @@ TEST_F(ServerHandlersTest, MessageNestedBeyondTheDepthLimitIsAParseError) {
     ASSERT_TRUE(refused.is_object()) << "the ping over the limit got no parse error";
     EXPECT_EQ(refused.at("error").at("code"), mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
+
+}  // namespace server_handlers_test

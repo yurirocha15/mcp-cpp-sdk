@@ -24,6 +24,8 @@
 #include <string_view>
 #include <vector>
 
+namespace protocol_test {
+
 using json = nlohmann::json;
 
 namespace {
@@ -2529,3 +2531,5 @@ TEST(ProtocolError, ACodeThatIsNoIntOfThisSizeDecodesToInternalError) {
     EXPECT_EQ(decode(7).code, 7);
     EXPECT_THROW((void)decode("x"), nlohmann::json::exception);
 }
+
+}  // namespace protocol_test

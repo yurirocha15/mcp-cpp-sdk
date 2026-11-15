@@ -22,6 +22,8 @@
 #include <thread>
 #include <vector>
 
+namespace json_parse_test {
+
 using mcp::detail::parse_json_fast;
 
 namespace {
@@ -579,3 +581,5 @@ TEST(JsonParseTest, ReadsGeneratedNumbersAsNlohmannDoes) {
         expect_peer_parse_alike("[" + text + "]");
     }
 }
+
+}  // namespace json_parse_test

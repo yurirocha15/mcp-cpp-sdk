@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_version_header_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -168,3 +170,5 @@ TEST(VersionHeader, HttpServerTransportAcceptsAnyLegacyVersionOnASession) {
     EXPECT_EQ(answers.unknown_version, 400U);
     EXPECT_EQ(answers.delete_with_other_legacy_version, 200U);
 }
+
+}  // namespace transport_http_version_header_test

@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+namespace http_response_write_test {
+
 namespace http = boost::beast::http;
 using mcp::StringResponse;
 
@@ -261,3 +263,5 @@ TEST(HttpResponseWriteTest, WriteToAResetPeerFailsAsBeastsDoes) {
     EXPECT_TRUE(helper_error);
     EXPECT_EQ(helper_error, beast_error) << helper_error.message() << " / " << beast_error.message();
 }
+
+}  // namespace http_response_write_test

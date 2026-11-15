@@ -26,6 +26,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_mrtr_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -318,3 +320,5 @@ TEST_F(HttpMrtrTest, CloseGivesUpWaitingHandlers) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_mrtr_test

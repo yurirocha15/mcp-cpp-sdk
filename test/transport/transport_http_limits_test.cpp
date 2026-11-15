@@ -33,6 +33,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_limits_test {
+
 namespace event_store = mcp::constants::event_store;
 
 namespace {
@@ -1693,3 +1695,5 @@ TEST_F(ReverseBindingTest, ActiveSessionKeepsNextClientOut) {
     });
     EXPECT_EQ(second.status, 400u);
 }
+
+}  // namespace transport_http_limits_test

@@ -24,6 +24,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_scope_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -463,3 +465,5 @@ TEST(HttpInsufficientScope, ScopeRequirementsWithoutAValidatorAreRefusedWhenList
         manager.close();
     }
 }
+
+}  // namespace transport_http_scope_test

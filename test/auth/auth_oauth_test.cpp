@@ -33,6 +33,8 @@
 #include "../../src/detail/constants.hpp"
 #include "../support/hang_guard.hpp"
 
+namespace auth_oauth_test {
+
 namespace encoding = mcp::detail::constants::encoding;
 
 namespace {
@@ -1641,3 +1643,5 @@ TEST(OAuthSetterPairAtomicity, ConfigureInstallsBothOfItsArguments) {
     client.configure(fixture.narrow, fixture.resolver_new);
     EXPECT_EQ(observe(), Observed::refused_origin);
 }
+
+}  // namespace auth_oauth_test

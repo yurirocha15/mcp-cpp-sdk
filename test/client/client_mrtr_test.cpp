@@ -30,6 +30,8 @@
 #include <utility>
 #include <vector>
 
+namespace client_mrtr_test {
+
 namespace {
 
 using nlohmann::json;
@@ -923,3 +925,5 @@ TEST(ClientMrtr, RoundTripAgainstSdkServerStdio) {
     EXPECT_EQ(error, "");
     EXPECT_EQ(answer, (json{{"name", "octocat"}}));
 }
+
+}  // namespace client_mrtr_test

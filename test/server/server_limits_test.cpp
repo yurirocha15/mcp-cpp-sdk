@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+namespace server_limits_test {
+
 namespace {
 
 using nlohmann::json;
@@ -908,3 +910,5 @@ TEST(ClientLimits, IncomingRequestMemoryLimitMustBePositive) {
         mcp::Client(std::make_shared<FloodingPeer>(io.get_executor()), io.get_executor(), options),
         std::invalid_argument);
 }
+
+}  // namespace server_limits_test

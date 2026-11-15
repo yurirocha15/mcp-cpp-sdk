@@ -4,6 +4,8 @@
 
 #include "mcp/core/runtime.hpp"
 
+namespace transport_factory_test {
+
 namespace {
 
 TEST(TransportFactoryTest, FactoryCreateStdioReturnsNonNull) {
@@ -49,3 +51,5 @@ TEST(TransportFactoryTest, DeprecatedFreeFunctionsStillCreateTransports) {
 #endif
 
 }  // namespace
+
+}  // namespace transport_factory_test

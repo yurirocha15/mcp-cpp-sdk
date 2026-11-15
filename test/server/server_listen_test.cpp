@@ -23,6 +23,8 @@
 #include <thread>
 #include <vector>
 
+namespace server_listen_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -621,3 +623,5 @@ TEST(ListenConcurrencyTest, NotificationsFromManyThreadsReachTheListener) {
 }
 
 }  // namespace
+
+}  // namespace server_listen_test

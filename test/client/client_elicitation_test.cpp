@@ -17,6 +17,8 @@
 #include <string>
 #include <utility>
 
+namespace client_elicitation_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -276,3 +278,5 @@ INSTANTIATE_TEST_SUITE_P(Eras, ElicitationValidation, ::testing::Bool(),
                          [](const ::testing::TestParamInfo<bool>& info) {
                              return info.param ? std::string("Modern") : std::string("Legacy");
                          });
+
+}  // namespace client_elicitation_test

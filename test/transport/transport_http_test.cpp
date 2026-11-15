@@ -42,6 +42,8 @@
 #include <thread>
 #include <vector>
 
+namespace transport_http_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -3744,3 +3746,5 @@ TEST(HttpClientResponseTimeout, AServerThatNeverAnswersFailsTheWrite) {
 
     EXPECT_TRUE(failed);
 }
+
+}  // namespace transport_http_test

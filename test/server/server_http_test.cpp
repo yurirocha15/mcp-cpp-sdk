@@ -20,6 +20,8 @@
 #include <string>
 #include <thread>
 
+namespace server_http_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -160,3 +162,5 @@ TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
 
     server_thread.join();
 }
+
+}  // namespace server_http_test

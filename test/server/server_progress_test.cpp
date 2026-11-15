@@ -13,6 +13,8 @@
 #include <string_view>
 #include <vector>
 
+namespace server_progress_test {
+
 namespace {
 
 struct NoopParams {
@@ -294,3 +296,5 @@ TEST_F(ServerProgressTest, NotificationsOfEachRequestPrecedeItsResultInOrder) {
     }
     EXPECT_EQ(logs, 2U * steps);
 }
+
+}  // namespace server_progress_test

@@ -13,6 +13,8 @@
 #include <chrono>
 #include <string>
 
+namespace e2e_features_test {
+
 class E2EFeaturesTest : public ::testing::Test {
    protected:
     boost::asio::io_context io_ctx_;
@@ -84,3 +86,5 @@ TEST_F(E2EFeaturesTest, OneSessionConnectsPingsListsAndCallsTools) {
     io_ctx_.run();
     EXPECT_TRUE(test_passed);
 }
+
+}  // namespace e2e_features_test

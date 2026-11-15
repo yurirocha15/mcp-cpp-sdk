@@ -4,6 +4,8 @@
 
 #include <nlohmann/json.hpp>
 
+namespace capabilities_extensions_test {
+
 using json = nlohmann::json;
 
 TEST(CapabilitiesExtensionsTest, ClientCapabilitiesExtensionsRoundTripsWhenPresent) {
@@ -57,3 +59,5 @@ TEST(CapabilitiesExtensionsTest, ServerCapabilitiesExtensionsAbsentByDefault) {
     auto round_tripped = json_obj.get<mcp::ServerCapabilities>();
     EXPECT_FALSE(round_tripped.extensions.has_value());
 }
+
+}  // namespace capabilities_extensions_test

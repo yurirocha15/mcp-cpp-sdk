@@ -60,6 +60,8 @@
 #include <boost/asio/cancellation_signal.hpp>
 #endif
 
+namespace auth_authorization_test {
+
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -7112,3 +7114,5 @@ TEST(AuthModernClientTest, StepsUpOnceAgainstAnSdkServerThatRequiresAScope) {
     EXPECT_TRUE(has_scopes(consent_scopes[1], {"mcp:write"}));
     EXPECT_EQ(tool_calls, 1);
 }
+
+}  // namespace auth_authorization_test

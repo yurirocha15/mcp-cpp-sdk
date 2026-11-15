@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_server_modern_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -690,3 +692,5 @@ TEST_F(HttpServerModernTest, RequestsQueuedBeforeTheServerBindsHaveNoStream) {
     EXPECT_EQ(transport_->event_store().size(), stored_before);
     expect_error(listened, 404, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
+
+}  // namespace transport_http_server_modern_test

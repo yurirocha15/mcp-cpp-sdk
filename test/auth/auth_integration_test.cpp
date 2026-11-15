@@ -31,6 +31,8 @@
 #include <string>
 #include <vector>
 
+namespace auth_integration_test {
+
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -856,3 +858,5 @@ TEST(AuthClientTransportTest, RefreshPreservesOldRefreshTokenIfNewOneMissing) {
     ASSERT_TRUE(stored->refresh_token.has_value());
     EXPECT_EQ(stored->refresh_token.value(), "keep_this_rt");
 }
+
+}  // namespace auth_integration_test

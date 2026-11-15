@@ -14,6 +14,8 @@
 #include <string>
 #include <string_view>
 
+namespace server_logging_test {
+
 namespace {
 
 struct NoopParams {
@@ -319,3 +321,5 @@ TEST_F(ServerLoggingTest, ListChangedNotificationsSent) {
     EXPECT_EQ(responses[2]["id"], "2");
     ASSERT_TRUE(responses[2].contains("result"));
 }
+
+}  // namespace server_logging_test

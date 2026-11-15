@@ -12,6 +12,8 @@
 #include <string>
 #include <string_view>
 
+namespace server_subscriptions_test {
+
 class ServerSubscriptionsTest : public ::testing::Test {
    protected:
     boost::asio::io_context io_ctx_;
@@ -210,3 +212,5 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedNotSentForUnsubscribedUri) 
     EXPECT_EQ(responses[1]["id"], "2");
     // No notification was sent
 }
+
+}  // namespace server_subscriptions_test

@@ -36,6 +36,8 @@
 #include <utility>
 #include <vector>
 
+namespace server_core_test {
+
 namespace {
 
 // Ends its session immediately, then fails the teardown. ITransport::close is not noexcept, so a
@@ -1984,3 +1986,5 @@ TEST(ServerTeardownTest, ReverseRequestFromAHandlerReportsADestroyedServer) {
     io_ctx.stop();
     runner.join();
 }
+
+}  // namespace server_core_test

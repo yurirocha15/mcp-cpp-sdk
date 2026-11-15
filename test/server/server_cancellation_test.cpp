@@ -12,6 +12,8 @@
 #include <string>
 #include <string_view>
 
+namespace server_cancellation_test {
+
 namespace {
 
 struct SlowParams {
@@ -256,3 +258,5 @@ TEST_F(ServerCancellationTest, InFlightCleanedUpAfterToolCompletes) {
     EXPECT_EQ(responses[2]["id"], "3");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
 }
+
+}  // namespace server_cancellation_test

@@ -33,6 +33,8 @@
 #include <utility>
 #include <vector>
 
+namespace client_modern_test {
+
 namespace {
 
 using nlohmann::json;
@@ -1739,3 +1741,5 @@ TEST(E2eEra, LegacyClientOverHttpIsLegacy) {
     EXPECT_EQ(outcome->connected.protocolVersion, "2025-11-25");
     EXPECT_EQ(outcome->whoami.at("modern"), false);
 }
+
+}  // namespace client_modern_test

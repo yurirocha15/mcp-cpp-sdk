@@ -13,6 +13,8 @@
 #include <string>
 #include <string_view>
 
+namespace sampling_test {
+
 namespace {
 
 struct EchoInput {
@@ -533,3 +535,5 @@ TEST_F(SamplingTest, SampleLlmErrorResponseThrows) {
     }
     EXPECT_TRUE(found_result);
 }
+
+}  // namespace sampling_test

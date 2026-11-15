@@ -36,6 +36,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_session_manager_test {
+
 namespace http_server = mcp::constants::http_server;
 
 namespace {
@@ -3306,3 +3308,5 @@ TEST_F(SessionManagerTest, BlockedHandlerDoesNotStallAnotherSessionOfItsConnecti
     }
     finish();
 }
+
+}  // namespace transport_http_session_manager_test

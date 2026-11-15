@@ -34,6 +34,8 @@
 #include <mcp/core/constants.hpp>
 #endif
 
+namespace transport_stdio_client_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 #ifndef MCP_TEST_STDIO_SERVER
@@ -911,3 +913,5 @@ TEST(StdioClientSession, CleanExitRestartsOnlyWhenThePolicyAsksForIt) {
         EXPECT_EQ(restarts, after_clean_exit ? 1u : 0u);
     }
 }
+
+}  // namespace transport_stdio_client_test

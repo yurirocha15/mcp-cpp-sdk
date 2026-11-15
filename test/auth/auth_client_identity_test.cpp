@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+namespace auth_client_identity_test {
+
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
@@ -963,3 +965,5 @@ TEST(AuthClientIdentityConfigTest, AcceptsMetadataUrlDotsInsideSegmentsAndAnyCas
 TEST(AuthClientIdentityConfigTest, AcceptsHttpsUrlWithPath) {
     EXPECT_NO_THROW(construct_with_metadata_url("https://client.example/metadata.json"));
 }
+
+}  // namespace auth_client_identity_test

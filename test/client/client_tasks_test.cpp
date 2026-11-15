@@ -22,6 +22,8 @@
 #include <variant>
 #include <vector>
 
+namespace client_tasks_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -995,3 +997,5 @@ TEST(ClientTasksScripted, AListenRequestForTasksDeclaresTheExtension) {
 }
 
 }  // namespace
+
+}  // namespace client_tasks_test

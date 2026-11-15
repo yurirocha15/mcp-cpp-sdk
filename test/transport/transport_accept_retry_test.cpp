@@ -35,6 +35,8 @@
 #include <string>
 #include <vector>
 
+namespace transport_accept_retry_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -181,5 +183,7 @@ TEST(AcceptRetry, SessionManagerOutlivesRunningOutOfDescriptors) {
         });
     expect_accepting_after_exhaustion(io, manager, port);
 }
+
+}  // namespace transport_accept_retry_test
 
 #endif

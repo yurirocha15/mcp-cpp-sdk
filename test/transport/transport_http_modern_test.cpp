@@ -22,6 +22,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_modern_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -764,3 +766,5 @@ TEST_F(HttpModernTest, ModernHeaderWithoutMetaIsInvalidParams) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_modern_test

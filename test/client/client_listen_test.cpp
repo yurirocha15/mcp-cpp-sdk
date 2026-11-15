@@ -34,6 +34,8 @@
 #include <utility>
 #include <vector>
 
+namespace client_listen_test {
+
 namespace {
 
 using nlohmann::json;
@@ -795,3 +797,5 @@ TEST(ClientListen, AgainstSdkServerOverWebSocket) {
     });
     expect_listen_outcome(*outcome);
 }
+
+}  // namespace client_listen_test

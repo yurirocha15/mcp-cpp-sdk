@@ -28,6 +28,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_stream_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -718,3 +720,5 @@ TEST(HttpStreamOptions, InvalidOptionsAreRefused) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_stream_test

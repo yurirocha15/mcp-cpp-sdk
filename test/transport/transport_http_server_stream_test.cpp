@@ -29,6 +29,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_server_stream_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 namespace protocol = mcp::constants::protocol;
 
@@ -1087,3 +1089,5 @@ TEST(HttpServerStreamOptions, OptionsCannotChangeOnceListening) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_server_stream_test

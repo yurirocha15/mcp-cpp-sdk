@@ -28,6 +28,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_principal_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -613,3 +615,5 @@ TEST(HttpPrincipal, OneTokenIsOnePrincipalHoweverTheHeaderSpellsIt) {
     EXPECT_NE(mcp::detail::request_principal(std::nullopt, "Bearer other"), principal);
     EXPECT_NE(mcp::detail::request_principal(std::nullopt, "Basic dG9rOg=="), principal);
 }
+
+}  // namespace transport_http_principal_test

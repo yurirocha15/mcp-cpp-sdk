@@ -30,6 +30,8 @@
 #include <utility>
 #include <vector>
 
+namespace serialized_transport_writer_test {
+
 namespace {
 
 class OverlapDetectingTransport final : public mcp::ITransport {
@@ -570,3 +572,5 @@ TEST(SerializedTransportWriterTest, CloseDuringAWriteInPlaceFailsItAndTheQueue) 
 }
 
 }  // namespace
+
+}  // namespace serialized_transport_writer_test

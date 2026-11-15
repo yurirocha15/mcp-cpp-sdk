@@ -27,6 +27,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_http_listen_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -443,3 +445,5 @@ TEST_F(HttpListen, ClientNotAcceptingStreamsIsRefused) {
 }
 
 }  // namespace
+
+}  // namespace transport_http_listen_test

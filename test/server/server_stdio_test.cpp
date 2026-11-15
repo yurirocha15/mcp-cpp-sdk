@@ -40,6 +40,8 @@
 #include <mcp/core/constants.hpp>
 #endif
 
+namespace server_stdio_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -846,3 +848,5 @@ TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
     sbuf.close();
     server_thread.join();
 }
+
+}  // namespace server_stdio_test

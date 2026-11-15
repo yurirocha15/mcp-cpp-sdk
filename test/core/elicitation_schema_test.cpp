@@ -10,6 +10,8 @@
 #include <variant>
 #include <vector>
 
+namespace elicitation_schema_test {
+
 namespace {
 
 using nlohmann::json;
@@ -314,3 +316,5 @@ TEST(ElicitationSchema, JsonFormDoesNotKeepTheOrderFieldsWereAddedIn) {
     ASSERT_EQ(parsed.fields().size(), 2u);
     EXPECT_EQ(parsed.fields()[0].first, "a");
 }
+
+}  // namespace elicitation_schema_test

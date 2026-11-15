@@ -63,6 +63,8 @@
 
 #include <string>
 
+namespace json_peer_input_matrix_test {
+
 namespace {
 
 using nlohmann::json;
@@ -1496,6 +1498,8 @@ TEST(JsonPeerInputMatrix, CaseCountIsDerived) {
     EXPECT_EQ(generated_cases, fields * modes);
     EXPECT_GT(types, 0);
 }
+
+}  // namespace json_peer_input_matrix_test
 
 // Types in the matrix (checked against the protocol headers at build time):
 //   Annotations

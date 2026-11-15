@@ -46,6 +46,8 @@
 #include <boost/asio/cancellation_signal.hpp>
 #endif
 
+namespace transport_ws_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -1058,3 +1060,5 @@ TEST(WebSocketOriginTest, OriginsCannotChangeOnceTheHandshakeHasStarted) {
     ASSERT_TRUE(result.server_received.has_value());
     EXPECT_TRUE(refusal.has_value());
 }
+
+}  // namespace transport_ws_test

@@ -24,6 +24,8 @@
 #include <utility>
 #include <vector>
 
+namespace server_mrtr_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -2410,3 +2412,5 @@ TEST_F(MrtrWithoutMiddlewareTest, ListedToolsMatchTheOnesBuiltPageByPage) {
 }
 
 }  // namespace
+
+}  // namespace server_mrtr_test

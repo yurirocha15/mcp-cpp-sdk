@@ -15,6 +15,8 @@
 #include <string>
 #include <string_view>
 
+namespace roots_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -314,3 +316,5 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
     }
     EXPECT_TRUE(found_notification);
 }
+
+}  // namespace roots_test

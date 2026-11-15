@@ -21,6 +21,8 @@
 #include <utility>
 #include <vector>
 
+namespace server_middleware_test {
+
 using namespace mcp;
 using json = nlohmann::json;
 
@@ -608,3 +610,5 @@ TEST(ServerMiddlewareTest, NonStdExceptionFromHandlerIsAnsweredOnModernRequests)
         expect_internal_error(answer_modern(server, request));
     }
 }
+
+}  // namespace server_middleware_test

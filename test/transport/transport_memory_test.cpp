@@ -23,6 +23,8 @@
 #include <utility>
 #include <vector>
 
+namespace transport_memory_test {
+
 class MemoryTransportTest : public ::testing::Test {
    protected:
     boost::asio::io_context io_ctx_;
@@ -597,3 +599,5 @@ TEST_F(MemoryTransportTest, ClosingWakesReadersOfBothEndpointsThatShareOneStrand
 
     EXPECT_EQ(close_errors, 2);
 }
+
+}  // namespace transport_memory_test

@@ -13,6 +13,8 @@
 #include <pthread.h>
 #endif
 
+namespace regex_test {
+
 namespace {
 
 using mcp::detail::Regex;
@@ -426,3 +428,5 @@ TEST(Regex, NulCharacterInAClassRange) {
 }
 
 }  // namespace
+
+}  // namespace regex_test

@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+namespace client_features_test {
+
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
@@ -772,3 +774,5 @@ TEST_F(ClientToolSchemaTest, ChecksCanBeTurnedOff) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->structuredContent->at("size"), -1);
 }
+
+}  // namespace client_features_test

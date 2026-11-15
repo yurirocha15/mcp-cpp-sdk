@@ -28,6 +28,8 @@
 #include <utility>
 #include <vector>
 
+namespace client_core_test {
+
 namespace {
 
 nlohmann::json make_initialize_result() {
@@ -1598,3 +1600,5 @@ TEST_F(ClientCoreTest, ResultWithNullErrorMemberIsNotAProtocolViolation) {
         << outcome.second_failure;
     EXPECT_TRUE(outcome.reported.empty()) << "a well-formed response was reported as an error";
 }
+
+}  // namespace client_core_test

@@ -29,6 +29,8 @@
 #include <utility>
 #include <vector>
 
+namespace server_tasks_test {
+
 namespace {
 
 namespace asio = boost::asio;
@@ -1846,3 +1848,5 @@ TEST_F(TaskListen, ASessionServesTasksOverItsOwnTransport) {
 }
 
 }  // namespace
+
+}  // namespace server_tasks_test

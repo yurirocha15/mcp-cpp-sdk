@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+namespace json_dump_test {
+
 using mcp::detail::append_json;
 using mcp::detail::dump_json;
 
@@ -320,3 +322,5 @@ TEST(JsonDumpTest, WritesAnObjectWithAddedMembersAsDumpWritesTheMergedObject) {
     EXPECT_THROW(append_json_object_with(empty, bad_text, {{{"resultType", R"("complete")"}}}),
                  nlohmann::json::type_error);
 }
+
+}  // namespace json_dump_test

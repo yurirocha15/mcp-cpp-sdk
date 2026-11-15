@@ -28,6 +28,8 @@
 #include <tuple>
 #include <vector>
 
+namespace server_modern_era_test {
+
 namespace {
 
 using nlohmann::json;
@@ -1189,3 +1191,5 @@ TEST_F(ServerModernEraTest, NeverEmitsErrorCodes32042And32002) {
 }
 
 }  // namespace
+
+}  // namespace server_modern_era_test

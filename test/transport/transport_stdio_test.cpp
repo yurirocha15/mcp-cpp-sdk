@@ -29,6 +29,15 @@
 #include <unordered_set>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
+namespace transport_stdio_test {
+
 namespace {
 
 class BlockingStreambuf : public std::streambuf {
@@ -610,11 +619,6 @@ TEST_F(StdioTransportTest, LinesTakenLeaveRoomForMore) {
 // create_owning_stdout() uses the CRT equivalents and is not exercised here.
 #if !defined(_WIN32)
 
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/ioctl.h>
-#include <unistd.h>
-
 namespace {
 
 // Points the process's stdout and stderr at files the test can read back, and
@@ -1118,3 +1122,5 @@ TEST_F(StdioTransportTest, CloseReleasesAWriteThePeerDoesNotRead) {
 #endif  // defined(__linux__)
 
 #endif  // !defined(_WIN32)
+
+}  // namespace transport_stdio_test

@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+namespace transport_http_resumability_test {
+
 namespace protocol = mcp::constants::protocol;
 
 namespace {
@@ -513,3 +515,5 @@ TEST_F(HttpResumabilityTest, GetOpensAStreamAndResumesOneThatEnded) {
     EXPECT_EQ((*resumed)[http::field::content_type], "text/event-stream");
     EXPECT_EQ(resumed->body(), "");
 }
+
+}  // namespace transport_http_resumability_test

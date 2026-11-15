@@ -11,6 +11,8 @@
 #include <string>
 #include <vector>
 
+namespace auth_challenge_test {
+
 namespace {
 
 mcp::auth::AuthorizationRequest make_request(std::string issuer, bool issuer_parameter_supported) {
@@ -610,3 +612,5 @@ TEST(AuthMetadataPolicyTest, ExtractsOriginsWithoutNormalizing) {
     EXPECT_EQ(mcp::auth::metadata_url_origin("http://127.0.0.1:9000"), "http://127.0.0.1:9000");
     EXPECT_TRUE(mcp::auth::metadata_url_origin("not-a-url").empty());
 }
+
+}  // namespace auth_challenge_test

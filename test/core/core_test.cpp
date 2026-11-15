@@ -5,6 +5,8 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 
+namespace core_test {
+
 class CoreTest : public ::testing::Test {
    protected:
     boost::asio::io_context io_ctx;
@@ -25,3 +27,5 @@ TEST_F(CoreTest, CoroutineCompilation) {
     io_ctx.run();
     EXPECT_TRUE(executed);
 }
+
+}  // namespace core_test

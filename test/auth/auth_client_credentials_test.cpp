@@ -22,6 +22,8 @@
 #include <optional>
 #include <string>
 
+namespace auth_client_credentials_test {
+
 namespace asio = boost::asio;
 namespace http = boost::beast::http;
 using json = nlohmann::json;
@@ -643,3 +645,5 @@ TEST(ClientAuthenticationTest, NoCommonMethodIsAnError) {
 }
 
 }  // namespace
+
+}  // namespace auth_client_credentials_test
