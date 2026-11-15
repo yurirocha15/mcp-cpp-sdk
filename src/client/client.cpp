@@ -450,6 +450,110 @@ SubscriptionFilter honored_filter(const nlohmann::json& params) {
 
 }  // namespace
 
+namespace detail {
+
+/// What the copies of a CancellationToken share: whether it was cancelled, why, and what runs when
+/// it is.
+struct CancellationState {
+    using Callback = std::function<void(const std::optional<std::string>& reason)>;
+
+    std::mutex mutex;
+    std::atomic<bool> cancelled{false};
+    /// Set once, before `cancelled`, and never changed afterwards.
+    std::optional<std::string> reason;
+    std::uint64_t next_registration{0};
+    std::map<std::uint64_t, Callback> callbacks;
+
+    /// Adds @p callback, which runs once when the token is cancelled. Returns nothing, and keeps
+    /// nothing, when the token already is.
+    std::optional<std::uint64_t> add(Callback callback) {
+        std::lock_guard lock(mutex);
+        if (cancelled.load(std::memory_order_relaxed)) {
+            return std::nullopt;
+        }
+        const auto registration = next_registration++;
+        callbacks.emplace(registration, std::move(callback));
+        return registration;
+    }
+
+    void remove(std::uint64_t registration) {
+        std::lock_guard lock(mutex);
+        callbacks.erase(registration);
+    }
+};
+
+struct CancellationAccess {
+    static const std::shared_ptr<CancellationState>& state(const CancellationToken& token) {
+        return token.state_;
+    }
+};
+
+}  // namespace detail
+
+CancellationToken::CancellationToken() : state_(std::make_shared<detail::CancellationState>()) {}
+
+void CancellationToken::cancel(std::optional<std::string> reason) const {
+    std::map<std::uint64_t, detail::CancellationState::Callback> callbacks;
+    {
+        std::lock_guard lock(state_->mutex);
+        if (state_->cancelled.load(std::memory_order_relaxed)) {
+            return;
+        }
+        state_->reason = std::move(reason);
+        state_->cancelled.store(true, std::memory_order_release);
+        callbacks.swap(state_->callbacks);
+    }
+    // Run outside the lock: a callback may end a wait that removes its own registration.
+    for (auto& [registration, callback] : callbacks) {
+        callback(state_->reason);
+    }
+}
+
+bool CancellationToken::is_cancelled() const noexcept {
+    return state_->cancelled.load(std::memory_order_acquire);
+}
+
+namespace {
+
+/// Keeps a callback on a CancellationToken for as long as the wait it ends lasts.
+class CancellationRegistration {
+   public:
+    CancellationRegistration() = default;
+    CancellationRegistration(std::shared_ptr<detail::CancellationState> state,
+                             std::uint64_t registration)
+        : state_(std::move(state)), registration_(registration) {}
+    CancellationRegistration(const CancellationRegistration&) = delete;
+    CancellationRegistration& operator=(const CancellationRegistration&) = delete;
+    CancellationRegistration(CancellationRegistration&& other) noexcept
+        : state_(std::move(other.state_)), registration_(other.registration_) {}
+    CancellationRegistration& operator=(CancellationRegistration&& other) noexcept {
+        if (this != &other) {
+            release();
+            state_ = std::move(other.state_);
+            registration_ = other.registration_;
+        }
+        return *this;
+    }
+    ~CancellationRegistration() { release(); }
+
+   private:
+    void release() noexcept {
+        if (state_) {
+            try {
+                state_->remove(registration_);
+            } catch (...) {
+                // A mutex that cannot be locked leaves a callback that finds nothing to end.
+            }
+            state_.reset();
+        }
+    }
+
+    std::shared_ptr<detail::CancellationState> state_;
+    std::uint64_t registration_{0};
+};
+
+}  // namespace
+
 struct Client::Impl {
     struct PendingRequest {
         PendingRequest(const boost::asio::any_io_executor& executor, std::chrono::milliseconds timeout)
@@ -527,9 +631,10 @@ struct Client::Impl {
         auto strand = state->strand;
         // Awaiting post(strand) would not rebind a caller-owned coroutine's continuation.
         // Spawn the complete pending-request lifecycle on the client strand instead.
-        return boost::asio::co_spawn(
-            strand, send_request_wire(std::move(state), std::move(wire), id, timeout, probe),
-            boost::asio::use_awaitable);
+        return boost::asio::co_spawn(strand,
+                                     send_request_wire(std::move(state), std::move(wire), id, timeout,
+                                                       probe, request_options.cancellation),
+                                     boost::asio::use_awaitable);
     }
 
     /// The methods 2026-07-28 removed. The server answers none of them, so the request is refused
@@ -812,22 +917,22 @@ struct Client::Impl {
                 throw McpError(mcp::constants::jsonrpc::g_REQUEST_TIMEOUT,
                                "Timed out waiting for the task to finish");
             }
-            auto executor = co_await boost::asio::this_coro::executor;
-            boost::asio::steady_timer pause(executor);
-            pause.expires_after(std::min(std::chrono::milliseconds(poll_ms), remaining));
-            co_await pause.async_wait(boost::asio::use_awaitable);
+            // A cancelled token ends the pause, and the next tasks/get then fails without being sent.
+            auto strand = state->strand;
+            auto pause =
+                pause_unless_cancelled(state, std::min(std::chrono::milliseconds(poll_ms), remaining),
+                                       request_options.cancellation);
+            co_await detail::spawn_awaitable(strand, std::move(pause));
         }
     }
 
     /// Sends a tools/call that declares the tasks extension and follows the task the server starts,
     /// if it starts one, to its result.
     static Task<CallToolResult> call_tool_following(std::shared_ptr<Impl> state, nlohmann::json params,
-                                                    OutputCheck check) {
+                                                    OutputCheck check, RequestOptions request_options) {
         if (check.refusal) {
             throw *check.refusal;
         }
-        // call_tool() takes no per-request options, so the call and the follow use the defaults.
-        const RequestOptions request_options;
         nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
         if (is_task_result(reply)) {
             nlohmann::json task_params = {{"taskId", nlohmann::json()}};
@@ -846,8 +951,11 @@ struct Client::Impl {
                 gave_up = std::current_exception();
             }
             if (gave_up) {
+                // The cancel goes out even when the caller's token is what ended the wait.
+                RequestOptions cancel_options = request_options;
+                cancel_options.cancellation.reset();
                 try {
-                    co_await task_request(state, "tasks/cancel", task_params, request_options);
+                    co_await task_request(state, "tasks/cancel", task_params, cancel_options);
                 } catch (...) {
                     // The caller gets the error that ended the wait; a cancel that fails changes
                     // nothing.
@@ -1573,7 +1681,8 @@ struct Client::Impl {
 
     static Task<nlohmann::json> send_request_wire(std::shared_ptr<Impl> state,
                                                   std::shared_ptr<const std::string> wire, int64_t id,
-                                                  std::chrono::milliseconds timeout, bool probe) {
+                                                  std::chrono::milliseconds timeout, bool probe,
+                                                  std::optional<CancellationToken> cancellation) {
         if (state->closed.load(std::memory_order_acquire)) {
             throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed");
         }
@@ -1581,6 +1690,7 @@ struct Client::Impl {
         // [gcc11-sso: scope-before-await] The correlation key is a short std::string, so it is
         // built in this scope and rebuilt from `id` after the suspension rather than kept across it.
         PendingRequest* pending_request = nullptr;
+        CancellationRegistration cancellation_registration;
         {
             auto id_key = request_correlation_key(id);
             {
@@ -1593,6 +1703,25 @@ struct Client::Impl {
                 }
                 pending_request = iter->second.get();
                 pending_request->probe = probe;
+            }
+            if (cancellation) {
+                const auto& token_state = detail::CancellationAccess::state(*cancellation);
+                const auto registration =
+                    token_state->add([weak_state = std::weak_ptr<Impl>(state),
+                                      id](const std::optional<std::string>& reason) {
+                        if (auto owner = weak_state.lock()) {
+                            auto strand = owner->strand;
+                            boost::asio::post(strand, [owner = std::move(owner), id, reason] {
+                                cancel_request(owner, id, reason);
+                            });
+                        }
+                    });
+                if (!registration) {
+                    // Cancelled before it was sent: nothing reaches the server.
+                    erase_pending_request(state, id_key);
+                    throw McpError(mcp::constants::jsonrpc::g_REQUEST_CANCELLED, "Request cancelled");
+                }
+                cancellation_registration = CancellationRegistration(token_state, *registration);
             }
 
             boost::asio::co_spawn(
@@ -1650,17 +1779,8 @@ struct Client::Impl {
         // the same way where that closes a connection; elsewhere the server may predate the era.
         const bool cancels =
             state->modern_version().has_value() || (probe && state->overlapping_writes);
-        if (timed_out && cancels && !state->closed.load(std::memory_order_acquire)) {
-            CancelledNotificationParams cancel_params;
-            cancel_params.requestId = RequestId{std::to_string(id)};
-            cancel_params.reason = "Request timed out";
-            JSONRPCNotification notification;
-            notification.method = "notifications/cancelled";
-            notification.params = nlohmann::json(std::move(cancel_params));
-            auto cancel_wire = std::make_shared<const std::string>(
-                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
-            boost::asio::co_spawn(state->strand, send_notification_wire(state, std::move(cancel_wire)),
-                                  [](const std::exception_ptr&) {});
+        if (timed_out && cancels) {
+            send_cancelled(state, id, std::string("Request timed out"));
         }
 
         if (error) {
@@ -1670,6 +1790,72 @@ struct Client::Impl {
             std::rethrow_exception(write_error);
         }
         co_return result;
+    }
+
+    /// Sends `notifications/cancelled` for the request @p id, unless the client is closed. Nothing
+    /// waits for the write, and a write that fails changes nothing for the caller.
+    static void send_cancelled(const std::shared_ptr<Impl>& state, int64_t id,
+                               std::optional<std::string> reason) {
+        if (state->closed.load(std::memory_order_acquire)) {
+            return;
+        }
+        CancelledNotificationParams cancel_params;
+        cancel_params.requestId = RequestId{std::to_string(id)};
+        cancel_params.reason = std::move(reason);
+        JSONRPCNotification notification;
+        notification.method = "notifications/cancelled";
+        notification.params = nlohmann::json(std::move(cancel_params));
+        auto cancel_wire = std::make_shared<const std::string>(
+            mcp::detail::dump_json(nlohmann::json(std::move(notification))));
+        boost::asio::co_spawn(state->strand, send_notification_wire(state, std::move(cancel_wire)),
+                              [](const std::exception_ptr&) {});
+    }
+
+    /// Runs on the strand when the CancellationToken of the request @p id is cancelled: ends the
+    /// request's wait with g_REQUEST_CANCELLED and tells the server, unless it already ended.
+    static void cancel_request(const std::shared_ptr<Impl>& state, int64_t id,
+                               const std::optional<std::string>& reason) {
+        {
+            const auto id_key = request_correlation_key(id);
+            std::lock_guard lock(state->pending_requests_mutex);
+            const auto iter = state->pending_requests.find(id_key);
+            if (iter == state->pending_requests.end() || iter->second->completed) {
+                return;
+            }
+            // A write still queued is dropped, and a response that arrives later finds no request.
+            iter->second->cancel_write_before_start->store(true, std::memory_order_release);
+            iter->second->error =
+                Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED, "Request cancelled"};
+            iter->second->completed = true;
+            signal_pending_request(*iter->second);
+        }
+        send_cancelled(state, id, reason);
+    }
+
+    /// Waits @p time on the strand, ending early when @p cancellation is cancelled.
+    static Task<void> pause_unless_cancelled(std::shared_ptr<Impl> state,
+                                             std::chrono::milliseconds time,
+                                             std::optional<CancellationToken> cancellation) {
+        auto timer = std::make_shared<boost::asio::steady_timer>(state->strand, time);
+        CancellationRegistration cancellation_registration;
+        if (cancellation) {
+            const auto& token_state = detail::CancellationAccess::state(*cancellation);
+            const auto registration =
+                token_state->add([weak_timer = std::weak_ptr<boost::asio::steady_timer>(timer),
+                                  strand = state->strand](const std::optional<std::string>&) {
+                    boost::asio::post(strand, [weak_timer] {
+                        if (auto pending = weak_timer.lock()) {
+                            pending->cancel();
+                        }
+                    });
+                });
+            if (!registration) {
+                co_return;
+            }
+            cancellation_registration = CancellationRegistration(token_state, *registration);
+        }
+        boost::system::error_code ended;
+        co_await timer->async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ended));
     }
 
     static Task<void> send_notification_wire(std::shared_ptr<Impl> state,
@@ -2395,6 +2581,11 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
 }
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
+    return call_tool_with(std::move(params), RequestOptions{});
+}
+
+Task<CallToolResult> Client::call_tool_with(CallToolParams params,
+                                            const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
     if (impl_->options.tasks == ClientTaskMode::eAuto && impl_->modern_version()) {
@@ -2402,10 +2593,12 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
             throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                            "Client must connect before sending requests");
         }
-        return Impl::call_tool_following(impl_, nlohmann::json(std::move(params)), std::move(check));
+        return Impl::call_tool_following(impl_, nlohmann::json(std::move(params)), std::move(check),
+                                         request_options);
     }
-    return checked_call_result(send_request("tools/call", nlohmann::json(std::move(params))),
-                               std::move(check));
+    return checked_call_result(
+        send_request("tools/call", nlohmann::json(std::move(params)), request_options),
+        std::move(check));
 }
 
 Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(CallToolParams params) {

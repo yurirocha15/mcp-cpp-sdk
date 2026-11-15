@@ -690,6 +690,94 @@ TEST(ClientTasksScripted, CallToolCancelsTheTaskItGivesUpOn) {
     EXPECT_EQ(cancels[0].at("params").at("taskId"), "task-1");
 }
 
+// A cancelled call_tool() stops following its task at once, even in the middle of a long poll
+// interval, and asks the server to cancel the task.
+TEST(ClientTasksScripted, CancelledCallToolCancelsItsTask) {
+    mcp::ClientOptions options;
+    options.tasks = mcp::ClientTaskMode::eAuto;
+    ScriptedServer server(options);
+    server.reply = [](const json& request, std::size_t) -> json {
+        if (request.at("method") == "tools/call") {
+            json task = task_fields("working");
+            task["resultType"] = "task";
+            return task;
+        }
+        if (request.at("method") == "tasks/cancel") {
+            return json::object();
+        }
+        // An interval far past the test's hang guard: only the token can end the pause.
+        return task_fields("working", {{"resultType", "complete"}, {"pollIntervalMs", 3600000}});
+    };
+    int code = 0;
+    server.run([&]() -> mcp::Task<void> {
+        mcp::RequestOptions request_options;
+        request_options.cancellation = mcp::CancellationToken();
+        asio::co_spawn(
+            server.io,
+            [&server, token = *request_options.cancellation]() -> mcp::Task<void> {
+                asio::steady_timer tick(server.io);
+                while (server.requests("tasks/get").empty()) {
+                    tick.expires_after(std::chrono::milliseconds(1));
+                    co_await tick.async_wait(asio::use_awaitable);
+                }
+                // Past the first poll's answer, so the call is in its pause.
+                tick.expires_after(std::chrono::milliseconds(20));
+                co_await tick.async_wait(asio::use_awaitable);
+                token.cancel("user stopped it");
+            },
+            asio::detached);
+        try {
+            const json arguments = json::object();
+            co_await server.client->call_tool("t", arguments, request_options);
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+    });
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
+    EXPECT_EQ(server.requests("tasks/get").size(), 1u);
+    const auto cancels = server.requests("tasks/cancel");
+    ASSERT_EQ(cancels.size(), 1u);
+    EXPECT_EQ(cancels[0].at("params").at("taskId"), "task-1");
+}
+
+// A cancelled TaskHandle::wait() stops polling at once and leaves the task to its handle: nothing
+// asks the server to cancel it.
+TEST(ClientTasksScripted, CancelledWaitLeavesTheTask) {
+    ScriptedServer server;
+    server.reply = [](const json&, std::size_t) -> json {
+        // An interval far past the test's hang guard: only the token can end the pause.
+        return task_fields("working", {{"resultType", "complete"}, {"pollIntervalMs", 3600000}});
+    };
+    int code = 0;
+    server.run([&]() -> mcp::Task<void> {
+        mcp::RequestOptions request_options;
+        request_options.cancellation = mcp::CancellationToken();
+        asio::co_spawn(
+            server.io,
+            [&server, token = *request_options.cancellation]() -> mcp::Task<void> {
+                asio::steady_timer tick(server.io);
+                while (server.requests("tasks/get").empty()) {
+                    tick.expires_after(std::chrono::milliseconds(1));
+                    co_await tick.async_wait(asio::use_awaitable);
+                }
+                // Past the first poll's answer, so the wait is in its pause.
+                tick.expires_after(std::chrono::milliseconds(20));
+                co_await tick.async_wait(asio::use_awaitable);
+                token.cancel();
+            },
+            asio::detached);
+        const auto handle = server.client->task_handle("task-1");
+        try {
+            co_await handle.wait(request_options);
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+    });
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
+    EXPECT_EQ(server.requests("tasks/get").size(), 1u);
+    EXPECT_TRUE(server.requests("tasks/cancel").empty());
+}
+
 TEST(ClientTasksScripted, CallToolCancelsTheTaskWhenItCannotAnswerItsQuestions) {
     mcp::ClientOptions options;
     options.tasks = mcp::ClientTaskMode::eAuto;

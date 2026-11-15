@@ -332,6 +332,42 @@ struct ClientOptions {
     std::size_t subscription_queue_limit{1024};
 };
 
+namespace detail {
+struct CancellationState;
+struct CancellationAccess;
+}  // namespace detail
+
+/**
+ * @brief Cancels the requests it is given to, from any thread.
+ *
+ * @details Copies share one state: the application keeps one copy and passes another as
+ * RequestOptions::cancellation of each request it may want to cancel. cancel() sends
+ * `notifications/cancelled` for each of those requests still waiting for its answer and ends the
+ * wait at once, in every protocol revision: the call throws McpError with
+ * mcp::constants::jsonrpc::g_REQUEST_CANCELLED, and an answer that arrives afterwards is dropped. A
+ * request given a token that is already cancelled fails the same way without being sent.
+ *
+ * A call answering the `input_required` questions of a 2026-07-28 server stops before it sends
+ * its next round. call_tool() following a task stops waiting and asks the server to cancel the task
+ * with `tasks/cancel`; TaskHandle::wait() and TaskHandle::result() stop waiting and leave the task
+ * to its handle. listen() does not use the token: Subscription::close() ends a stream.
+ */
+class MCP_API CancellationToken {
+   public:
+    CancellationToken();
+
+    /// Cancels the requests given this token, those waiting now and any given it later. Only the
+    /// first call has an effect; @p reason goes in each `notifications/cancelled` it sends.
+    void cancel(std::optional<std::string> reason = std::nullopt) const;
+
+    /// Whether cancel() has been called on this token or a copy of it.
+    [[nodiscard]] bool is_cancelled() const noexcept;
+
+   private:
+    friend struct detail::CancellationAccess;
+    std::shared_ptr<detail::CancellationState> state_;
+};
+
 /** @brief Overrides for one outgoing request. */
 struct RequestOptions {
     /**
@@ -366,6 +402,8 @@ struct RequestOptions {
      * that asks more fails the call with an McpError.
      */
     int max_input_requests = 32;
+    /// @brief Cancels the request when cancelled; see CancellationToken.
+    std::optional<CancellationToken> cancellation;
 };
 
 /**
@@ -745,6 +783,22 @@ class MCP_API Client {
     }
 
     /**
+     * @brief Call a tool with per-request options, such as a deadline or a CancellationToken.
+     *
+     * @details As call_tool() above. A cancelled call throws McpError with
+     * mcp::constants::jsonrpc::g_REQUEST_CANCELLED.
+     */
+    template <JsonSerializable Args>
+    Task<CallToolResult> call_tool(const std::string& name, const Args& arguments,
+                                   const RequestOptions& request_options) {
+        // [gcc11-sso: not-a-coroutine]
+        CallToolParams call_params;
+        call_params.name = name;
+        call_params.arguments = nlohmann::json(arguments);
+        return call_tool_with(std::move(call_params), request_options);
+    }
+
+    /**
      * @brief Call a tool, taking a task if the server starts one (protocol revision 2026-07-28).
      *
      * @details Declares the tasks extension for this call whatever ClientOptions::tasks is set
@@ -848,6 +902,9 @@ class MCP_API Client {
     /**
      * @brief Send a cancellation notification for an in-flight request.
      *
+     * @details To cancel a request without knowing its id, give it a CancellationToken in
+     * RequestOptions::cancellation instead.
+     *
      * @param request_id The ID of the request to cancel.
      * @param reason Optional human-readable reason for the cancellation.
      * @return A task that completes when the cancellation notification has been sent.
@@ -929,6 +986,7 @@ class MCP_API Client {
     friend class TaskHandle;
 
     Task<CallToolResult> call_tool_with(CallToolParams params);
+    Task<CallToolResult> call_tool_with(CallToolParams params, const RequestOptions& request_options);
     Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(CallToolParams params);
 
     // [gcc11-sso: string_view] nlohmann::json is heap-allocated; string_view is trivially copyable.
