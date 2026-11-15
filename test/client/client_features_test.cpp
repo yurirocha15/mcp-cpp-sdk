@@ -8,6 +8,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,11 +16,13 @@
 #include <utility>
 #include <vector>
 
+namespace jsonrpc = mcp::constants::jsonrpc;
+
 namespace {
 
 // Returns just the result object (not a full JSON-RPC response) for use with make_result_response.
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_LEGACY_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -699,7 +702,7 @@ TEST_F(ClientToolSchemaTest, NonConformingStructuredContentThrows) {
     });
 
     ASSERT_TRUE(thrown.has_value());
-    EXPECT_EQ(thrown->code(), mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(thrown->code(), jsonrpc::g_INTERNAL_ERROR);
     ASSERT_TRUE(thrown->data().has_value());
     const auto& violations = thrown->data()->at("violations");
     ASSERT_EQ(violations.size(), 1U);

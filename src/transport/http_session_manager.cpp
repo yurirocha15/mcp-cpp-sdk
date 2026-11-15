@@ -1,5 +1,6 @@
 #include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
+#include "../detail/constants.hpp"
 #include "../detail/http_limits.hpp"
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
@@ -51,6 +52,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+namespace http_server = mcp::constants::http_server;
 
 namespace mcp {
 
@@ -117,7 +120,8 @@ struct SessionRuntime {
     std::shared_ptr<MemoryTransport> client_transport;
 
     mutable std::mutex protocol_mutex;
-    std::string negotiated_protocol_version{std::string(g_LATEST_LEGACY_PROTOCOL_VERSION)};
+    std::string negotiated_protocol_version{
+        std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
 
     mutable std::mutex response_mutex;
     EventStore event_store;
@@ -160,8 +164,8 @@ struct SessionRuntime {
         return pending_responses.empty();
     }
 
-    explicit SessionRuntime(
-        std::string id, std::size_t event_store_capacity = constants::g_event_store_default_capacity)
+    explicit SessionRuntime(std::string id, std::size_t event_store_capacity =
+                                                mcp::constants::event_store::g_DEFAULT_CAPACITY)
         : session_id(std::move(id)), event_store(event_store_capacity) {}
 
     [[nodiscard]] std::string protocol_version() const {
@@ -298,7 +302,7 @@ struct StreamableHttpSessionManager::Impl {
     std::unordered_set<std::string> allowed_origins_;
     BearerTokenValidator bearer_token_validator_;
     AsyncBearerTokenValidator async_bearer_token_validator_;
-    std::size_t max_request_body_bytes_{constants::g_default_max_request_body_bytes};
+    std::size_t max_request_body_bytes_{http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES};
     BearerChallengeConfig bearer_challenge_;
     ScopeRequirementProvider scope_requirements_;
     /// Rendered once when the challenge or the metadata changes, so serving a 401 never formats.
@@ -915,7 +919,7 @@ struct StreamableHttpSessionManager::Impl {
         const auto id = request_json.value("id", nlohmann::json(nullptr));
         nlohmann::json error_body = {{"jsonrpc", "2.0"},
                                      {"error",
-                                      {{"code", g_METHOD_NOT_FOUND},
+                                      {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND},
                                        {"message", detail::initialize_not_served_message(served)},
                                        {"data", {{"supported", std::move(served)}}}}}};
         if (detail::is_request_id(id)) {
@@ -999,7 +1003,7 @@ struct StreamableHttpSessionManager::Impl {
         }
         if (!detail::is_request_id(request_json.at("id"))) {
             co_return detail_session_mgr::make_jsonrpc_error_response(
-                request, http::status::bad_request, g_INVALID_REQUEST,
+                request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
                 "JSON-RPC request id must be a string or an integer within int64_t");
         }
 
@@ -1007,13 +1011,13 @@ struct StreamableHttpSessionManager::Impl {
             if (auto mismatch = detail::modern_header_mismatch(request, request_json)) {
                 header_mismatch_rejections_.fetch_add(1, std::memory_order_relaxed);
                 co_return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::bad_request, g_HEADER_MISMATCH,
+                    request, http::status::bad_request, mcp::constants::jsonrpc::g_HEADER_MISMATCH,
                     "Header mismatch: " + *mismatch, request_json.at("id"));
             }
             if (auto refusal = detail::missing_modern_version(request_json)) {
                 co_return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::bad_request, g_INVALID_PARAMS, std::move(*refusal),
-                    request_json.at("id"));
+                    request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                    std::move(*refusal), request_json.at("id"));
             }
         }
 
@@ -1217,7 +1221,7 @@ struct StreamableHttpSessionManager::Impl {
         if (session_header_it == request.end()) {
             if (!detail_session_mgr::is_initialize_request(request_json)) {
                 return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::bad_request, g_INVALID_REQUEST,
+                    request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
                     "Missing Mcp-Session-Id header; only initialize is allowed without a session");
             }
             if (at_session_limit()) {
@@ -1231,7 +1235,8 @@ struct StreamableHttpSessionManager::Impl {
         auto session = find_session(session_id_value);
         if (session == nullptr || !session_belongs_to(*session, principal)) {
             return detail_session_mgr::make_jsonrpc_error_response(
-                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
+                request, http::status::not_found, mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                "Session not found");
         }
         return session;
     }
@@ -1363,7 +1368,7 @@ struct StreamableHttpSessionManager::Impl {
         if (request_json.contains("id") && request_json.contains("method") &&
             !detail::is_request_id(request_json.at("id"))) {
             co_return detail_session_mgr::make_jsonrpc_error_response(
-                request, http::status::bad_request, g_INVALID_REQUEST,
+                request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
                 "JSON-RPC request id must be a string or an integer within int64_t");
         }
 
@@ -1393,7 +1398,7 @@ struct StreamableHttpSessionManager::Impl {
             // the version the client and the session agreed on.
             const auto requested_protocol_version =
                 detail_session_mgr::initialize_protocol_version(request_json)
-                    .value_or(std::string(g_LATEST_LEGACY_PROTOCOL_VERSION));
+                    .value_or(std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
             session->set_protocol_version(
                 protocol_policy_
                     ? negotiate_protocol_version(requested_protocol_version, *protocol_policy_)
@@ -1407,7 +1412,7 @@ struct StreamableHttpSessionManager::Impl {
             if (created_here) {
                 destroy_session(session->session_id);
                 co_return detail_session_mgr::make_jsonrpc_error_response(
-                    request, http::status::bad_request, g_INVALID_REQUEST,
+                    request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
                     "initialize must be a request");
             }
             co_await session->client_transport->write_json(std::move(request_json));
@@ -1469,7 +1474,8 @@ struct StreamableHttpSessionManager::Impl {
         auto session = find_session(session_id_value);
         if (session == nullptr || !session_belongs_to(*session, principal)) {
             co_return detail_session_mgr::make_jsonrpc_error_response(
-                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
+                request, http::status::not_found, mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                "Session not found");
         }
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
@@ -1500,7 +1506,8 @@ struct StreamableHttpSessionManager::Impl {
         auto session = find_session(session_id_value);
         if (session == nullptr || !session_belongs_to(*session, principal)) {
             co_return detail_session_mgr::make_jsonrpc_error_response(
-                request, http::status::not_found, g_INVALID_REQUEST, "Session not found");
+                request, http::status::not_found, mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                "Session not found");
         }
 
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
@@ -2059,7 +2066,8 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
             retry = true;
         }
         if (retry) {
-            boost::asio::steady_timer pause(impl->listener_strand, detail::g_accept_retry_delay);
+            boost::asio::steady_timer pause(impl->listener_strand,
+                                            mcp::detail::constants::accept_retry::g_DELAY);
             boost::system::error_code ignored;
             co_await pause.async_wait(boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
             continue;

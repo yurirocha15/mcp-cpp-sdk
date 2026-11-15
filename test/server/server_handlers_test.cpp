@@ -11,12 +11,15 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace protocol = mcp::constants::protocol;
 
 struct AddParams {
     int augend = 0;
@@ -689,7 +692,7 @@ TEST_F(ServerHandlersTest, AmbiguousResourceTemplateMatchReturnsInvalidParams) {
                                           {"params", {{"uri", "file:///fixed/item.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("Ambiguous"), std::string::npos);
 }
 
@@ -739,7 +742,7 @@ TEST_F(ServerHandlersTest, UnknownResourceReturnsResourceNotFound) {
                                           {"params", {{"uri", "file:///does-not-exist.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
     EXPECT_EQ(responses[1]["error"]["data"], nlohmann::json({{"uri", "file:///does-not-exist.txt"}}));
 }
 
@@ -761,7 +764,7 @@ TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsResourceNotFound) {
                                           {"params", {{"uri", "file:///other/item.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
     EXPECT_EQ(responses[1]["error"]["data"], nlohmann::json({{"uri", "file:///other/item.txt"}}));
 }
 
@@ -784,7 +787,7 @@ TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching)
 
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("error"));
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     // Says the URI was too long, rather than that no such resource exists, and does not echo it.
     const auto message = responses[1]["error"]["message"].get<std::string>();
     EXPECT_NE(message.find("limit"), std::string::npos);
@@ -942,7 +945,7 @@ TEST_F(ServerHandlersTest, TemplateExpressionsMatchWhatTheirOperatorExpandsTo) {
             EXPECT_EQ(response["result"]["contents"][0]["text"], uri_template);
         } else {
             ASSERT_TRUE(response.contains("error")) << response.dump();
-            EXPECT_EQ(response["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
+            EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
         }
     }
 }
@@ -974,7 +977,7 @@ TEST_F(ServerHandlersTest, ANearlyMatchingUriIsAnsweredInBoundedTime) {
     const auto elapsed = std::chrono::steady_clock::now() - started;
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_RESOURCE_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
     EXPECT_LT(elapsed, std::chrono::seconds(1));
 }
 
@@ -1098,7 +1101,7 @@ TEST_F(ServerHandlersTest, UnknownPromptReturnsInvalidParams) {
     auto& error_response = responses[1];
     EXPECT_EQ(error_response["id"], "2");
     ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
-    EXPECT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_NE(error_response["error"]["message"].get<std::string>().find("nonexistent"),
               std::string::npos);
 }
@@ -1271,7 +1274,7 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     auto& error_response = responses[1];
     EXPECT_EQ(error_response["id"], "2");
     ASSERT_TRUE(error_response.contains("error"));
-    EXPECT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_TRUE(error_response["error"]["message"].get<std::string>().find("nonexistent") !=
                 std::string::npos);
 }
@@ -1857,7 +1860,7 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
     ASSERT_EQ(responses.size(), 2);
     auto& error_response = responses[1];
     ASSERT_TRUE(error_response.contains("error"));
-    EXPECT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 // A tool name is chosen entirely by the client, and an unknown one is the ordinary error path of
@@ -1893,10 +1896,10 @@ TEST_F(ServerHandlersTest, UnknownToolDiagnosticFlattensClientChosenName) {
     // rejected earlier by params validation or routed to some other diagnostic that flattens its
     // own message; either would make the assertions below pass for a reason unrelated to the site
     // under test. The code pins WHICH of the two "Unknown tool" sites this is: the RPC path refuses
-    // in handle_tools_call_wire with g_INVALID_PARAMS, whereas the invoke_tool path throws and
-    // surfaces as g_INTERNAL_ERROR through the dispatcher. Dump the message on failure so a vacuous
-    // pass cannot hide.
-    ASSERT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS)
+    // in handle_tools_call_wire with mcp::constants::jsonrpc::g_INVALID_PARAMS, whereas the invoke_tool
+    // path throws and surfaces as mcp::constants::jsonrpc::g_INTERNAL_ERROR through the dispatcher.
+    // Dump the message on failure so a vacuous pass cannot hide.
+    ASSERT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS)
         << "response: " << error_response.dump();
     ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U) << "actual message: " << message;
     ASSERT_NE(message.find("zqtripwire"), std::string::npos) << "actual message: " << message;
@@ -1928,7 +1931,7 @@ TEST_F(ServerHandlersTest, UnknownToolDiagnosticBoundsClientChosenName) {
     ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
     const auto message = error_response["error"]["message"].get<std::string>();
 
-    ASSERT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS)
+    ASSERT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS)
         << "actual message prefix: " << message.substr(0, 64);
     ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U)
         << "actual message prefix: " << message.substr(0, 64);
@@ -2129,7 +2132,7 @@ TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
     ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
     ASSERT_TRUE(init_response.contains("result"));
     EXPECT_EQ(init_response["result"]["protocolVersion"],
-              std::string(mcp::g_LATEST_LEGACY_PROTOCOL_VERSION));
+              std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullCapabilityFlags) {
@@ -2204,5 +2207,5 @@ TEST_F(ServerHandlersTest, MessageNestedBeyondTheDepthLimitIsAParseError) {
     // The id of a message that was never decoded is unknown, so the error carries none.
     const auto refused = with_id(nullptr);
     ASSERT_TRUE(refused.is_object()) << "the ping over the limit got no parse error";
-    EXPECT_EQ(refused.at("error").at("code"), mcp::g_PARSE_ERROR);
+    EXPECT_EQ(refused.at("error").at("code"), mcp::constants::jsonrpc::g_PARSE_ERROR);
 }

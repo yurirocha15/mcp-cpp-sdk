@@ -1,3 +1,4 @@
+#include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
@@ -11,6 +12,7 @@
 #include "task_run.hpp"
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
@@ -64,6 +66,9 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+namespace sealed_token = mcp::detail::constants::sealed_token;
+namespace transport_writer = mcp::constants::transport_writer;
 
 namespace mcp {
 
@@ -132,7 +137,8 @@ BySchemaCache<ListedSchemaText>& listed_schema_text_cache() {
 }
 
 /// Throws when the `structuredContent` of @p result does not conform to @p schema; the dispatcher
-/// answers that with g_INTERNAL_ERROR, since the tool broke its own declared contract.
+/// answers that with mcp::constants::jsonrpc::g_INTERNAL_ERROR, since the tool broke its own declared
+/// contract.
 void check_structured_content(const CompiledSchema& schema, std::string_view tool_name,
                               const nlohmann::json& result) {
     const auto content = result.find("structuredContent");
@@ -268,16 +274,6 @@ struct UriTemplatePattern {
     std::string source;
     std::vector<UriMatchState> matcher;
 };
-
-// Matching a URI against every registered template costs time in proportion to the URI's length
-// times the templates' size, so the length is bounded to keep one resources/read cheap whatever a
-// client sends. Real resource identifiers sit far below this.
-constexpr std::size_t g_MAX_TEMPLATE_MATCH_URI_LENGTH = 512;
-/// The default of Server::set_max_in_flight_bytes().
-constexpr std::size_t g_default_max_in_flight_bytes = 256U * 1024U * 1024U;
-/// Resources one session may subscribe to, and the bytes of their URIs together.
-constexpr std::size_t g_max_subscriptions = 4096;
-constexpr std::size_t g_max_subscription_bytes = 8U * 1024U * 1024U;
 
 /// Does `uri` match the automaton `states` from start to end? Every state the input can be in is
 /// followed at once, as in Thompson's construction, so the work is linear in the URI's length and
@@ -585,7 +581,7 @@ nlohmann::json normalize_structured_tool_result(nlohmann::json result, bool mode
 /// The `_meta` of a message that belongs to the subscriptions/listen request with id @p listen_id.
 nlohmann::json subscription_meta(const nlohmann::json& listen_id) {
     nlohmann::json meta = nlohmann::json::object();
-    meta[std::string(g_META_SUBSCRIPTION_ID)] = listen_id;
+    meta[std::string(mcp::constants::meta::g_META_SUBSCRIPTION_ID)] = listen_id;
     return meta;
 }
 
@@ -711,8 +707,9 @@ bool is_valid_response_envelope(const nlohmann::json& message) {
 /// An error that answers no request it can name leaves out `id`: MCP's schema gives an error
 /// response's id the type of a request id, which null is not.
 std::string make_invalid_request_wire(const nlohmann::json& message, std::string_view reason) {
-    nlohmann::json wire = {{"jsonrpc", "2.0"},
-                           {"error", {{"code", g_INVALID_REQUEST}, {"message", reason}}}};
+    nlohmann::json wire = {
+        {"jsonrpc", "2.0"},
+        {"error", {{"code", mcp::constants::jsonrpc::g_INVALID_REQUEST}, {"message", reason}}}};
     if (message.is_object() && has_valid_request_id(message)) {
         wire["id"] = message.at("id");
     }
@@ -721,7 +718,8 @@ std::string make_invalid_request_wire(const nlohmann::json& message, std::string
 
 std::string make_parse_error_wire() {
     return mcp::detail::dump_json(nlohmann::json{
-        {"jsonrpc", "2.0"}, {"error", {{"code", g_PARSE_ERROR}, {"message", "Parse error"}}}});
+        {"jsonrpc", "2.0"},
+        {"error", {{"code", mcp::constants::jsonrpc::g_PARSE_ERROR}, {"message", "Parse error"}}}});
 }
 
 }  // namespace
@@ -957,8 +955,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::array<CacheHint, 6> cache_hints{};
     bool report_server_info{true};
     /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
-    /// g_META_SERVER_INFO, as JSON text. Written by the first such result, so a server that only
-    /// serves earlier revisions never writes it; empty when the identity cannot be serialized.
+    /// mcp::constants::meta::g_META_SERVER_INFO, as JSON text. Written by the first such result,
+    /// so a server that only serves earlier revisions never writes it; empty when the identity cannot
+    /// be serialized.
     mutable std::string server_info_meta_text;  // written once, under server_info_meta_once
     mutable std::once_flag server_info_meta_once;
     const std::string& server_info_meta() const;
@@ -976,7 +975,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::atomic<LoggingLevel> log_level{g_default_log_level};
     std::size_t page_size{0};
     std::atomic_size_t max_in_flight_requests{1024};
-    std::atomic_size_t max_in_flight_bytes{g_default_max_in_flight_bytes};
+    std::atomic_size_t max_in_flight_bytes{
+        mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_BYTES};
     /// Requests dispatched with dispatch_request_direct(), which belong to no session, and the
     /// memory they take parsed. Together they are held to the limits of one session.
     struct DirectCounters {
@@ -1717,28 +1717,29 @@ std::string negotiate_protocol_version(std::string_view requested, const ServerP
     if (policy_allows_legacy_version(policy, requested)) {
         return std::string(requested);
     }
-    // g_LEGACY_PROTOCOL_VERSIONS is oldest first, so the last one allowed is the newest.
-    for (auto version = g_LEGACY_PROTOCOL_VERSIONS.rbegin();
-         version != g_LEGACY_PROTOCOL_VERSIONS.rend(); ++version) {
+    // mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS is oldest first, so the last one allowed is
+    // the newest.
+    for (auto version = mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.rbegin();
+         version != mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.rend(); ++version) {
         if (policy_allows_legacy_version(policy, *version)) {
             return std::string(*version);
         }
     }
-    return std::string(g_LATEST_LEGACY_PROTOCOL_VERSION);
+    return std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
 }
 
 std::vector<std::string> served_protocol_versions(const ServerProtocolPolicy& policy) {
     std::vector<std::string> versions;
     if (policy.serve_legacy) {
-        for (const auto version : g_LEGACY_PROTOCOL_VERSIONS) {
+        for (const auto version : mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS) {
             if (policy_allows_legacy_version(policy, version)) {
                 versions.emplace_back(version);
             }
         }
     }
     if (policy.serve_modern) {
-        versions.insert(versions.end(), g_MODERN_PROTOCOL_VERSIONS.begin(),
-                        g_MODERN_PROTOCOL_VERSIONS.end());
+        versions.insert(versions.end(), mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.begin(),
+                        mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end());
     }
     return versions;
 }
@@ -1845,7 +1846,8 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     }
     // A cancel that came before the handler asked has nothing to wake, so it is checked here.
     if (cancelled && cancelled->load(std::memory_order_relaxed)) {
-        throw std::runtime_error("JSON-RPC error " + std::to_string(g_REQUEST_CANCELLED) +
+        throw std::runtime_error("JSON-RPC error " +
+                                 std::to_string(mcp::constants::jsonrpc::g_REQUEST_CANCELLED) +
                                  ": The request was cancelled");
     }
 
@@ -1882,8 +1884,8 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
             const auto id_key = RequestId{std::to_string(id)}.correlation_key();
             const auto pending_it = session->pending_requests.find(id_key);
             if (pending_it != session->pending_requests.end() && !pending_it->second.completed) {
-                pending_it->second.error =
-                    Error{g_REQUEST_TIMEOUT, "The client did not answer in time", std::nullopt};
+                pending_it->second.error = Error{mcp::constants::jsonrpc::g_REQUEST_TIMEOUT,
+                                                 "The client did not answer in time", std::nullopt};
                 pending_it->second.completed = true;
                 pending_it->second.given_up = true;
             }
@@ -2054,9 +2056,10 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
             if (session_is_full(*session, message_bytes)) {
                 if (is_identified_request(json_msg)) {
                     co_await answer_from_read_loop(
-                        *session, std::make_shared<const std::string>(make_error_wire(
-                                      json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
-                                      "Too many requests in flight")));
+                        *session,
+                        std::make_shared<const std::string>(make_error_wire(
+                            json_msg.at("id").get<RequestId>(),
+                            mcp::constants::jsonrpc::g_INTERNAL_ERROR, "Too many requests in flight")));
                 } else {
                     try {
                         co_await dispatch_on_strand(std::move(json_msg));
@@ -2153,7 +2156,7 @@ Task<void> Server::Impl::answer_from_read_loop(Session& session,
     // requests, which a peer at its own limit may be waiting to write before it reads again.
     // Answers are queued instead while what is queued stays within the byte limit; past it,
     // reading waits for the peer.
-    if (session.writer->queued_bytes() + answer->size() + detail::g_queued_message_overhead <=
+    if (session.writer->queued_bytes() + answer->size() + transport_writer::g_QUEUED_MESSAGE_OVERHEAD <=
         max_in_flight_bytes.load(std::memory_order_relaxed)) {
         session.writer->post_message(std::move(answer));
         co_return;
@@ -2230,7 +2233,8 @@ Task<std::string> Server::Impl::dispatch_direct(
              max_in_flight_requests.load(std::memory_order_relaxed) ||
          counters.bytes.load(std::memory_order_relaxed) + bytes >
              max_in_flight_bytes.load(std::memory_order_relaxed))) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                   "Too many requests in flight");
     }
     auto in_flight = std::make_shared<CountedRequest>(direct_counters, bytes);
@@ -2252,8 +2256,8 @@ Task<std::string> Server::Impl::dispatch_for_http(std::weak_ptr<Impl> weak, nloh
                                                   RequestContext request_context) {
     auto impl = weak.lock();
     if (!impl) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
-                                  "The server is gone");
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INTERNAL_ERROR, "The server is gone");
     }
     co_return co_await impl->dispatch_with_context(std::move(json_msg), std::move(request_context));
 }
@@ -2529,7 +2533,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
 
     // [gcc11-sso: scope-before-await] DO NOT use optional<string> for error state.
     nlohmann::json error_payload;
-    int error_code = g_INTERNAL_ERROR;
+    int error_code = mcp::constants::jsonrpc::g_INTERNAL_ERROR;
 
     try {
         // A request naming its protocol version in _meta is served on its own, without
@@ -2556,8 +2560,9 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                 // names them, as an initialize error should.
                 co_return initialize_not_served_wire(json_msg.at("id").get<RequestId>());
             }
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
-                                      "Missing " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
+            co_return make_error_wire(
+                json_msg.at("id").get<RequestId>(), mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                "Missing " + std::string(mcp::constants::meta::g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
         RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle, nullptr, {},
@@ -2575,7 +2580,8 @@ Task<std::string> Server::Impl::dispatch_request_wire(
 
         if (method == "initialize") {
             if (enforce_lifecycle && session_state != LifecycleState::eUninitialized) {
-                co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_REQUEST,
+                co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                          mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                           "Server has already been initialized");
             }
             co_return co_await handle_initialize_wire(json_msg, enforce_lifecycle);
@@ -2589,13 +2595,14 @@ Task<std::string> Server::Impl::dispatch_request_wire(
             // server/discover belongs to 2026-07-28 and requires its per-request fields.
             legacy_shaped_rejections.fetch_add(1, std::memory_order_relaxed);
             co_return make_error_wire(
-                json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
-                "server/discover requires " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
+                json_msg.at("id").get<RequestId>(), mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                "server/discover requires " +
+                    std::string(mcp::constants::meta::g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
         if (session_state != LifecycleState::eReady) {
             co_return make_error_wire(
-                json_msg.at("id").get<RequestId>(), g_INVALID_REQUEST,
+                json_msg.at("id").get<RequestId>(), mcp::constants::jsonrpc::g_INVALID_REQUEST,
                 "Server is not ready; initialize and send notifications/initialized first");
         }
 
@@ -2624,11 +2631,12 @@ Task<std::string> Server::Impl::dispatch_request_wire(
         } else if (method == "completion/complete") {
             co_return co_await handle_complete_wire(json_msg, legacy_scope);
         } else {
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
                                       "Method not found: " + std::string(method));
         }
     } catch (const InvalidParamsError& error) {
-        error_code = g_INVALID_PARAMS;
+        error_code = mcp::constants::jsonrpc::g_INVALID_PARAMS;
         error_payload = error.what();
     } catch (const nlohmann::json::exception&) {
         // Its text describes the library, and quotes bytes of the value that could not be encoded.
@@ -2654,7 +2662,8 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                   error_payload.get<std::string>());
     }
 
-    co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+    co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                              mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                               "Request produced no response");
 }
 
@@ -2666,8 +2675,9 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
     const auto* version = detail::requested_protocol_version(json_msg);
     if (version == nullptr) {
         invalid_metadata_rejections.fetch_add(1, std::memory_order_relaxed);
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
-                                  "Invalid " + std::string(g_META_PROTOCOL_VERSION) + " in _meta");
+        co_return make_error_wire(
+            json_msg.at("id").get<RequestId>(), mcp::constants::jsonrpc::g_INVALID_PARAMS,
+            "Invalid " + std::string(mcp::constants::meta::g_META_PROTOCOL_VERSION) + " in _meta");
     }
     if (!protocol_policy.serve_modern || !is_modern_protocol_version(*version)) {
         unsupported_version_rejections.fetch_add(1, std::memory_order_relaxed);
@@ -2678,7 +2688,8 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
         (method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel");
     const auto extension = extension_methods.find(method);
     if (!task_method && extension == extension_methods.end() && !detail::is_modern_method(method)) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
                                   "Method not found: " + std::string(method));
     }
     {
@@ -2686,7 +2697,8 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
             scope.message ? scope.message : std::make_shared<const nlohmann::json>(json_msg));
         if (!parsed.metadata) {
             invalid_metadata_rejections.fetch_add(1, std::memory_order_relaxed);
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                       std::move(parsed.error));
         }
         scope.meta = std::move(parsed.metadata);
@@ -2724,7 +2736,8 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     const auto responses = params.find("inputResponses");
     if ((state != params.end() && !state->is_string()) ||
         (responses != params.end() && !responses->is_object())) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "requestState must be a string and inputResponses an object");
     }
     const bool retry = state != params.end();
@@ -2740,7 +2753,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         if (const auto token = meta.find("progressToken"); token != meta.end()) {
             progress_token = *token;
         }
-        const auto declared = meta.find(std::string(g_META_CLIENT_CAPABILITIES));
+        const auto declared = meta.find(std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES));
         if (declared != meta.end() && declared->is_object()) {
             client_capabilities = *declared;
         }
@@ -2765,21 +2778,24 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     if (retry) {
         // Checked before the state is taken, so that a refused retry can be sent again.
         if (auto mismatch = retry_header_mismatch(json_msg, method, scope)) {
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_HEADER_MISMATCH,
                                       "Header mismatch: " + *mismatch);
         }
         if (sealed) {
             earlier = open_sealed_state(*codec, *options, state->get_ref<const std::string&>(),
                                         principal, method, detail::mrtr_params_digest(params));
             if (!earlier) {
-                co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                          mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                           "Unknown or expired requestState");
             }
         } else {
             entry = take_parked(state->get_ref<const std::string&>(), principal, method,
                                 detail::mrtr_params_digest(params));
             if (!entry) {
-                co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+                co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                          mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                           "Unknown or expired requestState");
             }
         }
@@ -2864,7 +2880,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         detail::mrtr_abandon(entry);
         end_sealed_handler();
         co_return make_error_wire(json_msg.at("id").get<RequestId>(),
-                                  g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+                                  mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY,
                                   "The request needs a capability the client did not declare",
                                   {{"requiredCapabilities", std::move(outcome.missing_capabilities)}});
     }
@@ -2872,8 +2888,8 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         // Nothing is sent for a cancelled request, and nothing will retry it.
         detail::mrtr_abandon(entry);
         end_sealed_handler();
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
-                                  "Request cancelled");
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INTERNAL_ERROR, "Request cancelled");
     }
     std::string token;
     if (sealed) {
@@ -2894,12 +2910,14 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         }
         next.answers = std::move(outcome.answers);
         if (next.round > options->max_rounds) {
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                       "The request needs more rounds of input than the server allows");
         }
         token = detail::mrtr_seal_state(*codec, next);
         if (token.empty()) {
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                       "The state of the request is larger than the server allows");
         }
     } else {
@@ -2933,7 +2951,7 @@ Task<std::string> Server::Impl::serve_without_parking(const nlohmann::json& json
     auto missing = input->missing_capabilities();
     if (!missing.empty()) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(),
-                                  g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+                                  mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY,
                                   "The request needs a capability the client did not declare",
                                   {{"requiredCapabilities", std::move(missing)}});
     }
@@ -2977,12 +2995,12 @@ Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
     const nlohmann::json& json_msg = *message;
     // [gcc11-sso: string-in-frame] The answer is held as json until no suspension is left.
     nlohmann::json answer;
-    int error_code = g_INTERNAL_ERROR;
+    int error_code = mcp::constants::jsonrpc::g_INTERNAL_ERROR;
     nlohmann::json error_payload;
     try {
         answer = co_await impl->serve_mrtr_method(json_msg, scope);
     } catch (const InvalidParamsError& error) {
-        error_code = g_INVALID_PARAMS;
+        error_code = mcp::constants::jsonrpc::g_INVALID_PARAMS;
         error_payload = error.what();
     } catch (const nlohmann::json::exception&) {
         // Its text describes the library, and quotes bytes of the value that could not be encoded.
@@ -3279,7 +3297,7 @@ void Server::set_mrtr_options(MrtrOptions options) {
         if (options.max_rounds == 0) {
             throw std::invalid_argument("max_rounds must be at least 1");
         }
-        if (options.max_state_bytes < detail::g_min_state_chars) {
+        if (options.max_state_bytes < mcp::detail::constants::mrtr::g_MIN_STATE_CHARS) {
             throw std::invalid_argument("max_state_bytes is too small for any request state");
         }
         if (options.state_mode == MrtrStateMode::eSealed) {
@@ -3288,14 +3306,14 @@ void Server::set_mrtr_options(MrtrOptions options) {
             }
             std::vector<detail::sealed_state::SealKey> keys;
             for (const auto& material : options.sealing_keys) {
-                if (material.size() < detail::sealed_state::g_key_size) {
+                if (material.size() < sealed_token::g_KEY_SIZE) {
                     throw std::invalid_argument("a sealing key must be at least 32 bytes");
                 }
                 // The master key and its id are one-way derivations of the supplied secret.
                 auto secret = auth::detail::sha256(material);
                 std::string secret_bytes(secret.begin(), secret.end());
                 const auto id = auth::detail::sha256(secret_bytes);
-                std::array<std::uint8_t, detail::sealed_state::g_kid_size> kid{};
+                std::array<std::uint8_t, sealed_token::g_KID_SIZE> kid{};
                 std::copy_n(id.begin(), kid.size(), kid.begin());
                 keys.emplace_back(kid, secret);
                 OPENSSL_cleanse(secret.data(), secret.size());
@@ -3371,8 +3389,8 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
             // parked until the reverse request timed out, counting against the limit on requests.
             for (auto& [pending_id, pending] : session->pending_requests) {
                 if (pending.caller_cancelled == it->second && !pending.completed) {
-                    pending.error =
-                        Error{g_REQUEST_CANCELLED, "The request was cancelled", std::nullopt};
+                    pending.error = Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                                          "The request was cancelled", std::nullopt};
                     pending.completed = true;
                     pending.given_up = true;
                     pending.timer->cancel();
@@ -3406,8 +3424,8 @@ void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
             it->second.error = json_msg.at("error").get<Error>();
         } catch (const std::exception&) {
             // Still an answer: the request failed, and the handler must not wait on.
-            it->second.error =
-                Error{g_INVALID_REQUEST, "Malformed JSON-RPC error object", std::nullopt};
+            it->second.error = Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                                     "Malformed JSON-RPC error object", std::nullopt};
         }
     } else if (json_msg.contains("result")) {
         it->second.result = json_msg.at("result");
@@ -3462,7 +3480,7 @@ Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_
     discover_result.supportedVersions = supported_versions();
     discover_result.capabilities = capabilities;
     if (tasks_enabled.load(std::memory_order_acquire)) {
-        mcp::declare_extension(discover_result.capabilities, g_TASKS_EXTENSION);
+        mcp::declare_extension(discover_result.capabilities, mcp::constants::tasks::g_EXTENSION_ID);
     }
     discover_result.instructions = instructions;
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope,
@@ -3484,8 +3502,8 @@ Task<std::string> Server::Impl::handle_extension_wire(const nlohmann::json& json
         invalid_params = detail::sanitize_for_diagnostics(error.what());
     }
     if (!invalid_params.empty()) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
-                                  std::move(invalid_params));
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS, std::move(invalid_params));
     }
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
@@ -3706,7 +3724,8 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
         // the RPC path refuses before dispatch. The tools spec lists an unknown tool as -32602
         // (Invalid params). The name is entirely the client's, so flatten and bound it before it
         // reaches the operator's log.
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "Unknown tool: " + detail::sanitize_for_diagnostics(*call.name));
     }
     // An HTTP request mirrors the arguments the tool's x-mcp-header annotations name into
@@ -3714,7 +3733,8 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     if (scope.meta != nullptr && scope.param_headers != nullptr) {
         if (auto mismatch = detail::param_header_mismatch(tool->second.schemas.param_headers->headers,
                                                           *call.arguments, *scope.param_headers)) {
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_HEADER_MISMATCH,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_HEADER_MISMATCH,
                                       "Header mismatch: " + *mismatch);
         }
     }
@@ -3734,7 +3754,7 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
 
     if (tasks_enabled.load(std::memory_order_acquire) &&
         tool->second.task_mode != ToolTaskMode::eNever) {
-        if (declares_extension(scope.meta.get(), g_TASKS_EXTENSION)) {
+        if (declares_extension(scope.meta.get(), mcp::constants::tasks::g_EXTENSION_ID)) {
             auto executor = co_await boost::asio::this_coro::executor;
             if (!tool->second.task_preparation) {
                 co_return start_task(json_msg, scope, call, *call.arguments, executor);
@@ -3743,7 +3763,8 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
                 // A client at its limit is told before it answers the preparation's questions.
                 std::lock_guard runs_lock(task_runs_mutex);
                 if (task_limit_reached_locked(scope.principal ? *scope.principal : std::string())) {
-                    co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                    co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                              mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                               "Too many tasks for this principal");
                 }
             }
@@ -3760,7 +3781,8 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
             if (prepared && !prepared->result) {
                 if (prepared_cancelled->load(std::memory_order_relaxed)) {
                     // A cancelled request creates no task.
-                    co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+                    co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                              mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                               "Request cancelled");
                 }
                 co_return start_task(json_msg, scope, call, prepared->arguments, executor);
@@ -3800,7 +3822,8 @@ Task<std::string> Server::Impl::handle_tools_list_wire(const nlohmann::json& jso
                                                        const RequestScope& scope) {
     auto page = paginate(tools.size(), json_msg);
     if (!page) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "Invalid pagination cursor");
     }
 
@@ -3848,7 +3871,8 @@ Task<std::string> Server::Impl::handle_resources_list_wire(const nlohmann::json&
                                                            const RequestScope& scope) {
     auto page = paginate(resources.size(), json_msg);
     if (!page) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "Invalid pagination cursor");
     }
 
@@ -3880,11 +3904,12 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     // Exact resources are found by lookup and so may be any length; only template matching is
     // length-sensitive. This reports the limit rather than "Unknown resource", so that a caller
     // whose URI is merely too long can tell that from one that names nothing.
-    if (params.uri.size() > g_MAX_TEMPLATE_MATCH_URI_LENGTH) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
-                                  "Resource URI exceeds the " +
-                                      std::to_string(g_MAX_TEMPLATE_MATCH_URI_LENGTH) +
-                                      " character limit for template matching");
+    if (params.uri.size() > mcp::detail::constants::server::g_MAX_TEMPLATE_MATCH_URI_LENGTH) {
+        co_return make_error_wire(
+            json_msg.at("id").get<RequestId>(), mcp::constants::jsonrpc::g_INVALID_PARAMS,
+            "Resource URI exceeds the " +
+                std::to_string(mcp::detail::constants::server::g_MAX_TEMPLATE_MATCH_URI_LENGTH) +
+                " character limit for template matching");
     }
 
     const Impl::ResourceTemplateRegistration* match = nullptr;
@@ -3896,7 +3921,8 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
             continue;
         }
         if (match != nullptr) {
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                       "Ambiguous resource template match: " + params.uri);
         }
         match = &resource_template;
@@ -3905,9 +3931,11 @@ Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json&
     if (match == nullptr || !match->handler) {
         // 2025-11-25 and earlier name this case with its own code, which 2026-07-28 retired. Both
         // name the URI in data.
-        co_return make_error_wire(
-            json_msg.at("id").get<RequestId>(), scope.meta ? g_INVALID_PARAMS : g_RESOURCE_NOT_FOUND,
-            "Unknown resource: " + params.uri, nlohmann::json{{"uri", params.uri}});
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  scope.meta ? mcp::constants::jsonrpc::g_INVALID_PARAMS
+                                             : mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND,
+                                  "Unknown resource: " + params.uri,
+                                  nlohmann::json{{"uri", params.uri}});
     }
 
     nlohmann::json params_json = params;
@@ -3923,7 +3951,8 @@ Task<std::string> Server::Impl::handle_resource_templates_list_wire(const nlohma
                                                                     const RequestScope& scope) {
     auto page = paginate(resource_templates.size(), json_msg);
     if (!page) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "Invalid pagination cursor");
     }
 
@@ -3952,7 +3981,8 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         if (session->http_transport != nullptr) {
             // A request an HttpServerTransport queued before the server was bound has no stream to
             // keep open: the session's own stream is the legacy session's.
-            co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+            co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                      mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
                                       "Method not found: subscriptions/listen");
         }
         owner = session;
@@ -3960,7 +3990,8 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     } else if (scope.notifications) {
         sink = scope.notifications;
     } else {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_REQUEST,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                   "subscriptions/listen needs a transport that streams notifications");
     }
 
@@ -3982,7 +4013,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
                 "most 1024 strings");
         }
         if (tasks_enabled.load(std::memory_order_acquire) && !requested_task_ids->empty() &&
-            !declares_extension(scope.meta.get(), g_TASKS_EXTENSION)) {
+            !declares_extension(scope.meta.get(), mcp::constants::tasks::g_EXTENSION_ID)) {
             co_return missing_tasks_extension_wire(json_msg.at("id").get<RequestId>());
         }
     }
@@ -4266,8 +4297,9 @@ Task<void> Server::Impl::notify_listeners(ListenTopic topic, std::shared_ptr<con
 
 std::string Server::Impl::missing_tasks_extension_wire(const RequestId& id) {
     nlohmann::json required = {
-        {"extensions", {{std::string(g_TASKS_EXTENSION), nlohmann::json::object()}}}};
-    return make_error_wire(id, g_MISSING_REQUIRED_CLIENT_CAPABILITY,
+        {"extensions",
+         {{std::string(mcp::constants::tasks::g_EXTENSION_ID), nlohmann::json::object()}}}};
+    return make_error_wire(id, mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY,
                            "Missing required client capability",
                            {{"requiredCapabilities", std::move(required)}});
 }
@@ -4288,7 +4320,7 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
                                              const RequestScope& scope,
                                              std::shared_ptr<const TaskRecord>& changed) {
     const auto& id = json_msg.at("id");
-    if (!declares_extension(scope.meta.get(), g_TASKS_EXTENSION)) {
+    if (!declares_extension(scope.meta.get(), mcp::constants::tasks::g_EXTENSION_ID)) {
         return missing_tasks_extension_wire(id.get<RequestId>());
     }
     const auto params_member = json_msg.find("params");
@@ -4307,7 +4339,7 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
         scope.principal ? std::string_view(*scope.principal) : std::string_view();
     const auto record = task_store->get(owner, id_text);
     if (!record) {
-        return make_error_wire(id.get<RequestId>(), g_INVALID_PARAMS,
+        return make_error_wire(id.get<RequestId>(), mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                "Failed to retrieve task: Task not found");
     }
     if (method == "tasks/get") {
@@ -4362,19 +4394,21 @@ std::string Server::Impl::start_task(const nlohmann::json& json_msg, const Reque
     // happen under one lock, so concurrent requests cannot pass the limit together.
     std::unique_lock runs_lock(task_runs_mutex);
     if (task_limit_reached_locked(owner)) {
-        return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+        return make_error_wire(json_msg.at("id").get<RequestId>(),
+                               mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                "Too many tasks for this principal");
     }
     auto record = task_store->create(owner, task_options.ttl, task_options.poll_interval);
     if (!record) {
-        return make_error_wire(json_msg.at("id").get<RequestId>(), g_INTERNAL_ERROR,
+        return make_error_wire(json_msg.at("id").get<RequestId>(),
+                               mcp::constants::jsonrpc::g_INTERNAL_ERROR,
                                "Too many tasks for this principal");
     }
 
     nlohmann::json client_capabilities = nlohmann::json::object();
     {
         const auto& meta = *scope.meta->meta;
-        const auto declared = meta.find(std::string(g_META_CLIENT_CAPABILITIES));
+        const auto declared = meta.find(std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES));
         if (declared != meta.end() && declared->is_object()) {
             client_capabilities = *declared;
         }
@@ -4427,14 +4461,15 @@ Task<void> Server::Impl::run_task_worker(std::shared_ptr<Impl> impl,
         // The task was cancelled, expired or its server went away: the store holds its outcome.
         abandoned = true;
     } catch (const InvalidParamsError& failure) {
-        error = {{"code", g_INVALID_PARAMS}, {"message", failure.what()}};
+        error = {{"code", mcp::constants::jsonrpc::g_INVALID_PARAMS}, {"message", failure.what()}};
     } catch (const nlohmann::json::exception&) {
-        error = {{"code", g_INTERNAL_ERROR}, {"message", "The result could not be encoded as JSON"}};
+        error = {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
+                 {"message", "The result could not be encoded as JSON"}};
     } catch (const std::exception& failure) {
-        error = {{"code", g_INTERNAL_ERROR},
+        error = {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
                  {"message", detail::sanitize_for_diagnostics(failure.what())}};
     } catch (...) {
-        error = {{"code", g_INTERNAL_ERROR}, {"message", "Internal error"}};
+        error = {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR}, {"message", "Internal error"}};
     }
     run->stop_expiry();
     {
@@ -4522,8 +4557,10 @@ Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json
                 if (!session->subscriptions.contains(uri)) {
                     const auto epoch = Impl::session_epoch(*session);
                     const auto full = [&session, &uri] {
-                        return session->subscriptions.size() >= g_max_subscriptions ||
-                               session->subscription_bytes + uri.size() > g_max_subscription_bytes;
+                        return session->subscriptions.size() >=
+                                   mcp::detail::constants::server::g_MAX_SUBSCRIPTIONS ||
+                               session->subscription_bytes + uri.size() >
+                                   mcp::detail::constants::server::g_MAX_SUBSCRIPTION_BYTES;
                     };
                     if (full()) {
                         // Subscriptions of a session that ended are only dropped lazily.
@@ -4577,7 +4614,8 @@ Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& j
                                                          const RequestScope& scope) {
     auto page = paginate(prompts.size(), json_msg);
     if (!page) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "Invalid pagination cursor");
     }
 
@@ -4597,7 +4635,8 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
     auto iter = prompt_handlers.find(params.name);
     if (iter == prompt_handlers.end()) {
         // The prompts spec lists an invalid prompt name as -32602 (Invalid params).
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_INVALID_PARAMS,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                   "Unknown prompt: " + params.name);
     }
 
@@ -4620,7 +4659,8 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
     auto params = deserialize_request_params<CompleteParams>(json_msg, "completion/complete");
 
     if (!completion_handler) {
-        co_return make_error_wire(json_msg.at("id").get<RequestId>(), g_METHOD_NOT_FOUND,
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(),
+                                  mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
                                   "No completion handler registered");
     }
 
@@ -4656,7 +4696,7 @@ const std::string& Server::Impl::server_info_meta() const {
     std::call_once(server_info_meta_once, [this] {
         try {
             nlohmann::json meta = nlohmann::json::object();
-            meta[std::string(g_META_SERVER_INFO)] = server_info;
+            meta[std::string(mcp::constants::meta::g_META_SERVER_INFO)] = server_info;
             server_info_meta_text = detail::dump_json(meta);
         } catch (const nlohmann::json::exception&) {
             // Left empty: each result then has the identity inserted, and fails, as before.
@@ -4707,7 +4747,7 @@ std::string Server::Impl::make_result_wire(const RequestId& id,
             meta = nlohmann::json::object();
         }
         if (meta.is_object()) {
-            meta.emplace(g_META_SERVER_INFO, server_info_json);
+            meta.emplace(mcp::constants::meta::g_META_SERVER_INFO, server_info_json);
         }
     }
     if (target) {
@@ -4751,7 +4791,7 @@ bool Server::Impl::serves_legacy_version(std::string_view version) const {
 std::string Server::Impl::initialize_not_served_wire(const RequestId& id) const {
     auto supported = supported_versions();
     auto message = detail::initialize_not_served_message(supported);
-    return make_error_wire(id, g_METHOD_NOT_FOUND, std::move(message),
+    return make_error_wire(id, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND, std::move(message),
                            nlohmann::json{{"supported", std::move(supported)}});
 }
 
@@ -4759,8 +4799,8 @@ std::string Server::Impl::unsupported_version_wire(const RequestId& id, std::str
     UnsupportedProtocolVersionData data;
     data.supported = supported_versions();
     data.requested = std::move(requested);
-    return make_error_wire(id, g_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version",
-                           nlohmann::json(std::move(data)));
+    return make_error_wire(id, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                           "Unsupported protocol version", nlohmann::json(std::move(data)));
 }
 
 Task<void> Server::Impl::send_notification(const std::string& method,
@@ -4959,7 +4999,8 @@ void Server::Impl::abandon_pending_requests(Session& session) {
     for (auto& [id, pending] : session.pending_requests) {
         static_cast<void>(id);
         if (!pending.completed) {
-            pending.error = Error{g_CONNECTION_CLOSED, "Server session closed", std::nullopt};
+            pending.error = Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Server session closed",
+                                  std::nullopt};
             pending.completed = true;
         }
         pending.timer->cancel();

@@ -27,31 +27,13 @@ namespace mcp::auth {
 
 namespace net = boost::asio;
 
-namespace constants {
-
-constexpr int g_default_token_lifetime_safety_margin_seconds = 30;
-constexpr std::size_t g_buffer_size = 4096;
-constexpr int g_shift4 = 4;
-constexpr int g_shift6 = 6;
-constexpr int g_shift8 = 8;
-constexpr int g_shift12 = 12;
-constexpr int g_shift16 = 16;
-constexpr int g_shift18 = 18;
-constexpr unsigned int g_mask0x3F = 0x3F;
-constexpr std::size_t g_min_verifier_length = 43;
-constexpr std::size_t g_max_verifier_length = 128;
-constexpr unsigned int g_mask0x0F = 0x0F;
-constexpr std::size_t g_sha256_digest_length = 32;
-constexpr std::size_t g_default_verifier_length = 64;
-constexpr std::size_t g_default_cache_ttl_seconds = 300;
-}  // namespace constants
-
 namespace detail {
 MCP_API std::string base64_encode(const unsigned char* data, std::size_t len);
 MCP_API std::string base64url_encode(const unsigned char* data, std::size_t len);
 
 /// SHA-256 via OpenSSL EVP interface.
-MCP_API std::array<unsigned char, constants::g_sha256_digest_length> sha256(const std::string& input);
+MCP_API std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> sha256(
+    const std::string& input);
 
 MCP_API std::string generate_random_string(std::size_t length);
 MCP_API std::string url_encode(const std::string& value);
@@ -74,7 +56,8 @@ struct PkcePair {
  * @param verifier_length Length of the verifier string, between 43 and 128 characters.
  * @return A PKCE pair suitable for OAuth 2.1 authorization code flows.
  */
-MCP_API PkcePair generate_pkce_pair(std::size_t verifier_length = constants::g_default_verifier_length);
+MCP_API PkcePair
+generate_pkce_pair(std::size_t verifier_length = mcp::constants::oauth::g_DEFAULT_VERIFIER_LENGTH);
 
 /**
  * @brief OAuth token response data returned by an authorization server.
@@ -95,7 +78,7 @@ struct TokenResponse {
      * @return True when the token is expired or within the safety margin.
      */
     [[nodiscard]] MCP_API bool is_expired(
-        int margin = constants::g_default_token_lifetime_safety_margin_seconds) const;
+        int margin = mcp::constants::oauth::g_DEFAULT_TOKEN_LIFETIME_SAFETY_MARGIN_SECONDS) const;
 };
 
 /**
@@ -501,9 +484,9 @@ class MCP_API OAuthDiscoveryClient {
      * @param http_client HTTP helper used to fetch discovery documents.
      * @param cache_ttl Time-to-live for cached discovery responses.
      */
-    explicit OAuthDiscoveryClient(
-        std::shared_ptr<OAuthHttpClient> http_client,
-        std::chrono::seconds cache_ttl = std::chrono::seconds(constants::g_default_cache_ttl_seconds));
+    explicit OAuthDiscoveryClient(std::shared_ptr<OAuthHttpClient> http_client,
+                                  std::chrono::seconds cache_ttl = std::chrono::seconds(
+                                      mcp::constants::oauth::g_DEFAULT_CACHE_TTL_SECONDS));
 
     OAuthDiscoveryClient(const OAuthDiscoveryClient&) = delete;
     OAuthDiscoveryClient& operator=(const OAuthDiscoveryClient&) = delete;

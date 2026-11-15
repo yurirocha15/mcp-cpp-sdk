@@ -2,6 +2,7 @@
 
 #include "../detail/strand_executor.hpp"
 
+#include <mcp/core/constants.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -24,13 +25,15 @@
 #include <stdexcept>
 #include <utility>
 
+namespace transport_writer = mcp::constants::transport_writer;
+
 namespace mcp::detail {
 
 namespace {
 
 /// What a queued message counts in queued_bytes().
 std::size_t queued_cost(const std::string& message) {
-    return message.size() + g_queued_message_overhead;
+    return message.size() + transport_writer::g_QUEUED_MESSAGE_OVERHEAD;
 }
 
 }  // namespace

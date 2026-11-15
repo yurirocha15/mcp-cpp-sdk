@@ -1,5 +1,6 @@
 #include <mcp/transport/websocket.hpp>
 
+#include "../detail/constants.hpp"
 #include "../detail/socket_deadline.hpp"
 
 #include <algorithm>
@@ -50,14 +51,9 @@ std::chrono::milliseconds effective_connect_timeout(std::chrono::milliseconds re
     return requested > longest ? std::chrono::milliseconds::zero() : requested;
 }
 
-constexpr auto kNever = std::chrono::steady_clock::time_point::max();
-
-/// What Beast defaults to, and what the stdio transport uses.
-constexpr std::size_t g_default_max_message_bytes = 16U * 1024U * 1024U;
-
 struct OperationWaiter {
     explicit OperationWaiter(const asio::any_io_executor& executor) : signal(executor) {
-        signal.expires_at(kNever);
+        signal.expires_at(mcp::detail::constants::websocket::g_NEVER);
     }
 
     void wake() noexcept { signal.cancel(); }
@@ -202,7 +198,7 @@ struct WebSocketServerTransport::Impl {
     bool configuration_locked{false};
     std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
     std::chrono::milliseconds idle_timeout{std::chrono::minutes(5)};
-    std::size_t max_message_bytes{g_default_max_message_bytes};
+    std::size_t max_message_bytes{mcp::detail::constants::websocket::g_DEFAULT_MAX_MESSAGE_BYTES};
 
     explicit Impl(asio::ip::tcp::socket socket)
         : ws(std::move(socket)),
@@ -471,7 +467,8 @@ struct WebSocketClientTransport::Impl {
     std::vector<std::shared_ptr<OperationWaiter>> connection_waiters;
     SerializedWriteGate write_gate;
     bool read_active{false};
-    std::atomic<std::size_t> max_message_bytes{g_default_max_message_bytes};
+    std::atomic<std::size_t> max_message_bytes{
+        mcp::detail::constants::websocket::g_DEFAULT_MAX_MESSAGE_BYTES};
 
     Impl(const asio::any_io_executor& executor, std::string host_arg, std::string port_arg,
          std::string path_arg, std::chrono::milliseconds connect_timeout_arg)

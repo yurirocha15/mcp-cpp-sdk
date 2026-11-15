@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "constants.hpp"
 
 namespace mcp::detail {
 
@@ -18,23 +19,13 @@ namespace mcp::detail {
 /// has expired, is for the caller.
 namespace sealed_state {
 
-inline constexpr std::size_t g_key_size = 32;
-inline constexpr std::size_t g_kid_size = 4;
-inline constexpr std::size_t g_salt_size = 16;
-inline constexpr std::size_t g_tag_size = 16;
-inline constexpr std::uint8_t g_version = 1;
-inline constexpr std::size_t g_header_size = 1 + g_kid_size + g_salt_size;
-/// The shortest valid token: header, no ciphertext, tag.
-inline constexpr std::size_t g_min_token_bytes = g_header_size + g_tag_size;
-inline constexpr std::size_t g_default_max_token_chars = 64 * 1024;
-
 /// One master key and the id that names it in a token. Each SealKey overwrites its own copy of the
 /// secret with `OPENSSL_cleanse` when it is destroyed, and the secret is never printed. A copy
 /// taken from secret() is the caller's to overwrite.
 class SealKey {
    public:
-    SealKey(std::array<std::uint8_t, g_kid_size> kid,
-            const std::array<std::uint8_t, g_key_size>& secret)
+    SealKey(std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KID_SIZE> kid,
+            const std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KEY_SIZE>& secret)
         : kid_(kid), secret_(secret) {}
     SealKey(const SealKey&) = default;
     SealKey& operator=(const SealKey&) = default;
@@ -42,14 +33,18 @@ class SealKey {
     SealKey& operator=(SealKey&&) noexcept = default;
     ~SealKey();
 
-    [[nodiscard]] const std::array<std::uint8_t, g_kid_size>& kid() const noexcept { return kid_; }
-    [[nodiscard]] const std::array<std::uint8_t, g_key_size>& secret() const noexcept {
+    [[nodiscard]] const std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KID_SIZE>&
+    kid() const noexcept {
+        return kid_;
+    }
+    [[nodiscard]] const std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KEY_SIZE>&
+    secret() const noexcept {
         return secret_;
     }
 
    private:
-    std::array<std::uint8_t, g_kid_size> kid_;
-    std::array<std::uint8_t, g_key_size> secret_;
+    std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KID_SIZE> kid_;
+    std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KEY_SIZE> secret_;
 };
 
 enum class SealError {
@@ -103,7 +98,9 @@ std::optional<std::string> base64url_decode(std::string_view text);
 class Codec {
    public:
     /// Throws `std::invalid_argument` if two keys share a kid.
-    explicit Codec(std::vector<SealKey> keys, std::size_t max_token_chars = g_default_max_token_chars);
+    explicit Codec(
+        std::vector<SealKey> keys,
+        std::size_t max_token_chars = mcp::detail::constants::sealed_token::g_DEFAULT_MAX_TOKEN_CHARS);
 
     [[nodiscard]] SealResult seal(std::string_view payload) const;
     [[nodiscard]] OpenResult open(std::string_view token) const;

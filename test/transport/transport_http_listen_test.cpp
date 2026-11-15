@@ -20,11 +20,14 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace {
 
@@ -435,7 +438,7 @@ TEST_F(HttpListen, ClientNotAcceptingStreamsIsRefused) {
 
     EXPECT_NE(client.received().find("Content-Type: application/json"), std::string::npos)
         << client.received();
-    EXPECT_NE(client.received().find(std::to_string(mcp::g_INVALID_REQUEST)), std::string::npos)
+    EXPECT_NE(client.received().find(std::to_string(jsonrpc::g_INVALID_REQUEST)), std::string::npos)
         << client.received();
 }
 
