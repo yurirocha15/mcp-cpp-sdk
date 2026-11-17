@@ -827,7 +827,7 @@ int main(int argc, char** argv) {
 
         mcp::Implementation implementation;
         implementation.name = "mcp-cpp-sdk-conformance-server";
-        implementation.version = "0.2.0";
+        implementation.version = "0.3.0";
 
         mcp::ServerCapabilities capabilities;
         capabilities.tools = mcp::ServerCapabilities::ToolsCapability{true};

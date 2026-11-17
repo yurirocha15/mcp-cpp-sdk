@@ -6,6 +6,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-17
+
 ### Added
 
 - Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as

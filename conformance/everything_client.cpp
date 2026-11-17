@@ -125,7 +125,7 @@ std::string g_scenario;
 mcp::Task<mcp::ConnectResult> connect_conformance_client(mcp::Client& client) {
     mcp::Implementation implementation;
     implementation.name = "mcp-cpp-sdk-conformance-client";
-    implementation.version = "0.2.0";
+    implementation.version = "0.3.0";
 
     mcp::ClientCapabilities capabilities;
     mcp::ClientCapabilities::ElicitationCapability elicitation;
