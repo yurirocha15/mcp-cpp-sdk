@@ -8,6 +8,111 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [0.3.0] - 2026-11-17
 
+### Migrating from 0.2.0
+
+Code written for 0.2.0 needs these changes to compile with 0.3.0:
+
+- The public constants moved into groups under `mcp::constants`, and the old
+  names are gone. The error codes `mcp::g_INVALID_PARAMS`,
+  `mcp::g_INTERNAL_ERROR` and the rest are in `mcp::constants::jsonrpc`. The
+  protocol versions, such as `mcp::g_PROTOCOL_VERSION_2025_11_25`,
+  `g_LATEST_PROTOCOL_VERSION` and `g_SUPPORTED_PROTOCOL_VERSIONS`, are in
+  `mcp::constants::protocol`; use `g_SUPPORTED_PROTOCOL_VERSIONS` where the
+  removed `g_DISCOVERABLE_PROTOCOL_VERSIONS` was used.
+  `mcp::constants::g_event_store_default_capacity` is
+  `mcp::constants::event_store::g_DEFAULT_CAPACITY`, `g_shutdown_timeout_ms`
+  is `mcp::constants::shutdown::g_TIMEOUT_MS`, and
+  `g_default_max_request_body_bytes` is
+  `mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES`.
+  `mcp::auth::constants::g_default_max_metadata_bytes` and
+  `g_default_max_metadata_redirects` are
+  `mcp::constants::metadata_policy::g_DEFAULT_MAX_BYTES` and
+  `g_DEFAULT_MAX_REDIRECTS`; the other OAuth limits keep their names in upper
+  case in `mcp::constants::oauth`, so `g_default_cache_ttl_seconds` is
+  `mcp::constants::oauth::g_DEFAULT_CACHE_TTL_SECONDS`. The constants only the
+  implementation used, such as hex digits, bit masks and HTTP strings, are no
+  longer public.
+- `Client::connect()` resolves to `ConnectResult` instead of
+  `InitializeResult`. Its `serverInfo` is optional (`result.serverInfo->name`),
+  and `era` says which protocol family the session speaks.
+  `DiscoverResult::serverInfo` is optional too.
+- `Server::set_cache_hints()` replaces `Server::set_discover_ttl_ms()` and
+  `Server::set_discover_cache_scope()`.
+- `PrimitiveSchemaDefinition` is a `std::variant` of `StringSchema`,
+  `NumberSchema`, `BooleanSchema` and the enum schemas instead of one struct
+  with `type`, `title` and `description`. `NumberSchema::integer` stands for
+  the `integer` type, and `EnumSchema` no longer derives from it.
+- `ElicitRequestURLParams::elicitationId` is a `std::optional<std::string>`,
+  and `ElicitationCompleteNotificationParams` names the elicitation by its
+  `elicitationId` instead of a `requestId`. The `task` member of the
+  elicitation request parameters is gone.
+- The task types have the shape of the tasks extension instead of the
+  experimental shape of 2025-11-25, as Removed lists: `TaskData` has
+  `ttlMs`, now optional, and `pollIntervalMs`; `GetTaskResult` is
+  `DetailedTask`, which holds the task in its `task` member; the request
+  parameters name the task `taskId`; and `TaskStatusNotification` is declared
+  in `mcp/protocol/tasks.hpp`.
+- A `RequestSender` that builds a `Context` takes a third argument, the key of
+  the question (`std::optional<std::string>`).
+- The enumerators of `AuthorizationResponseStatus`, `ClientIdentitySource` and
+  `ClientIdentityDecision` have the `eName` form: `state_missing` is
+  `eStateMissing`, `pre_registered` is `ePreRegistered`, and so on.
+- `BearerTokenValidator` and `AsyncBearerTokenValidator` return
+  `TokenValidation`. A validator that returns `bool` still converts; an
+  asynchronous one returns `Task<TokenValidation>`, where `co_return true;`
+  still works.
+- The `to_json` and `from_json` functions of the protocol types take
+  `nlohmann::json` only, as Changed describes.
+- `make_stdio_transport()` and `make_http_client_transport()` are deprecated
+  and warn, so a build with `-Werror` fails until it uses
+  `TransportFactory::create_stdio()` and `create_http_client()`.
+
+These changes in behavior and defaults need no change to compile:
+
+- `Client::connect()` sends `server/discover` before `initialize`. A server
+  that only speaks earlier revisions costs one more round trip, or
+  `ClientOptions::probe_timeout` if it does not answer.
+  `ClientOptions::protocol = ClientProtocol::legacy()` sends only
+  `initialize`.
+- `g_LATEST_PROTOCOL_VERSION` is `2026-07-28`, and
+  `g_SUPPORTED_PROTOCOL_VERSIONS` includes it.
+  `g_LATEST_LEGACY_PROTOCOL_VERSION` is `2025-11-25`.
+- `g_CONNECTION_CLOSED` is -31000. Its old value, -32002, is now
+  `g_RESOURCE_NOT_FOUND`.
+- Tool schemas are checked. `Server::add_tool()` throws `SchemaError` for an
+  input or output schema that is not a valid JSON Schema object, or an input
+  schema without `"type": "object"`. The server answers `tools/call`
+  arguments that do not conform with an `isError` result without calling the
+  handler, and `structuredContent` that does not conform with
+  `g_INTERNAL_ERROR` (`Server::set_tool_validation()`). `Client::call_tool()`
+  throws `StructuredContentError` for a result that does not conform
+  (`ClientOptions::validate_tool_schemas`). Elicitation answers are checked
+  against `requestedSchema` on both sides (`InputOptions::validate_content`
+  and `ClientOptions::validate_elicitation_content`).
+- An unknown tool in `tools/call` or prompt in `prompts/get` is answered
+  `g_INVALID_PARAMS` (-32602) instead of `g_METHOD_NOT_FOUND`.
+- New default limits: a server session has at most 1024 requests and 256 MiB
+  in flight (`Server::set_max_in_flight_requests()` and
+  `set_max_in_flight_bytes()`). `StreamableHttpSessionManager` keeps at most
+  10,000 sessions and ends one idle for five minutes (`SessionLimits`), and
+  `HttpServerTransport` ends a session idle for five minutes when a new
+  `initialize` arrives (`set_session_idle_timeout()`). Stdio and WebSocket
+  messages are limited to 16 MiB (`set_max_message_bytes()`).
+- `StdioTransport::write_message()` throws `std::invalid_argument` for a
+  message that contains a newline.
+- `HttpClientTransport` starts a new session and sends the request again when
+  the server answers 404 for its session
+  (`set_reinitialize_on_expired_session()`).
+- OAuth asks for `offline_access` when the authorization server lists it
+  (`OAuthAuthorizationConfig::request_offline_access`), and
+  `OAuthClientTransport` asks for a wider scope once per request when a 403
+  challenge says `insufficient_scope`
+  (`OAuthClientTransportOptions::max_step_ups_per_request`).
+- `StreamableHttpSessionManager::set_tool_executor()` moves only handler
+  calls to that executor, and the server factory receives the HTTP executor.
+- `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only
+  when the SDK is the top-level project.
+
 ### Added
 
 - Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as
