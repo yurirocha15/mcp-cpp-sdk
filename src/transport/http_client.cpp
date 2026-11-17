@@ -1915,7 +1915,7 @@ void HttpClientTransport::close() {
         Impl::CloseTarget{impl_->host, impl_->port, impl_->path, impl_->pin_bearer_token_provider()});
     net::co_spawn(
         impl_->strand,
-        [shared_state, close_target = std::move(close_target)]() -> Task<void> {
+        [shared_state, close_target = std::move(close_target)]() -> boost::asio::awaitable<void> {
             for (auto& entry : shared_state->modern_calls) {
                 Impl::SharedState::close_call_socket(*entry.second);
             }

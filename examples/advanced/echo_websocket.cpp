@@ -50,7 +50,7 @@ int main() {
         // Server side: accept TCP socket → WebSocketServerTransport handles WS upgrade
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 auto socket = co_await acceptor.async_accept(asio::use_awaitable);
                 auto transport = std::make_shared<WebSocketServerTransport>(std::move(socket));
                 co_await server.run(transport, io_ctx.get_executor());
@@ -60,7 +60,7 @@ int main() {
         // Client side: WebSocketClientTransport handles connect + WS handshake internally
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 auto transport = std::make_shared<WebSocketClientTransport>(
                     io_ctx.get_executor(), "127.0.0.1", std::to_string(port));
                 Client client(transport, io_ctx.get_executor());

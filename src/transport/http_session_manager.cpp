@@ -517,7 +517,7 @@ struct StreamableHttpSessionManager::Impl {
         boost::asio::co_spawn(
             conn_strand,
             [srv = std::move(server), transport = std::move(server_transport),
-             exec = server_exec]() mutable -> Task<void> {
+             exec = server_exec]() mutable -> boost::asio::awaitable<void> {
                 co_await srv->run(std::move(transport), exec);
             },
             boost::asio::detached);
@@ -2112,7 +2112,7 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
         }
         boost::asio::co_spawn(
             conn_strand,
-            [impl, connection, conn_strand]() mutable -> Task<void> {
+            [impl, connection, conn_strand]() mutable -> boost::asio::awaitable<void> {
                 try {
                     co_await impl->handle_connection(connection, conn_strand);
                 } catch (...) {

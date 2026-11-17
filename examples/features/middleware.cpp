@@ -119,7 +119,7 @@ int main() {
         // ========== SERVER COROUTINE ==========
         asio::co_spawn(
             io_ctx,
-            [&, transport = server_transport]() mutable -> Task<void> {
+            [&, transport = server_transport]() mutable -> boost::asio::awaitable<void> {
                 std::cout << "[Server] Starting\n";
                 co_await server.run(transport, io_ctx.get_executor());
             },
@@ -128,7 +128,7 @@ int main() {
         // ========== CLIENT COROUTINE ==========
         asio::co_spawn(
             io_ctx,
-            [&, transport = client_transport]() -> Task<void> {
+            [&, transport = client_transport]() -> boost::asio::awaitable<void> {
                 try {
                     std::cout << "[Client] Connecting\n";
                     Client client(transport, io_ctx.get_executor());

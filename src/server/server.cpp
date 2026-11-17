@@ -2074,7 +2074,7 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
             boost::asio::co_spawn(
                 *session->strand,
                 [impl = shared_from_this(), session, message_bytes, json_msg = std::move(json_msg),
-                 principal = std::move(principal)]() mutable -> Task<void> {
+                 principal = std::move(principal)]() mutable -> boost::asio::awaitable<void> {
                     try {
                         co_await impl->dispatch_on_strand(std::move(json_msg), std::move(principal));
                     } catch (...) {

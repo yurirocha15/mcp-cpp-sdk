@@ -431,6 +431,7 @@ if(BUILD_TESTING)
       test/core/json_schema_engines_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
+      test/core/task_class_test.cpp
       test/core/tasks_test.cpp
       test/core/regex_test.cpp
       test/core/sealed_state_test.cpp

@@ -172,7 +172,7 @@ Core Types
 
 The core headers expose fundamental types in the ``mcp`` namespace:
 
-* ``Task<T>`` - Coroutine return type (alias for ``boost::asio::awaitable<T>``)
+* ``Task<T>`` - Coroutine return type, a class derived from ``boost::asio::awaitable<T>``
 * ``LoggingLevel`` - Protocol enum for log severity
 * ``Error`` and JSON-RPC error responses - Structured peer-visible failures
 

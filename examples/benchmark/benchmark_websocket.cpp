@@ -67,7 +67,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 auto socket = co_await acceptor.async_accept(asio::use_awaitable);
                 auto transport = std::make_shared<WebSocketServerTransport>(std::move(socket));
                 co_await server.run(transport, io_ctx.get_executor());
@@ -76,7 +76,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 asio::steady_timer delay(io_ctx.get_executor());
                 delay.expires_after(std::chrono::milliseconds(50));
                 co_await delay.async_wait(asio::use_awaitable);

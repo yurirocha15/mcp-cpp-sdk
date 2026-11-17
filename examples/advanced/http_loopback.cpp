@@ -57,7 +57,7 @@ int main() {
         auto* http_transport_ptr = http_server_transport.get();
         asio::co_spawn(
             io_ctx,
-            [&, transport = http_server_transport]() mutable -> Task<void> {
+            [&, transport = http_server_transport]() mutable -> boost::asio::awaitable<void> {
                 asio::co_spawn(io_ctx, http_transport_ptr->listen(), asio::detached);
                 co_await server.run(transport, io_ctx.get_executor());
             },
@@ -65,7 +65,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 try {
                     std::cout << "Client: creating transport" << '\n';
                     auto http_client_transport = std::make_shared<HttpClientTransport>(

@@ -97,7 +97,7 @@ int main() {
         io.get_executor(), "http://127.0.0.1:3000/mcp");
     mcp::Client client(transport, io.get_executor());
 
-    boost::asio::co_spawn(io, [&]() -> mcp::Task<void> {
+    boost::asio::co_spawn(io, [&]() -> boost::asio::awaitable<void> {
         mcp::ConnectResult connected = co_await client.connect("my-client", "1.0.0");
         std::cerr << "Connected using protocol " << connected.protocolVersion << '\n';
         nlohmann::json arguments{{"name", "World"}};

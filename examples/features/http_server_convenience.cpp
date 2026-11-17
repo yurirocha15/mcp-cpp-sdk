@@ -109,7 +109,7 @@ int main() {
 
         asio::co_spawn(
             client_io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 try {
                     std::cout << "\nClient: connecting to server\n";
 

@@ -112,7 +112,7 @@ int main() {
         // Spawn server coroutine
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 try {
                     co_await server.run(server_transport, io_ctx.get_executor());
                 } catch (const std::exception& e) {
@@ -124,7 +124,7 @@ int main() {
         // Spawn client coroutine
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 try {
                     // Create client
                     std::cout << "Client: Creating client\n";

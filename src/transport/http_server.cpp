@@ -1963,7 +1963,7 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
 
         boost::asio::co_spawn(
             impl->strand,
-            [impl, connection]() -> Task<void> {
+            [impl, connection]() -> boost::asio::awaitable<void> {
                 try {
                     co_await impl->handle_connection(connection);
                 } catch (...) {

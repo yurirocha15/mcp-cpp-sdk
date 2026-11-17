@@ -72,7 +72,10 @@ int main() {
         auto transport = std::make_shared<StdioTransport>(io_ctx.get_executor());
 
         boost::asio::co_spawn(
-            io_ctx, [&]() -> Task<void> { co_await server.run(transport, io_ctx.get_executor()); },
+            io_ctx,
+            [&]() -> boost::asio::awaitable<void> {
+                co_await server.run(transport, io_ctx.get_executor());
+            },
             boost::asio::detached);
 
         io_ctx.run();

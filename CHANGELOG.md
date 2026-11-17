@@ -540,6 +540,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>` instead of
+  an alias of it, declared in `mcp/core/async.hpp` and forward-declared without
+  Boost in `mcp/core/async_fwd.hpp`. A Task is awaited, passed to `co_spawn` and
+  combined with Asio's awaitable operators as before, and a function returning
+  an awaitable converts to it. A callable handed to `co_spawn` must return
+  `boost::asio::awaitable<T>`, since `co_spawn` accepts no other result type
+  from a callable; a lambda that returned `mcp::Task<T>` there declares
+  `boost::asio::awaitable<T>` instead. `Task` is `[[nodiscard]]`.
 - `RequestSender` takes the key a handler chose for a question as a third
   argument; senders that build a `Context` from their own `RequestSender` must
   accept it.

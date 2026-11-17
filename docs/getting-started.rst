@@ -171,7 +171,7 @@ with other async work — you can wire up the transport manually:
        auto transport = std::make_shared<mcp::StdioTransport>(io.get_executor());
        boost::asio::co_spawn(
            io,
-           [&]() -> mcp::Task<void> {
+           [&]() -> boost::asio::awaitable<void> {
                co_await server.run(transport, io.get_executor());
            },
            boost::asio::detached);
@@ -214,7 +214,7 @@ HTTP when ``server.run_stdio()`` is replaced by
 
        boost::asio::co_spawn(
            io,
-           [&]() -> Task<void> {
+           [&]() -> boost::asio::awaitable<void> {
                // Connect. The client detects the protocol revision the server speaks.
                ConnectResult connected = co_await client.connect("hello-client", "1.0.0");
                std::cout << "Protocol: " << connected.protocolVersion << std::endl;
@@ -235,7 +235,9 @@ HTTP when ``server.run_stdio()`` is replaced by
 ``co_spawn`` is given the lambda itself, not the result of calling it: it keeps
 the lambda alive until the coroutine finishes. A coroutine started from a
 temporary lambda would read the lambda's captures after the temporary is
-destroyed.
+destroyed. The lambda returns ``boost::asio::awaitable<void>`` rather than
+``mcp::Task<void>``, because ``co_spawn`` accepts no other result type from a
+callable.
 
 ``connect()`` returns a ``ConnectResult`` with the ``era`` of the session
 (``ProtocolEra::eModern`` for protocol revision 2026-07-28 or ``eLegacy`` for

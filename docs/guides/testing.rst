@@ -71,7 +71,7 @@ request.
    // Run the server loop in the background.
    boost::asio::co_spawn(
        io_ctx,
-       [&]() -> mcp::Task<void> {
+       [&]() -> boost::asio::awaitable<void> {
            try {
                co_await server.run(server_transport, io_ctx.get_executor());
            } catch (...) {
@@ -81,7 +81,7 @@ request.
 
    boost::asio::co_spawn(
        io_ctx,
-       [&]() -> mcp::Task<void> {
+       [&]() -> boost::asio::awaitable<void> {
            {
                auto connected = co_await client.connect("test-client", "1.0");
                EXPECT_EQ(connected.era, mcp::ProtocolEra::eModern);
@@ -136,7 +136,7 @@ When writing scripted tests, consider the following:
 
 .. code-block:: cpp
 
-    boost::asio::co_spawn(io_ctx, [&]() -> mcp::Task<void> {
+    boost::asio::co_spawn(io_ctx, [&]() -> boost::asio::awaitable<void> {
         // 1. Connect and verify what the server declared
         auto connected = co_await client->connect(client_info, client_caps);
         EXPECT_EQ(connected.serverInfo->version, "1.0");

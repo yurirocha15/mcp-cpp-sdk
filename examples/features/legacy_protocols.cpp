@@ -333,7 +333,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> mcp::Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 try {
                     succeeded = co_await run_all(io_ctx.get_executor());
                 } catch (const std::exception& error) {

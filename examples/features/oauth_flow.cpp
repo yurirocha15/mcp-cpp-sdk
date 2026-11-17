@@ -639,14 +639,14 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&, transport = server_transport]() -> Task<void> {
+            [&, transport = server_transport]() -> boost::asio::awaitable<void> {
                 co_await server.run(transport, io_ctx.get_executor());
             },
             asio::detached);
 
         asio::co_spawn(
             io_ctx,
-            [&, exit_timer]() -> Task<void> {
+            [&, exit_timer]() -> boost::asio::awaitable<void> {
                 try {
                     co_await exit_timer->async_wait(asio::use_awaitable);
                     std::cerr << "[Main] Auto-exit timer fired before the OAuth flow completed\n";

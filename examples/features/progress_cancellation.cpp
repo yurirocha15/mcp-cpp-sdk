@@ -99,7 +99,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 try {
                     co_await server.run(server_transport, io_ctx.get_executor());
                 } catch (const std::exception& e) {
@@ -110,7 +110,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> Task<void> {
+            [&]() -> boost::asio::awaitable<void> {
                 try {
                     std::cout << "Client: Creating client\n";
                     mcp::Client client(client_transport, io_ctx.get_executor());

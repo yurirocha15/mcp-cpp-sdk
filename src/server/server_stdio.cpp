@@ -34,7 +34,9 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
     std::exception_ptr ep;
     boost::asio::co_spawn(
         io_ctx,
-        [this, transport, executor]() mutable -> Task<void> { co_await run(transport, executor); },
+        [this, transport, executor]() mutable -> boost::asio::awaitable<void> {
+            co_await run(transport, executor);
+        },
         [&](std::exception_ptr e) {
             ep = std::move(e);
             signals.cancel();
