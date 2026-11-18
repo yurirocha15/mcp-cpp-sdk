@@ -1750,6 +1750,114 @@ void Server::register_prompt(const Prompt& prompt, TypeErasedHandler handler) {
     }
 }
 
+namespace {
+
+/// @p resource, with its MIME type text/plain when unset.
+Resource text_resource(const Resource& resource) {
+    Resource described = resource;
+    if (!described.mimeType) {
+        described.mimeType = "text/plain";
+    }
+    return described;
+}
+
+/// The resources/read result of a text resource.
+nlohmann::json text_contents(const Resource& resource, std::string text) {
+    ReadResourceResult result;
+    result.contents.emplace_back(TextResourceContents{
+        .uri = resource.uri, .text = std::move(text), .mimeType = resource.mimeType, .meta = {}});
+    return result;
+}
+
+/// The arguments of the prompts/get request whose params are @p params, for a prompt that
+/// declares @p declared.
+/// @throws InvalidParamsError When an argument the prompt requires is missing.
+Server::PromptArguments prompt_arguments(const std::vector<PromptArgument>& declared,
+                                         const nlohmann::json& params) {
+    Server::PromptArguments arguments;
+    if (const auto given = params.find("arguments"); given != params.end() && given->is_object()) {
+        arguments = given->get<Server::PromptArguments>();
+    }
+    for (const auto& argument : declared) {
+        if (argument.required.value_or(false) && !arguments.contains(argument.name)) {
+            throw InvalidParamsError("Missing required argument: " + argument.name);
+        }
+    }
+    return arguments;
+}
+
+/// The prompts/get result of a text prompt: one message from the user.
+nlohmann::json text_prompt_result(std::string text, const std::optional<std::string>& description) {
+    GetPromptResult result;
+    result.messages.push_back(
+        PromptMessage{.role = Role::eUser, .content = TextContent{.text = std::move(text)}});
+    result.description = description;
+    return result;
+}
+
+}  // namespace
+
+void Server::add_text_resource(const std::string& uri, const std::string& name,
+                               std::function<std::string()> read, const std::string& mime_type) {
+    Resource resource;
+    resource.uri = uri;
+    resource.name = name;
+    resource.mimeType = mime_type;
+    add_text_resource(resource, std::move(read));
+}
+
+void Server::add_text_resource(const Resource& resource, std::function<std::string()> read) {
+    auto described = text_resource(resource);
+    register_sync_resource(described, [described, read = std::move(read)](
+                                          Context& /*ctx*/, const nlohmann::json& /*params*/) {
+        return text_contents(described, read());
+    });
+}
+
+void Server::register_text_resource(const Resource& resource, std::function<Task<std::string>()> read) {
+    auto described = text_resource(resource);
+    register_resource(described,
+                      [described, read = std::move(read)](
+                          Context& /*ctx*/, const nlohmann::json& /*params*/) -> Task<nlohmann::json> {
+                          auto text = co_await read();
+                          co_return text_contents(described, std::move(text));
+                      });
+}
+
+void Server::add_text_prompt(const std::string& name, const std::string& description,
+                             std::vector<PromptArgument> arguments,
+                             std::function<std::string(const PromptArguments&)> render) {
+    Prompt prompt;
+    prompt.name = name;
+    prompt.description = description;
+    prompt.arguments = std::move(arguments);
+    add_text_prompt(prompt, std::move(render));
+}
+
+void Server::add_text_prompt(const Prompt& prompt,
+                             std::function<std::string(const PromptArguments&)> render) {
+    register_sync_prompt(prompt, [declared = prompt.arguments.value_or(std::vector<PromptArgument>{}),
+                                  description = prompt.description, render = std::move(render)](
+                                     Context& /*ctx*/, const nlohmann::json& params) {
+        return text_prompt_result(render(prompt_arguments(declared, params)), description);
+    });
+}
+
+void Server::register_text_prompt(const Prompt& prompt,
+                                  std::function<Task<std::string>(const PromptArguments&)> render) {
+    register_prompt(prompt,
+                    [declared = prompt.arguments.value_or(std::vector<PromptArgument>{}),
+                     description = prompt.description, render = std::move(render)](
+                        Context& /*ctx*/, const nlohmann::json& params) -> Task<nlohmann::json> {
+                        // [gcc11-sso] The arguments live behind a pointer, so no map of strings is kept
+                        // in the frame across the co_await.
+                        const auto arguments =
+                            std::make_shared<const PromptArguments>(prompt_arguments(declared, params));
+                        auto text = co_await render(*arguments);
+                        co_return text_prompt_result(std::move(text), description);
+                    });
+}
+
 void Server::add_resource_template(const ResourceTemplate& tmpl) {
     register_resource_template(tmpl, {});
 }

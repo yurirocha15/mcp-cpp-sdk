@@ -3,6 +3,7 @@
 
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 #include "cache_hints.hpp"
 
@@ -28,6 +29,21 @@ CallToolResult make_tool_structured_result(nlohmann::json structured_content,
         make_tool_text_result(text ? std::move(*text) : mcp::detail::dump_json(structured_content));
     result.structuredContent = std::move(structured_content);
     return result;
+}
+
+std::string result_text(const CallToolResult& result) {
+    std::string text;
+    bool first = true;
+    for (const auto& block : result.content) {
+        if (const auto* content = std::get_if<TextContent>(&block)) {
+            if (!first) {
+                text += '\n';
+            }
+            text += content->text;
+            first = false;
+        }
+    }
+    return text;
 }
 
 void to_json(nlohmann::json& json_obj, const ToolAnnotations& annotations) {

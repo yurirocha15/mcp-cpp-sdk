@@ -49,6 +49,22 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server(name, version)` constructs a server from its name and version, such
   as `Server server("hello", "1.0.0");`, advertising the capabilities its
   registrations imply.
+- `mcp::tool_params()` writes the input schema of a tool from a list of
+  `ParamSpec` (name, JSON Schema type, description and whether it is
+  required), refusing a missing or repeated name and an unknown type.
+  `add_tool()` takes a JSON handler that receives the request's `Context`
+  first, synchronous or a coroutine, and a `Tool` definition in place of the
+  name, description and schema, so that a tool's title, annotations, icons,
+  output schema and `_meta` are registered with a JSON handler.
+- `Server::add_text_resource()` registers a resource whose contents are the
+  text a function returns, `text/plain` unless another MIME type is given,
+  and `Server::add_text_prompt()` a prompt whose one user message is the text
+  a function makes of the request's arguments (`Server::PromptArguments`).
+  A `prompts/get` that leaves out an argument the prompt marks as required is
+  answered with `g_INVALID_PARAMS` before the function runs. Each takes a
+  coroutine as well, and a `Resource` or `Prompt` definition in place of the
+  name and description.
+- `mcp::result_text()` joins the text blocks of a `CallToolResult`.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around
@@ -608,6 +624,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   subscriptions or logging, is set on it before the server serves.
   `SkillsExtension` declares the resources capability on a server that lacks
   it instead of refusing that server.
+- `Server::add_raw_tool()` takes any coroutine JSON handler, with or without
+  the request's `Context`, in place of a `TypeErasedHandler` only; a
+  `TypeErasedHandler` is still accepted.
 - `Server::run_http()` serves any number of clients of protocol revision
   2025-11-25 or earlier, each in a session of its own, where it served one at
   a time: it listens through a `StreamableHttpSessionManager` whose sessions

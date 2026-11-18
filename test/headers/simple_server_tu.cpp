@@ -3,6 +3,7 @@
 #include <mcp/mcp.hpp>
 
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 
 namespace simple_server_tu {
@@ -55,7 +56,43 @@ void register_handlers(mcp::Server& server) {
     prompt.name = "review";
     server.add_prompt<nlohmann::json, nlohmann::json>(
         prompt, [](const nlohmann::json&) -> nlohmann::json { return nlohmann::json::object(); });
+
+    const auto params = mcp::tool_params({{"name", "string", "Who to greet"}});
+    server.add_tool("greet_simply", "Greets", params,
+                    [](mcp::Context&, const nlohmann::json& arguments) -> nlohmann::json {
+                        return arguments.at("name");
+                    });
+    mcp::Tool tool;
+    tool.name = "described";
+    tool.title = "Described";
+    tool.inputSchema = params;
+    server.add_tool(tool, [](const nlohmann::json& arguments) { return arguments; });
+    tool.name = "described_with_context";
+    server.add_tool(tool, [](mcp::Context&, const nlohmann::json& arguments) { return arguments; });
+    tool.name = "raw";
+    server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+        return mcp::make_tool_text_result("raw");
+    });
+
+    server.add_text_resource("notes://motd", "motd", [] { return std::string("hello"); });
+    server.add_text_resource(
+        "notes://readme", "readme", [] { return std::string("# Readme"); }, "text/markdown");
+    mcp::Resource text_resource;
+    text_resource.uri = "notes://today";
+    text_resource.name = "today";
+    server.add_text_resource(text_resource, [] { return std::string("today"); });
+
+    server.add_text_prompt("summarize", "Summarize", {{"text", "The text", true, std::nullopt}},
+                           [](const mcp::Server::PromptArguments& arguments) {
+                               return "Summarize " + arguments.at("text");
+                           });
+    mcp::Prompt text_prompt;
+    text_prompt.name = "hello";
+    server.add_text_prompt(text_prompt,
+                           [](const mcp::Server::PromptArguments&) { return std::string("Hello"); });
 }
+
+std::string first_text(const mcp::CallToolResult& result) { return mcp::result_text(result); }
 
 void serve(mcp::Server& server) {
     register_handlers(server);

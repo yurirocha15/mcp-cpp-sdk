@@ -463,6 +463,7 @@ if(BUILD_TESTING)
       test/server/server_param_headers_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
+      test/server/server_simple_registration_test.cpp
       test/transport/transport_stdio_test.cpp
       test/transport/transport_stdio_client_test.cpp
       test/transport/transport_ws_test.cpp

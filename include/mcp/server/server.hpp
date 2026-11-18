@@ -25,7 +25,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <iosfwd>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -49,6 +51,26 @@ using Middleware =
 
 /// @brief Completion handler: takes CompleteParams, returns CompleteResult.
 using CompletionHandler = std::function<Task<CompleteResult>(const CompleteParams&)>;
+
+/// @brief One argument of a tool, for tool_params().
+struct ParamSpec {
+    std::string name;
+    /// The JSON Schema type: "string", "number", "integer", "boolean", "array" or "object".
+    std::string type;
+    std::string description;
+    bool required = true;
+};
+
+/**
+ * @brief The input schema of a tool whose arguments are @p params, such as
+ *        `mcp::tool_params({{"name", "string", "Who to greet"}})`.
+ *
+ * @return An object schema with a property of the given type and description per argument, and
+ *         the required arguments listed under `required`. Any other schema is written as JSON.
+ * @throws std::invalid_argument For an argument without a name, a name given twice, or a type
+ *         other than those ParamSpec::type lists.
+ */
+MCP_API nlohmann::json tool_params(std::initializer_list<ParamSpec> params);
 
 namespace detail {
 
@@ -113,6 +135,14 @@ SyncTypeErasedHandler wrap_sync_handler(Fn fn) {
     };
 }
 
+/// @brief T, named through a type that depends on Dependent, so that a coroutine returning it is
+/// checked only when the enclosing template is instantiated: a header can then define a
+/// coroutine returning Task while Task is only declared.
+template <typename Dependent, typename T>
+struct DependentType {
+    using type = T;
+};
+
 /**
  * @brief Wraps an asynchronous handler into a TypeErasedHandler.
  *
@@ -122,14 +152,6 @@ SyncTypeErasedHandler wrap_sync_handler(Fn fn) {
  * @param fn The async handler to wrap.
  * @return A TypeErasedHandler that deserializes JSON to In, calls fn, and serializes Out to JSON.
  */
-/// @brief T, named through a type that depends on Dependent, so that a coroutine returning it is
-/// checked only when the enclosing template is instantiated: a header can then define a
-/// coroutine returning Task while Task is only declared.
-template <typename Dependent, typename T>
-struct DependentType {
-    using type = T;
-};
-
 template <JsonSerializable In, JsonSerializable Out, typename Fn>
     requires AsyncHandler<Fn, In, Out>
 TypeErasedHandler wrap_handler(Fn fn) {
@@ -145,6 +167,31 @@ TypeErasedHandler wrap_handler(Fn fn) {
         }
     };
 }
+
+/// @brief Detects a coroutine handler shaped as TypeErasedHandler is, which is stored as one
+/// without another coroutine around it.
+template <typename Fn>
+concept ErasedAsyncHandler =
+    std::same_as<std::invoke_result_t<Fn&, Context&, const nlohmann::json&>, Task<nlohmann::json>>;
+
+/// @brief A coroutine handler of JSON params and results, with or without the Context.
+template <typename Fn>
+concept JsonAsyncHandler = ErasedAsyncHandler<Fn> || AsyncHandler<Fn, nlohmann::json, nlohmann::json>;
+
+/// @brief A JsonAsyncHandler as a TypeErasedHandler.
+template <typename Fn>
+    requires JsonAsyncHandler<Fn>
+TypeErasedHandler erase_json_handler(Fn fn) {
+    if constexpr (ErasedAsyncHandler<Fn>) {
+        return TypeErasedHandler(std::move(fn));
+    } else {
+        return wrap_handler<nlohmann::json, nlohmann::json>(std::move(fn));
+    }
+}
+
+/// @brief Detects a coroutine that returns text, called with @p Args.
+template <typename Fn, typename... Args>
+concept TextAsyncHandler = std::same_as<std::invoke_result_t<Fn&, Args...>, Task<std::string>>;
 
 }  // namespace detail
 
@@ -522,6 +569,53 @@ class MCP_API Server {
                   const nlohmann::json& input_schema,
                   std::function<nlohmann::json(const nlohmann::json&)> handler);
 
+    /// @brief As add_tool() above, with a synchronous handler that takes the request's Context
+    /// first, for logging or progress from the handler.
+    void add_tool(const std::string& name, const std::string& description,
+                  const nlohmann::json& input_schema,
+                  std::function<nlohmann::json(Context&, const nlohmann::json&)> handler);
+
+    /**
+     * @brief As add_tool() above, with a coroutine handler, such as
+     *        `[](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json>`.
+     *
+     * @details The handler takes the JSON arguments, after the request's Context if it wants it.
+     * A coroutine needs <mcp/core/async.hpp>.
+     */
+    template <typename Fn>
+        requires detail::JsonAsyncHandler<Fn>
+    void add_tool(const std::string& name, const std::string& description,
+                  const nlohmann::json& input_schema, Fn handler) {
+        Tool tool;
+        tool.name = name;
+        tool.description = description;
+        tool.inputSchema = input_schema;
+        add_tool(tool, std::move(handler));
+    }
+
+    /**
+     * @brief Register the tool @p tool describes, with its title, annotations, icons, output
+     *        schema and `_meta` (such as an Apps link) as given.
+     *
+     * @details The handler takes the JSON arguments and returns a JSON value. A string becomes the
+     * result's text. An object that is not already a CallToolResult becomes its
+     * `structuredContent`, with the object's JSON text as its text, so a tool with an output schema
+     * returns an object. Any other value is sent as its JSON text.
+     * @throws SchemaError and std::invalid_argument as add_tool() above.
+     */
+    void add_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);
+    /// @brief As add_tool() above, with a synchronous handler that takes the request's Context
+    /// first.
+    void add_tool(const Tool& tool,
+                  std::function<nlohmann::json(Context&, const nlohmann::json&)> handler);
+    /// @brief As add_tool() above, with a coroutine handler, with or without the Context.
+    template <typename Fn>
+        requires detail::JsonAsyncHandler<Fn>
+    void add_tool(const Tool& tool, Fn handler) {
+        register_tool(tool, tool.name, detail::erase_json_handler(std::move(handler)),
+                      detail::ToolResultMode::eNormalize);
+    }
+
     /**
      * @brief Register a low-level tool whose handler returns a complete CallToolResult JSON object.
      *
@@ -530,7 +624,8 @@ class MCP_API Server {
      * is sent to the client.
      *
      * @param tool Tool metadata.
-     * @param handler Asynchronous raw handler receiving tool arguments.
+     * @param handler Coroutine raw handler receiving tool arguments, after the request's Context
+     *        if it wants it, such as a TypeErasedHandler.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
      *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
      *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
@@ -539,7 +634,12 @@ class MCP_API Server {
      *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
-    void add_raw_tool(const Tool& tool, TypeErasedHandler handler);
+    template <typename Fn>
+        requires detail::JsonAsyncHandler<Fn>
+    void add_raw_tool(const Tool& tool, Fn handler) {
+        register_tool(tool, tool.name, detail::erase_json_handler(std::move(handler)),
+                      detail::ToolResultMode::eValidated);
+    }
 
     /**
      * @brief Register a synchronous low-level tool returning complete CallToolResult JSON.
@@ -630,6 +730,79 @@ class MCP_API Server {
         } else {
             register_prompt(prompt, detail::wrap_handler<In, Out>(std::move(handler)));
         }
+    }
+
+    /**
+     * @brief Register a text resource at @p uri named @p name, whose text @p read returns on
+     *        each read, such as
+     *        `server.add_text_resource("config://motd", "Message of the day", [] { return
+     * std::string("hi"); });`.
+     *
+     * @param mime_type The MIME type the resource and its contents report.
+     * @throws std::invalid_argument When a resource with the same URI is already registered.
+     */
+    void add_text_resource(const std::string& uri, const std::string& name,
+                           std::function<std::string()> read,
+                           const std::string& mime_type = "text/plain");
+    /// @brief As add_text_resource() above, for the resource @p resource describes, with its
+    /// title, description, annotations, icons and size as given and its MIME type text/plain when
+    /// unset.
+    void add_text_resource(const Resource& resource, std::function<std::string()> read);
+    /// @brief As add_text_resource() above, with a coroutine that returns the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn>
+    void add_text_resource(const std::string& uri, const std::string& name, Fn read,
+                           const std::string& mime_type = "text/plain") {
+        Resource resource;
+        resource.uri = uri;
+        resource.name = name;
+        resource.mimeType = mime_type;
+        add_text_resource(resource, std::move(read));
+    }
+    /// @brief As add_text_resource() above, with a coroutine that returns the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn>
+    void add_text_resource(const Resource& resource, Fn read) {
+        register_text_resource(resource, std::function<Task<std::string>()>(std::move(read)));
+    }
+
+    /// @brief The arguments of a prompts/get request, by name.
+    using PromptArguments = std::map<std::string, std::string>;
+
+    /**
+     * @brief Register a prompt named @p name whose one message, from the user, is the text
+     *        @p render makes of the request's arguments, such as
+     *        `server.add_text_prompt("review", "Review code", {{"code", "The code", true}}, render);`.
+     *
+     * @details @p render gets the arguments the request gave, an empty map when it gave none. A
+     * request that leaves out an argument @p arguments marks as required is answered with
+     * mcp::constants::jsonrpc::g_INVALID_PARAMS, and @p render does not run.
+     * @throws std::invalid_argument When a prompt with the same name is already registered.
+     */
+    void add_text_prompt(const std::string& name, const std::string& description,
+                         std::vector<PromptArgument> arguments,
+                         std::function<std::string(const PromptArguments&)> render);
+    /// @brief As add_text_prompt() above, for the prompt @p prompt describes, with its title,
+    /// icons and arguments as given.
+    void add_text_prompt(const Prompt& prompt,
+                         std::function<std::string(const PromptArguments&)> render);
+    /// @brief As add_text_prompt() above, with a coroutine that makes the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn, const PromptArguments&>
+    void add_text_prompt(const std::string& name, const std::string& description,
+                         std::vector<PromptArgument> arguments, Fn render) {
+        Prompt prompt;
+        prompt.name = name;
+        prompt.description = description;
+        prompt.arguments = std::move(arguments);
+        add_text_prompt(prompt, std::move(render));
+    }
+    /// @brief As add_text_prompt() above, with a coroutine that makes the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn, const PromptArguments&>
+    void add_text_prompt(const Prompt& prompt, Fn render) {
+        register_text_prompt(
+            prompt, std::function<Task<std::string>(const PromptArguments&)>(std::move(render)));
     }
 
     /**
@@ -1196,6 +1369,10 @@ class MCP_API Server {
     void register_sync_resource(const Resource& resource, SyncTypeErasedHandler handler);
     void register_sync_resource_template(const ResourceTemplate& tmpl, SyncTypeErasedHandler handler);
     void register_sync_prompt(const Prompt& prompt, SyncTypeErasedHandler handler);
+    /// The registration helpers of the coroutine add_text_resource() and add_text_prompt().
+    void register_text_resource(const Resource& resource, std::function<Task<std::string>()> read);
+    void register_text_prompt(const Prompt& prompt,
+                              std::function<Task<std::string>(const PromptArguments&)> render);
 
     /// Registers a typed tool: a sync handler without a coroutine, an async one through
     /// wrap_handler().
