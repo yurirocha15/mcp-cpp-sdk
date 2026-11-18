@@ -60,6 +60,7 @@ TESTS = (
     "test/core/*",
     "test/data/*",
     "test/e2e/*",
+    "test/headers/*",
     "test/pipe_stream.hpp",
     "test/server/*",
     "test/support/*",
