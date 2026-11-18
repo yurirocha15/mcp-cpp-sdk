@@ -45,7 +45,7 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-    GIT_TAG v0.2.0
+    GIT_TAG v0.3.0
 )
 # Skip the SDK's own tests, examples and docs.
 set(BUILD_TESTING OFF)

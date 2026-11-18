@@ -17,7 +17,12 @@ class McpCppSdkTestPackage(ConanFile):
 
     def generate(self):
         CMakeDeps(self).generate()
-        CMakeToolchain(self).generate()
+        toolchain = CMakeToolchain(self)
+        # find_package() asks for exactly the version under test.
+        toolchain.cache_variables["MCP_CPP_SDK_EXPECTED_VERSION"] = str(
+            self.dependencies["mcp-cpp-sdk"].ref.version
+        )
+        toolchain.generate()
 
     def build(self):
         cmake = CMake(self)
