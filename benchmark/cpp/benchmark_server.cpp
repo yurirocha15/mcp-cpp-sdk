@@ -7,6 +7,7 @@
 /// Stateless JSON: uses the SDK's direct Streamable HTTP path to avoid
 /// per-session MemoryTransport and DELETE cleanup overhead during the benchmark.
 
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
@@ -713,7 +714,7 @@ mcp::Task<mcp::CallToolResult> handle_checkout(const CheckoutArgs& args) {
 using namespace mcp;
 using namespace benchmark;
 
-static std::unique_ptr<Server> create_server_with_tools(const boost::asio::any_io_executor&) {
+static std::unique_ptr<Server> create_server_with_tools(const mcp::Executor&) {
     ServerCapabilities caps;
     caps.tools = ServerCapabilities::ToolsCapability{};
 
