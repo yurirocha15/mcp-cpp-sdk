@@ -9,9 +9,12 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <mcp/core/constants.hpp>
 #include <memory>
@@ -143,6 +146,90 @@ TEST_F(ServerHandlersTest, SyncToolCallReturnsResult) {
     ASSERT_TRUE(tool_response.contains("result"));
     EXPECT_EQ(tool_response["result"]["structuredContent"]["sum"], 7);
     EXPECT_EQ(tool_response["result"]["content"][0]["type"], "text");
+}
+
+TEST_F(ServerHandlersTest, SyncToolWithContextReceivesTheRequestContext) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    bool saw_live_request = false;
+    setup.server.add_tool<AddParams, AddResult>(
+        "add", "Adds two numbers", nlohmann::json{{"type", "object"}},
+        [&saw_live_request](mcp::Context& ctx, AddParams params) -> AddResult {
+            saw_live_request = !ctx.is_cancelled();
+            return AddResult{params.augend + params.addend};
+        });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "add"}, {"arguments", {{"augend", 2}, {"addend", 5}}}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_TRUE(saw_live_request);
+    EXPECT_EQ(responses[1]["result"]["structuredContent"]["sum"], 7) << responses[1];
+}
+
+TEST_F(ServerHandlersTest, SyncToolRunsOnTheHandlerExecutor) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    boost::asio::thread_pool pool(1);
+    std::promise<std::thread::id> pool_thread;
+    boost::asio::post(pool, [&pool_thread] { pool_thread.set_value(std::this_thread::get_id()); });
+    const auto pool_thread_id = pool_thread.get_future().get();
+
+    setup.server.set_handler_executor(pool.get_executor());
+    std::thread::id handler_thread;
+    setup.server.add_tool("where", "Reports its thread", nlohmann::json{{"type", "object"}},
+                          [&handler_thread](const nlohmann::json&) -> nlohmann::json {
+                              handler_thread = std::this_thread::get_id();
+                              return nlohmann::json{{"ok", true}};
+                          });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "where"}, {"arguments", nlohmann::json::object()}}}});
+    pool.join();
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_FALSE(responses[1]["result"].value("isError", false)) << responses[1];
+    EXPECT_EQ(handler_thread, pool_thread_id);
+}
+
+TEST_F(ServerHandlersTest, SyncHandlersRunThroughMiddleware) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    int middleware_calls = 0;
+    setup.server.use([&middleware_calls](mcp::Context& ctx, const nlohmann::json& params,
+                                         mcp::TypeErasedHandler next) -> mcp::Task<nlohmann::json> {
+        ++middleware_calls;
+        co_return co_await next(ctx, params);
+    });
+    setup.server.add_tool<AddParams, AddResult>(
+        "add", "Adds two numbers", nlohmann::json{{"type", "object"}},
+        [](AddParams params) -> AddResult { return AddResult{params.augend + params.addend}; });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "add"}, {"arguments", {{"augend", 1}, {"addend", 1}}}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["structuredContent"]["sum"], 2) << responses[1];
+    EXPECT_EQ(middleware_calls, 1);
 }
 
 TEST_F(ServerHandlersTest, AsyncToolCallReturnsResult) {

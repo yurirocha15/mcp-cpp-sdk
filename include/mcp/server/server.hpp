@@ -37,6 +37,10 @@ namespace mcp {
 /// @brief Type-erased handler: takes a Context and JSON params, returns JSON result.
 using TypeErasedHandler = std::function<Task<nlohmann::json>(Context&, const nlohmann::json&)>;
 
+/// @brief Type-erased synchronous handler: takes a Context and JSON params, returns the JSON
+/// result directly.
+using SyncTypeErasedHandler = std::function<nlohmann::json(Context&, const nlohmann::json&)>;
+
 /// @brief Middleware function signature for intercepting handler invocations.
 using Middleware =
     std::function<Task<nlohmann::json>(Context&, const nlohmann::json&, TypeErasedHandler)>;
@@ -78,34 +82,33 @@ concept SyncHandlerWithCtx = requires(Fn fn, Context& ctx, In in) {
     { fn(ctx, std::move(in)) } -> std::same_as<Out>;
 };
 
+/// @brief Detects a synchronous handler of either supported signature.
+template <typename Fn, typename In, typename Out>
+concept SyncHandler = SyncHandlerWithCtx<Fn, In, Out> || SyncHandlerNoCtx<Fn, In, Out>;
+
+/// @brief Detects an asynchronous handler of either supported signature.
+template <typename Fn, typename In, typename Out>
+concept AsyncHandler = AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>;
+
 /**
- * @brief Ensures a handler is async by wrapping sync handlers into Task-returning ones.
+ * @brief Wraps a synchronous handler into a SyncTypeErasedHandler, without a coroutine.
  *
- * @tparam In  The input type deserialized from JSON.
- * @tparam Out The output type serialized to JSON.
- * @tparam Fn  The handler callable type (may be sync or async).
- *
- * @details This template accepts four handler signatures:
- * - `Task<Out>(Context&, In)` — async with context
- * - `Task<Out>(In)` — async without context
- * - `Out(Context&, In)` — sync with context (wrapped in co_return)
- * - `Out(In)` — sync without context (wrapped in co_return)
- *
- * Sync handlers are automatically lifted into coroutines.
+ * @tparam In  The input type (must satisfy JsonSerializable).
+ * @tparam Out The output type (must satisfy JsonSerializable).
+ * @tparam Fn  The handler callable type: `Out(Context&, In)` or `Out(In)`.
+ * @param fn The sync handler to wrap.
+ * @return A SyncTypeErasedHandler that deserializes JSON to In, calls fn, and serializes Out.
  */
-template <typename In, typename Out, typename Fn>
-auto ensure_async_handler(Fn fn) {
-    if constexpr (AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>) {
-        return fn;
-    } else if constexpr (SyncHandlerWithCtx<Fn, In, Out>) {
-        return [handler = std::move(fn)](Context& ctx, In in) -> Task<Out> {
-            co_return handler(ctx, std::move(in));
-        };
-    } else {
-        static_assert(SyncHandlerNoCtx<Fn, In, Out>,
-                      "Handler must be sync or async with supported signature");
-        return [handler = std::move(fn)](In in) -> Task<Out> { co_return handler(std::move(in)); };
-    }
+template <JsonSerializable In, JsonSerializable Out, typename Fn>
+    requires SyncHandler<Fn, In, Out>
+SyncTypeErasedHandler wrap_sync_handler(Fn fn) {
+    return [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> nlohmann::json {
+        if constexpr (SyncHandlerWithCtx<Fn, In, Out>) {
+            return nlohmann::json(handler(ctx, params.get<In>()));
+        } else {
+            return nlohmann::json(handler(params.get<In>()));
+        }
+    };
 }
 
 /**
@@ -118,7 +121,7 @@ auto ensure_async_handler(Fn fn) {
  * @return A TypeErasedHandler that deserializes JSON to In, calls fn, and serializes Out to JSON.
  */
 template <JsonSerializable In, JsonSerializable Out, typename Fn>
-    requires AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>
+    requires AsyncHandler<Fn, In, Out>
 TypeErasedHandler wrap_handler(Fn fn) {
     return
         [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
@@ -446,15 +449,7 @@ class MCP_API Server {
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema, Fn handler) {
-        Tool tool;
-        tool.name = name;
-        tool.description = description;
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eTyped
-                                         : detail::ToolResultMode::eNormalize;
-        register_tool(std::move(tool), input_schema, nullptr,
-                      detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
+        add_typed_tool<In, Out>(name, description, input_schema, nullptr, std::move(handler));
     }
 
     /**
@@ -474,15 +469,7 @@ class MCP_API Server {
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema, const nlohmann::json& output_schema, Fn handler) {
-        Tool tool;
-        tool.name = name;
-        tool.description = description;
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eTyped
-                                         : detail::ToolResultMode::eNormalize;
-        register_tool(std::move(tool), input_schema, &output_schema,
-                      detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
+        add_typed_tool<In, Out>(name, description, input_schema, &output_schema, std::move(handler));
     }
 
     /**
@@ -553,8 +540,13 @@ class MCP_API Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource(const Resource& resource, Fn handler) {
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_resource(resource, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature");
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_resource(resource, detail::wrap_sync_handler<In, Out>(std::move(handler)));
+        } else {
+            register_resource(resource, detail::wrap_handler<In, Out>(std::move(handler)));
+        }
     }
 
     /**
@@ -580,8 +572,14 @@ class MCP_API Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource_template(const ResourceTemplate& tmpl, Fn handler) {
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_resource_template(tmpl, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature");
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_resource_template(tmpl,
+                                            detail::wrap_sync_handler<In, Out>(std::move(handler)));
+        } else {
+            register_resource_template(tmpl, detail::wrap_handler<In, Out>(std::move(handler)));
+        }
     }
 
     /**
@@ -595,8 +593,13 @@ class MCP_API Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_prompt(const Prompt& prompt, Fn handler) {
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_prompt(prompt, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature");
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_prompt(prompt, detail::wrap_sync_handler<In, Out>(std::move(handler)));
+        } else {
+            register_prompt(prompt, detail::wrap_handler<In, Out>(std::move(handler)));
+        }
     }
 
     /**
@@ -1139,6 +1142,39 @@ class MCP_API Server {
     void register_resource(const Resource& resource, TypeErasedHandler handler);
     void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
+    /// The synchronous counterparts of the helpers above: the handler is stored without a
+    /// coroutine around it.
+    void register_sync_tool(const Tool& tool, SyncTypeErasedHandler handler,
+                            detail::ToolResultMode result_mode);
+    void register_sync_tool(Tool&& tool, const nlohmann::json& input_schema,
+                            const nlohmann::json* output_schema, SyncTypeErasedHandler handler,
+                            detail::ToolResultMode result_mode);
+    void register_sync_resource(const Resource& resource, SyncTypeErasedHandler handler);
+    void register_sync_resource_template(const ResourceTemplate& tmpl, SyncTypeErasedHandler handler);
+    void register_sync_prompt(const Prompt& prompt, SyncTypeErasedHandler handler);
+
+    /// Registers a typed tool: a sync handler without a coroutine, an async one through
+    /// wrap_handler().
+    template <JsonSerializable In, JsonSerializable Out, typename Fn>
+    void add_typed_tool(const std::string& name, const std::string& description,
+                        const nlohmann::json& input_schema, const nlohmann::json* output_schema,
+                        Fn handler) {
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature");
+        Tool tool;
+        tool.name = name;
+        tool.description = description;
+        constexpr auto result_mode = std::same_as<Out, CallToolResult>
+                                         ? detail::ToolResultMode::eTyped
+                                         : detail::ToolResultMode::eNormalize;
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_tool(std::move(tool), input_schema, output_schema,
+                               detail::wrap_sync_handler<In, Out>(std::move(handler)), result_mode);
+        } else {
+            register_tool(std::move(tool), input_schema, output_schema,
+                          detail::wrap_handler<In, Out>(std::move(handler)), result_mode);
+        }
+    }
 
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 

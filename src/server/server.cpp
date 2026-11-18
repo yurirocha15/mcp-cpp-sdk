@@ -783,11 +783,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     };
 
     struct ToolRegistration {
+        /// Called through middleware, task runs and the handler executor. For a sync handler it is
+        /// sync_handler lifted into a coroutine.
         TypeErasedHandler handler;
         detail::ToolResultMode result_mode;
         CompiledToolSchemas schemas;
         ToolTaskMode task_mode{ToolTaskMode::eNever};
         ToolTaskPreparation task_preparation;
+        /// The handler of a tool registered as synchronous, called directly when the call already
+        /// runs on the strand the handler belongs on; empty for an async handler.
+        SyncTypeErasedHandler sync_handler;
     };
 
     struct ResourceTemplateRegistration {
@@ -1052,7 +1057,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     };
 
     void add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
-                               TypeErasedHandler handler, detail::ToolResultMode result_mode);
+                               TypeErasedHandler handler, detail::ToolResultMode result_mode,
+                               SyncTypeErasedHandler sync_handler = {});
     /// Appends @p listed as tools/list writes it to @p text, adding the schema texts it was written
     /// from to @p held.
     static void append_listed_tool(std::string& text, const ListedTool& listed,
@@ -1524,15 +1530,31 @@ std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
 }
 
 void Server::Impl::add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
-                                         TypeErasedHandler handler,
-                                         detail::ToolResultMode result_mode) {
+                                         TypeErasedHandler handler, detail::ToolResultMode result_mode,
+                                         SyncTypeErasedHandler sync_handler) {
     forget_tools_text();
     tool.inputSchema = nullptr;
     tool.outputSchema.reset();
     tools.push_back(ListedTool{std::move(tool), schemas.input, schemas.output});
-    tool_handlers.emplace(std::move(name),
-                          ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+    ToolRegistration registration{std::move(handler), result_mode, std::move(schemas)};
+    registration.sync_handler = std::move(sync_handler);
+    tool_handlers.emplace(std::move(name), std::move(registration));
 }
+
+namespace {
+
+/// A sync handler as a TypeErasedHandler, for the paths that await handlers.
+TypeErasedHandler lift_sync_handler(SyncTypeErasedHandler handler) {
+    if (!handler) {
+        return {};
+    }
+    return [handler = std::move(handler)](Context& ctx,
+                                          const nlohmann::json& params) -> Task<nlohmann::json> {
+        co_return handler(ctx, params);
+    };
+}
+
+}  // namespace
 
 void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {
@@ -1565,6 +1587,44 @@ void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
     auto name = tool.name;
     impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
                                  std::move(handler), result_mode);
+}
+
+void Server::register_sync_tool(const Tool& tool, SyncTypeErasedHandler handler,
+                                detail::ToolResultMode result_mode) {
+    if (impl_->tool_handlers.contains(tool.name)) {
+        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
+    }
+    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
+                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
+    auto lifted = lift_sync_handler(handler);
+    impl_->add_tool_registration(Tool(tool), tool.name, std::move(schemas), std::move(lifted),
+                                 result_mode, std::move(handler));
+}
+
+void Server::register_sync_tool(Tool&& tool, const nlohmann::json& input_schema,
+                                const nlohmann::json* output_schema, SyncTypeErasedHandler handler,
+                                detail::ToolResultMode result_mode) {
+    if (impl_->tool_handlers.contains(tool.name)) {
+        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
+    }
+    auto schemas = compile_tool_schemas(tool.name, input_schema, output_schema);
+    auto name = tool.name;
+    auto lifted = lift_sync_handler(handler);
+    impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
+                                 std::move(lifted), result_mode, std::move(handler));
+}
+
+void Server::register_sync_resource(const Resource& resource, SyncTypeErasedHandler handler) {
+    register_resource(resource, lift_sync_handler(std::move(handler)));
+}
+
+void Server::register_sync_resource_template(const ResourceTemplate& tmpl,
+                                             SyncTypeErasedHandler handler) {
+    register_resource_template(tmpl, lift_sync_handler(std::move(handler)));
+}
+
+void Server::register_sync_prompt(const Prompt& prompt, SyncTypeErasedHandler handler) {
+    register_prompt(prompt, lift_sync_handler(std::move(handler)));
 }
 
 void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
@@ -3545,6 +3605,14 @@ Task<nlohmann::json> Server::Impl::call_tool_handler(const ToolRegistration& too
         }
     }
     try {
+        // A sync handler is called in place when the call runs on its strand already; otherwise it
+        // reaches the strand through its lifted coroutine, as an async handler does.
+        if (tool.sync_handler && !handler_executor) {
+            const auto executor = co_await boost::asio::this_coro::executor;
+            if (detail::is_strand_executor(executor)) {
+                co_return tool.sync_handler(ctx, arguments);
+            }
+        }
         co_return co_await call_on_handler_strand(tool.handler, ctx, arguments);
     } catch (const std::exception& error) {
         co_return nlohmann::json(

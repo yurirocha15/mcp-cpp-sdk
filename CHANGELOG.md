@@ -8,6 +8,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
+- `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
+  The typed `add_tool`, `add_resource`, `add_resource_template` and
+  `add_prompt` store a synchronous handler as one, without a coroutine around
+  it, and a synchronous tool is called in place when its call already runs on
+  the strand it belongs on.
 - `Client::executor()` returns the executor the client was constructed with.
 - Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as
   the entries below describe, and is the newest revision the SDK supports.

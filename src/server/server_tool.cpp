@@ -9,10 +9,9 @@ void Server::add_tool(const std::string& name, const std::string& description,
     tool.name = name;
     tool.description = description;
 
-    register_tool(
+    register_sync_tool(
         std::move(tool), input_schema, nullptr,
-        [h = std::move(handler)](Context& /*ctx*/, const nlohmann::json& params)
-            -> Task<nlohmann::json> { co_return h(params); },
+        [h = std::move(handler)](Context& /*ctx*/, const nlohmann::json& params) { return h(params); },
         detail::ToolResultMode::eNormalize);
 }
 
@@ -24,9 +23,10 @@ void Server::add_raw_tool(const Tool& tool,
                           std::function<nlohmann::json(const nlohmann::json&)> handler) {
     // Exceptions are turned into isError results by the dispatcher, which is also where the
     // message is made safe to hand to the peer.
-    add_raw_tool(tool,
-                 [h = std::move(handler)](Context& /*ctx*/, const nlohmann::json& params)
-                     -> Task<nlohmann::json> { co_return h(params); });
+    register_sync_tool(
+        tool,
+        [h = std::move(handler)](Context& /*ctx*/, const nlohmann::json& params) { return h(params); },
+        detail::ToolResultMode::eValidated);
 }
 
 }  // namespace mcp
