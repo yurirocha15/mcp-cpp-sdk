@@ -100,7 +100,14 @@ Core Types
 Task<T>
 ^^^^^^^
 
-.. doxygentypedef:: mcp::Task
+.. doxygenclass:: mcp::Task
+   :members:
+
+Executor
+^^^^^^^^
+
+.. doxygenclass:: mcp::Executor
+   :members:
 
 Protocol Types
 --------------
