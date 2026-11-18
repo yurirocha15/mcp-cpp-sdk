@@ -5,6 +5,7 @@
 #include <mcp/transport/stdio_client.hpp>
 
 #include <functional>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +53,10 @@ class MCP_API Endpoint {
      * @throws std::invalid_argument If @p command is empty.
      */
     static Endpoint stdio(std::vector<std::string> command);
+
+    /// As stdio() above, for a command written in place, such as
+    /// `Endpoint::stdio({"./server", "--verbose"})` or `Endpoint::stdio({"./server"})`.
+    static Endpoint stdio(std::initializer_list<std::string> command);
 
     /// Launch the process @p process describes, with its environment, working directory and
     /// standard error handling.

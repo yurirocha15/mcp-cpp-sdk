@@ -4,6 +4,7 @@
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
+#include <initializer_list>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -23,6 +24,10 @@ Endpoint Endpoint::stdio(std::vector<std::string> command) {
     process.arguments.assign(std::make_move_iterator(command.begin() + 1),
                              std::make_move_iterator(command.end()));
     return stdio(std::move(process));
+}
+
+Endpoint Endpoint::stdio(std::initializer_list<std::string> command) {
+    return stdio(std::vector<std::string>(command));
 }
 
 Endpoint Endpoint::stdio(StdioProcessOptions process) {

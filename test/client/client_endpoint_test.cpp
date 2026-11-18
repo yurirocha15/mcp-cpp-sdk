@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #ifndef MCP_TEST_STDIO_SERVER
@@ -41,6 +42,7 @@ TEST(ClientEndpointTest, RefusesAnEmptyCommandOrFactory) {
                  std::invalid_argument);
     EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio(mcp::StdioProcessOptions{})),
                  std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio({})), std::invalid_argument);
     EXPECT_THROW(static_cast<void>(mcp::Endpoint::custom({})), std::invalid_argument);
     const auto null_transport = mcp::Endpoint::custom(
         [](const mcp::Executor&) -> std::shared_ptr<mcp::ITransport> { return nullptr; });
@@ -76,6 +78,20 @@ TEST(ClientEndpointTest, CommandVectorNamesTheProgramAndItsArguments) {
                             .get();
     ASSERT_TRUE(result.structuredContent.has_value());
     EXPECT_NE(result.structuredContent->dump().find("second"), std::string::npos);
+}
+
+// A command written in braces is the program and its arguments, also when it is the program alone.
+TEST(ClientEndpointTest, BracedCommandNamesTheProgramAndItsArguments) {
+    const std::vector<std::pair<mcp::Endpoint, json>> cases = {
+        {mcp::Endpoint::stdio({MCP_TEST_STDIO_SERVER}), json::array()},
+        {mcp::Endpoint::stdio({MCP_TEST_STDIO_SERVER, "serve", "third"}), json{"serve", "third"}}};
+    for (const auto& [endpoint, arguments] : cases) {
+        mcp::Client client(endpoint);
+        client.sync().connect("endpoint-test", "1.0");
+        const auto result = client.sync().call_tool("args", json::object());
+        ASSERT_TRUE(result.structuredContent.has_value());
+        EXPECT_EQ(result.structuredContent->at("args"), arguments);
+    }
 }
 
 TEST(ClientEndpointTest, HttpEndpointConfiguresTheTransportAndMakesTheAuthenticator) {
