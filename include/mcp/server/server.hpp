@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -124,14 +125,14 @@ SyncTypeErasedHandler wrap_sync_handler(Fn fn) {
 /// checked only when the enclosing template is instantiated: a header can then define a
 /// coroutine returning Task while Task is only declared.
 template <typename Dependent, typename T>
-struct dependent_type {
+struct DependentType {
     using type = T;
 };
 
 template <JsonSerializable In, JsonSerializable Out, typename Fn>
     requires AsyncHandler<Fn, In, Out>
 TypeErasedHandler wrap_handler(Fn fn) {
-    using Result = typename dependent_type<Fn, Task<nlohmann::json>>::type;
+    using Result = typename DependentType<Fn, Task<nlohmann::json>>::type;
     return [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Result {
         // [gcc11-sso: no-named-temporaries] DO NOT introduce a named `input` variable here.
         if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
