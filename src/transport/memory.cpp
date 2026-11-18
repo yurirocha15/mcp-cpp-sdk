@@ -283,8 +283,8 @@ Task<std::optional<nlohmann::json>> detail::MemoryTransportAccess::read_json_unt
     return mcp::read_json_until_closed_on_strand(transport.state_);
 }
 
-MemoryTransport::MemoryTransport(const boost::asio::any_io_executor& executor)
-    : state_(std::make_shared<detail::MemoryTransportState>(executor)) {}
+MemoryTransport::MemoryTransport(const Executor& executor)
+    : state_(std::make_shared<detail::MemoryTransportState>(executor.get())) {}
 
 MemoryTransport::~MemoryTransport() = default;
 
@@ -330,7 +330,7 @@ void MemoryTransport::set_peer(const std::shared_ptr<MemoryTransport>& peer) {
 }
 
 std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>> create_memory_transport_pair(
-    const boost::asio::any_io_executor& executor) {
+    const Executor& executor) {
     auto transport_a = std::make_shared<MemoryTransport>(executor);
     auto transport_b = std::make_shared<MemoryTransport>(executor);
     transport_a->set_peer(transport_b);

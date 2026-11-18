@@ -1610,8 +1610,8 @@ void Server::set_completion_provider(CompletionHandler handler) {
     impl_->completion_handler = std::move(handler);
 }
 
-void Server::set_handler_executor(const boost::asio::any_io_executor& executor) {
-    impl_->handler_executor = executor;
+void Server::set_handler_executor(const Executor& executor) {
+    impl_->handler_executor = executor.get();
 }
 
 void Server::set_tool_validation(const ToolValidationOptions& options) {
@@ -1948,10 +1948,10 @@ Task<nlohmann::json> Server::invoke_tool(const std::string& tool_name, const nlo
                                    std::nullopt);
 }
 
-Task<void> Server::run(std::shared_ptr<ITransport> transport, boost::asio::any_io_executor executor) {
+Task<void> Server::run(std::shared_ptr<ITransport> transport, Executor executor) {
     // Deliberately not a coroutine: reading impl_ here, on the caller's thread, hands the session
     // a reference that outlives this Server rather than one that is read again later.
-    return Impl::run(impl_, std::move(transport), std::move(executor));
+    return Impl::run(impl_, std::move(transport), executor.get());
 }
 
 Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransport> transport,

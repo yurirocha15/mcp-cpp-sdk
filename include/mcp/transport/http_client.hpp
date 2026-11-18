@@ -4,9 +4,9 @@
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <functional>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -66,7 +66,7 @@ class MCP_API HttpClientTransport final : public ITransport {
      * @throws std::invalid_argument If the URL is malformed or does not use
      *         the `http://` scheme.
      */
-    HttpClientTransport(const boost::asio::any_io_executor& executor, const std::string& url);
+    HttpClientTransport(const Executor& executor, const std::string& url);
 
     ~HttpClientTransport() override;
 

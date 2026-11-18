@@ -6,8 +6,8 @@
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <boost/beast/http.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/transport/http_types.hpp>
 
 #include <chrono>
@@ -63,7 +63,7 @@ struct SessionLimits {
  * @code
  * asio::io_context io_ctx;
  *
- * auto server_factory = [](const asio::any_io_executor&) {
+ * auto server_factory = [](const mcp::Executor&) {
  *     ServerCapabilities caps;
  *     caps.tools = ServerCapabilities::ToolsCapability{};
  *     Implementation info{"my-server", "1.0"};
@@ -81,7 +81,7 @@ struct SessionLimits {
 class MCP_API StreamableHttpSessionManager {
    public:
     /// Callback that creates a configured Server instance for a new session.
-    using ServerFactory = std::function<std::unique_ptr<Server>(const boost::asio::any_io_executor&)>;
+    using ServerFactory = std::function<std::unique_ptr<Server>(const Executor&)>;
 
     /// Optional callback for handling non-MCP HTTP requests (e.g., health checks).
     /// Return std::nullopt to let the session manager handle the request normally.
@@ -97,8 +97,7 @@ class MCP_API StreamableHttpSessionManager {
      * @param event_store_capacity Per-session event store capacity.
      */
     StreamableHttpSessionManager(
-        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
-        ServerFactory factory,
+        const Executor& executor, std::string host, unsigned short port, ServerFactory factory,
         std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~StreamableHttpSessionManager();
@@ -333,7 +332,7 @@ class MCP_API StreamableHttpSessionManager {
      * @param exec The executor to use for tool execution.
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
-    void set_tool_executor(const boost::asio::any_io_executor& exec);
+    void set_tool_executor(const Executor& exec);
 
     /**
      * @brief Choose which protocol revisions the endpoint serves.

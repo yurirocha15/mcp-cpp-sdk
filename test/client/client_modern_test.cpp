@@ -1639,7 +1639,7 @@ TEST(E2eEra, AutoOverHttpIsModern) {
     bool fired = false;
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_dual_era_server(); });
+        [](const mcp::Executor&) { return make_dual_era_server(); });
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     std::vector<mcp::EraDecision> decisions;
@@ -1672,7 +1672,7 @@ TEST(E2eEra, DefaultClientOverHttpIsModern) {
     bool fired = false;
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_dual_era_server(); });
+        [](const mcp::Executor&) { return make_dual_era_server(); });
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::Client client(transport, io.get_executor());
@@ -1699,7 +1699,7 @@ TEST(E2eEra, LegacyClientOverHttpIsLegacy) {
     bool fired = false;
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_dual_era_server(); });
+        [](const mcp::Executor&) { return make_dual_era_server(); });
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::ClientOptions options;

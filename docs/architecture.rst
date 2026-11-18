@@ -363,8 +363,9 @@ The SDK is designed for extension:
 
 * **Custom transports**: Implement ``ITransport`` (e.g., for HTTP/2)
 * **Custom serialization**: Provide ``to_json``/``from_json`` for your types
-* **Asio executors**: Pass an executor accepted by the relevant
-  ``boost::asio::any_io_executor`` API
+* **Asio executors**: Pass any Asio executor, such as an ``io_context``'s, a
+  strand or a thread pool's; it converts to ``mcp::Executor``, and
+  ``Executor::get()`` returns it as a ``boost::asio::any_io_executor``
 * **Middleware**: Intercept handler execution for auth, logging, and request shaping
 
 Future Work

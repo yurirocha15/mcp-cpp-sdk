@@ -96,7 +96,7 @@ class HttpTasksTest : public ::testing::Test {
     asio::io_context io_ctx_;
 
     static mcp::StreamableHttpSessionManager::ServerFactory factory() {
-        return [](const asio::any_io_executor& executor) {
+        return [](const mcp::Executor& executor) {
             mcp::ServerCapabilities caps;
             caps.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(mcp::Implementation{"tasks-http", "1.0"}, caps);

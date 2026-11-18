@@ -2298,6 +2298,8 @@ struct Client::Impl {
     }
 
     std::shared_ptr<ITransport> transport;
+    /// The executor the Client was constructed with, as Client::executor() returns it.
+    Executor executor;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     /// How many requests of the server are being answered. Touched on the strand only.
     std::size_t incoming_requests{0};
@@ -2493,8 +2495,7 @@ struct Client::Impl {
     }
 };
 
-Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_executor& executor,
-               ClientOptions options) {
+Client::Client(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options) {
     if (!transport) {
         throw std::invalid_argument("Client transport must not be null");
     }
@@ -2514,7 +2515,8 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     if (options.max_incoming_request_bytes == 0) {
         throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
-    impl_ = std::make_shared<Impl>(std::move(transport), executor, std::move(options));
+    impl_ = std::make_shared<Impl>(std::move(transport), executor.get(), std::move(options));
+    impl_->executor = executor;
     impl_->transport->set_interaction_observer(
         [state = std::weak_ptr<Impl>(impl_)](std::string_view key, bool waiting) {
             if (const auto alive = state.lock()) {
@@ -2525,6 +2527,8 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
             }
         });
 }
+
+Executor Client::executor() const { return impl_->executor; }
 
 Client::~Client() { close(); }
 

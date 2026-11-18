@@ -7,13 +7,13 @@
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <iterator>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -46,7 +46,7 @@ struct HttpServerBinding {
     /// held weakly: once that server is gone it answers with an error.
     std::function<Task<std::string>(nlohmann::json, RequestContext)> modern_dispatch;
     /// Where modern_dispatch runs.
-    boost::asio::any_io_executor dispatch_executor;
+    Executor dispatch_executor;
 };
 
 /// Installed by Server::run().
@@ -235,7 +235,7 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @param event_store_capacity Maximum number of replayable SSE events to retain.
      */
     HttpServerTransport(
-        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
+        const Executor& executor, std::string host, unsigned short port,
         std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~HttpServerTransport() override;

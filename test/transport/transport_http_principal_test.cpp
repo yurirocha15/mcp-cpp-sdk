@@ -279,9 +279,8 @@ TEST_F(HttpPrincipalTest, ASessionServesOnlyThePrincipalThatCreatedIt) {
 
 TEST(SessionManagerPrincipal, ASessionServesOnlyThePrincipalThatCreatedIt) {
     asio::io_context io;
-    mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", 19341,
-        [](const asio::any_io_executor&) { return make_server(); });
+    mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", 19341,
+                                              [](const mcp::Executor&) { return make_server(); });
     manager.set_bearer_token_validator([](std::string_view /*token*/) { return true; });
     mcp_test::spawn_detached(io, manager.listen());
 
@@ -300,9 +299,8 @@ TEST(SessionManagerPrincipal, ASessionServesOnlyThePrincipalThatCreatedIt) {
 
 TEST(SessionManagerPrincipal, ANamedPrincipalKeepsItsSessionAcrossATokenRefresh) {
     asio::io_context io;
-    mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", 19342,
-        [](const asio::any_io_executor&) { return make_server(); });
+    mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", 19342,
+                                              [](const mcp::Executor&) { return make_server(); });
     manager.set_bearer_token_validator(
         [](std::string_view /*token*/) -> mcp::TokenValidation { return {true, "alice"}; });
     mcp_test::spawn_detached(io, manager.listen());
@@ -489,7 +487,7 @@ class HttpPrincipalManagerTest : public ::testing::Test {
     asio::io_context io_ctx_;
 
     static mcp::StreamableHttpSessionManager::ServerFactory factory() {
-        return [](const asio::any_io_executor&) { return make_server(); };
+        return [](const mcp::Executor&) { return make_server(); };
     }
 
     template <typename Exchange>

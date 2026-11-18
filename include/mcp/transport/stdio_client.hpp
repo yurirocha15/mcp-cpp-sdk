@@ -1,6 +1,6 @@
 #pragma once
 
-#include <boost/asio/any_io_executor.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -136,7 +136,7 @@ class MCP_API StdioClientTransport final : public ITransport {
      *         executable, the working directory is missing, or the system refuses.
      * @throws std::invalid_argument If #StdioProcessOptions::command is empty.
      */
-    StdioClientTransport(const boost::asio::any_io_executor& executor, StdioProcessOptions options);
+    StdioClientTransport(const Executor& executor, StdioProcessOptions options);
 
     ~StdioClientTransport() override;
 

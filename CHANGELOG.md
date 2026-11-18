@@ -8,6 +8,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
+- `Client::executor()` returns the executor the client was constructed with.
 - Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as
   the entries below describe, and is the newest revision the SDK supports.
 - Requests of protocol revision 2026-07-28, which carry their protocol
@@ -540,6 +541,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- Constructors and functions that took a `boost::asio::any_io_executor` take an
+  `mcp::Executor` (`mcp/core/executor.hpp`, which needs no Boost) instead:
+  `Client`, `Server::run()` and `Server::set_handler_executor()`, the stdio,
+  memory, HTTP and WebSocket transports, `StdioClientSession`,
+  `StreamableHttpSessionManager` and its `set_tool_executor()`, and the OAuth,
+  client-credentials and enterprise authenticators. Any Asio executor converts
+  to it implicitly where `mcp/core/async.hpp` is included, and
+  `Executor::get()` returns it as an `any_io_executor`. A
+  `StreamableHttpSessionManager::ServerFactory` is called with a
+  `const mcp::Executor&`.
 - `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>` instead of
   an alias of it, declared in `mcp/core/async.hpp` and forward-declared without
   Boost in `mcp/core/async_fwd.hpp`. A Task is awaited, passed to `co_spawn` and

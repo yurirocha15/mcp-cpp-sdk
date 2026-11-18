@@ -7,11 +7,11 @@
 //   [wire-builders]        make_result_wire/make_error_wire are synchronous helpers;
 //                          do NOT convert them to Task<T> coroutines.
 
-#include <boost/asio/any_io_executor.hpp>
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/core/core.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/request_context.hpp>
@@ -636,7 +636,7 @@ class MCP_API Server {
      * thread of @p executor rather than one the transport needs. Read unsynchronized by request
      * handlers; must be called before run().
      */
-    void set_handler_executor(const boost::asio::any_io_executor& executor);
+    void set_handler_executor(const Executor& executor);
 
     /**
      * @brief Declare support for an extension in the capabilities this server advertises.
@@ -951,7 +951,7 @@ class MCP_API Server {
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
      */
-    Task<void> run(std::shared_ptr<ITransport> transport, boost::asio::any_io_executor executor);
+    Task<void> run(std::shared_ptr<ITransport> transport, Executor executor);
 
     /**
      * @brief Run the server on stdio (stdin/stdout), blocking until shutdown.

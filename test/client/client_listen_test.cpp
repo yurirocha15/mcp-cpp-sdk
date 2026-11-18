@@ -715,7 +715,7 @@ TEST(ClientListen, AgainstSdkServerOverHttp) {
     std::shared_ptr<mcp::Server> server = make_listen_server();
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_listen_server(); });
+        [](const mcp::Executor&) { return make_listen_server(); });
     manager.set_modern_server(server);
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
@@ -740,7 +740,7 @@ TEST(ClientListen, WorksWithoutSetModernServer) {
     bool fired = false;
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_listen_server(); });
+        [](const mcp::Executor&) { return make_listen_server(); });
     auto server = manager.modern_server();
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");

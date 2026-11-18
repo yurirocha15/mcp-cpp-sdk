@@ -4,6 +4,8 @@
 // or returning them include this; code that defines or awaits a coroutine includes
 // <mcp/core/async.hpp>.
 
+#include <mcp/core/executor.hpp>
+
 namespace mcp {
 
 template <typename T>

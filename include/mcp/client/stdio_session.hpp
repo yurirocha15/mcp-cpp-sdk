@@ -1,8 +1,8 @@
 #pragma once
 
-#include <boost/asio/any_io_executor.hpp>
 #include <mcp/client/client.hpp>
 #include <mcp/core/constants.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
@@ -76,7 +76,7 @@ class MCP_API StdioClientSession {
      * @brief Create a session; nothing starts until start().
      * @throws std::invalid_argument If the process command is empty.
      */
-    StdioClientSession(const boost::asio::any_io_executor& executor, StdioSessionOptions options);
+    StdioClientSession(const Executor& executor, StdioSessionOptions options);
 
     /// Stops restarting and starts shutting the current server down, also while the application
     /// still holds its Client, which is closed.

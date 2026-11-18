@@ -73,7 +73,7 @@ int main() {
 
     mcp::StreamableHttpSessionManager manager(
         io_context.get_executor(), "0.0.0.0", port(),
-        [workload, schemas](const asio::any_io_executor&) { return make_server(workload, *schemas); });
+        [workload, schemas](const mcp::Executor&) { return make_server(workload, *schemas); });
     manager.set_stateless_json_mode(stateless());
     manager.set_tool_executor(handler_pool.get_executor());
 

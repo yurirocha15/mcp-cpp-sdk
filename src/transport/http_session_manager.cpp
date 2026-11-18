@@ -1808,11 +1808,10 @@ struct StreamableHttpSessionManager::Impl {
 // StreamableHttpSessionManager public methods
 // ============================================================================
 
-StreamableHttpSessionManager::StreamableHttpSessionManager(const boost::asio::any_io_executor& executor,
-                                                           std::string host, unsigned short port,
-                                                           ServerFactory factory,
+StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& executor, std::string host,
+                                                           unsigned short port, ServerFactory factory,
                                                            std::size_t event_store_capacity)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), port, std::move(factory),
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), port, std::move(factory),
                                    event_store_capacity)) {}
 
 StreamableHttpSessionManager::~StreamableHttpSessionManager() {
@@ -1957,10 +1956,10 @@ void StreamableHttpSessionManager::set_stateless_json_mode(bool enabled) {
     }
 }
 
-void StreamableHttpSessionManager::set_tool_executor(const boost::asio::any_io_executor& exec) {
+void StreamableHttpSessionManager::set_tool_executor(const Executor& exec) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
-    impl_->tool_executor_ = exec;
+    impl_->tool_executor_ = exec.get();
 }
 
 void StreamableHttpSessionManager::set_protocol_policy(ServerProtocolPolicy policy) {

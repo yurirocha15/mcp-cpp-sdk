@@ -838,8 +838,7 @@ int main(int argc, char** argv) {
 
         // Task handlers run on this pool, apart from the connection's executor.
         boost::asio::thread_pool handler_pool(4);
-        auto server_factory = [implementation, capabilities,
-                               &handler_pool](const boost::asio::any_io_executor&) {
+        auto server_factory = [implementation, capabilities, &handler_pool](const mcp::Executor&) {
             auto server = std::make_unique<mcp::Server>(implementation, capabilities);
             configure_server(*server, handler_pool.get_executor());
             return server;

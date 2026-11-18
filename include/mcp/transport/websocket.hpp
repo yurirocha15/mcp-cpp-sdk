@@ -3,8 +3,8 @@
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <mcp/core/executor.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -143,8 +143,8 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      *                 (such as `std::chrono::milliseconds::max()`) disables the limit.
      *                 Established connections are not subject to it.
      */
-    WebSocketClientTransport(const boost::asio::any_io_executor& executor, std::string host,
-                             std::string port, std::string path = "/",
+    WebSocketClientTransport(const Executor& executor, std::string host, std::string port,
+                             std::string path = "/",
                              std::chrono::milliseconds connect_timeout = std::chrono::seconds(30));
 
     ~WebSocketClientTransport() override;

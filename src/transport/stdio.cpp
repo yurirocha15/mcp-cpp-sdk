@@ -828,16 +828,14 @@ struct StdioTransport::Impl {
     std::thread writer_thread;
 };
 
-StdioTransport::StdioTransport(const boost::asio::any_io_executor& executor, std::istream& input,
-                               std::ostream& output)
-    : impl_(std::make_unique<Impl>(executor, input, output)) {}
+StdioTransport::StdioTransport(const Executor& executor, std::istream& input, std::ostream& output)
+    : impl_(std::make_unique<Impl>(executor.get(), input, output)) {}
 
-StdioTransport::StdioTransport(const boost::asio::any_io_executor& executor, std::istream& input,
-                               OwnStdoutTag tag)
-    : impl_(std::make_unique<Impl>(executor, input, tag)) {}
+StdioTransport::StdioTransport(const Executor& executor, std::istream& input, OwnStdoutTag tag)
+    : impl_(std::make_unique<Impl>(executor.get(), input, tag)) {}
 
-std::unique_ptr<StdioTransport> StdioTransport::create_owning_stdout(
-    const boost::asio::any_io_executor& executor, std::istream& input) {
+std::unique_ptr<StdioTransport> StdioTransport::create_owning_stdout(const Executor& executor,
+                                                                     std::istream& input) {
     return std::unique_ptr<StdioTransport>(new StdioTransport(executor, input, OwnStdoutTag{}));
 }
 

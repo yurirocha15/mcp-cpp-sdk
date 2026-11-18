@@ -3,9 +3,12 @@
 // <utility> comes first: Boost 1.74's awaitable.hpp uses std::exchange without including it.
 #include <utility>
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
 #include <coroutine>
 #include <mcp/core/async_fwd.hpp>
+#include <memory>
+#include <stdexcept>
 
 namespace mcp {
 
@@ -32,5 +35,26 @@ class [[nodiscard]] Task : public boost::asio::awaitable<T> {
     Task(boost::asio::awaitable<T>&& other) noexcept  // NOLINT(google-explicit-constructor)
         : boost::asio::awaitable<T>(std::move(other)) {}
 };
+
+namespace detail {
+
+template <typename AsioExecutor>
+struct ExecutorWrap {
+    static std::shared_ptr<const void> wrap(const AsioExecutor& executor) {
+        return std::make_shared<const boost::asio::any_io_executor>(executor);
+    }
+};
+
+template <typename Unused>
+struct ExecutorAccess {
+    static const boost::asio::any_io_executor& get(const Executor& executor) {
+        if (!executor.target_) {
+            throw std::invalid_argument("mcp::Executor holds no executor");
+        }
+        return *static_cast<const boost::asio::any_io_executor*>(executor.target_.get());
+    }
+};
+
+}  // namespace detail
 
 }  // namespace mcp

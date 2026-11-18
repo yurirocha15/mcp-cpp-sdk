@@ -1701,9 +1701,9 @@ struct HttpServerTransport::Impl {
     std::atomic<bool> json_only_{false};
 };
 
-HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
+HttpServerTransport::HttpServerTransport(const Executor& executor, std::string host,
                                          unsigned short port, std::size_t event_store_capacity)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), port, event_store_capacity)) {}
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), port, event_store_capacity)) {}
 
 HttpServerTransport::~HttpServerTransport() {
     try {
@@ -1993,7 +1993,8 @@ void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
         binding.modern_dispatch
             ? std::make_shared<const detail::ModernDispatch>(std::move(binding.modern_dispatch))
             : nullptr;
-    transport.impl_->modern_dispatch_executor = std::move(binding.dispatch_executor);
+    transport.impl_->modern_dispatch_executor =
+        binding.dispatch_executor ? binding.dispatch_executor.get() : boost::asio::any_io_executor();
 }
 
 }  // namespace detail

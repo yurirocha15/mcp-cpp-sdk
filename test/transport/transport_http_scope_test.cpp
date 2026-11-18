@@ -232,7 +232,7 @@ TEST(HttpInsufficientScope, SessionManagerAnswers403BeforeDispatch) {
     auto handled = std::make_shared<std::atomic<int>>(0);
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [handled](const asio::any_io_executor&) { return make_server(handled); });
+        [handled](const mcp::Executor&) { return make_server(handled); });
     configure_scopes(manager, port);
 
     Replies replies;
@@ -276,7 +276,7 @@ TEST(HttpInsufficientScope, LegacyRequestsAreCheckedAndOpenNoSession) {
     auto handled = std::make_shared<std::atomic<int>>(0);
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [handled](const asio::any_io_executor&) { return make_server(handled); });
+        [handled](const mcp::Executor&) { return make_server(handled); });
     manager.set_bearer_token_validator(
         [](std::string_view token) -> mcp::TokenValidation { return scopes_from_token(token); });
     manager.set_scope_requirements(everything_needs_read);
@@ -330,7 +330,7 @@ TEST(HttpInsufficientScope, AProviderThatThrowsIsAnswered500WithoutAChallenge) {
     auto handled = std::make_shared<std::atomic<int>>(0);
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [handled](const asio::any_io_executor&) { return make_server(handled); });
+        [handled](const mcp::Executor&) { return make_server(handled); });
     manager.set_bearer_token_validator(
         [](std::string_view token) -> mcp::TokenValidation { return scopes_from_token(token); });
     manager.set_scope_requirements([](const mcp::ScopeRequestContext&) -> std::vector<std::string> {
@@ -373,7 +373,7 @@ TEST(HttpInsufficientScope, ASessionManagerScopeThatCannotBeQuotedIsAnswered500)
     auto handled = std::make_shared<std::atomic<int>>(0);
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [handled](const asio::any_io_executor&) { return make_server(handled); });
+        [handled](const mcp::Executor&) { return make_server(handled); });
     manager.set_bearer_token_validator(
         [](std::string_view token) -> mcp::TokenValidation { return scopes_from_token(token); });
     manager.set_scope_requirements(unquotable_scope);
@@ -433,9 +433,8 @@ TEST(HttpInsufficientScope, ScopeRequirementsWithoutAValidatorAreRefusedWhenList
     }
     {
         mcp::StreamableHttpSessionManager manager(
-            io.get_executor(), "127.0.0.1", 0, [](const asio::any_io_executor&) {
-                return make_server(std::make_shared<std::atomic<int>>(0));
-            });
+            io.get_executor(), "127.0.0.1", 0,
+            [](const mcp::Executor&) { return make_server(std::make_shared<std::atomic<int>>(0)); });
         manager.set_scope_requirements(files_scopes);
         EXPECT_THROW((void)manager.listen(), std::logic_error);
         manager.set_bearer_token_validator(validator);

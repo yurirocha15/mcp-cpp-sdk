@@ -261,7 +261,7 @@ class HttpStreamTest : public ::testing::Test {
     std::unique_ptr<mcp::StreamableHttpSessionManager> make_manager(unsigned short port) {
         auto manager = std::make_unique<mcp::StreamableHttpSessionManager>(
             io_ctx_.get_executor(), "127.0.0.1", port,
-            [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });
+            [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });
         manager->set_modern_server(make_server());
         return manager;
     }
@@ -663,7 +663,7 @@ TEST_F(HttpStreamTest, NotificationsStayOffAnotherTransportOfTheSharedServer) {
     auto [client_end, server_end] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", 20450,
-        [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });
+        [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });
     manager.set_modern_server(server);
     std::vector<std::string> on_other_transport;
     RawClient client(io_ctx_.get_executor());
@@ -702,7 +702,7 @@ TEST(HttpStreamOptions, InvalidOptionsAreRefused) {
     asio::io_context io_ctx;
     mcp::StreamableHttpSessionManager manager(
         io_ctx.get_executor(), "127.0.0.1", 20442,
-        [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });
+        [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });
     EXPECT_THROW(
         manager.set_stream_options({std::chrono::milliseconds(0), std::chrono::milliseconds(1), 1}),
         std::invalid_argument);

@@ -1324,9 +1324,8 @@ TEST(HttpClientModern, AgainstDualEraSessionManager) {
     asio::io_context io;
     asio::steady_timer guard(io);
     bool fired = false;
-    mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", port,
-        [](const asio::any_io_executor&) { return make_sdk_server(); });
+    mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", port,
+                                              [](const mcp::Executor&) { return make_sdk_server(); });
     auto transport = make_transport(io, "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::Client client(transport, io.get_executor(), auto_options());
     SdkOutcome outcome;
@@ -1562,7 +1561,7 @@ PinnedOutcome run_pinned(ServerKind kind, unsigned short manager_port, const std
     if (kind == ServerKind::eSessionManager) {
         manager = std::make_unique<mcp::StreamableHttpSessionManager>(
             io.get_executor(), "127.0.0.1", manager_port,
-            [](const asio::any_io_executor&) { return make_sdk_server(); });
+            [](const mcp::Executor&) { return make_sdk_server(); });
         if (policy) {
             manager->set_protocol_policy(*policy);
         }

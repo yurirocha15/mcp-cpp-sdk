@@ -18,11 +18,11 @@
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -620,8 +620,15 @@ class MCP_API Client {
      * @param executor  The executor to use for async operations.
      * @param options   Default timeout and protocol-validation behavior.
      */
-    Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_executor& executor,
-           ClientOptions options = {});
+    Client(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options = {});
+
+    /**
+     * @brief The executor the Client was constructed with.
+     *
+     * @details Coroutines that use this Client can be spawned on it; get() returns it as a
+     * boost::asio::any_io_executor.
+     */
+    [[nodiscard]] Executor executor() const;
 
     /// @brief Destructor. Closes the transport and clears pending requests
     /// so that asio-tied objects (timers, streams) are destroyed while the

@@ -236,7 +236,7 @@ std::vector<std::pair<std::string, json>> parse_sse_events(const std::string& bo
 // ---------------------------------------------------------------------------
 
 mcp::StreamableHttpSessionManager::ServerFactory make_echo_server_factory() {
-    return [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+    return [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
         auto server = std::make_unique<mcp::Server>(mcp::Implementation{"test-session-server", "1.0.0"},
@@ -254,7 +254,7 @@ mcp::StreamableHttpSessionManager::ServerFactory make_echo_server_factory() {
 }
 
 mcp::StreamableHttpSessionManager::ServerFactory make_notifying_server_factory() {
-    return [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+    return [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
         caps.logging = json::object();
@@ -1391,7 +1391,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoversShareOneServer) {
     std::atomic<int> factory_calls{0};
     auto echo_factory = make_echo_server_factory();
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
-                                              [&](const asio::any_io_executor& executor) {
+                                              [&](const mcp::Executor& executor) {
                                                   factory_calls.fetch_add(1, std::memory_order_relaxed);
                                                   return echo_factory(executor);
                                               });
@@ -1717,7 +1717,7 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
     auto echo_factory = make_echo_server_factory();
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&factory_calls, echo_factory](const asio::any_io_executor& executor) mutable {
+        [&factory_calls, echo_factory](const mcp::Executor& executor) mutable {
             factory_calls.fetch_add(1, std::memory_order_relaxed);
             return echo_factory(executor);
         });
@@ -1936,7 +1936,7 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
         [&handler_ran, &handler_ran_on_http_thread,
-         http_thread](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+         http_thread](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(
@@ -1987,7 +1987,7 @@ TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) 
 
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
             capabilities.logging = json::object();
@@ -2072,7 +2072,7 @@ TEST_F(SessionManagerTest, ResourceAndPromptProgressReachesAClientWithoutCapabil
     const unsigned short port = 19165;
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
             capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
@@ -2145,7 +2145,7 @@ TEST_F(SessionManagerTest, ResourceAndPromptHandlersRunOnTheToolExecutor) {
 
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
             capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
@@ -2254,7 +2254,7 @@ void run_fan_out_case(asio::io_context& io_ctx, unsigned short port, bool with_t
     asio::thread_pool tool_pool(4);
     mcp::StreamableHttpSessionManager manager(
         io_ctx.get_executor(), "127.0.0.1", port,
-        [&probe](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&probe](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(mcp::Implementation{"fan-out-server", "1.0.0"},
@@ -2945,7 +2945,7 @@ TEST_F(SessionManagerTest, RequestPendingWhenItsSessionIsDeletedIsAnswered) {
     std::atomic<bool> tool_finished{false};
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities caps;
             caps.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(
@@ -3033,7 +3033,7 @@ TEST_F(SessionManagerTest, BlockedHandlerDoesNotStallAnotherSessionOfItsConnecti
 
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [gate](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [gate](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities caps;
             caps.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(

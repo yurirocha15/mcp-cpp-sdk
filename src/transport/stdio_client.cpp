@@ -1093,12 +1093,11 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
     std::thread escalator;
 };
 
-StdioClientTransport::StdioClientTransport(const boost::asio::any_io_executor& executor,
-                                           StdioProcessOptions options) {
+StdioClientTransport::StdioClientTransport(const Executor& executor, StdioProcessOptions options) {
     if (options.command.empty()) {
         throw std::invalid_argument("StdioProcessOptions::command must not be empty");
     }
-    impl_ = std::make_shared<Impl>(executor, std::move(options));
+    impl_ = std::make_shared<Impl>(executor.get(), std::move(options));
     impl_->start();
 }
 

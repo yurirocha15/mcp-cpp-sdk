@@ -12,10 +12,10 @@
 #include <mcp/transport/transport.hpp>
 
 #include <array>
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -225,7 +225,7 @@ class MCP_API OAuthHttpClient {
      * `WWW-Authenticate` challenges must be given a policy naming the origins it is meant to reach,
      * because the URLs it then visits are influenced by the server it talks to.
      */
-    explicit OAuthHttpClient(const net::any_io_executor& executor);
+    explicit OAuthHttpClient(const Executor& executor);
 
     /**
      * @brief Apply an outbound-request policy to every request this client issues.
@@ -758,9 +758,8 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      *         sets `client_id`, `client_secret` or `client_issuer` together with
      *         `client_identity.pre_registered`.
      */
-    OAuthAuthorizationManager(const net::any_io_executor& executor,
-                              std::shared_ptr<TokenStore> token_store, OAuthAuthorizationConfig config,
-                              AuthorizationCallback callback);
+    OAuthAuthorizationManager(const Executor& executor, std::shared_ptr<TokenStore> token_store,
+                              OAuthAuthorizationConfig config, AuthorizationCallback callback);
 
     /**
      * @brief Return the stored access token without network I/O.

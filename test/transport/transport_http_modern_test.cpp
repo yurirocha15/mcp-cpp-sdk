@@ -145,7 +145,7 @@ class HttpModernTest : public ::testing::Test {
     std::atomic<int> factory_calls_{0};
 
     mcp::StreamableHttpSessionManager::ServerFactory factory() {
-        return [this](const asio::any_io_executor&) {
+        return [this](const mcp::Executor&) {
             factory_calls_.fetch_add(1);
             return make_server("factory-server");
         };

@@ -146,7 +146,7 @@ struct EnterpriseAuthorizationAuthenticator::Impl {
 };
 
 EnterpriseAuthorizationAuthenticator::EnterpriseAuthorizationAuthenticator(
-    const boost::asio::any_io_executor& executor, std::shared_ptr<TokenStore> token_store,
+    const Executor& executor, std::shared_ptr<TokenStore> token_store,
     EnterpriseAuthorizationConfig config, IdentityAssertionProvider provider)
     : impl_(std::make_shared<Impl>()) {
     if (!token_store || !provider) {
@@ -160,8 +160,8 @@ EnterpriseAuthorizationAuthenticator::EnterpriseAuthorizationAuthenticator(
             "EnterpriseAuthorizationConfig needs a server_url, an idp_token_endpoint and client "
             "identifiers for the IdP and the authorization server");
     }
-    impl_->flow = std::make_shared<EnterpriseFlow>(executor, std::move(token_store), std::move(config),
-                                                   std::move(provider));
+    impl_->flow = std::make_shared<EnterpriseFlow>(executor.get(), std::move(token_store),
+                                                   std::move(config), std::move(provider));
 }
 
 EnterpriseAuthorizationAuthenticator::~EnterpriseAuthorizationAuthenticator() = default;

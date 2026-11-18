@@ -1841,8 +1841,8 @@ struct HttpClientTransport::Impl {
     std::function<void(const std::string&)> warning_handler;
 };
 
-HttpClientTransport::HttpClientTransport(const net::any_io_executor& executor, const std::string& url)
-    : impl_(std::make_shared<Impl>(executor, url)) {}
+HttpClientTransport::HttpClientTransport(const Executor& executor, const std::string& url)
+    : impl_(std::make_shared<Impl>(executor.get(), url)) {}
 
 HttpClientTransport::~HttpClientTransport() {
     try {
