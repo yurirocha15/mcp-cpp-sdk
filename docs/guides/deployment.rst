@@ -28,7 +28,7 @@ The mcp-cpp-sdk provides two ways to set up an HTTP server: a high-level conveni
 Convenience API (run_http)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up the :cpp:class:`mcp::HttpServerTransport`, and handles signal mapping automatically.
+For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up a :cpp:class:`mcp::StreamableHttpSessionManager` that serves each older-protocol client in a session of its own with the same server, and handles signal mapping automatically.
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp
@@ -74,6 +74,9 @@ revision, as before. All 2026-07-28 requests are answered by one shared
 the factory the first time it is needed. ``modern_server()`` returns it, and
 builds it if no request has yet. Because every 2026-07-28 client sees the same
 tools, resources and prompts, they must not depend on the connection.
+``Server::run_http()`` serves through a manager with its default settings: the
+server itself answers 2026-07-28 requests, and each session gets a server that
+shares its tools, resources, prompts, handlers and settings.
 
 Configure that server before ``listen()``, for example its cache hints:
 
@@ -139,7 +142,7 @@ A request holds its place under ``HttpConnectionLimits::max_requests`` and
 is closed when the client does not take a write within ``request_read_timeout``.
 ``set_stream_options()`` sets the keep-alive and probe intervals and the limits
 on queued notifications, and ``stream_stats()`` counts what the streams did. ``set_json_only(true)`` keeps
-the answers to plain JSON. ``Server::run_http()`` uses ``HttpServerTransport``.
+the answers to plain JSON.
 
 Request headers
 ~~~~~~~~~~~~~~~

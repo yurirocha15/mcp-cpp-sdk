@@ -40,7 +40,8 @@ int main() {
         using namespace mcp;
 
         // ========== MANUAL SETUP (for comparison - NOT used in this example) ==========
-        // This is what run_http() does internally:
+        // A transport of your own, which serves one client of protocol revision 2025-11-25 or
+        // earlier at a time (any number of 2026-07-28 clients):
         //
         //   asio::io_context io_ctx;
         //   auto transport = std::make_shared<HttpServerTransport>(
@@ -51,6 +52,9 @@ int main() {
         //                  asio::detached);
         //
         //   io_ctx.run();  // Blocks until shutdown
+        //
+        // run_http() instead serves each older-protocol client in a session of its own, as a
+        // StreamableHttpSessionManager does.
         //
 
         // ========== CONVENIENCE SETUP (this example) ==========
@@ -88,9 +92,9 @@ int main() {
             try {
                 // This convenience method handles everything:
                 // - Creates io_context
-                // - Creates HttpServerTransport
-                // - Calls transport->listen()
-                // - Calls server.run(transport, executor)
+                // - Listens, and serves each client of protocol revision 2025-11-25 or earlier
+                //   in a session of its own, with this server's tools
+                // - Answers 2026-07-28 requests with this server
                 // - Manages signal handling for graceful shutdown
                 server.run_http("127.0.0.1", http_port);
             } catch (const std::exception& e) {

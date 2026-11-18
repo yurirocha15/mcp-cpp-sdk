@@ -991,16 +991,20 @@ class MCP_API Server {
      * @brief Run the server over HTTP, blocking until shutdown.
      *
      * Binds to the given host and port, accepts HTTP connections, and
-     * processes JSON-RPC requests. Handles SIGINT and SIGTERM for clean
-     * shutdown. Exceptions from the server session are propagated to the caller.
+     * processes JSON-RPC requests from any number of clients. Handles SIGINT and SIGTERM for
+     * clean shutdown. Exceptions from listening are propagated to the caller.
      *
-     * A 2026-07-28 request is answered with plain JSON, or, when its handler sends a
-     * notification and the client accepts `text/event-stream`, with an SSE stream of the
-     * notifications and then the response. `subscriptions/listen` is served as a stream.
+     * A client of protocol revision 2025-11-25 or earlier gets a session of its own
+     * (`MCP-Session-Id`), served with this server's tools, resources, prompts, handlers and
+     * settings; notify_tools_list_changed() and the other notify_ calls reach every session. A
+     * 2026-07-28 request belongs to no session and is answered by this server with plain JSON,
+     * or, when its handler sends a notification and the client accepts `text/event-stream`, with
+     * an SSE stream of the notifications and then the response. `subscriptions/listen` is served
+     * as a stream.
      *
-     * The transport keeps its default settings, so a request carrying an Origin
-     * header is answered with 403. To accept browser clients, construct an
-     * HttpServerTransport, call set_allowed_origins() on it, and pass it to run().
+     * The endpoint keeps its default settings, so a request carrying an Origin
+     * header is answered with 403. To accept browser clients, construct a
+     * StreamableHttpSessionManager, call set_allowed_origins() on it, and listen() on it.
      *
      * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
      * @param port  TCP port to listen on.
@@ -1205,6 +1209,11 @@ class MCP_API Server {
     void reset_session();
 
     struct Impl;
+    explicit Server(std::shared_ptr<Impl> impl);
+    /// A server for another session, sharing this server's identity, capabilities, registrations
+    /// and settings; run_http() serves each legacy session with one.
+    [[nodiscard]] std::unique_ptr<Server> session_server() const;
+
     /// Shared rather than owned outright: work already in flight when this Server is destroyed
     /// keeps the implementation alive until it finishes, so it never runs against freed state.
     std::shared_ptr<Impl> impl_;

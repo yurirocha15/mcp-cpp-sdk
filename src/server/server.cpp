@@ -953,19 +953,23 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     static Task<void> skip_write() { co_return; }
 
-    Implementation server_info;
-    /// server_info as JSON, converted once for the answers that report it.
-    nlohmann::json server_info_json;
-    ServerCapabilities capabilities;
-    std::optional<std::string> instructions;
-    std::array<CacheHint, 6> cache_hints{};
-    bool report_server_info{true};
-    /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
-    /// mcp::constants::meta::g_META_SERVER_INFO, as JSON text. Written by the first such result,
-    /// so a server that only serves earlier revisions never writes it; empty when the identity cannot
-    /// be serialized.
-    mutable std::string server_info_meta_text;  // written once, under server_info_meta_once
-    mutable std::once_flag server_info_meta_once;
+    struct Registry;
+    Impl() = default;
+    /// A server for another session of the application whose servers share @p shared.
+    explicit Impl(std::shared_ptr<Registry> shared) : registry(std::move(shared)) {}
+
+    /// What this server shares with the servers built for the other sessions it serves; see
+    /// Registry. Declared before the references into it below, which bind to it.
+    std::shared_ptr<Registry> registry = std::make_shared<Registry>();
+
+    Implementation& server_info = registry->server_info;
+    nlohmann::json& server_info_json = registry->server_info_json;
+    ServerCapabilities& capabilities = registry->capabilities;
+    std::optional<std::string>& instructions = registry->instructions;
+    std::array<CacheHint, 6>& cache_hints = registry->cache_hints;
+    bool& report_server_info = registry->report_server_info;
+    std::string& server_info_meta_text = registry->server_info_meta_text;
+    std::once_flag& server_info_meta_once = registry->server_info_meta_once;
     const std::string& server_info_meta() const;
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     // The transport's terminated_session_count() when the current session was initialized.
@@ -979,10 +983,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::shared_ptr<Session> session;
     std::atomic<int64_t> next_request_id{1};
     std::atomic<LoggingLevel> log_level{g_default_log_level};
-    std::size_t page_size{0};
-    std::atomic_size_t max_in_flight_requests{1024};
-    std::atomic_size_t max_in_flight_bytes{
-        mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_BYTES};
+    std::size_t& page_size = registry->page_size;
+    std::atomic_size_t& max_in_flight_requests = registry->max_in_flight_requests;
+    std::atomic_size_t& max_in_flight_bytes = registry->max_in_flight_bytes;
     /// Requests dispatched with dispatch_request_direct(), which belong to no session, and the
     /// memory they take parsed. Together they are held to the limits of one session.
     struct DirectCounters {
@@ -1035,10 +1038,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         CountedSessionWork(const CountedSessionWork&) = delete;
         CountedSessionWork& operator=(const CountedSessionWork&) = delete;
     };
-    std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
+    std::atomic<std::chrono::milliseconds::rep>& reverse_request_timeout_ms =
+        registry->reverse_request_timeout_ms;
 
-    CompletionHandler completion_handler;
+    CompletionHandler& completion_handler = registry->completion_handler;
 
     /// A registered tool as tools/list describes it. The tool's own schemas are unset: they are
     /// listed from their compiled form, which servers that register the same schema share.
@@ -1065,33 +1068,26 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     static void append_listed_tool(std::string& text, const ListedTool& listed,
                                    std::vector<std::shared_ptr<const ListedSchemaText>>& held);
 
-    std::vector<ListedTool> tools;
-    /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
-    /// lists them all sends, without building the tools again. Built by the first such list after
-    /// a registration, since a server built for one session may never be asked for its tools.
-    /// Null when a tool could not be serialized, in which case the list is built (and fails) per
-    /// request.
-    mutable std::mutex tools_text_mutex;
-    std::shared_ptr<const std::string> tools_text;  // guarded by tools_text_mutex
-    bool tools_text_built{false};                   // guarded by tools_text_mutex
-    /// The schema texts tools_text was written from, held so that servers listing the same
-    /// schemas find them; guarded by tools_text_mutex.
-    std::vector<std::shared_ptr<const ListedSchemaText>> tools_text_schemas;
+    std::vector<ListedTool>& tools = registry->tools;
+    std::mutex& tools_text_mutex = registry->tools_text_mutex;
+    std::shared_ptr<const std::string>& tools_text = registry->tools_text;
+    bool& tools_text_built = registry->tools_text_built;
+    std::vector<std::shared_ptr<const ListedSchemaText>>& tools_text_schemas =
+        registry->tools_text_schemas;
     void forget_tools_text();
     [[nodiscard]] std::shared_ptr<const std::string> listed_tools_text();
-    std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
-    ToolValidationOptions tool_validation;
-    /// Where tool handlers run, when that is not the executor the server runs on.
-    std::optional<boost::asio::any_io_executor> handler_executor;
-    std::atomic<std::uint64_t> argument_rejections{0};
-    std::atomic<std::uint64_t> structured_content_rejections{0};
+    std::map<std::string, ToolRegistration, std::less<>>& tool_handlers = registry->tool_handlers;
+    ToolValidationOptions& tool_validation = registry->tool_validation;
+    std::optional<boost::asio::any_io_executor>& handler_executor = registry->handler_executor;
+    std::atomic<std::uint64_t>& argument_rejections = registry->argument_rejections;
+    std::atomic<std::uint64_t>& structured_content_rejections = registry->structured_content_rejections;
 
-    ServerProtocolPolicy protocol_policy;
-    // Set by the first request and by run(); the policy is read unsynchronized after that.
-    std::atomic_bool serving{false};
-    std::atomic<std::uint64_t> invalid_metadata_rejections{0};
-    std::atomic<std::uint64_t> unsupported_version_rejections{0};
-    std::atomic<std::uint64_t> legacy_shaped_rejections{0};
+    ServerProtocolPolicy& protocol_policy = registry->protocol_policy;
+    std::atomic_bool& serving = registry->serving;
+    std::atomic<std::uint64_t>& invalid_metadata_rejections = registry->invalid_metadata_rejections;
+    std::atomic<std::uint64_t>& unsupported_version_rejections =
+        registry->unsupported_version_rejections;
+    std::atomic<std::uint64_t>& legacy_shaped_rejections = registry->legacy_shaped_rejections;
 
     mutable std::mutex mrtr_mutex;
     /// Immutable snapshot of the options; `sealing_keys` is always empty, the key material lives in
@@ -1103,32 +1099,115 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::uint64_t next_park_sequence{0};
     std::shared_ptr<detail::MrtrCounters> mrtr_counters = std::make_shared<detail::MrtrCounters>();
 
-    // The tasks extension; configured before the server serves its first request.
-    std::atomic_bool tasks_enabled{false};
-    TaskOptions task_options;
-    std::shared_ptr<TaskStore> task_store;
-    /// The handlers of tasks that run in this process, by task id.
+    std::atomic_bool& tasks_enabled = registry->tasks_enabled;
+    TaskOptions& task_options = registry->task_options;
+    std::shared_ptr<TaskStore>& task_store = registry->task_store;
+    /// The handlers of tasks that run in this process for this server's requests, by task id.
     mutable std::mutex task_runs_mutex;
     std::map<std::string, std::shared_ptr<detail::TaskRun>> task_runs;  // guarded by task_runs_mutex
 
-    std::vector<Resource> resources;
-    std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
-
-    /// Request methods of extensions, served to 2026-07-28 clients (add_extension_method).
-    std::map<std::string, TypeErasedHandler, std::less<>> extension_methods;
-
-    std::vector<ResourceTemplateRegistration> resource_templates;
-
-    std::vector<Prompt> prompts;
-    std::map<std::string, TypeErasedHandler, std::less<>> prompt_handlers;
-
-    std::vector<Middleware> middlewares;
-
-    SubscriptionHandler subscribe_handler;
-    SubscriptionHandler unsubscribe_handler;
+    std::vector<Resource>& resources = registry->resources;
+    std::map<std::string, TypeErasedHandler, std::less<>>& resource_handlers =
+        registry->resource_handlers;
+    std::map<std::string, TypeErasedHandler, std::less<>>& extension_methods =
+        registry->extension_methods;
+    std::vector<ResourceTemplateRegistration>& resource_templates = registry->resource_templates;
+    std::vector<Prompt>& prompts = registry->prompts;
+    std::map<std::string, TypeErasedHandler, std::less<>>& prompt_handlers = registry->prompt_handlers;
+    std::vector<Middleware>& middlewares = registry->middlewares;
+    SubscriptionHandler& subscribe_handler = registry->subscribe_handler;
+    SubscriptionHandler& unsubscribe_handler = registry->unsubscribe_handler;
 
     mutable std::mutex listeners_mutex;
     std::vector<std::shared_ptr<Listener>> listeners;  // guarded by listeners_mutex
+
+    /// What the servers of one application share when one Server serves several sessions (the
+    /// servers run_http() builds for its legacy sessions share the one the application made): the
+    /// identity, capabilities, registrations, settings and counters. A server made on its own has
+    /// a registry of its own. The state of a session (its lifecycle, log level, requests, tasks
+    /// and subscriptions) stays with each server.
+    struct Registry {
+        Implementation server_info;
+        /// server_info as JSON, converted once for the answers that report it.
+        nlohmann::json server_info_json;
+        ServerCapabilities capabilities;
+        std::optional<std::string> instructions;
+        std::array<CacheHint, 6> cache_hints{};
+        bool report_server_info{true};
+        /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
+        /// mcp::constants::meta::g_META_SERVER_INFO, as JSON text. Written by the first such
+        /// result, so a server that only serves earlier revisions never writes it; empty when the
+        /// identity cannot be serialized.
+        std::string server_info_meta_text;  // written once, under server_info_meta_once
+        std::once_flag server_info_meta_once;
+        std::size_t page_size{0};
+        std::atomic_size_t max_in_flight_requests{1024};
+        std::atomic_size_t max_in_flight_bytes{
+            mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_BYTES};
+        std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
+        CompletionHandler completion_handler;
+        std::vector<ListedTool> tools;
+        /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
+        /// lists them all sends, without building the tools again. Built by the first such list
+        /// after a registration, since a server built for one session may never be asked for its
+        /// tools. Null when a tool could not be serialized, in which case the list is built (and
+        /// fails) per request.
+        std::mutex tools_text_mutex;
+        std::shared_ptr<const std::string> tools_text;  // guarded by tools_text_mutex
+        bool tools_text_built{false};                   // guarded by tools_text_mutex
+        /// The schema texts tools_text was written from, held so that servers listing the same
+        /// schemas find them; guarded by tools_text_mutex.
+        std::vector<std::shared_ptr<const ListedSchemaText>> tools_text_schemas;
+        std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
+        ToolValidationOptions tool_validation;
+        /// Where tool handlers run, when that is not the executor the server runs on.
+        std::optional<boost::asio::any_io_executor> handler_executor;
+        std::atomic<std::uint64_t> argument_rejections{0};
+        std::atomic<std::uint64_t> structured_content_rejections{0};
+        ServerProtocolPolicy protocol_policy;
+        // Set by the first request and by run(); the policy is read unsynchronized after that.
+        std::atomic_bool serving{false};
+        std::atomic<std::uint64_t> invalid_metadata_rejections{0};
+        std::atomic<std::uint64_t> unsupported_version_rejections{0};
+        std::atomic<std::uint64_t> legacy_shaped_rejections{0};
+        // The tasks extension; configured before the server serves its first request.
+        std::atomic_bool tasks_enabled{false};
+        TaskOptions task_options;
+        std::shared_ptr<TaskStore> task_store;
+        std::vector<Resource> resources;
+        std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
+        /// Request methods of extensions, served to 2026-07-28 clients (add_extension_method).
+        std::map<std::string, TypeErasedHandler, std::less<>> extension_methods;
+        std::vector<ResourceTemplateRegistration> resource_templates;
+        std::vector<Prompt> prompts;
+        std::map<std::string, TypeErasedHandler, std::less<>> prompt_handlers;
+        std::vector<Middleware> middlewares;
+        SubscriptionHandler subscribe_handler;
+        SubscriptionHandler unsubscribe_handler;
+        /// The servers that share this registry, so that a notification about it reaches the
+        /// sessions of all of them.
+        std::mutex members_mutex;
+        std::vector<std::weak_ptr<Impl>> members;  // guarded by members_mutex
+    };
+
+    /// The servers sharing this one's registry that are still alive, this one included.
+    [[nodiscard]] std::vector<std::shared_ptr<Impl>> registry_members() {
+        std::vector<std::shared_ptr<Impl>> alive;
+        std::lock_guard lock(registry->members_mutex);
+        auto& members = registry->members;
+        members.erase(std::remove_if(members.begin(), members.end(),
+                                     [&alive](const std::weak_ptr<Impl>& member) {
+                                         auto locked = member.lock();
+                                         if (!locked) {
+                                             return true;
+                                         }
+                                         alive.push_back(std::move(locked));
+                                         return false;
+                                     }),
+                      members.end());
+        return alive;
+    }
 
     // The request path lives here rather than on Server so that work still in flight when a
     // Server is destroyed has something valid to run against. Holders keep the implementation
@@ -1424,10 +1503,20 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 };
 
 Server::Server(const Implementation& server_info, const ServerCapabilities& capabilities)
-    : impl_(std::make_shared<Impl>()) {
+    : Server(std::make_shared<Impl>()) {
     impl_->server_info = server_info;
     impl_->server_info_json = server_info;
     impl_->capabilities = capabilities;
+}
+
+Server::Server(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+    std::lock_guard lock(impl_->registry->members_mutex);
+    impl_->registry->members.push_back(impl_);
+}
+
+std::unique_ptr<Server> Server::session_server() const {
+    // The constructor is private, which std::make_unique cannot reach.
+    return std::unique_ptr<Server>(new Server(std::make_shared<Impl>(impl_->registry)));
 }
 
 Server::~Server() {
@@ -4893,38 +4982,56 @@ Task<void> Server::Impl::send_notification(const std::string& method,
 // temporary bound to a reference parameter of a lazy coroutine: under co_await it lives to the end
 // of the full expression, which includes the await, but a plain `return` destroys it before the
 // coroutine body ever runs and leaves the reference dangling. Both forms compile.
+// Each goes to the sessions of every server sharing this one's registry, such as the legacy
+// sessions run_http() serves.
 Task<void> Server::notify_tools_list_changed() {
-    co_await impl_->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
-    if (impl_->legacy_broadcast_wanted()) {
-        co_await impl_->send_notification("notifications/tools/list_changed", std::nullopt);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
+        if (member->legacy_broadcast_wanted()) {
+            co_await member->send_notification("notifications/tools/list_changed", std::nullopt);
+        }
     }
 }
 
 Task<void> Server::notify_resources_list_changed() {
-    co_await impl_->notify_listeners(Impl::ListenTopic::eResourcesListChanged, nullptr);
-    if (impl_->legacy_broadcast_wanted()) {
-        co_await impl_->send_notification("notifications/resources/list_changed", std::nullopt);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::eResourcesListChanged, nullptr);
+        if (member->legacy_broadcast_wanted()) {
+            co_await member->send_notification("notifications/resources/list_changed", std::nullopt);
+        }
     }
 }
 
 Task<void> Server::notify_prompts_list_changed() {
-    co_await impl_->notify_listeners(Impl::ListenTopic::ePromptsListChanged, nullptr);
-    if (impl_->legacy_broadcast_wanted()) {
-        co_await impl_->send_notification("notifications/prompts/list_changed", std::nullopt);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::ePromptsListChanged, nullptr);
+        if (member->legacy_broadcast_wanted()) {
+            co_await member->send_notification("notifications/prompts/list_changed", std::nullopt);
+        }
     }
 }
 
 Task<void> Server::notify_resource_updated(const std::string& uri) {
-    co_await impl_->notify_listeners(Impl::ListenTopic::eResourceUpdated,
-                                     std::make_shared<const std::string>(uri));
-    co_await impl_->notify_resource_updated(uri);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::eResourceUpdated,
+                                          std::make_shared<const std::string>(uri));
+        co_await member->notify_resource_updated(uri);
+    }
 }
 
-void Server::close_subscriptions() { impl_->end_listeners(Impl::ListenEnd::eClosed); }
+void Server::close_subscriptions() {
+    for (const auto& member : impl_->registry_members()) {
+        member->end_listeners(Impl::ListenEnd::eClosed);
+    }
+}
 
 std::size_t Server::subscription_count() const {
-    std::lock_guard lock(impl_->listeners_mutex);
-    return impl_->listeners.size();
+    std::size_t count = 0;
+    for (const auto& member : impl_->registry_members()) {
+        std::lock_guard lock(member->listeners_mutex);
+        count += member->listeners.size();
+    }
+    return count;
 }
 
 Task<void> Server::Impl::notify_resource_updated(const std::string& uri) {

@@ -597,6 +597,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `elicitation/create` is registered, as it already declared roots and as
   every request of a modern session does. Capabilities given to `connect()`
   are kept as they are.
+- `Server::run_http()` serves any number of clients of protocol revision
+  2025-11-25 or earlier, each in a session of its own, where it served one at
+  a time: it listens through a `StreamableHttpSessionManager` whose sessions
+  are served by servers sharing the server's identity, capabilities,
+  registrations and settings, and answers 2026-07-28 requests itself.
+  `notify_tools_list_changed()` and the other `notify_` calls reach every
+  session.
 - `StdioRestartPolicy` is declared in `<mcp/transport/stdio_client.hpp>`,
   which `<mcp/client/stdio_session.hpp>` includes.
 - `StringRequest` and `StringResponse`, the Boost.Beast message types, are in

@@ -1,3 +1,4 @@
+#include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
@@ -9,10 +10,12 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -20,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace server_http_test {
 
@@ -199,6 +203,91 @@ TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
 
     mcp::detail::trigger_shutdown_signal();
 
+    server_thread.join();
+}
+
+// Each older-protocol client gets a session of its own, served with the one server's tools.
+TEST_F(ServerHttpTest, RunHttpServesSeveralLegacySessions) {
+    constexpr uint16_t port = 18073;
+
+    std::thread server_thread([&] { server_->run_http("127.0.0.1", port); });
+    const ServerThreadGuard guard(server_thread);
+
+    asio::io_context client_ctx;
+    beast::tcp_stream first(client_ctx);
+    beast::tcp_stream second(client_ctx);
+    connect_when_listening(first, port);
+    connect_when_listening(second, port);
+
+    std::vector<std::string> sessions;
+    for (auto* stream : {&first, &second}) {
+        auto init_resp = send_json_rpc(*stream, make_initialize_request("1"));
+        ASSERT_TRUE(nlohmann::json::parse(init_resp.body()).contains("result")) << init_resp.body();
+        const auto session_it = init_resp.find("MCP-Session-Id");
+        ASSERT_NE(session_it, init_resp.end());
+        sessions.emplace_back(session_it->value());
+        static_cast<void>(send_json_rpc(*stream, make_initialized_notification(), sessions.back()));
+    }
+    EXPECT_NE(sessions[0], sessions[1]);
+
+    const std::vector<std::string> names = {"first", "second"};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        auto& stream = i == 0 ? first : second;
+        auto tool_resp = send_json_rpc(
+            stream, make_tool_call_request("2", "greet", {{"name", names[i]}}), sessions[i]);
+        const auto tool_json = nlohmann::json::parse(tool_resp.body());
+        ASSERT_TRUE(tool_json.contains("result")) << tool_resp.body();
+        EXPECT_EQ(tool_json["result"]["structuredContent"]["greeting"], "Hello, " + names[i]);
+    }
+
+    beast::error_code ec;
+    first.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    second.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    mcp::detail::trigger_shutdown_signal();
+    server_thread.join();
+}
+
+// A notification from the server reaches the session of every older-protocol client.
+TEST_F(ServerHttpTest, RunHttpNotifiesEveryLegacySession) {
+    constexpr uint16_t port = 18074;
+
+    std::thread server_thread([&] { server_->run_http("127.0.0.1", port); });
+    const ServerThreadGuard guard(server_thread);
+    {
+        asio::io_context probe_ctx;
+        beast::tcp_stream stream(probe_ctx);
+        connect_when_listening(stream, port);
+    }
+
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    const auto endpoint = mcp::Endpoint::http("http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    mcp::Client first(endpoint, options);
+    mcp::Client second(endpoint, options);
+    std::atomic<int> first_seen{0};
+    std::atomic<int> second_seen{0};
+    first.on_notification("notifications/tools/list_changed",
+                          [&](const nlohmann::json&) { ++first_seen; });
+    second.on_notification("notifications/tools/list_changed",
+                           [&](const nlohmann::json&) { ++second_seen; });
+    first.sync().connect("first", "1.0");
+    second.sync().connect("second", "1.0");
+
+    // Each client opens the stream that carries such notifications after connecting, so the
+    // notification is sent until both have one.
+    while (first_seen.load() == 0 || second_seen.load() == 0) {
+        asio::io_context notify_ctx;
+        auto sent = asio::co_spawn(notify_ctx, server_->notify_tools_list_changed(), asio::use_future);
+        notify_ctx.run();
+        sent.get();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_GT(first_seen.load(), 0);
+    EXPECT_GT(second_seen.load(), 0);
+
+    first.close();
+    second.close();
+    mcp::detail::trigger_shutdown_signal();
     server_thread.join();
 }
 

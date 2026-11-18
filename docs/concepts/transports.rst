@@ -251,8 +251,10 @@ HTTP Server Convenience
 For developers who want a quick way to host an MCP server over HTTP without
 worrying about the underlying networking boilerplate, the SDK provides `run_http()`.
 
-``Server::run_http()`` owns its ``HttpServerTransport`` internally and does not
-currently expose Origin allowlist or bearer-token validator configuration. Use
+``Server::run_http()`` owns its ``StreamableHttpSessionManager`` internally,
+which gives each client of protocol revision 2025-11-25 or earlier a session of
+its own, and does not currently expose Origin allowlist or bearer-token
+validator configuration. Use
 it only on a suitable trusted boundary, such as the loopback example below. For
 a configurable deployment, construct ``HttpServerTransport`` or
 ``StreamableHttpSessionManager`` directly, apply the security settings, and
