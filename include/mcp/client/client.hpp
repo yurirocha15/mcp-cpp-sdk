@@ -408,6 +408,18 @@ struct RequestOptions {
     int max_input_requests = 32;
     /// @brief Cancels the request when cancelled; see CancellationToken.
     std::optional<CancellationToken> cancellation;
+    /**
+     * @brief Receives the progress the server reports for this request.
+     *
+     * @details When set, the request carries a `progressToken` in its `_meta`, a new one unless
+     * the params already name one, and each `notifications/progress` with that token goes to this
+     * callback instead of Client::on_progress until the answer arrives. A tool call the client
+     * follows as a task (ClientTaskMode::eAuto) keeps the token until the task's result arrives;
+     * after start_tool() returns a TaskHandle, the task's progress goes to Client::on_progress.
+     * The callback runs on the client's read loop, as notification callbacks do, so it must not
+     * block on the client. Client::listen() does not use it.
+     */
+    std::function<void(const ProgressNotificationParams&)> on_progress;
 };
 
 /**
@@ -880,6 +892,21 @@ class MCP_API Client {
     }
 
     /**
+     * @brief Start a tool call with per-request options.
+     *
+     * @details As start_tool() above.
+     */
+    template <JsonSerializable Args, typename Self = Client>
+    auto start_tool(const std::string& name, const Args& arguments,
+                    const RequestOptions& request_options) {
+        // [gcc11-sso: not-a-coroutine]
+        CallToolParams call_params;
+        call_params.name = name;
+        call_params.arguments = nlohmann::json(arguments);
+        return static_cast<Self*>(this)->start_tool_with(std::move(call_params), request_options);
+    }
+
+    /**
      * @brief A handle to a task by its id, for a task started earlier.
      *
      * @details The handle's created() holds nothing but the id until get() or wait() fetches the
@@ -897,6 +924,10 @@ class MCP_API Client {
      */
     Task<ListToolsResult> list_tools(const std::optional<std::string>& cursor = std::nullopt);
 
+    /// @brief As list_tools() above, with per-request options.
+    Task<ListToolsResult> list_tools(const std::optional<std::string>& cursor,
+                                     const RequestOptions& request_options);
+
     /**
      * @brief List available resources from the server.
      *
@@ -905,6 +936,10 @@ class MCP_API Client {
      */
     Task<ListResourcesResult> list_resources(const std::optional<std::string>& cursor = std::nullopt);
 
+    /// @brief As list_resources() above, with per-request options.
+    Task<ListResourcesResult> list_resources(const std::optional<std::string>& cursor,
+                                             const RequestOptions& request_options);
+
     /**
      * @brief Read a resource from the server by URI.
      *
@@ -912,6 +947,10 @@ class MCP_API Client {
      * @return A task that resolves to the server's ReadResourceResult.
      */
     Task<ReadResourceResult> read_resource(const std::string& uri);
+
+    /// @brief As read_resource() above, with per-request options.
+    Task<ReadResourceResult> read_resource(const std::string& uri,
+                                           const RequestOptions& request_options);
 
     /**
      * @brief List available resource templates from the server.
@@ -922,6 +961,10 @@ class MCP_API Client {
     Task<ListResourceTemplatesResult> list_resource_templates(
         const std::optional<std::string>& cursor = std::nullopt);
 
+    /// @brief As list_resource_templates() above, with per-request options.
+    Task<ListResourceTemplatesResult> list_resource_templates(const std::optional<std::string>& cursor,
+                                                              const RequestOptions& request_options);
+
     /**
      * @brief List available prompts from the server.
      *
@@ -929,6 +972,10 @@ class MCP_API Client {
      * @return A task that resolves to the server's ListPromptsResult.
      */
     Task<ListPromptsResult> list_prompts(const std::optional<std::string>& cursor = std::nullopt);
+
+    /// @brief As list_prompts() above, with per-request options.
+    Task<ListPromptsResult> list_prompts(const std::optional<std::string>& cursor,
+                                         const RequestOptions& request_options);
 
     /**
      * @brief Get a specific prompt from the server.
@@ -941,6 +988,11 @@ class MCP_API Client {
         const std::string& name,
         const std::optional<std::map<std::string, std::string>>& arguments = std::nullopt);
 
+    /// @brief As get_prompt() above, with per-request options.
+    Task<GetPromptResult> get_prompt(const std::string& name,
+                                     const std::optional<std::map<std::string, std::string>>& arguments,
+                                     const RequestOptions& request_options);
+
     /**
      * @brief Request completions from the server.
      *
@@ -948,6 +1000,9 @@ class MCP_API Client {
      * @return A task that resolves to the server's CompleteResult.
      */
     Task<CompleteResult> complete(const CompleteParams& params);
+
+    /// @brief As complete() above, with per-request options.
+    Task<CompleteResult> complete(const CompleteParams& params, const RequestOptions& request_options);
 
     /**
      * @brief Send a ping request to the connected server.
@@ -994,6 +1049,9 @@ class MCP_API Client {
 
     /**
      * @brief Register a callback for progress notifications.
+     *
+     * @details A notification whose token belongs to a request in flight with
+     * RequestOptions::on_progress set goes to that request's callback instead.
      *
      * @param callback The callback invoked when a notifications/progress message arrives.
      */
@@ -1049,6 +1107,8 @@ class MCP_API Client {
     Task<CallToolResult> call_tool_with(CallToolParams params);
     Task<CallToolResult> call_tool_with(CallToolParams params, const RequestOptions& request_options);
     Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(CallToolParams params);
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(
+        CallToolParams params, const RequestOptions& request_options);
 
     void start(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options);
 
@@ -1150,24 +1210,48 @@ class MCP_API SyncClient {
     /// As Client::start_tool(); follow a task through TaskHandle::sync().
     std::variant<CallToolResult, TaskHandle> start_tool(const std::string& name,
                                                         const nlohmann::json& arguments);
+    /// As Client::start_tool().
+    std::variant<CallToolResult, TaskHandle> start_tool(const std::string& name,
+                                                        const nlohmann::json& arguments,
+                                                        const RequestOptions& request_options);
 
     /// As Client::list_tools().
     ListToolsResult list_tools(const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::list_tools().
+    ListToolsResult list_tools(const std::optional<std::string>& cursor,
+                               const RequestOptions& request_options);
     /// As Client::list_resources().
     ListResourcesResult list_resources(const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::list_resources().
+    ListResourcesResult list_resources(const std::optional<std::string>& cursor,
+                                       const RequestOptions& request_options);
     /// As Client::read_resource().
     ReadResourceResult read_resource(const std::string& uri);
+    /// As Client::read_resource().
+    ReadResourceResult read_resource(const std::string& uri, const RequestOptions& request_options);
     /// As Client::list_resource_templates().
     ListResourceTemplatesResult list_resource_templates(
         const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::list_resource_templates().
+    ListResourceTemplatesResult list_resource_templates(const std::optional<std::string>& cursor,
+                                                        const RequestOptions& request_options);
     /// As Client::list_prompts().
     ListPromptsResult list_prompts(const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::list_prompts().
+    ListPromptsResult list_prompts(const std::optional<std::string>& cursor,
+                                   const RequestOptions& request_options);
     /// As Client::get_prompt().
     GetPromptResult get_prompt(
         const std::string& name,
         const std::optional<std::map<std::string, std::string>>& arguments = std::nullopt);
+    /// As Client::get_prompt().
+    GetPromptResult get_prompt(const std::string& name,
+                               const std::optional<std::map<std::string, std::string>>& arguments,
+                               const RequestOptions& request_options);
     /// As Client::complete().
     CompleteResult complete(const CompleteParams& params);
+    /// As Client::complete().
+    CompleteResult complete(const CompleteParams& params, const RequestOptions& request_options);
     /// As Client::ping().
     void ping();
     /// As Client::cancel().

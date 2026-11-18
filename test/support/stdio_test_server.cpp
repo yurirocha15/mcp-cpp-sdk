@@ -26,6 +26,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #include <fcntl.h>
@@ -38,6 +39,43 @@
 namespace {
 
 using nlohmann::json;
+
+void add_resource_and_prompt(mcp::Server& server) {
+    mcp::Resource greeting;
+    greeting.uri = "test://greeting";
+    greeting.name = "greeting";
+    server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        greeting, [](const mcp::ReadResourceRequestParams& params) {
+            mcp::TextResourceContents text;
+            text.uri = params.uri;
+            text.text = "hello";
+            mcp::ReadResourceResult result;
+            result.contents.emplace_back(std::move(text));
+            return result;
+        });
+    mcp::Prompt greet;
+    greet.name = "greet";
+    greet.arguments = std::vector<mcp::PromptArgument>{{"name", "Who to greet", true}};
+    server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+        greet, [](const mcp::GetPromptRequestParams& params) {
+            mcp::PromptMessage message;
+            message.role = mcp::Role::eUser;
+            mcp::TextContent text;
+            text.text = "Hello";
+            if (params.arguments && params.arguments->contains("name")) {
+                text.text += ", " + params.arguments->at("name");
+            }
+            message.content = std::move(text);
+            mcp::GetPromptResult result;
+            result.messages.push_back(std::move(message));
+            return result;
+        });
+    server.set_completion_provider([](const mcp::CompleteParams&) -> mcp::Task<mcp::CompleteResult> {
+        mcp::CompleteResult result;
+        result.completion.values = {"alpha"};
+        co_return result;
+    });
+}
 
 void add_tools(mcp::Server& server, int argc, char** argv) {
     server.add_tool<json, json>("env", "Reads an environment variable", json{{"type", "object"}},
@@ -73,6 +111,22 @@ void add_tools(mcp::Server& server, int argc, char** argv) {
                                     co_await timer.async_wait(boost::asio::use_awaitable);
                                     co_return json::object();
                                 });
+    server.add_tool<json, json>(
+        "progress", "Reports progress in steps, then answers, after wait_ms unless cancelled",
+        json{{"type", "object"}}, [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+            const int steps = args.value("steps", 3);
+            for (int step = 1; step <= steps; ++step) {
+                co_await ctx.report_progress(step, steps);
+            }
+            const auto until =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds(args.value("wait_ms", 0));
+            while (std::chrono::steady_clock::now() < until && !ctx.is_cancelled()) {
+                boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor,
+                                                std::chrono::milliseconds(10));
+                co_await timer.async_wait(boost::asio::use_awaitable);
+            }
+            co_return json{{"steps", steps}};
+        });
     server.add_tool<json, json>("crash", "Ends the process at once", json{{"type", "object"}},
                                 [](mcp::Context&, json args) -> mcp::Task<json> {
                                     std::cout.flush();
@@ -133,8 +187,12 @@ int main(int argc, char** argv) {
 #endif
     mcp::ServerCapabilities capabilities;
     capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+    capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
+    capabilities.completions = json::object();
     mcp::Server server(mcp::Implementation{"stdio-test-server", "1.0"}, capabilities);
     add_tools(server, argc, argv);
+    add_resource_and_prompt(server);
     std::cerr << "test server started" << '\n' << std::flush;
     server.run_stdio();
     if (mode == "ignore-stdin-close" || mode == "ignore-sigterm") {

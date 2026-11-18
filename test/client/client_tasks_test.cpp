@@ -685,6 +685,53 @@ TEST(ClientTasksScripted, CallToolCancelsTheTaskItGivesUpOn) {
     EXPECT_EQ(cancels[0].at("params").at("taskId"), "task-1");
 }
 
+// The progress a followed task reports with the call's token reaches the call's callback until the
+// task's result arrives; the polls made for the call carry no token of their own.
+TEST(ClientTasksScripted, AFollowedTaskKeepsTheCallsProgressToken) {
+    mcp::ClientOptions options;
+    options.tasks = mcp::ClientTaskMode::eAuto;
+    options.task_poll_interval = std::chrono::milliseconds(5);
+    ScriptedServer server(options);
+    json token;
+    server.reply = [&](const json& request, std::size_t index) -> json {
+        if (request.at("method") == "tools/call") {
+            token = request.at("params").at("_meta").value("progressToken", json());
+            json task = task_fields("working");
+            task["resultType"] = "task";
+            return task;
+        }
+        if (index == 1) {
+            server.transport->enqueue_message(
+                json{{"jsonrpc", "2.0"},
+                     {"method", "notifications/progress"},
+                     {"params", {{"progressToken", token}, {"progress", 0.5}}}}
+                    .dump());
+            return task_fields("working", {{"resultType", "complete"}});
+        }
+        return task_fields("completed",
+                           {{"resultType", "complete"}, {"result", {{"content", json::array()}}}});
+    };
+    std::vector<double> seen;
+    int unrouted = 0;
+    server.client->on_progress([&](const mcp::ProgressNotificationParams&) { ++unrouted; });
+    server.run([&]() -> mcp::Task<void> {
+        mcp::RequestOptions request;
+        request.on_progress = [&](const mcp::ProgressNotificationParams& progress) {
+            seen.push_back(progress.progress);
+        };
+        const json arguments = json::object();
+        co_await server.client->call_tool("t", arguments, request);
+    });
+    EXPECT_FALSE(token.is_null()) << "the call carried no progress token";
+    EXPECT_EQ(seen, std::vector<double>{0.5});
+    EXPECT_EQ(unrouted, 0);
+    const auto polls = server.requests("tasks/get");
+    ASSERT_EQ(polls.size(), 2u);
+    for (const auto& poll : polls) {
+        EXPECT_FALSE(poll.at("params").at("_meta").contains("progressToken"));
+    }
+}
+
 // A cancelled call_tool() stops following its task at once, even in the middle of a long poll
 // interval, and asks the server to cancel the task.
 TEST(ClientTasksScripted, CancelledCallToolCancelsItsTask) {

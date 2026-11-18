@@ -25,6 +25,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
   throws. Both are for a client built from an `Endpoint`: on a client built on
   an application executor, or when called on the client's own loop thread,
   they throw `std::logic_error`.
+- `RequestOptions::on_progress` receives the progress the server reports for
+  one request: the request carries a `progressToken` in its `_meta`, a new one
+  unless its params name one, and the `notifications/progress` with that token
+  go to the callback instead of `Client::on_progress` until the answer
+  arrives, or for a tool call the client follows as a task, until the task's
+  result arrives. A token already used by another request in flight is
+  refused with `std::invalid_argument`. `read_resource()`, `get_prompt()`,
+  `complete()`, `start_tool()` and the `list_*()` members take
+  `RequestOptions`, as `call_tool()` and `send_request()` do, and `SyncClient`
+  has a twin of each.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around

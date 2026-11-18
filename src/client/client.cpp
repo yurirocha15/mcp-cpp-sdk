@@ -674,6 +674,11 @@ struct Client::Impl {
                                         const std::optional<nlohmann::json>& params,
                                         const RequestOptions& request_options,
                                         bool declare_tasks = false) {
+        if (request_options.on_progress) {
+            return request_with_progress(std::move(state), std::make_shared<const std::string>(method),
+                                         params.value_or(nlohmann::json()), request_options,
+                                         declare_tasks);
+        }
         const auto modern_version = state->modern_version();
         if (!modern_version) {
             return request_wire(std::move(state), method, params, request_options, false);
@@ -689,6 +694,156 @@ struct Client::Impl {
             state->with_request_meta(*modern_version, params, request_options.log_level, declare_tasks);
         return checked_result(
             request_wire(std::move(state), method, modern_params, request_options, false));
+    }
+
+    /// The RequestOptions::on_progress callback of one request in flight. The read loop calls it
+    /// holding `mutex`, and the request's end closes it holding `mutex`, so a progress
+    /// notification that arrives after the answer never reaches a callback whose caller returned.
+    struct ProgressRouteState {
+        std::recursive_mutex mutex;
+        std::function<void(const ProgressNotificationParams&)> callback;
+        bool open = true;
+    };
+
+    /// Ends a request's progress route when the request ends.
+    struct ProgressRoute {
+        std::shared_ptr<Impl> state;
+        std::shared_ptr<const std::string> key;
+        std::shared_ptr<ProgressRouteState> route;
+
+        ProgressRoute() = default;
+        ProgressRoute(const ProgressRoute&) = delete;
+        ProgressRoute& operator=(const ProgressRoute&) = delete;
+        ProgressRoute(ProgressRoute&&) noexcept = default;
+        ProgressRoute& operator=(ProgressRoute&&) = delete;
+        ~ProgressRoute() {
+            if (!route) {
+                return;
+            }
+            {
+                std::lock_guard lock(state->handlers_mutex);
+                state->progress_routes.erase(*key);
+            }
+            std::lock_guard lock(route->mutex);
+            route->open = false;
+        }
+    };
+
+    /// Gives the request in @p params a progress token, unless its `_meta` names one, and routes
+    /// the notifications/progress carrying it to RequestOptions::on_progress until the returned
+    /// route ends. The callback is taken out of @p request_options, so the requests made on this
+    /// one's behalf (input rounds, task polls, a cancel) carry no token of their own.
+    static ProgressRoute route_progress(const std::shared_ptr<Impl>& state, nlohmann::json& params,
+                                        RequestOptions& request_options) {
+        ProgressRoute ended;
+        if (!request_options.on_progress) {
+            return ended;
+        }
+        auto route = std::make_shared<ProgressRouteState>();
+        route->callback = std::move(request_options.on_progress);
+        request_options.on_progress = nullptr;
+        if (params.is_null()) {
+            params = nlohmann::json::object();
+        }
+        if (!params.is_object()) {
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                           "Request params must be an object");
+        }
+        auto& meta = params["_meta"];
+        if (meta.is_null()) {
+            meta = nlohmann::json::object();
+        }
+        if (!meta.is_object()) {
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                           "Request _meta must be an object");
+        }
+        ProgressToken token;
+        if (const auto found = meta.find("progressToken"); found != meta.end()) {
+            try {
+                token = found->get<ProgressToken>();
+            } catch (const std::exception&) {
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                               "Request _meta.progressToken must be a string or an integer");
+            }
+        } else {
+            token = ProgressToken{state->next_progress_token.fetch_add(1, std::memory_order_relaxed)};
+            meta["progressToken"] = token;
+        }
+        auto key = std::make_shared<const std::string>(token.correlation_key());
+        {
+            std::lock_guard lock(state->handlers_mutex);
+            if (!state->progress_routes.emplace(*key, route).second) {
+                throw std::invalid_argument(
+                    "The request's progress token is already used by another request in flight");
+            }
+        }
+        ProgressRoute routed;
+        routed.state = state;
+        routed.key = std::move(key);
+        routed.route = std::move(route);
+        return routed;
+    }
+
+    /// Sends a request whose RequestOptions::on_progress is set, routing its progress for as long
+    /// as the request lasts.
+    static Task<nlohmann::json> request_with_progress(std::shared_ptr<Impl> state,
+                                                      std::shared_ptr<const std::string> method,
+                                                      nlohmann::json params,
+                                                      RequestOptions request_options,
+                                                      bool declare_tasks) {
+        const auto route = route_progress(state, params, request_options);
+        auto reply = co_await request(state, *method, params, request_options, declare_tasks);
+        co_return reply;
+    }
+
+    /// Hands a notifications/progress to the RequestOptions::on_progress of the request whose
+    /// token it carries. Returns false when no request in flight has that token, leaving the
+    /// notification to Client::on_progress.
+    static bool deliver_request_progress(const std::shared_ptr<Impl>& state,
+                                         const nlohmann::json& json_message) {
+        const auto params = json_message.find("params");
+        if (params == json_message.end() || !params->is_object()) {
+            return false;
+        }
+        const auto token = params->find("progressToken");
+        if (token == params->end() || !(token->is_string() || token->is_number_integer())) {
+            return false;
+        }
+        std::shared_ptr<ProgressRouteState> route;
+        {
+            const auto key = token->get<ProgressToken>().correlation_key();
+            std::lock_guard lock(state->handlers_mutex);
+            const auto found = state->progress_routes.find(key);
+            if (found == state->progress_routes.end()) {
+                return false;
+            }
+            route = found->second;
+        }
+        ProgressNotificationParams progress;
+        try {
+            params->get_to(progress);
+        } catch (const std::exception& error) {
+            report_protocol_error(state, mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                                  "Malformed progress notification params: " +
+                                      detail::sanitize_for_diagnostics(error.what()));
+            return true;
+        }
+        // As for any notification callback, a throw is reported and the session carries on.
+        std::lock_guard lock(route->mutex);
+        if (!route->open) {
+            return true;
+        }
+        try {
+            route->callback(progress);
+        } catch (const std::exception& error) {
+            report_protocol_error(
+                state, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                "Progress callback threw: " + detail::sanitize_for_diagnostics(error.what()));
+        } catch (...) {
+            report_protocol_error(state, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                                  "Progress callback threw");
+        }
+        return true;
     }
 
     static Task<nlohmann::json> request_wire(std::shared_ptr<Impl> state, std::string_view method,
@@ -1011,6 +1166,7 @@ struct Client::Impl {
         if (check.refusal) {
             throw *check.refusal;
         }
+        const auto route = route_progress(state, params, request_options);
         nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
         if (is_task_result(reply)) {
             nlohmann::json task_params = {{"taskId", nlohmann::json()}};
@@ -1049,7 +1205,8 @@ struct Client::Impl {
     /// to the caller.
     static Task<std::variant<CallToolResult, TaskHandle>> start_tool(std::shared_ptr<Impl> state,
                                                                      nlohmann::json params,
-                                                                     OutputCheck check) {
+                                                                     OutputCheck check,
+                                                                     RequestOptions request_options) {
         if (check.refusal) {
             throw *check.refusal;
         }
@@ -1057,7 +1214,7 @@ struct Client::Impl {
         if (params.contains("name") && params["name"].is_string()) {
             tool = params["name"].get<std::string>();
         }
-        const RequestOptions request_options;
+        const auto route = route_progress(state, params, request_options);
         nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
         if (is_task_result(reply)) {
             try {
@@ -2148,6 +2305,9 @@ struct Client::Impl {
             return;
         }
         route_to_subscription(state, method, json_message);
+        if (method == "notifications/progress" && deliver_request_progress(state, json_message)) {
+            return;
+        }
         if (method == "notifications/cancelled") {
             if (detail::has_json_value(json_message, "params")) {
                 auto params = json_message.at("params").get<CancelledNotificationParams>();
@@ -2372,6 +2532,9 @@ struct Client::Impl {
 
     mutable std::mutex handlers_mutex;
     std::map<std::string, NotificationCallback, std::less<>> notification_handlers;
+    /// The progress routes of the requests in flight, by the correlation key of their token.
+    std::map<std::string, std::shared_ptr<ProgressRouteState>, std::less<>> progress_routes;
+    std::atomic<int64_t> next_progress_token{1};
     std::map<std::string, RequestHandler, std::less<>> request_handlers;
     std::vector<Root> roots;
     ClientCapabilities client_capabilities;
@@ -2745,9 +2908,15 @@ void Client::close() {
 }
 
 Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor) {
+    return list_tools(cursor, RequestOptions{});
+}
+
+Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor,
+                                         const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
-    return Impl::accepted_tools(impl_, parse_result<ListToolsResult>(
-                                           send_request("tools/list", make_paginated_params(cursor))));
+    return Impl::accepted_tools(
+        impl_, parse_result<ListToolsResult>(
+                   send_request("tools/list", make_paginated_params(cursor), request_options)));
 }
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
@@ -2772,13 +2941,19 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params,
 }
 
 Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(CallToolParams params) {
+    return start_tool_with(std::move(params), RequestOptions{});
+}
+
+Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(
+    CallToolParams params, const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
         throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "Client must connect before sending requests");
     }
-    return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check));
+    return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check),
+                            request_options);
 }
 
 TaskHandle Client::task_handle(std::string id) {
@@ -2851,38 +3026,71 @@ Task<CallToolResult> TaskHandle::result(const RequestOptions& request_options) c
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {
+    return list_resources(cursor, RequestOptions{});
+}
+
+Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor,
+                                                 const RequestOptions& request_options) {
     return parse_result<ListResourcesResult>(
-        send_request("resources/list", make_paginated_params(cursor)));
+        send_request("resources/list", make_paginated_params(cursor), request_options));
 }
 
 Task<ReadResourceResult> Client::read_resource(const std::string& uri) {
+    return read_resource(uri, RequestOptions{});
+}
+
+Task<ReadResourceResult> Client::read_resource(const std::string& uri,
+                                               const RequestOptions& request_options) {
     ReadResourceRequestParams params;
     params.uri = uri;
     return parse_result<ReadResourceResult>(
-        send_request("resources/read", nlohmann::json(std::move(params))));
+        send_request("resources/read", nlohmann::json(std::move(params)), request_options));
 }
 
 Task<ListResourceTemplatesResult> Client::list_resource_templates(
     const std::optional<std::string>& cursor) {
+    return list_resource_templates(cursor, RequestOptions{});
+}
+
+Task<ListResourceTemplatesResult> Client::list_resource_templates(
+    const std::optional<std::string>& cursor, const RequestOptions& request_options) {
     return parse_result<ListResourceTemplatesResult>(
-        send_request("resources/templates/list", make_paginated_params(cursor)));
+        send_request("resources/templates/list", make_paginated_params(cursor), request_options));
 }
 
 Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor) {
-    return parse_result<ListPromptsResult>(send_request("prompts/list", make_paginated_params(cursor)));
+    return list_prompts(cursor, RequestOptions{});
+}
+
+Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor,
+                                             const RequestOptions& request_options) {
+    return parse_result<ListPromptsResult>(
+        send_request("prompts/list", make_paginated_params(cursor), request_options));
 }
 
 Task<GetPromptResult> Client::get_prompt(
     const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments) {
+    return get_prompt(name, arguments, RequestOptions{});
+}
+
+Task<GetPromptResult> Client::get_prompt(
+    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments,
+    const RequestOptions& request_options) {
     GetPromptRequestParams params;
     params.name = name;
     params.arguments = arguments;
     return parse_result<GetPromptResult>(
-        send_request("prompts/get", nlohmann::json(std::move(params))));
+        send_request("prompts/get", nlohmann::json(std::move(params)), request_options));
 }
 
 Task<CompleteResult> Client::complete(const CompleteParams& params) {
-    return parse_result<CompleteResult>(send_request("completion/complete", nlohmann::json(params)));
+    return complete(params, RequestOptions{});
+}
+
+Task<CompleteResult> Client::complete(const CompleteParams& params,
+                                      const RequestOptions& request_options) {
+    return parse_result<CompleteResult>(
+        send_request("completion/complete", nlohmann::json(params), request_options));
 }
 
 Task<void> Client::ping() {
@@ -3142,9 +3350,23 @@ std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::strin
         client_->impl_->blocking_loop, [&] { return client_->start_tool(name, arguments); });
 }
 
+std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::string& name,
+                                                                const nlohmann::json& arguments,
+                                                                const RequestOptions& request_options) {
+    return detail::run_blocking<std::variant<CallToolResult, TaskHandle>>(
+        client_->impl_->blocking_loop,
+        [&] { return client_->start_tool(name, arguments, request_options); });
+}
+
 ListToolsResult SyncClient::list_tools(const std::optional<std::string>& cursor) {
     return detail::run_blocking<ListToolsResult>(client_->impl_->blocking_loop,
                                                  [&] { return client_->list_tools(cursor); });
+}
+
+ListToolsResult SyncClient::list_tools(const std::optional<std::string>& cursor,
+                                       const RequestOptions& request_options) {
+    return detail::run_blocking<ListToolsResult>(
+        client_->impl_->blocking_loop, [&] { return client_->list_tools(cursor, request_options); });
 }
 
 ListResourcesResult SyncClient::list_resources(const std::optional<std::string>& cursor) {
@@ -3152,9 +3374,22 @@ ListResourcesResult SyncClient::list_resources(const std::optional<std::string>&
                                                      [&] { return client_->list_resources(cursor); });
 }
 
+ListResourcesResult SyncClient::list_resources(const std::optional<std::string>& cursor,
+                                               const RequestOptions& request_options) {
+    return detail::run_blocking<ListResourcesResult>(client_->impl_->blocking_loop, [&] {
+        return client_->list_resources(cursor, request_options);
+    });
+}
+
 ReadResourceResult SyncClient::read_resource(const std::string& uri) {
     return detail::run_blocking<ReadResourceResult>(client_->impl_->blocking_loop,
                                                     [&] { return client_->read_resource(uri); });
+}
+
+ReadResourceResult SyncClient::read_resource(const std::string& uri,
+                                             const RequestOptions& request_options) {
+    return detail::run_blocking<ReadResourceResult>(
+        client_->impl_->blocking_loop, [&] { return client_->read_resource(uri, request_options); });
 }
 
 ListResourceTemplatesResult SyncClient::list_resource_templates(
@@ -3163,9 +3398,22 @@ ListResourceTemplatesResult SyncClient::list_resource_templates(
         client_->impl_->blocking_loop, [&] { return client_->list_resource_templates(cursor); });
 }
 
+ListResourceTemplatesResult SyncClient::list_resource_templates(
+    const std::optional<std::string>& cursor, const RequestOptions& request_options) {
+    return detail::run_blocking<ListResourceTemplatesResult>(client_->impl_->blocking_loop, [&] {
+        return client_->list_resource_templates(cursor, request_options);
+    });
+}
+
 ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cursor) {
     return detail::run_blocking<ListPromptsResult>(client_->impl_->blocking_loop,
                                                    [&] { return client_->list_prompts(cursor); });
+}
+
+ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cursor,
+                                           const RequestOptions& request_options) {
+    return detail::run_blocking<ListPromptsResult>(
+        client_->impl_->blocking_loop, [&] { return client_->list_prompts(cursor, request_options); });
 }
 
 GetPromptResult SyncClient::get_prompt(
@@ -3174,9 +3422,23 @@ GetPromptResult SyncClient::get_prompt(
                                                  [&] { return client_->get_prompt(name, arguments); });
 }
 
+GetPromptResult SyncClient::get_prompt(
+    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments,
+    const RequestOptions& request_options) {
+    return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop, [&] {
+        return client_->get_prompt(name, arguments, request_options);
+    });
+}
+
 CompleteResult SyncClient::complete(const CompleteParams& params) {
     return detail::run_blocking<CompleteResult>(client_->impl_->blocking_loop,
                                                 [&] { return client_->complete(params); });
+}
+
+CompleteResult SyncClient::complete(const CompleteParams& params,
+                                    const RequestOptions& request_options) {
+    return detail::run_blocking<CompleteResult>(
+        client_->impl_->blocking_loop, [&] { return client_->complete(params, request_options); });
 }
 
 void SyncClient::ping() {
