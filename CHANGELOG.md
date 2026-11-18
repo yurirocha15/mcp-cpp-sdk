@@ -38,6 +38,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Client::on_sampling()` registers a typed handler for
   `sampling/createMessage`, beside `on_elicitation()` and `on_roots_list()`;
   it also answers a modern server's `input_required` sampling questions.
+- `Endpoint::stdio()` takes a `StdioRestartPolicy`: when the server process
+  ends without the client having asked it to, the same `Client` starts it
+  again as the policy allows and goes on with it, keeping its handlers,
+  callbacks and `sync()` view. The requests waiting for an answer when the
+  process ended fail with `g_CONNECTION_CLOSED`, requests made while it starts
+  again wait for it, a legacy session sends its `initialize` request to the
+  new process again, and `subscriptions/listen` streams end. Past the last
+  start the policy allows, the client closes as it does without one.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around
@@ -589,6 +597,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `elicitation/create` is registered, as it already declared roots and as
   every request of a modern session does. Capabilities given to `connect()`
   are kept as they are.
+- `StdioRestartPolicy` is declared in `<mcp/transport/stdio_client.hpp>`,
+  which `<mcp/client/stdio_session.hpp>` includes.
 - `StringRequest` and `StringResponse`, the Boost.Beast message types, are in
   `<mcp/transport/http_beast.hpp>` instead of `<mcp/transport/http_types.hpp>`.
 - `Client::call_tool()` with `nlohmann::json` arguments, with and without

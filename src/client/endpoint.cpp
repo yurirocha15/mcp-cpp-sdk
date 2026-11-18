@@ -1,3 +1,5 @@
+#include "restarting_stdio_transport.hpp"
+
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/endpoint.hpp>
 #include <mcp/core/async.hpp>
@@ -15,7 +17,9 @@ namespace mcp {
 
 Endpoint::Endpoint(TransportFactory factory) : factory_(std::move(factory)) {}
 
-Endpoint Endpoint::stdio(std::vector<std::string> command) {
+namespace {
+
+StdioProcessOptions process_for(std::vector<std::string> command) {
     if (command.empty() || command.front().empty()) {
         throw std::invalid_argument("Endpoint::stdio needs a command");
     }
@@ -23,7 +27,33 @@ Endpoint Endpoint::stdio(std::vector<std::string> command) {
     process.command = std::move(command.front());
     process.arguments.assign(std::make_move_iterator(command.begin() + 1),
                              std::make_move_iterator(command.end()));
-    return stdio(std::move(process));
+    return process;
+}
+
+}  // namespace
+
+Endpoint Endpoint::stdio(std::vector<std::string> command) {
+    return stdio(process_for(std::move(command)));
+}
+
+Endpoint Endpoint::stdio(std::vector<std::string> command, StdioRestartPolicy restart) {
+    return stdio(process_for(std::move(command)), restart);
+}
+
+Endpoint Endpoint::stdio(std::initializer_list<std::string> command, StdioRestartPolicy restart) {
+    return stdio(std::vector<std::string>(command), restart);
+}
+
+Endpoint Endpoint::stdio(StdioProcessOptions process, StdioRestartPolicy restart) {
+    if (process.command.empty()) {
+        throw std::invalid_argument("Endpoint::stdio needs a command");
+    }
+    if (restart.max_restarts == 0) {
+        return stdio(std::move(process));
+    }
+    return Endpoint([process = std::move(process), restart](const Executor& executor) {
+        return std::make_shared<detail::RestartingStdioTransport>(executor, process, restart);
+    });
 }
 
 Endpoint Endpoint::stdio(std::initializer_list<std::string> command) {

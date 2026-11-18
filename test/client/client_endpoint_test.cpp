@@ -5,9 +5,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/use_future.hpp>
+#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -92,6 +94,100 @@ TEST(ClientEndpointTest, BracedCommandNamesTheProgramAndItsArguments) {
         ASSERT_TRUE(result.structuredContent.has_value());
         EXPECT_EQ(result.structuredContent->at("args"), arguments);
     }
+}
+
+/// The code a blocking call failed with, or 0 when it succeeded.
+template <typename Call>
+int failure_code(Call call) {
+    try {
+        call();
+    } catch (const mcp::McpError& error) {
+        return error.code();
+    }
+    return 0;
+}
+
+json crash(int status) { return json{{"status", status}}; }
+
+// A server that ends on its own is started again, and the same Client, handlers and blocking view
+// go on with it; a legacy session initializes the new process first.
+TEST(ClientEndpointTest, ARestartedServerServesTheSameClient) {
+    for (const bool legacy : {false, true}) {
+        SCOPED_TRACE(legacy ? "legacy session" : "modern session");
+        mcp::ClientOptions options;
+        if (legacy) {
+            options.protocol = mcp::ClientProtocol::legacy();
+        }
+        std::atomic<int> ended_alone{0};
+        auto process = test_server({"serve", "restarted"});
+        process.on_exit = [&](const mcp::ProcessExit& exit) {
+            if (!exit.requested) {
+                ++ended_alone;
+            }
+        };
+        mcp::Client client(
+            mcp::Endpoint::stdio(process, {.max_restarts = 2, .delay = std::chrono::milliseconds(50)}),
+            options);
+        const auto connected = client.sync().connect("endpoint-test", "1.0");
+        EXPECT_EQ(connected.era, legacy ? mcp::ProtocolEra::eLegacy : mcp::ProtocolEra::eModern);
+
+        EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+                  mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+        // Made while the server starts again, this call waits for it.
+        const auto result = client.sync().call_tool("args", json::object());
+        ASSERT_TRUE(result.structuredContent.has_value());
+        EXPECT_EQ(result.structuredContent->at("args"), (json{"serve", "restarted"}));
+        EXPECT_EQ(ended_alone.load(), 1);
+
+        EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(4)); }),
+                  mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+        EXPECT_FALSE(client.sync().list_tools().tools.empty());
+    }
+}
+
+// Past the last start the policy allows, the client closes as it does without one.
+TEST(ClientEndpointTest, TheClientClosesWhenThePolicyAllowsNoMoreStarts) {
+    mcp::Client client(mcp::Endpoint::stdio(
+        test_server(), {.max_restarts = 1, .delay = std::chrono::milliseconds(10)}));
+    client.sync().connect("endpoint-test", "1.0");
+    EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_EQ(failure_code([&] { client.sync().list_tools(); }), 0);
+    EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_EQ(failure_code([&] { client.sync().list_tools(); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+}
+
+// A server that exits with status 0 is shutting down by choice, unless the policy says otherwise.
+TEST(ClientEndpointTest, ACleanExitRestartsOnlyWhenThePolicySaysSo) {
+    for (const bool after_clean_exit : {false, true}) {
+        SCOPED_TRACE(after_clean_exit ? "restart_after_clean_exit" : "default policy");
+        mcp::StdioRestartPolicy policy{.max_restarts = 1, .delay = std::chrono::milliseconds(10)};
+        policy.restart_after_clean_exit = after_clean_exit;
+        mcp::Client client(mcp::Endpoint::stdio(test_server(), policy));
+        client.sync().connect("endpoint-test", "1.0");
+        EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(0)); }),
+                  mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+        EXPECT_EQ(failure_code([&] { client.sync().list_tools(); }),
+                  after_clean_exit ? 0 : mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    }
+}
+
+// A subscriptions/listen stream does not carry over to the new process.
+TEST(ClientEndpointTest, AListenStreamEndsWhenTheServerIsRestarted) {
+    mcp::Client client(mcp::Endpoint::stdio(
+        test_server(), {.max_restarts = 1, .delay = std::chrono::milliseconds(10)}));
+    client.sync().connect("endpoint-test", "1.0");
+    mcp::SubscriptionFilter filter;
+    filter.toolsListChanged = true;
+    auto subscription = client.sync().listen(filter);
+    EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_FALSE(subscription.sync().next().has_value());
+    ASSERT_TRUE(subscription.end_error().has_value());
+    EXPECT_EQ(subscription.end_error()->code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_FALSE(client.sync().list_tools().tools.empty());
 }
 
 TEST(ClientEndpointTest, HttpEndpointConfiguresTheTransportAndMakesTheAuthenticator) {

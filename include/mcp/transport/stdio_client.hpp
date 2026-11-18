@@ -86,6 +86,22 @@ struct StdioProcessOptions {
 };
 
 /**
+ * @brief When a stdio server is started again after it ends on its own, by a StdioClientSession or
+ *        a Client built from Endpoint::stdio().
+ */
+struct StdioRestartPolicy {
+    /// How many times the server is restarted over the life of the session or client; zero never
+    /// restarts it.
+    std::size_t max_restarts = 0;
+    /// How long to wait before each start.
+    std::chrono::milliseconds delay{std::chrono::milliseconds(500)};
+    /// Also restart a server that ends on its own with status 0. By default only an abnormal end (a
+    /// non-zero status or a signal) restarts it: a server that exits cleanly of its own accord is
+    /// shutting down by choice.
+    bool restart_after_clean_exit = false;
+};
+
+/**
  * @brief A client transport that launches an MCP server as a child process and speaks to it over
  * the process's standard input and output (the stdio transport of the specification).
  *

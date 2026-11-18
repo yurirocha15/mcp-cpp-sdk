@@ -63,6 +63,26 @@ class MCP_API Endpoint {
     /// @throws std::invalid_argument If `process.command` is empty.
     static Endpoint stdio(StdioProcessOptions process);
 
+    /**
+     * @brief Launch a server as stdio() above, and start it again as @p restart allows when it
+     *        ends without the client having asked it to, such as
+     *        `Endpoint::stdio({"./server"}, {.max_restarts = 3})`.
+     *
+     * @details The same Client goes on with the new process, keeping its handlers, callbacks and
+     * sync() view. The requests waiting for an answer when the process ended fail with McpError
+     * (mcp::constants::jsonrpc::g_CONNECTION_CLOSED); requests made while it starts again wait for
+     * it, within their own timeouts. A legacy session sends its initialize request to the new
+     * process again. What the old process kept for the session, such as a log level, resource
+     * subscriptions or tasks, is gone, and `subscriptions/listen` streams end. When the policy
+     * allows no more starts, or a start fails, the client closes as it does without a restart.
+     * StdioProcessOptions::on_exit runs for each process that ends.
+     */
+    static Endpoint stdio(std::vector<std::string> command, StdioRestartPolicy restart);
+    /// As the stdio() overload above that takes a restart policy.
+    static Endpoint stdio(std::initializer_list<std::string> command, StdioRestartPolicy restart);
+    /// As the stdio() overload above that takes a restart policy.
+    static Endpoint stdio(StdioProcessOptions process, StdioRestartPolicy restart);
+
     /// Talk to the server at @p url over Streamable HTTP.
     static Endpoint http(std::string url, HttpEndpointOptions options = {});
 

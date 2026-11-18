@@ -129,6 +129,7 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/enterprise_authorization.cpp
     src/client/client.cpp
     src/client/endpoint.cpp
+    src/client/restarting_stdio_transport.cpp
     src/detail/sealed_state.cpp
     src/client/stdio_session.cpp
     src/client/apps.cpp

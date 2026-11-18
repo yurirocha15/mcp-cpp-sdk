@@ -13,6 +13,9 @@ namespace mcp::detail {
 struct JsonRpcEnvelope {
     /// Raw text of the `id` value, such as `7` or `"req-1"`; empty when the member is absent.
     std::string_view id;
+    /// Raw text of the `method` value with its quotes, such as `"initialize"`; empty when the
+    /// member is absent.
+    std::string_view method;
     bool has_result_or_error{false};
     /// Whether the message has a `result` member, which only a successful response has.
     bool has_result{false};
@@ -102,7 +105,8 @@ inline std::size_t skip_json_value(std::string_view text, std::size_t pos) {
     return std::string_view::npos;
 }
 
-/// Find a message's id and whether it carries a result or an error, without building its JSON tree.
+/// Find a message's id, its method and whether it carries a result or an error, without building
+/// its JSON tree.
 ///
 /// Meant for messages this SDK serialized itself, which are valid JSON: the scan delimits values
 /// but does not validate them. A later duplicate member wins, as it does in nlohmann::json.
@@ -142,6 +146,8 @@ inline std::optional<JsonRpcEnvelope> scan_jsonrpc_envelope(std::string_view tex
         }
         if (key == "id") {
             envelope.id = text.substr(pos, value_end - pos);
+        } else if (key == "method") {
+            envelope.method = text.substr(pos, value_end - pos);
         } else if (key == "result") {
             envelope.has_result_or_error = true;
             envelope.has_result = true;
