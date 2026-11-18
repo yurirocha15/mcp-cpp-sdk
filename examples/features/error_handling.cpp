@@ -9,6 +9,7 @@
 /// - Loopback pattern with MemoryTransport for in-process communication
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 

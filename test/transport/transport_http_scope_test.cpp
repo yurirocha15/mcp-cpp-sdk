@@ -3,6 +3,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/auth/challenge.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"

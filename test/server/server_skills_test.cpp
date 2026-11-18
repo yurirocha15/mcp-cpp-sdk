@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "mcp/client/skills.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/protocol/skills.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/server/skills.hpp"

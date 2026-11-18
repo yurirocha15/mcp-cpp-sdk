@@ -1,3 +1,4 @@
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 
 #if __has_include(<lldb/API/LLDB.h>)

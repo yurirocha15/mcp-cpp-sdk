@@ -6,6 +6,7 @@
 #include "../detail/request_meta.hpp"
 #include "../detail/socket_deadline.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/http_client.hpp>

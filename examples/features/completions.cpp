@@ -8,6 +8,7 @@
 /// - The completion flow: client sends partial argument, server returns suggestions
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/mcp.hpp>
 #include <mcp/transport/memory.hpp>
 

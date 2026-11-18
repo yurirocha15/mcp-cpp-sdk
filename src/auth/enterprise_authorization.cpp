@@ -1,4 +1,5 @@
 #include <mcp/auth/enterprise_authorization.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/constants.hpp"
 #include "grant_flow.hpp"

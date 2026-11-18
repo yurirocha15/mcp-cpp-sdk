@@ -11,9 +11,9 @@
 //   [wire-builders]      make_result_wire/make_error_wire are synchronous helpers;
 //                        do NOT convert them to Task<T> coroutines.
 
+#include <mcp/core/async_fwd.hpp>
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/constants.hpp>
-#include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/transport.hpp>
@@ -754,14 +754,22 @@ class MCP_API Client {
      * @throws StructuredContentError when the result's `structuredContent` does not conform to
      *         the tool's output schema (see ClientOptions::validate_tool_schemas).
      */
-    template <JsonSerializable Args>
-    Task<CallToolResult> call_tool(const std::string& name, const Args& arguments) {
+    template <JsonSerializable Args, typename Self = Client>
+        requires(!std::same_as<Args, nlohmann::json>)
+    auto call_tool(const std::string& name, const Args& arguments) {
         // [gcc11-sso: not-a-coroutine]
         CallToolParams call_params;
         call_params.name = name;
         call_params.arguments = nlohmann::json(arguments);
-        return call_tool_with(std::move(call_params));
+        return static_cast<Self*>(this)->call_tool_with(std::move(call_params));
     }
+
+    /**
+     * @brief Call a tool with JSON arguments, such as `call_tool("add", {{"a", 1}, {"b", 2}})`.
+     *
+     * @details As call_tool() above.
+     */
+    Task<CallToolResult> call_tool(const std::string& name, const nlohmann::json& arguments);
 
     /**
      * @brief Call a tool with per-request options, such as a deadline or a CancellationToken.
@@ -769,15 +777,24 @@ class MCP_API Client {
      * @details As call_tool() above. A cancelled call throws McpError with
      * mcp::constants::jsonrpc::g_REQUEST_CANCELLED.
      */
-    template <JsonSerializable Args>
-    Task<CallToolResult> call_tool(const std::string& name, const Args& arguments,
-                                   const RequestOptions& request_options) {
+    template <JsonSerializable Args, typename Self = Client>
+        requires(!std::same_as<Args, nlohmann::json>)
+    auto call_tool(const std::string& name, const Args& arguments,
+                   const RequestOptions& request_options) {
         // [gcc11-sso: not-a-coroutine]
         CallToolParams call_params;
         call_params.name = name;
         call_params.arguments = nlohmann::json(arguments);
-        return call_tool_with(std::move(call_params), request_options);
+        return static_cast<Self*>(this)->call_tool_with(std::move(call_params), request_options);
     }
+
+    /**
+     * @brief Call a tool with JSON arguments and per-request options.
+     *
+     * @details As call_tool() above.
+     */
+    Task<CallToolResult> call_tool(const std::string& name, const nlohmann::json& arguments,
+                                   const RequestOptions& request_options);
 
     /**
      * @brief Call a tool, taking a task if the server starts one (protocol revision 2026-07-28).
@@ -790,14 +807,13 @@ class MCP_API Client {
      *         answered with a task. A legacy session always gets the result.
      * @throws StructuredContentError as call_tool() does for a result.
      */
-    template <JsonSerializable Args>
-    Task<std::variant<CallToolResult, TaskHandle>> start_tool(const std::string& name,
-                                                              const Args& arguments) {
+    template <JsonSerializable Args, typename Self = Client>
+    auto start_tool(const std::string& name, const Args& arguments) {
         // [gcc11-sso: not-a-coroutine]
         CallToolParams call_params;
         call_params.name = name;
         call_params.arguments = nlohmann::json(arguments);
-        return start_tool_with(std::move(call_params));
+        return static_cast<Self*>(this)->start_tool_with(std::move(call_params));
     }
 
     /**
@@ -969,18 +985,6 @@ class MCP_API Client {
     Task<CallToolResult> call_tool_with(CallToolParams params);
     Task<CallToolResult> call_tool_with(CallToolParams params, const RequestOptions& request_options);
     Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(CallToolParams params);
-
-    // [gcc11-sso: string_view] nlohmann::json is heap-allocated; string_view is trivially copyable.
-    template <typename Result>
-    Task<Result> call_and_parse(std::string_view method, std::optional<nlohmann::json> params) {
-        return parse_result<Result>(send_request(method, params));
-    }
-
-    template <typename Result>
-    static Task<Result> parse_result(Task<nlohmann::json> request) {
-        auto result_json = co_await std::move(request);
-        co_return result_json.template get<Result>();
-    }
 
     struct Impl;
     std::shared_ptr<Impl> impl_;

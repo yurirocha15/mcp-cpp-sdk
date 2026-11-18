@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 
 #include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"

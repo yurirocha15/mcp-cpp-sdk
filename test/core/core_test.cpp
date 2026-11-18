@@ -1,10 +1,11 @@
-#include "mcp/core/core.hpp"
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 
 #include <gtest/gtest.h>
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
 
 namespace core_test {
 

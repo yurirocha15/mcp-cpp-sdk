@@ -1,3 +1,4 @@
+#include <mcp/core/async.hpp>
 #include <mcp/transport/stdio.hpp>
 #include "../detail/constants.hpp"
 #include "../detail/spawn_awaitable.hpp"

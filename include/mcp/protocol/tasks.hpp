@@ -16,7 +16,7 @@ namespace mcp {
 /**
  * @brief The state a task carries in every message that describes it.
  *
- * Named TaskData to avoid conflict with mcp::Task (boost::asio::awaitable) in core.hpp.
+ * Named TaskData to avoid conflict with mcp::Task, the coroutine type in mcp/core/async.hpp.
  */
 struct TaskData {
     std::string taskId;                        ///< The task identifier.

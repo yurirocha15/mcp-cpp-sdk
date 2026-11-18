@@ -546,6 +546,23 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
+- `<mcp/mcp.hpp>` includes no Boost header, and neither do the server, client,
+  context and transport headers, the stdio, memory and HTTP client and server
+  transports, `StdioClientSession` or the authentication headers; a check run
+  in CI compiles each public header on its own and lists the Boost headers it
+  reaches. Code that defines or awaits a coroutine includes
+  `<mcp/core/async.hpp>`, which defines `Task`; a coroutine handler registered
+  without it fails with a message naming that header. `<mcp/mcp.hpp>` also
+  includes `<mcp/client/client.hpp>`.
+- `StringRequest` and `StringResponse`, the Boost.Beast message types, are in
+  `<mcp/transport/http_beast.hpp>` instead of `<mcp/transport/http_types.hpp>`.
+- `Client::call_tool()` with `nlohmann::json` arguments, with and without
+  `RequestOptions`, is an ordinary member function; the template overloads take
+  other argument types.
+- `ITransport` and `auth::Authenticator` are exported from the library, which
+  holds their default `read_incoming()`, `write_related_message()` and
+  `try_handle_challenge()`, and the coroutine members of `Context` are defined
+  in the library as well.
 - Constructors and functions that took a `boost::asio::any_io_executor` take an
   `mcp::Executor` (`mcp/core/executor.hpp`, which needs no Boost) instead:
   `Client`, `Server::run()` and `Server::set_handler_executor()`, the stdio,
@@ -885,6 +902,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Removed
 
+- `<mcp/core/core.hpp>`. `Task` is in `<mcp/core/async.hpp>`, and
+  `<mcp/core/async_fwd.hpp>` declares it without Boost.
 - The task types of the experimental shape of 2025-11-25: the `tasks` member of
   `ClientCapabilities` and `ServerCapabilities` (a legacy peer that sends it
   still parses, and the member is dropped), `ToolExecution` and `Tool::execution`,

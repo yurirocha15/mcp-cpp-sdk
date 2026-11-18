@@ -15,6 +15,7 @@
 /// input_required result, and the client's roots handler answers on the retry of the tools/call.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 

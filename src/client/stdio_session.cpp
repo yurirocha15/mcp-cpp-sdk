@@ -1,4 +1,5 @@
 #include <mcp/client/stdio_session.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/spawn_awaitable.hpp"
 

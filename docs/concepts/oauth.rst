@@ -29,6 +29,7 @@ Hand that header to the manager and it runs the whole exchange:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/auth/oauth.hpp>
 
    // A default-constructed policy refuses every origin, so name the ones this
@@ -257,6 +258,7 @@ credentials and no dynamic client registration is involved.
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/auth/client_credentials.hpp>
 
    mcp::auth::ClientCredentialsConfig config;
@@ -325,6 +327,7 @@ supplies the assertion through a callback:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/auth/enterprise_authorization.hpp>
 
    mcp::auth::EnterpriseAuthorizationConfig config;

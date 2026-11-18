@@ -12,6 +12,7 @@
 ///       execute its built-in graceful-shutdown path on all supported platforms.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_client.hpp>
 

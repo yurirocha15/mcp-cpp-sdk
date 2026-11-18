@@ -86,6 +86,7 @@ A host declares support when it connects:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/apps.hpp>
 
    mcp::ClientCapabilities capabilities;

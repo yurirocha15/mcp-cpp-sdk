@@ -82,6 +82,7 @@ int main() {
 ### 3. Create a Minimal Client
 
 ```cpp
+#include <mcp/core/async.hpp>
 #include <mcp/client/client.hpp>
 #include <mcp/transport/http_client.hpp>
 

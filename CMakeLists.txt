@@ -95,6 +95,7 @@ configure_file(
 
 set(MCP_CPP_SDK_SOURCES
     src/core/version.cpp
+    src/core/context.cpp
     src/core/runtime.cpp
     src/core/regex.cpp
     src/core/secure_random.cpp
@@ -141,6 +142,7 @@ set(MCP_CPP_SDK_SOURCES
     src/server/task_store.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
+    src/transport/transport.cpp
     src/transport/stdio_client.cpp
     src/transport/memory.cpp
     src/transport/http_types.cpp
@@ -495,6 +497,12 @@ if(BUILD_TESTING)
   # so its test builds the source itself.
   add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # Compiled apart from the test program, whose unity build would make Task
+  # complete: the simple-mode headers must take synchronous handlers while Task
+  # is only declared.
+  add_library(mcp-simple-mode-headers OBJECT test/headers/simple_server_tu.cpp)
+  target_link_libraries(mcp-simple-mode-headers PRIVATE mcp-cpp-sdk)
+  add_dependencies(mcp-sdk-tests mcp-simple-mode-headers)
   # The server the stdio client tests launch as a child process.
   add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
   target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)

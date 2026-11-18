@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "mcp/client/apps.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/protocol/apps.hpp"
 #include "mcp/server/apps.hpp"
 #include "mcp/server/server.hpp"

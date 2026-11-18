@@ -1,6 +1,7 @@
 /// @file llama_server.cpp
 /// @brief MCP server adapter for llama.cpp llama-server, with stdio and HTTP transport.
 
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 
 #include <boost/asio/ip/tcp.hpp>

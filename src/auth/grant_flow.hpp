@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 
 #include <algorithm>
 #include <any>
@@ -14,6 +15,8 @@
 #include <string>
 
 namespace mcp::auth::detail {
+
+namespace net = boost::asio;
 
 /// Throws unless @p token is a Bearer token, the only type these flows can present.
 inline void require_bearer(const TokenResponse& token) {

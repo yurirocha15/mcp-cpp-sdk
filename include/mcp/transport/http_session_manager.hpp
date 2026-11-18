@@ -8,6 +8,7 @@
 
 #include <boost/beast/http.hpp>
 #include <mcp/core/executor.hpp>
+#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_types.hpp>
 
 #include <chrono>

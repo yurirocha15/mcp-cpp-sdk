@@ -24,6 +24,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 
 #include <gtest/gtest.h>
 

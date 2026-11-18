@@ -1,3 +1,4 @@
+#include <mcp/core/async.hpp>
 #include <mcp/core/runtime.hpp>
 #include <mcp/detail/runtime_access.hpp>
 

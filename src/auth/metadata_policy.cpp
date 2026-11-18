@@ -1,4 +1,5 @@
 #include <mcp/auth/metadata_policy.hpp>
+#include <mcp/core/async.hpp>
 
 #include <algorithm>
 #include <array>

@@ -1,3 +1,4 @@
+#include <mcp/core/async.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
 #include "../detail/constants.hpp"

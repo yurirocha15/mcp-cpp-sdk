@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/core/async.hpp>
+#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_types.hpp>
 
 #include <boost/asio/buffer.hpp>

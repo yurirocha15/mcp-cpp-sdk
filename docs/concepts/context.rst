@@ -39,6 +39,7 @@ Available log levels (from most to least severe):
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/mcp.hpp>
 
    server.add_tool<nlohmann::json, nlohmann::json>("debug_tool", "Tool with logging", schema,

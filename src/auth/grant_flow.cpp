@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <mcp/auth/challenge.hpp>
+#include <mcp/core/async.hpp>
 #include <stdexcept>
 #include <utility>
 

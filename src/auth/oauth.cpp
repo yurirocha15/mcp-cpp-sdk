@@ -1,4 +1,5 @@
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/constants.hpp"
 #include "../detail/middleware_rejection.hpp"
@@ -3186,6 +3187,11 @@ void OAuthClientTransport::close() {
     // transports and outlive this one, so closing it is left to its owner.
     impl_->authenticator->cancel_pending();
     impl_->inner->close();
+}
+
+Task<bool> Authenticator::try_handle_challenge(const std::string& www_authenticate) {
+    static_cast<void>(www_authenticate);
+    co_return false;
 }
 
 }  // namespace mcp::auth

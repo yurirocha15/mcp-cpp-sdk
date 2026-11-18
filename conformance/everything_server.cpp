@@ -1,6 +1,7 @@
 // Project fixture for the official MCP conformance runner: the 2025-11-25 baseline and the diagnostic
 // tools that the 2026-07-28 scenarios call.
 
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/server/skills.hpp>
 #include <mcp/transport/http_session_manager.hpp>

@@ -1,3 +1,4 @@
+#include "mcp/core/async.hpp"
 #include "mcp/transport/websocket.hpp"
 
 #include <gtest/gtest.h>

@@ -142,6 +142,7 @@ with other async work — you can wire up the transport manually:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/server/server.hpp>
    #include <mcp/transport/stdio.hpp>
    #include <boost/asio/co_spawn.hpp>
@@ -196,6 +197,7 @@ HTTP when ``server.run_stdio()`` is replaced by
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/client.hpp>
    #include <mcp/transport/http_client.hpp>
    #include <boost/asio/co_spawn.hpp>

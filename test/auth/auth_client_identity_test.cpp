@@ -20,6 +20,7 @@
 #include <exception>
 #include <functional>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>

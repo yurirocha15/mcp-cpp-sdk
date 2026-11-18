@@ -3,6 +3,7 @@
 #include "../detail/spawn_awaitable.hpp"
 #include "../detail/strand_executor.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/memory.hpp>
 

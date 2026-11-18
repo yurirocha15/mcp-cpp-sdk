@@ -12,6 +12,7 @@
 #include "../detail/strand_executor.hpp"
 #include "modern_exchange.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>

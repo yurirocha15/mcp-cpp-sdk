@@ -1,5 +1,6 @@
 #include <mcp/transport/transport_factory.hpp>
 
+#include <mcp/core/async.hpp>
 #include <mcp/detail/runtime_access.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/stdio.hpp>

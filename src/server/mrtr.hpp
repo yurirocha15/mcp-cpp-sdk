@@ -7,8 +7,8 @@
 // Everything about one parked handler lives in an MrtrEntry, and every member of the entry is
 // read and written only on the entry's strand, where the handler itself runs.
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>
-#include <mcp/core/core.hpp>
 
 #include <mcp/protocol/request_meta.hpp>
 

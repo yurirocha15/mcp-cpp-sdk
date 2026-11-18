@@ -12,6 +12,7 @@
 /// Each step checks its outcome; the example exits with EXIT_FAILURE if any differs.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/schema.hpp>
 #include <mcp/server/server.hpp>

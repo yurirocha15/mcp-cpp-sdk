@@ -73,6 +73,7 @@ ends the process when the client is done.
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/client.hpp>
    #include <mcp/transport/stdio_client.hpp>
 
@@ -159,6 +160,7 @@ and to establish active ``subscriptions/listen`` streams again.
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/stdio_session.hpp>
 
    mcp::StdioSessionOptions options;
@@ -410,6 +412,7 @@ All you need to do is inherit from `mcp::ITransport` and implement three methods
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/transport/transport.hpp>
 
    class MyCustomTransport : public mcp::ITransport {

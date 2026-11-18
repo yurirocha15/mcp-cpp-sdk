@@ -4,6 +4,7 @@
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
@@ -39,6 +40,13 @@
 namespace mcp {
 
 namespace {
+
+/// Awaits @p request and decodes its result as a Result.
+template <typename Result>
+Task<Result> parse_result(Task<nlohmann::json> request) {
+    auto result_json = co_await std::move(request);
+    co_return result_json.template get<Result>();
+}
 
 std::optional<nlohmann::json> make_paginated_params(const std::optional<std::string>& cursor) {
     if (!cursor) {
@@ -2530,6 +2538,23 @@ Client::Client(std::shared_ptr<ITransport> transport, const Executor& executor, 
 
 Executor Client::executor() const { return impl_->executor; }
 
+Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments) {
+    // [gcc11-sso: not-a-coroutine]
+    CallToolParams call_params;
+    call_params.name = name;
+    call_params.arguments = arguments;
+    return call_tool_with(std::move(call_params));
+}
+
+Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments,
+                                       const RequestOptions& request_options) {
+    // [gcc11-sso: not-a-coroutine]
+    CallToolParams call_params;
+    call_params.name = name;
+    call_params.arguments = arguments;
+    return call_tool_with(std::move(call_params), request_options);
+}
+
 Client::~Client() { close(); }
 
 Task<ConnectResult> Client::connect(std::string_view name, std::string_view version) {
@@ -2613,8 +2638,8 @@ void Client::close() {
 
 Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor) {
     // [gcc11-sso: not-a-coroutine]
-    return Impl::accepted_tools(
-        impl_, call_and_parse<ListToolsResult>("tools/list", make_paginated_params(cursor)));
+    return Impl::accepted_tools(impl_, parse_result<ListToolsResult>(
+                                           send_request("tools/list", make_paginated_params(cursor))));
 }
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
@@ -2718,23 +2743,25 @@ Task<CallToolResult> TaskHandle::result(const RequestOptions& request_options) c
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {
-    return call_and_parse<ListResourcesResult>("resources/list", make_paginated_params(cursor));
+    return parse_result<ListResourcesResult>(
+        send_request("resources/list", make_paginated_params(cursor)));
 }
 
 Task<ReadResourceResult> Client::read_resource(const std::string& uri) {
     ReadResourceRequestParams params;
     params.uri = uri;
-    return call_and_parse<ReadResourceResult>("resources/read", nlohmann::json(std::move(params)));
+    return parse_result<ReadResourceResult>(
+        send_request("resources/read", nlohmann::json(std::move(params))));
 }
 
 Task<ListResourceTemplatesResult> Client::list_resource_templates(
     const std::optional<std::string>& cursor) {
-    return call_and_parse<ListResourceTemplatesResult>("resources/templates/list",
-                                                       make_paginated_params(cursor));
+    return parse_result<ListResourceTemplatesResult>(
+        send_request("resources/templates/list", make_paginated_params(cursor)));
 }
 
 Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor) {
-    return call_and_parse<ListPromptsResult>("prompts/list", make_paginated_params(cursor));
+    return parse_result<ListPromptsResult>(send_request("prompts/list", make_paginated_params(cursor)));
 }
 
 Task<GetPromptResult> Client::get_prompt(
@@ -2742,11 +2769,12 @@ Task<GetPromptResult> Client::get_prompt(
     GetPromptRequestParams params;
     params.name = name;
     params.arguments = arguments;
-    return call_and_parse<GetPromptResult>("prompts/get", nlohmann::json(std::move(params)));
+    return parse_result<GetPromptResult>(
+        send_request("prompts/get", nlohmann::json(std::move(params))));
 }
 
 Task<CompleteResult> Client::complete(const CompleteParams& params) {
-    return call_and_parse<CompleteResult>("completion/complete", nlohmann::json(params));
+    return parse_result<CompleteResult>(send_request("completion/complete", nlohmann::json(params)));
 }
 
 Task<void> Client::ping() {

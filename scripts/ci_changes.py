@@ -118,6 +118,7 @@ JOB_INPUTS = {
     "code": LIBRARY + TESTS + (
         "examples/*",
         "scripts/build.py",
+        "scripts/check_boost_free_headers.py",
         "scripts/check_doc_snippets.py",
         "scripts/check_json_matrix.py",
         "scripts/check_readme_snippets.py",

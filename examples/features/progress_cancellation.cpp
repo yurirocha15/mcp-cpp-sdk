@@ -13,6 +13,7 @@
 /// protocol revision, and the tool sees ctx.is_cancelled() at its next step.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>

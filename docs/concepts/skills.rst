@@ -74,6 +74,7 @@ Using skills from a client
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/skills.hpp>
 
    auto connected = co_await client.connect(info, capabilities);

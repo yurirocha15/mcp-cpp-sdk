@@ -2,6 +2,7 @@
 /// @brief Loopback WebSocket example: in-process server + client over TCP.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/websocket.hpp>
 

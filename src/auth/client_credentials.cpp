@@ -1,4 +1,5 @@
 #include <mcp/auth/client_credentials.hpp>
+#include <mcp/core/async.hpp>
 
 #include "grant_flow.hpp"
 

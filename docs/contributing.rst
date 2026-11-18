@@ -131,6 +131,7 @@ Example test structure:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/server/server.hpp>
    #include <gtest/gtest.h>
 

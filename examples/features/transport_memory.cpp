@@ -8,6 +8,7 @@
 /// - Runtime: Event loop management with run() and stop()
 /// - Bidirectional message exchange via MemoryTransport
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/runtime.hpp>
 #include <mcp/transport/memory.hpp>
 #include <mcp/transport/transport_factory.hpp>

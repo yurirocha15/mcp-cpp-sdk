@@ -11,6 +11,7 @@
 // The tools report what the process sees (arguments, environment, working directory), write to
 // standard error, and end the process.
 
+#include <mcp/core/async.hpp>
 #include <mcp/mcp.hpp>
 
 #include <chrono>

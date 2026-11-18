@@ -7,10 +7,10 @@
 //   [wire-builders]        make_result_wire/make_error_wire are synchronous helpers;
 //                          do NOT convert them to Task<T> coroutines.
 
+#include <mcp/core/async_fwd.hpp>
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
-#include <mcp/core/core.hpp>
 #include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
@@ -120,20 +120,28 @@ SyncTypeErasedHandler wrap_sync_handler(Fn fn) {
  * @param fn The async handler to wrap.
  * @return A TypeErasedHandler that deserializes JSON to In, calls fn, and serializes Out to JSON.
  */
+/// @brief T, named through a type that depends on Dependent, so that a coroutine returning it is
+/// checked only when the enclosing template is instantiated: a header can then define a
+/// coroutine returning Task while Task is only declared.
+template <typename Dependent, typename T>
+struct dependent_type {
+    using type = T;
+};
+
 template <JsonSerializable In, JsonSerializable Out, typename Fn>
     requires AsyncHandler<Fn, In, Out>
 TypeErasedHandler wrap_handler(Fn fn) {
-    return
-        [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
-            // [gcc11-sso: no-named-temporaries] DO NOT introduce a named `input` variable here.
-            if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
-                Out output = co_await handler(ctx, params.get<In>());
-                co_return nlohmann::json(std::move(output));
-            } else {
-                Out output = co_await handler(params.get<In>());
-                co_return nlohmann::json(std::move(output));
-            }
-        };
+    using Result = typename dependent_type<Fn, Task<nlohmann::json>>::type;
+    return [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Result {
+        // [gcc11-sso: no-named-temporaries] DO NOT introduce a named `input` variable here.
+        if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
+            Out output = co_await handler(ctx, params.get<In>());
+            co_return nlohmann::json(std::move(output));
+        } else {
+            Out output = co_await handler(params.get<In>());
+            co_return nlohmann::json(std::move(output));
+        }
+    };
 }
 
 }  // namespace detail
@@ -541,7 +549,8 @@ class MCP_API Server {
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource(const Resource& resource, Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
-                      "Handler must be sync or async with supported signature");
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "needs <mcp/core/async.hpp>");
         if constexpr (detail::SyncHandler<Fn, In, Out>) {
             register_sync_resource(resource, detail::wrap_sync_handler<In, Out>(std::move(handler)));
         } else {
@@ -573,7 +582,8 @@ class MCP_API Server {
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource_template(const ResourceTemplate& tmpl, Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
-                      "Handler must be sync or async with supported signature");
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "needs <mcp/core/async.hpp>");
         if constexpr (detail::SyncHandler<Fn, In, Out>) {
             register_sync_resource_template(tmpl,
                                             detail::wrap_sync_handler<In, Out>(std::move(handler)));
@@ -594,7 +604,8 @@ class MCP_API Server {
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_prompt(const Prompt& prompt, Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
-                      "Handler must be sync or async with supported signature");
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "needs <mcp/core/async.hpp>");
         if constexpr (detail::SyncHandler<Fn, In, Out>) {
             register_sync_prompt(prompt, detail::wrap_sync_handler<In, Out>(std::move(handler)));
         } else {
@@ -1160,7 +1171,8 @@ class MCP_API Server {
                         const nlohmann::json& input_schema, const nlohmann::json* output_schema,
                         Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
-                      "Handler must be sync or async with supported signature");
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "needs <mcp/core/async.hpp>");
         Tool tool;
         tool.name = name;
         tool.description = description;

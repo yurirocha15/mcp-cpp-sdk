@@ -1,3 +1,4 @@
+#include "mcp/core/async.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
 

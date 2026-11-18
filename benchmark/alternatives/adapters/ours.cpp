@@ -1,5 +1,6 @@
 #include "benchmark_workload.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 

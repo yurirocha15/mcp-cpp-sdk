@@ -2,6 +2,7 @@
 
 #include "../../src/detail/http_request_metadata.hpp"
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 

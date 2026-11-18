@@ -1,4 +1,5 @@
 #include <mcp/client/skills.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/base64_decode.hpp"
 
