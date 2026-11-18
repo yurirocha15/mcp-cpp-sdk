@@ -17,6 +17,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   destructor closes the connection, waits up to
   `mcp::constants::client::g_CLOSE_WAIT_MS` for the loop to finish and joins
   the thread.
+- `Client::sync()` returns a `SyncClient`, whose members block the calling
+  thread until the matching `Client` coroutine finishes and return its result
+  or throw its exception; `TaskHandle::sync()` and `Subscription::sync()` give
+  the same blocking view of a task and a subscription. `Client::run()` runs a
+  coroutine on the client's loop and blocks until it ends, rethrowing what it
+  throws. Both are for a client built from an `Endpoint`: on a client built on
+  an application executor, or when called on the client's own loop thread,
+  they throw `std::logic_error`.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around

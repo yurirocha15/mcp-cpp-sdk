@@ -23,6 +23,7 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/use_future.hpp>
 #include <boost/system/system_error.hpp>
 #include <chrono>
 #include <cstdint>
@@ -246,6 +247,35 @@ void check_elicitation_content(const nlohmann::json& params, const ElicitResult&
 
 namespace detail {
 
+/// The event loop a Client constructed from an Endpoint runs on, for the calls that wait for it.
+struct BlockingLoop {
+    boost::asio::any_io_executor executor;
+    std::thread::id thread;
+};
+
+/// Runs the coroutine @p start makes on @p loop and waits for it; see Client::sync().
+template <typename T>
+T run_blocking(const std::shared_ptr<const BlockingLoop>& loop, std::function<Task<T>()> start) {
+    if (!loop) {
+        throw std::logic_error(
+            "mcp::Client: blocking calls need a client constructed from an Endpoint; a client on "
+            "the application's executor is used through its coroutines");
+    }
+    if (std::this_thread::get_id() == loop->thread) {
+        throw std::logic_error(
+            "mcp::Client: a blocking call on the client's own event loop thread would wait for "
+            "itself; await the coroutine instead");
+    }
+    // The coroutine is made on the loop as well, so that no part of the call runs on this thread.
+    return boost::asio::co_spawn(
+               loop->executor,
+               [start = std::move(start)]() -> boost::asio::awaitable<T> {
+                   co_return co_await start();
+               },
+               boost::asio::use_future)
+        .get();
+}
+
 /// The client's side of one subscriptions/listen stream. Every change to it happens on the client
 /// strand; the mutex only lets the handle's accessors read it from any thread.
 struct SubscriptionState {
@@ -255,6 +285,8 @@ struct SubscriptionState {
 
     /// Wakes whoever waits for the acknowledgment or the next notification.
     boost::asio::steady_timer wake;
+    /// The loop of a Client constructed from an Endpoint, for Subscription::sync(); null otherwise.
+    std::shared_ptr<const BlockingLoop> blocking_loop;
     std::size_t queue_limit;
     RequestId id;
     SubscriptionFilter requested;
@@ -1070,6 +1102,7 @@ struct Client::Impl {
 
         auto stream = std::make_shared<detail::SubscriptionState>(
             state->strand, state->options.subscription_queue_limit);
+        stream->blocking_loop = state->blocking_loop;
         stream->id = RequestId{std::to_string(id)};
         stream->requested = filter;
         std::weak_ptr<Impl> weak_state = state;
@@ -2313,6 +2346,8 @@ struct Client::Impl {
     std::shared_ptr<ITransport> transport;
     /// The executor the Client was constructed with, as Client::executor() returns it.
     Executor executor;
+    /// The loop of a Client constructed from an Endpoint, for the blocking calls; null otherwise.
+    std::shared_ptr<const detail::BlockingLoop> blocking_loop;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     /// How many requests of the server are being answered. Touched on the strand only.
     std::size_t incoming_requests{0};
@@ -2545,6 +2580,8 @@ Client::Client(const Endpoint& endpoint, ClientOptions options) : loop_(std::mak
     try {
         const Executor executor = loop_->io.get_executor();
         start(endpoint.make_transport(executor), executor, std::move(options));
+        impl_->blocking_loop = std::make_shared<const detail::BlockingLoop>(
+            detail::BlockingLoop{loop_->io.get_executor(), loop_->thread.get_id()});
     } catch (...) {
         loop_->work.reset();
         loop_->io.stop();
@@ -2961,6 +2998,194 @@ void Client::on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::j
                    auto result = co_await handler(params);
                    co_return nlohmann::json(std::move(result));
                });
+}
+
+SyncClient Client::sync() {
+    if (!impl_->blocking_loop) {
+        throw std::logic_error(
+            "mcp::Client::sync() needs a client constructed from an Endpoint; a client on the "
+            "application's executor is used through its coroutines");
+    }
+    return SyncClient(*this);
+}
+
+void Client::run(std::function<Task<void>()> body) {
+    if (!body) {
+        throw std::invalid_argument("mcp::Client::run() needs a coroutine");
+    }
+    detail::run_blocking<void>(impl_->blocking_loop, std::move(body));
+}
+
+SyncSubscription Subscription::sync() const {
+    if (!state_ || !state_->blocking_loop) {
+        throw std::logic_error(
+            "mcp::Subscription::sync() needs a subscription of a client constructed from an "
+            "Endpoint");
+    }
+    return SyncSubscription(*this);
+}
+
+SyncSubscription::SyncSubscription(Subscription subscription)
+    : subscription_(std::move(subscription)) {}
+
+std::optional<SubscriptionEvent> SyncSubscription::next() {
+    return detail::run_blocking<std::optional<SubscriptionEvent>>(
+        subscription_.state_->blocking_loop, [this] { return subscription_.next(); });
+}
+
+void SyncSubscription::close() {
+    detail::run_blocking<void>(subscription_.state_->blocking_loop,
+                               [this] { return subscription_.close(); });
+}
+
+std::shared_ptr<const detail::BlockingLoop> TaskHandle::blocking_loop() const {
+    return std::static_pointer_cast<Client::Impl>(attached_client(client_))->blocking_loop;
+}
+
+SyncTaskHandle TaskHandle::sync() const {
+    if (!blocking_loop()) {
+        throw std::logic_error(
+            "mcp::TaskHandle::sync() needs a task of a client constructed from an Endpoint");
+    }
+    return SyncTaskHandle(*this);
+}
+
+SyncTaskHandle::SyncTaskHandle(TaskHandle handle) : handle_(std::move(handle)) {}
+
+DetailedTask SyncTaskHandle::get(const RequestOptions& request_options) const {
+    return detail::run_blocking<DetailedTask>(handle_.blocking_loop(),
+                                              [&] { return handle_.get(request_options); });
+}
+
+void SyncTaskHandle::update(const nlohmann::json& input_responses,
+                            const RequestOptions& request_options) const {
+    detail::run_blocking<void>(handle_.blocking_loop(),
+                               [&] { return handle_.update(input_responses, request_options); });
+}
+
+void SyncTaskHandle::cancel(const RequestOptions& request_options) const {
+    detail::run_blocking<void>(handle_.blocking_loop(),
+                               [&] { return handle_.cancel(request_options); });
+}
+
+DetailedTask SyncTaskHandle::wait(const RequestOptions& request_options) const {
+    return detail::run_blocking<DetailedTask>(handle_.blocking_loop(),
+                                              [&] { return handle_.wait(request_options); });
+}
+
+CallToolResult SyncTaskHandle::result(const RequestOptions& request_options) const {
+    return detail::run_blocking<CallToolResult>(handle_.blocking_loop(),
+                                                [&] { return handle_.result(request_options); });
+}
+
+SyncClient::SyncClient(Client& client) : client_(&client) {}
+
+ConnectResult SyncClient::connect(std::string_view name, std::string_view version) {
+    return detail::run_blocking<ConnectResult>(client_->impl_->blocking_loop,
+                                               [&] { return client_->connect(name, version); });
+}
+
+ConnectResult SyncClient::connect(const Implementation& client_info,
+                                  const ClientCapabilities& capabilities) {
+    return detail::run_blocking<ConnectResult>(
+        client_->impl_->blocking_loop, [&] { return client_->connect(client_info, capabilities); });
+}
+
+nlohmann::json SyncClient::send_request(std::string_view method,
+                                        const std::optional<nlohmann::json>& params) {
+    return detail::run_blocking<nlohmann::json>(client_->impl_->blocking_loop,
+                                                [&] { return client_->send_request(method, params); });
+}
+
+nlohmann::json SyncClient::send_request(std::string_view method,
+                                        const std::optional<nlohmann::json>& params,
+                                        const RequestOptions& request_options) {
+    return detail::run_blocking<nlohmann::json>(client_->impl_->blocking_loop, [&] {
+        return client_->send_request(method, params, request_options);
+    });
+}
+
+Subscription SyncClient::listen(const SubscriptionFilter& filter) {
+    return detail::run_blocking<Subscription>(client_->impl_->blocking_loop,
+                                              [&] { return client_->listen(filter); });
+}
+
+Subscription SyncClient::listen(const SubscriptionFilter& filter,
+                                const RequestOptions& request_options) {
+    return detail::run_blocking<Subscription>(client_->impl_->blocking_loop,
+                                              [&] { return client_->listen(filter, request_options); });
+}
+
+void SyncClient::send_notification(std::string_view method,
+                                   const std::optional<nlohmann::json>& params) {
+    detail::run_blocking<void>(client_->impl_->blocking_loop,
+                               [&] { return client_->send_notification(method, params); });
+}
+
+void SyncClient::close() { client_->close(); }
+
+CallToolResult SyncClient::call_tool(const std::string& name, const nlohmann::json& arguments) {
+    return detail::run_blocking<CallToolResult>(client_->impl_->blocking_loop,
+                                                [&] { return client_->call_tool(name, arguments); });
+}
+
+CallToolResult SyncClient::call_tool(const std::string& name, const nlohmann::json& arguments,
+                                     const RequestOptions& request_options) {
+    return detail::run_blocking<CallToolResult>(client_->impl_->blocking_loop, [&] {
+        return client_->call_tool(name, arguments, request_options);
+    });
+}
+
+std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::string& name,
+                                                                const nlohmann::json& arguments) {
+    return detail::run_blocking<std::variant<CallToolResult, TaskHandle>>(
+        client_->impl_->blocking_loop, [&] { return client_->start_tool(name, arguments); });
+}
+
+ListToolsResult SyncClient::list_tools(const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListToolsResult>(client_->impl_->blocking_loop,
+                                                 [&] { return client_->list_tools(cursor); });
+}
+
+ListResourcesResult SyncClient::list_resources(const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListResourcesResult>(client_->impl_->blocking_loop,
+                                                     [&] { return client_->list_resources(cursor); });
+}
+
+ReadResourceResult SyncClient::read_resource(const std::string& uri) {
+    return detail::run_blocking<ReadResourceResult>(client_->impl_->blocking_loop,
+                                                    [&] { return client_->read_resource(uri); });
+}
+
+ListResourceTemplatesResult SyncClient::list_resource_templates(
+    const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListResourceTemplatesResult>(
+        client_->impl_->blocking_loop, [&] { return client_->list_resource_templates(cursor); });
+}
+
+ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListPromptsResult>(client_->impl_->blocking_loop,
+                                                   [&] { return client_->list_prompts(cursor); });
+}
+
+GetPromptResult SyncClient::get_prompt(
+    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments) {
+    return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop,
+                                                 [&] { return client_->get_prompt(name, arguments); });
+}
+
+CompleteResult SyncClient::complete(const CompleteParams& params) {
+    return detail::run_blocking<CompleteResult>(client_->impl_->blocking_loop,
+                                                [&] { return client_->complete(params); });
+}
+
+void SyncClient::ping() {
+    detail::run_blocking<void>(client_->impl_->blocking_loop, [&] { return client_->ping(); });
+}
+
+void SyncClient::cancel(const RequestId& request_id, const std::optional<std::string>& reason) {
+    detail::run_blocking<void>(client_->impl_->blocking_loop,
+                               [&] { return client_->cancel(request_id, reason); });
 }
 
 }  // namespace mcp

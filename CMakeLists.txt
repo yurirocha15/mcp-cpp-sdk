@@ -424,6 +424,7 @@ if(BUILD_TESTING)
       test/client/client_elicitation_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
+      test/client/client_sync_test.cpp
       test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
       test/core/elicitation_schema_test.cpp
@@ -511,7 +512,8 @@ if(BUILD_TESTING)
   add_dependencies(mcp-sdk-tests mcp-test-stdio-server)
   target_compile_definitions(
     mcp-sdk-tests
-    PRIVATE MCP_TEST_STDIO_SERVER="$<TARGET_FILE:mcp-test-stdio-server>")
+    PRIVATE MCP_TEST_STDIO_SERVER="$<TARGET_FILE:mcp-test-stdio-server>"
+            MCP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   target_compile_definitions(
     mcp-sdk-tests
     PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")

@@ -453,6 +453,7 @@ struct SubscriptionEvent {
 
 namespace detail {
 struct SubscriptionState;
+struct BlockingLoop;
 }  // namespace detail
 
 /**
@@ -466,6 +467,10 @@ struct SubscriptionState;
  * Reconnecting is the application's job: after a transport drop, connect a new client and call
  * Client::listen() again; the server keeps no subscription across connections.
  */
+class SyncClient;
+class SyncSubscription;
+class SyncTaskHandle;
+
 class MCP_API Subscription {
    public:
     /** @brief A handle that is not attached to a stream; it reads as cancelled and next() yields
@@ -508,6 +513,11 @@ class MCP_API Subscription {
      */
     Task<void> close();
 
+    /// @brief Blocking calls to this stream, for a subscription of a Client constructed from an
+    /// Endpoint (see Client::sync()).
+    /// @throws std::logic_error If the client runs on the application's executor.
+    [[nodiscard]] SyncSubscription sync() const;
+
     /** @brief How the stream ended, or nothing while it is open. */
     [[nodiscard]] std::optional<SubscriptionEnd> end_reason() const;
 
@@ -518,6 +528,8 @@ class MCP_API Subscription {
     [[nodiscard]] std::uint64_t dropped_events() const;
 
    private:
+    friend class SyncSubscription;
+
     std::shared_ptr<detail::SubscriptionState> state_;
 };
 
@@ -563,6 +575,11 @@ class MCP_API TaskHandle {
     Task<void> update(const nlohmann::json& input_responses,
                       const RequestOptions& request_options = {}) const;
 
+    /// @brief Blocking calls to this task, for a handle of a Client constructed from an Endpoint
+    /// (see Client::sync()).
+    /// @throws std::logic_error If the client runs on the application's executor.
+    [[nodiscard]] SyncTaskHandle sync() const;
+
     /**
      * @brief Ask the server to cancel the task with `tasks/cancel`.
      *
@@ -594,6 +611,11 @@ class MCP_API TaskHandle {
     Task<CallToolResult> result(const RequestOptions& request_options = {}) const;
 
    private:
+    friend class SyncTaskHandle;
+
+    /// The loop of the client the task belongs to, when it was constructed from an Endpoint.
+    [[nodiscard]] std::shared_ptr<const detail::BlockingLoop> blocking_loop() const;
+
     std::shared_ptr<void> client_;
     TaskData created_;
     std::optional<std::string> tool_;
@@ -637,6 +659,31 @@ class MCP_API Client {
      * @param options  Default timeout and protocol-validation behavior.
      */
     explicit Client(const Endpoint& endpoint, ClientOptions options = {});
+
+    /**
+     * @brief Blocking calls to this client: each method runs the coroutine member of the same name
+     *        on the client's event loop and waits for it.
+     *
+     * @details For a Client constructed from an Endpoint. A blocking call made on the client's
+     * own event loop thread, such as from a notification callback or a coroutine awaiting the
+     * client, would wait for itself and throws std::logic_error instead. Blocking calls, run()
+     * and coroutines may be mixed on one client.
+     * @throws std::logic_error If the client runs on the application's executor, whose event loop
+     *         it cannot run itself: such a client is used through its coroutines.
+     */
+    [[nodiscard]] SyncClient sync();
+
+    /**
+     * @brief Run @p body, a coroutine that uses this client, on the client's event loop and wait
+     *        for it to finish.
+     *
+     * @details For a Client constructed from an Endpoint. The coroutine's exception, if it throws,
+     * is rethrown here. @p body is kept alive until the coroutine has finished, so a lambda may
+     * capture what the coroutine uses.
+     * @throws std::logic_error If the client runs on the application's executor, or the call is
+     *         made on the client's own event loop thread.
+     */
+    void run(std::function<Task<void>()> body);
 
     /**
      * @brief The executor the Client was constructed with.
@@ -996,6 +1043,7 @@ class MCP_API Client {
     void on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler);
 
    private:
+    friend class SyncClient;
     friend class TaskHandle;
 
     Task<CallToolResult> call_tool_with(CallToolParams params);
@@ -1011,6 +1059,122 @@ class MCP_API Client {
 
     struct Impl;
     std::shared_ptr<Impl> impl_;
+};
+
+/**
+ * @brief Blocking calls to a Subscription; see Subscription::sync().
+ */
+class MCP_API SyncSubscription {
+   public:
+    explicit SyncSubscription(Subscription subscription);
+
+    /// As Subscription::next(), waiting for the next event or the end of the stream.
+    std::optional<SubscriptionEvent> next();
+    /// As Subscription::close().
+    void close();
+
+   private:
+    Subscription subscription_;
+};
+
+/**
+ * @brief Blocking calls to a TaskHandle; see TaskHandle::sync().
+ */
+class MCP_API SyncTaskHandle {
+   public:
+    explicit SyncTaskHandle(TaskHandle handle);
+
+    /// As TaskHandle::get().
+    DetailedTask get(const RequestOptions& request_options = {}) const;
+    /// As TaskHandle::update().
+    void update(const nlohmann::json& input_responses,
+                const RequestOptions& request_options = {}) const;
+    /// As TaskHandle::cancel().
+    void cancel(const RequestOptions& request_options = {}) const;
+    /// As TaskHandle::wait().
+    DetailedTask wait(const RequestOptions& request_options = {}) const;
+    /// As TaskHandle::result().
+    CallToolResult result(const RequestOptions& request_options = {}) const;
+
+   private:
+    TaskHandle handle_;
+};
+
+/**
+ * @brief Blocking calls to a Client; see Client::sync().
+ *
+ * @details Each method runs the Client coroutine member of the same name, with the same
+ * arguments, on the client's event loop and returns its result or throws its exception. A
+ * SyncClient refers to its Client, which must outlive it.
+ */
+class MCP_API SyncClient {
+   public:
+    explicit SyncClient(Client& client);
+
+    /// As Client::connect().
+    ConnectResult connect(std::string_view name, std::string_view version);
+    /// As Client::connect().
+    ConnectResult connect(const Implementation& client_info, const ClientCapabilities& capabilities);
+    /// As Client::send_request().
+    nlohmann::json send_request(std::string_view method, const std::optional<nlohmann::json>& params);
+    /// As Client::send_request().
+    nlohmann::json send_request(std::string_view method, const std::optional<nlohmann::json>& params,
+                                const RequestOptions& request_options);
+    /// As Client::listen(); read the stream through Subscription::sync().
+    Subscription listen(const SubscriptionFilter& filter);
+    /// As Client::listen().
+    Subscription listen(const SubscriptionFilter& filter, const RequestOptions& request_options);
+    /// As Client::send_notification().
+    void send_notification(std::string_view method, const std::optional<nlohmann::json>& params);
+    /// As Client::close().
+    void close();
+
+    /// As Client::call_tool().
+    CallToolResult call_tool(const std::string& name, const nlohmann::json& arguments);
+    /// As Client::call_tool().
+    CallToolResult call_tool(const std::string& name, const nlohmann::json& arguments,
+                             const RequestOptions& request_options);
+    /// As Client::call_tool(), with arguments of a type that converts to JSON.
+    template <JsonSerializable Args>
+        requires(!std::same_as<Args, nlohmann::json>)
+    CallToolResult call_tool(const std::string& name, const Args& arguments) {
+        return call_tool(name, nlohmann::json(arguments));
+    }
+    /// As Client::call_tool(), with arguments of a type that converts to JSON.
+    template <JsonSerializable Args>
+        requires(!std::same_as<Args, nlohmann::json>)
+    CallToolResult call_tool(const std::string& name, const Args& arguments,
+                             const RequestOptions& request_options) {
+        return call_tool(name, nlohmann::json(arguments), request_options);
+    }
+    /// As Client::start_tool(); follow a task through TaskHandle::sync().
+    std::variant<CallToolResult, TaskHandle> start_tool(const std::string& name,
+                                                        const nlohmann::json& arguments);
+
+    /// As Client::list_tools().
+    ListToolsResult list_tools(const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::list_resources().
+    ListResourcesResult list_resources(const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::read_resource().
+    ReadResourceResult read_resource(const std::string& uri);
+    /// As Client::list_resource_templates().
+    ListResourceTemplatesResult list_resource_templates(
+        const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::list_prompts().
+    ListPromptsResult list_prompts(const std::optional<std::string>& cursor = std::nullopt);
+    /// As Client::get_prompt().
+    GetPromptResult get_prompt(
+        const std::string& name,
+        const std::optional<std::map<std::string, std::string>>& arguments = std::nullopt);
+    /// As Client::complete().
+    CompleteResult complete(const CompleteParams& params);
+    /// As Client::ping().
+    void ping();
+    /// As Client::cancel().
+    void cancel(const RequestId& request_id, const std::optional<std::string>& reason = std::nullopt);
+
+   private:
+    Client* client_;
 };
 
 }  // namespace mcp
