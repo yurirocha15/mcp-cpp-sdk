@@ -29,6 +29,16 @@ inline constexpr int g_TIMEOUT_MS = 5000;
 
 }  // namespace shutdown
 
+/// Client defaults.
+namespace client {
+
+/// How long the destructor of a Client that runs its own event loop waits for the loop to finish
+/// closing the connection, such as a launched server process exiting, before it stops the loop,
+/// in ms. Covers StdioProcessOptions' default stdin_close_wait and terminate_wait.
+inline constexpr int g_CLOSE_WAIT_MS = 5000;
+
+}  // namespace client
+
 /// JSON-RPC and MCP error codes carried in `JsonRpcError::code`.
 namespace jsonrpc {
 

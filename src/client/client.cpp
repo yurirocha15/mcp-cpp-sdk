@@ -16,6 +16,8 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -24,9 +26,11 @@
 #include <boost/system/system_error.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <exception>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -34,6 +38,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -2503,7 +2508,53 @@ struct Client::Impl {
     }
 };
 
+struct Client::OwnedLoop {
+    boost::asio::io_context io;
+    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work{io.get_executor()};
+    std::promise<void> finished;
+    std::future<void> finished_future = finished.get_future();
+    std::thread thread;
+
+    OwnedLoop() {
+        thread = std::thread([this] {
+            for (;;) {
+                try {
+                    io.run();
+                    break;
+                } catch (...) {
+                    // A handler threw: the client's own work catches its errors, so this is one of
+                    // the application's callbacks. The loop keeps running for the others.
+                }
+            }
+            finished.set_value();
+        });
+    }
+
+    OwnedLoop(const OwnedLoop&) = delete;
+    OwnedLoop& operator=(const OwnedLoop&) = delete;
+    OwnedLoop(OwnedLoop&&) = delete;
+    OwnedLoop& operator=(OwnedLoop&&) = delete;
+    ~OwnedLoop() = default;
+};
+
 Client::Client(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options) {
+    start(std::move(transport), executor, std::move(options));
+}
+
+Client::Client(const Endpoint& endpoint, ClientOptions options) : loop_(std::make_unique<OwnedLoop>()) {
+    try {
+        const Executor executor = loop_->io.get_executor();
+        start(endpoint.make_transport(executor), executor, std::move(options));
+    } catch (...) {
+        loop_->work.reset();
+        loop_->io.stop();
+        loop_->thread.join();
+        throw;
+    }
+}
+
+void Client::start(std::shared_ptr<ITransport> transport, const Executor& executor,
+                   ClientOptions options) {
     if (!transport) {
         throw std::invalid_argument("Client transport must not be null");
     }
@@ -2555,7 +2606,27 @@ Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::
     return call_tool_with(std::move(call_params), request_options);
 }
 
-Client::~Client() { close(); }
+Client::~Client() {
+    close();
+    if (!loop_) {
+        return;
+    }
+    if (loop_->thread.get_id() == std::this_thread::get_id()) {
+        // The thread cannot join itself, and the loop it would wait for is the one it runs.
+        std::fputs(
+            "mcp::Client: a client with its own event loop was destroyed on that loop's "
+            "thread\n",
+            stderr);
+        std::terminate();
+    }
+    loop_->work.reset();
+    if (loop_->finished_future.wait_for(std::chrono::milliseconds(
+            mcp::constants::client::g_CLOSE_WAIT_MS)) != std::future_status::ready) {
+        loop_->io.stop();
+    }
+    loop_->thread.join();
+    impl_.reset();
+}
 
 Task<ConnectResult> Client::connect(std::string_view name, std::string_view version) {
     Implementation info;

@@ -128,6 +128,7 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/client_credentials.cpp
     src/auth/enterprise_authorization.cpp
     src/client/client.cpp
+    src/client/endpoint.cpp
     src/detail/sealed_state.cpp
     src/client/stdio_session.cpp
     src/client/apps.cpp
@@ -415,6 +416,7 @@ if(BUILD_TESTING)
       test/auth/auth_oauth_test.cpp
       test/auth/auth_token_endpoint_auth_test.cpp
       test/client/client_core_test.cpp
+      test/client/client_endpoint_test.cpp
       test/client/client_listen_test.cpp
       test/client/client_modern_test.cpp
       test/client/client_mrtr_test.cpp

@@ -14,6 +14,10 @@
 #include <mcp/core/async.hpp>
 #include <mcp/mcp.hpp>
 
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -60,6 +64,14 @@ void add_tools(mcp::Server& server, int argc, char** argv) {
                                     std::cerr << args.value("text", std::string()) << '\n'
                                               << std::flush;
                                     co_return json{{"logged", true}};
+                                });
+    server.add_tool<json, json>("hold", "Answers after an hour", json{{"type", "object"}},
+                                [](mcp::Context&, json) -> mcp::Task<json> {
+                                    boost::asio::steady_timer timer(
+                                        co_await boost::asio::this_coro::executor,
+                                        std::chrono::hours(1));
+                                    co_await timer.async_wait(boost::asio::use_awaitable);
+                                    co_return json::object();
                                 });
     server.add_tool<json, json>("crash", "Ends the process at once", json{{"type", "object"}},
                                 [](mcp::Context&, json args) -> mcp::Task<json> {

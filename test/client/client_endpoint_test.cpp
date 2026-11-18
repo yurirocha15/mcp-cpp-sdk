@@ -1,0 +1,122 @@
+#include "mcp/auth/oauth.hpp"
+#include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
+#include "mcp/transport/http_client.hpp"
+
+#include <gtest/gtest.h>
+
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/use_future.hpp>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+#ifndef MCP_TEST_STDIO_SERVER
+#error "MCP_TEST_STDIO_SERVER must name the stdio test server executable"
+#endif
+
+namespace client_endpoint_test {
+
+using nlohmann::json;
+
+class FixedTokenAuthenticator final : public mcp::auth::Authenticator {
+   public:
+    [[nodiscard]] std::string get_access_token() const override { return "token"; }
+    mcp::Task<bool> try_refresh_token() override { co_return false; }
+};
+
+mcp::StdioProcessOptions test_server(std::vector<std::string> arguments = {"serve"}) {
+    mcp::StdioProcessOptions process;
+    process.command = MCP_TEST_STDIO_SERVER;
+    process.arguments = std::move(arguments);
+    process.stderr_mode = mcp::StderrMode::eDiscard;
+    return process;
+}
+
+TEST(ClientEndpointTest, RefusesAnEmptyCommandOrFactory) {
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio(std::vector<std::string>{})),
+                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio(mcp::StdioProcessOptions{})),
+                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::custom({})), std::invalid_argument);
+    const auto null_transport = mcp::Endpoint::custom(
+        [](const mcp::Executor&) -> std::shared_ptr<mcp::ITransport> { return nullptr; });
+    EXPECT_THROW(mcp::Client client(null_transport), std::invalid_argument);
+}
+
+TEST(ClientEndpointTest, LaunchesTheServerAndCallsATool) {
+    mcp::Client client(mcp::Endpoint::stdio(test_server({"serve", "first-argument"})));
+    const auto result = boost::asio::co_spawn(
+                            client.executor().get(),
+                            [&client]() -> boost::asio::awaitable<mcp::CallToolResult> {
+                                co_await client.connect("endpoint-test", "1.0");
+                                co_return co_await client.call_tool("args", json::object());
+                            },
+                            boost::asio::use_future)
+                            .get();
+    ASSERT_FALSE(result.isError.value_or(false));
+    ASSERT_TRUE(result.structuredContent.has_value());
+    const auto arguments = result.structuredContent->dump();
+    EXPECT_NE(arguments.find("first-argument"), std::string::npos) << arguments;
+}
+
+TEST(ClientEndpointTest, CommandVectorNamesTheProgramAndItsArguments) {
+    mcp::Client client(
+        mcp::Endpoint::stdio(std::vector<std::string>{MCP_TEST_STDIO_SERVER, "serve", "second"}));
+    const auto result = boost::asio::co_spawn(
+                            client.executor().get(),
+                            [&client]() -> boost::asio::awaitable<mcp::CallToolResult> {
+                                co_await client.connect("endpoint-test", "1.0");
+                                co_return co_await client.call_tool("args", json::object());
+                            },
+                            boost::asio::use_future)
+                            .get();
+    ASSERT_TRUE(result.structuredContent.has_value());
+    EXPECT_NE(result.structuredContent->dump().find("second"), std::string::npos);
+}
+
+TEST(ClientEndpointTest, HttpEndpointConfiguresTheTransportAndMakesTheAuthenticator) {
+    bool configured = false;
+    bool executor_given = false;
+    mcp::HttpEndpointOptions options;
+    options.configure = [&configured](mcp::HttpClientTransport& transport) {
+        transport.set_response_timeout(std::chrono::seconds(5));
+        configured = true;
+    };
+    options.authenticator = [&executor_given](const mcp::Executor& executor) {
+        executor_given = static_cast<bool>(executor);
+        return std::make_shared<FixedTokenAuthenticator>();
+    };
+    mcp::Client client(mcp::Endpoint::http("http://127.0.0.1:9/mcp", std::move(options)));
+    EXPECT_TRUE(configured);
+    EXPECT_TRUE(executor_given);
+}
+
+TEST(ClientEndpointTest, DestructionEndsACallInFlight) {
+    std::future<mcp::CallToolResult> held;
+    {
+        mcp::Client client(mcp::Endpoint::stdio(test_server()));
+        boost::asio::co_spawn(
+            client.executor().get(),
+            [&client]() -> boost::asio::awaitable<void> {
+                co_await client.connect("endpoint-test", "1.0");
+            },
+            boost::asio::use_future)
+            .get();
+        held = boost::asio::co_spawn(
+            client.executor().get(),
+            [&client]() -> boost::asio::awaitable<mcp::CallToolResult> {
+                co_return co_await client.call_tool("hold", json::object());
+            },
+            boost::asio::use_future);
+        while (client.pending_request_count() == 0) {
+            std::this_thread::yield();
+        }
+    }
+    EXPECT_THROW(static_cast<void>(held.get()), std::exception);
+}
+
+}  // namespace client_endpoint_test

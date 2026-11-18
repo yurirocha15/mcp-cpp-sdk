@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <mcp/client/endpoint.hpp>
 #include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
@@ -623,6 +624,21 @@ class MCP_API Client {
     Client(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options = {});
 
     /**
+     * @brief Construct a client of the server @p endpoint names, running its own event loop.
+     *
+     * @details The client starts a thread that runs an event loop for it, makes the endpoint's
+     * transport on that loop, and needs no executor from the application: use it through sync()
+     * or run(), or await its coroutines from run(). The destructor closes the connection, waits
+     * up to mcp::constants::client::g_CLOSE_WAIT_MS for the loop to finish (a launched server
+     * exits), and joins the thread. A Client constructed this way must not be destroyed on its
+     * own loop's thread, such as from a notification callback.
+     *
+     * @param endpoint The server: Endpoint::stdio(), Endpoint::http() or Endpoint::custom().
+     * @param options  Default timeout and protocol-validation behavior.
+     */
+    explicit Client(const Endpoint& endpoint, ClientOptions options = {});
+
+    /**
      * @brief The executor the Client was constructed with.
      *
      * @details Coroutines that use this Client can be spawned on it; get() returns it as a
@@ -985,6 +1001,13 @@ class MCP_API Client {
     Task<CallToolResult> call_tool_with(CallToolParams params);
     Task<CallToolResult> call_tool_with(CallToolParams params, const RequestOptions& request_options);
     Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(CallToolParams params);
+
+    void start(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options);
+
+    /// The event loop of a client constructed from an Endpoint; null otherwise. Declared before
+    /// impl_ so that impl_ is destroyed first.
+    struct OwnedLoop;
+    std::unique_ptr<OwnedLoop> loop_;
 
     struct Impl;
     std::shared_ptr<Impl> impl_;

@@ -8,6 +8,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
+- `mcp::Endpoint` names the server a `Client` connects to: a process it
+  launches (`Endpoint::stdio()`, from a command line or `StdioProcessOptions`),
+  a Streamable HTTP URL (`Endpoint::http()`, whose `HttpEndpointOptions`
+  configure the transport and make an authenticator), or a transport the
+  application makes (`Endpoint::custom()`). `Client(const Endpoint&)` runs its
+  own event loop on a thread of its own, so it needs no executor; its
+  destructor closes the connection, waits up to
+  `mcp::constants::client::g_CLOSE_WAIT_MS` for the loop to finish and joins
+  the thread.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around
