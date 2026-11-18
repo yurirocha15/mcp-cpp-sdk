@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <concepts>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
@@ -423,10 +424,27 @@ struct TaskOptions {
 class MCP_API Server {
    public:
     /**
+     * @brief Construct a Server named @p name at version @p version, such as
+     *        `Server server("hello", "1.0.0");`.
+     *
+     * @details The server advertises what its registrations imply: tools once a tool is
+     * registered, resources for a resource or resource template, prompts for a prompt and
+     * completions for a completion provider. capabilities() adjusts what registration cannot
+     * imply, such as list-changed notifications, resource subscriptions or logging.
+     */
+    template <typename Name, typename Version>
+        requires(std::convertible_to<const Name&, std::string_view> &&
+                 std::convertible_to<const Version&, std::string_view>)
+    Server(const Name& name, const Version& version)
+        : Server(named(name, version), ServerCapabilities{}) {}
+
+    /**
      * @brief Construct a Server.
      *
      * @param server_info Information about this server implementation.
-     * @param capabilities The capabilities this server advertises.
+     * @param capabilities The capabilities this server advertises; each registration adds the
+     *        capability of its kind when @p capabilities does not set it, as the constructor above
+     *        describes.
      */
     Server(const Implementation& server_info, const ServerCapabilities& capabilities);
 
@@ -667,8 +685,18 @@ class MCP_API Server {
      */
     void declare_extension(const std::string& id, nlohmann::json settings = nlohmann::json::object());
 
-    /// A copy of the capabilities this server advertises, including declared extensions.
-    [[nodiscard]] ServerCapabilities capabilities() const;
+    /**
+     * @brief The capabilities this server advertises: those it was constructed with, what its
+     *        registrations imply and the declared extensions.
+     *
+     * @details Change them before the server serves its first request, such as
+     * `server.capabilities().tools->listChanged = true;` after registering a tool, or
+     * `server.capabilities().logging = nlohmann::json::object();`. A registration does not
+     * replace a capability that is already set.
+     */
+    [[nodiscard]] ServerCapabilities& capabilities();
+    /// @copydoc capabilities()
+    [[nodiscard]] const ServerCapabilities& capabilities() const;
 
     /**
      * @brief Serve an extension's request method to clients of protocol revision 2026-07-28.
@@ -1207,6 +1235,9 @@ class MCP_API Server {
     /// Tears down the current session. Runs on whatever thread destroys the Server, so it is safe
     /// to call from any thread.
     void reset_session();
+
+    /// The implementation information the name-and-version constructor gives the server.
+    static Implementation named(std::string_view name, std::string_view version);
 
     struct Impl;
     explicit Server(std::shared_ptr<Impl> impl);

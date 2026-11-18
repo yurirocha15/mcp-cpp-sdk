@@ -23,15 +23,14 @@ Serving skills
 --------------
 
 ``mcp::skills::SkillsExtension`` declares the extension on a server and serves
-the skills added to it. The server needs the ``resources`` capability:
+the skills added to it as resources, declaring the ``resources`` capability when
+the server has not:
 
 .. code-block:: cpp
 
    #include <mcp/server/skills.hpp>
 
-   mcp::ServerCapabilities capabilities;
-   capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
-   mcp::Server server({"docs", "1.0.0"}, capabilities);
+   mcp::Server server("docs", "1.0.0");
 
    mcp::skills::SkillsExtension skills(server);
 

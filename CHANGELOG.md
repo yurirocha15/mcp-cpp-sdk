@@ -46,6 +46,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   again wait for it, a legacy session sends its `initialize` request to the
   new process again, and `subscriptions/listen` streams end. Past the last
   start the policy allows, the client closes as it does without one.
+- `Server(name, version)` constructs a server from its name and version, such
+  as `Server server("hello", "1.0.0");`, advertising the capabilities its
+  registrations imply.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around
@@ -597,6 +600,14 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `elicitation/create` is registered, as it already declared roots and as
   every request of a modern session does. Capabilities given to `connect()`
   are kept as they are.
+- A server advertises the capability each registration implies when its
+  capabilities do not set it: tools for a tool, resources for a resource or
+  resource template, prompts for a prompt and completions for a completion
+  provider. `Server::capabilities()` returns a reference, so that what
+  registration cannot imply, such as list-changed notifications, resource
+  subscriptions or logging, is set on it before the server serves.
+  `SkillsExtension` declares the resources capability on a server that lacks
+  it instead of refusing that server.
 - `Server::run_http()` serves any number of clients of protocol revision
   2025-11-25 or earlier, each in a session of its own, where it served one at
   a time: it listens through a `StreamableHttpSessionManager` whose sessions

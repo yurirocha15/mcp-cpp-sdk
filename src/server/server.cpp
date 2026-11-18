@@ -1191,6 +1191,14 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::vector<std::weak_ptr<Impl>> members;  // guarded by members_mutex
     };
 
+    /// A resource or resource template implies the resources capability; one the application set
+    /// stays as it is.
+    void imply_resources() {
+        if (!capabilities.resources) {
+            capabilities.resources = ServerCapabilities::ResourcesCapability{};
+        }
+    }
+
     /// The servers sharing this one's registry that are still alive, this one included.
     [[nodiscard]] std::vector<std::shared_ptr<Impl>> registry_members() {
         std::vector<std::shared_ptr<Impl>> alive;
@@ -1623,6 +1631,9 @@ void Server::Impl::add_tool_registration(Tool&& tool, std::string name, Compiled
                                          TypeErasedHandler handler, detail::ToolResultMode result_mode,
                                          SyncTypeErasedHandler sync_handler) {
     forget_tools_text();
+    if (!capabilities.tools) {
+        capabilities.tools = ServerCapabilities::ToolsCapability{};
+    }
     tool.inputSchema = nullptr;
     tool.outputSchema.reset();
     tools.push_back(ListedTool{std::move(tool), schemas.input, schemas.output});
@@ -1724,6 +1735,7 @@ void Server::register_resource(const Resource& resource, TypeErasedHandler handl
     }
     impl_->resources.push_back(resource);
     impl_->resource_handlers.emplace(std::move(uri), std::move(handler));
+    impl_->imply_resources();
 }
 
 void Server::register_prompt(const Prompt& prompt, TypeErasedHandler handler) {
@@ -1733,6 +1745,9 @@ void Server::register_prompt(const Prompt& prompt, TypeErasedHandler handler) {
     }
     impl_->prompts.push_back(prompt);
     impl_->prompt_handlers.emplace(std::move(name), std::move(handler));
+    if (!impl_->capabilities.prompts) {
+        impl_->capabilities.prompts = ServerCapabilities::PromptsCapability{};
+    }
 }
 
 void Server::add_resource_template(const ResourceTemplate& tmpl) {
@@ -1752,11 +1767,15 @@ void Server::register_resource_template(const ResourceTemplate& tmpl, TypeErased
 
     impl_->resource_templates.push_back(Impl::ResourceTemplateRegistration{
         tmpl, std::move(pattern.source), std::move(pattern.matcher), std::move(handler)});
+    impl_->imply_resources();
 }
 
 void Server::use(Middleware mw) { impl_->middlewares.push_back(std::move(mw)); }
 
 void Server::set_completion_provider(CompletionHandler handler) {
+    if (handler && !impl_->capabilities.completions) {
+        impl_->capabilities.completions = nlohmann::json::object();
+    }
     impl_->completion_handler = std::move(handler);
 }
 
@@ -1810,7 +1829,16 @@ void Server::declare_extension(const std::string& id, nlohmann::json settings) {
     mcp::declare_extension(impl_->capabilities, id, std::move(settings));
 }
 
-ServerCapabilities Server::capabilities() const { return impl_->capabilities; }
+ServerCapabilities& Server::capabilities() { return impl_->capabilities; }
+
+const ServerCapabilities& Server::capabilities() const { return impl_->capabilities; }
+
+Implementation Server::named(std::string_view name, std::string_view version) {
+    Implementation info;
+    info.name = std::string(name);
+    info.version = std::string(version);
+    return info;
+}
 
 void Server::add_extension_method(const std::string& method, TypeErasedHandler handler) {
     if (method.empty() || !handler) {
