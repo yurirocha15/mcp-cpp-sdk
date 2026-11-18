@@ -74,9 +74,10 @@ revision, as before. All 2026-07-28 requests are answered by one shared
 the factory the first time it is needed. ``modern_server()`` returns it, and
 builds it if no request has yet. Because every 2026-07-28 client sees the same
 tools, resources and prompts, they must not depend on the connection.
-``Server::run_http()`` serves through a manager with its default settings: the
-server itself answers 2026-07-28 requests, and each session gets a server that
-shares its tools, resources, prompts, handlers and settings.
+``Server::run_http()`` serves through a manager, which keeps its default
+settings unless the callback ``run_http()`` takes changes them before it
+listens: the server itself answers 2026-07-28 requests, and each session gets a
+server that shares its tools, resources, prompts, handlers and settings.
 
 Configure that server before ``listen()``, for example its cache hints:
 

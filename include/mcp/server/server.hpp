@@ -38,6 +38,13 @@
 
 namespace mcp {
 
+class StreamableHttpSessionManager;
+class SyncServer;
+
+namespace detail {
+class RunControl;
+}  // namespace detail
+
 /// @brief Type-erased handler: takes a Context and JSON params, returns JSON result.
 using TypeErasedHandler = std::function<Task<nlohmann::json>(Context&, const nlohmann::json&)>;
 
@@ -1203,14 +1210,53 @@ class MCP_API Server {
      * an SSE stream of the notifications and then the response. `subscriptions/listen` is served
      * as a stream.
      *
-     * The endpoint keeps its default settings, so a request carrying an Origin
-     * header is answered with 403. To accept browser clients, construct a
-     * StreamableHttpSessionManager, call set_allowed_origins() on it, and listen() on it.
+     * The server listens through a StreamableHttpSessionManager, which @p configure, when given,
+     * receives before it listens: its setters choose the allowed origins, bearer token validation,
+     * protected resource metadata, limits and stream options, such as
+     * `server.run_http("127.0.0.1", 8080, [](mcp::StreamableHttpSessionManager& http) {
+     * http.set_allowed_origins({"https://app.example"}); });`. Without @p configure the endpoint
+     * keeps its default settings, so a request carrying an Origin header is answered with 403.
+     *
+     * stop() ends the call as SIGINT does, and bound_port() gives the port it listens on.
      *
      * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
-     * @param port  TCP port to listen on.
+     * @param port  TCP port to listen on, or 0 for one the system chooses.
+     * @param configure Called with the session manager before it listens; an exception it throws
+     *        ends run_http() before anything is served.
      */
-    void run_http(const std::string& host, uint16_t port);
+    void run_http(const std::string& host, uint16_t port,
+                  const std::function<void(StreamableHttpSessionManager&)>& configure = {});
+
+    /**
+     * @brief Ends the runs of this server in progress: run_stdio() and run_http() return as they
+     *        do on SIGINT, and run() closes its transport and completes as it does when the
+     *        transport closes.
+     *
+     * @details May be called from any thread, including from a handler. As on SIGINT, the transport
+     * closes at once, so a request still being served is not answered, and run_stdio() and
+     * run_http() return once the handlers still running have finished, or after
+     * mcp::constants::shutdown::g_TIMEOUT_MS. Does nothing when the server is not running: a run
+     * that starts after the call is not ended by it.
+     */
+    void stop();
+
+    /**
+     * @brief The TCP port run_http() listens on, which is the one the system chose when it was
+     *        given port 0.
+     *
+     * @return The port while run_http() runs and from before the first connection is accepted,
+     *         and 0 before and after; may be called from any thread.
+     */
+    [[nodiscard]] std::uint16_t bound_port() const;
+
+    /**
+     * @brief A view of this server whose members block the calling thread until the matching
+     *        coroutine finishes, for threads other than the event loop of run_stdio() and
+     *        run_http(), such as `server.sync().notify_resource_updated("file:///notes.txt");`.
+     *
+     * @details See SyncServer.
+     */
+    [[nodiscard]] SyncServer sync();
 
     /**
      * @brief Dispatch a parsed JSON-RPC message to the appropriate handler.
@@ -1422,9 +1468,42 @@ class MCP_API Server {
     /// and settings; run_http() serves each legacy session with one.
     [[nodiscard]] std::unique_ptr<Server> session_server() const;
 
+    friend class SyncServer;
+
+    /// The runs of this server in progress, which the run forms register with.
+    [[nodiscard]] std::shared_ptr<detail::RunControl> run_control() const;
+
     /// Shared rather than owned outright: work already in flight when this Server is destroyed
     /// keeps the implementation alive until it finishes, so it never runs against freed state.
     std::shared_ptr<Impl> impl_;
+};
+
+/**
+ * @brief Blocking twins of the Server's notify_ coroutines, from Server::sync().
+ *
+ * @details Each member runs the coroutine on the event loop of run_stdio() or run_http() and
+ * blocks the calling thread until it finishes, rethrowing what it throws. When the server is not
+ * running there is no client to notify, and the member returns at once; a run that ends before the
+ * notification is sent ends the wait as well.
+ * @throws std::logic_error From each member when called on that event loop's thread, such as from a
+ *         synchronous handler without a handler executor, where waiting would never end; and when
+ *         the server runs only through Server::run(), whose coroutines are awaited instead.
+ */
+class MCP_API SyncServer {
+   public:
+    explicit SyncServer(Server& server);
+
+    /// Blocking Server::notify_tools_list_changed().
+    void notify_tools_list_changed();
+    /// Blocking Server::notify_resources_list_changed().
+    void notify_resources_list_changed();
+    /// Blocking Server::notify_prompts_list_changed().
+    void notify_prompts_list_changed();
+    /// Blocking Server::notify_resource_updated().
+    void notify_resource_updated(const std::string& uri);
+
+   private:
+    Server* server_;
 };
 
 }  // namespace mcp

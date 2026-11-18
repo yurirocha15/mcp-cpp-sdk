@@ -9,6 +9,7 @@
 #include "../detail/spawn_awaitable.hpp"
 #include "../detail/strand_executor.hpp"
 #include "mrtr.hpp"
+#include "run_control.hpp"
 #include "task_run.hpp"
 
 #include <mcp/auth/oauth.hpp>
@@ -971,6 +972,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::string& server_info_meta_text = registry->server_info_meta_text;
     std::once_flag& server_info_meta_once = registry->server_info_meta_once;
     const std::string& server_info_meta() const;
+    /// The runs of this server in progress; each server has its own.
+    std::shared_ptr<detail::RunControl> run_control = std::make_shared<detail::RunControl>();
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     // The transport's terminated_session_count() when the current session was initialized.
     std::atomic<std::uint64_t> terminated_sessions_at_initialize{0};
@@ -1525,6 +1528,36 @@ Server::Server(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
 std::unique_ptr<Server> Server::session_server() const {
     // The constructor is private, which std::make_unique cannot reach.
     return std::unique_ptr<Server>(new Server(std::make_shared<Impl>(impl_->registry)));
+}
+
+std::shared_ptr<detail::RunControl> Server::run_control() const { return impl_->run_control; }
+
+void Server::stop() { impl_->run_control->stop_all(); }
+
+std::uint16_t Server::bound_port() const { return impl_->run_control->port(); }
+
+SyncServer Server::sync() { return SyncServer(*this); }
+
+SyncServer::SyncServer(Server& server) : server_(&server) {}
+
+void SyncServer::notify_tools_list_changed() {
+    server_->run_control()->run_blocking(
+        [server = server_] { return server->notify_tools_list_changed(); });
+}
+
+void SyncServer::notify_resources_list_changed() {
+    server_->run_control()->run_blocking(
+        [server = server_] { return server->notify_resources_list_changed(); });
+}
+
+void SyncServer::notify_prompts_list_changed() {
+    server_->run_control()->run_blocking(
+        [server = server_] { return server->notify_prompts_list_changed(); });
+}
+
+void SyncServer::notify_resource_updated(const std::string& uri) {
+    server_->run_control()->run_blocking(
+        [server = server_, uri] { return server->notify_resource_updated(uri); });
 }
 
 Server::~Server() {
@@ -2246,6 +2279,10 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
         throw std::invalid_argument("Server transport must not be null");
     }
     impl->serving.store(true, std::memory_order_release);
+
+    // stop() closes the transport on the run's executor, which ends the read loop below.
+    const auto registration = impl->run_control->add(
+        [transport, executor] { boost::asio::post(executor, [transport] { transport->close(); }); });
 
     auto session = std::make_shared<Session>();
     session->transport = std::move(transport);

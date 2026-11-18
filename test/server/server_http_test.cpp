@@ -2,6 +2,7 @@
 #include "mcp/core/async.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
+#include "mcp/transport/http_session_manager.hpp"
 
 #include <gtest/gtest.h>
 
@@ -117,6 +118,60 @@ class ServerThreadGuard {
 
    private:
     std::thread& thread_;
+};
+
+/// The port @p server listens on once run_http() has bound it; the per-test timeout ends a test
+/// whose server never does.
+uint16_t wait_for_port(const mcp::Server& server) {
+    while (server.bound_port() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return server.bound_port();
+}
+
+/// The HTTP status of an initialize request sent with the Origin header @p origin.
+unsigned status_with_origin(uint16_t port, const std::string& origin) {
+    asio::io_context client_ctx;
+    beast::tcp_stream stream(client_ctx);
+    connect_when_listening(stream, port);
+    http::request<http::string_body> req{http::verb::post, "/mcp", 11};
+    req.set(http::field::host, "127.0.0.1");
+    req.set(http::field::content_type, "application/json");
+    req.set(http::field::origin, origin);
+    req.body() = make_initialize_request("1").dump();
+    req.prepare_payload();
+    http::write(stream, req);
+    beast::flat_buffer buf;
+    http::response<http::string_body> resp;
+    http::read(stream, buf, resp);
+    beast::error_code ec;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+    return resp.result_int();
+}
+
+// Stops the server with stop() and joins its thread when a test ends before its own join. stop()
+// does nothing until the run has started, so it is repeated until the thread has finished.
+class StopGuard {
+   public:
+    StopGuard(mcp::Server& server, std::thread& thread, const std::atomic<bool>& finished)
+        : server_(server), thread_(thread), finished_(finished) {}
+    StopGuard(const StopGuard&) = delete;
+    StopGuard& operator=(const StopGuard&) = delete;
+    ~StopGuard() {
+        if (!thread_.joinable()) {
+            return;
+        }
+        while (!finished_.load()) {
+            server_.stop();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        thread_.join();
+    }
+
+   private:
+    mcp::Server& server_;
+    std::thread& thread_;
+    const std::atomic<bool>& finished_;
 };
 
 }  // namespace
@@ -288,6 +343,86 @@ TEST_F(ServerHttpTest, RunHttpNotifiesEveryLegacySession) {
     first.close();
     second.close();
     mcp::detail::trigger_shutdown_signal();
+    server_thread.join();
+}
+
+// run_http() on port 0 reports the port the system chose, applies configure before it listens, and
+// returns on stop().
+TEST_F(ServerHttpTest, ConfigureAndStopRunHttpOnTheBoundPort) {
+    EXPECT_EQ(server_->bound_port(), 0);
+    std::atomic<bool> configured{false};
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0, [&configured](mcp::StreamableHttpSessionManager& http) {
+            http.set_allowed_origins({"https://app.example"});
+            configured = true;
+        });
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+
+    const auto port = wait_for_port(*server_);
+    EXPECT_TRUE(configured.load());
+    EXPECT_EQ(status_with_origin(port, "https://app.example"), 200U);
+    EXPECT_EQ(status_with_origin(port, "https://other.example"), 403U);
+
+    server_->stop();
+    server_thread.join();
+    EXPECT_EQ(server_->bound_port(), 0);
+}
+
+TEST_F(ServerHttpTest, ConfigureThatThrowsEndsRunHttpBeforeItListens) {
+    EXPECT_THROW(server_->run_http("127.0.0.1", 0,
+                                   [](mcp::StreamableHttpSessionManager&) {
+                                       throw std::runtime_error("bad settings");
+                                   }),
+                 std::runtime_error);
+    EXPECT_EQ(server_->bound_port(), 0);
+}
+
+// server.sync() notifies every session from a thread of the application, and refuses to wait on
+// the event loop's own thread, where a synchronous handler runs.
+TEST_F(ServerHttpTest, SyncNotifiesTheSessionsOfRunHttpFromAnotherThread) {
+    server_->add_tool("notify_from_handler", "Notifies from its handler",
+                      nlohmann::json{{"type", "object"}},
+                      [this](const nlohmann::json&) -> nlohmann::json {
+                          try {
+                              server_->sync().notify_tools_list_changed();
+                          } catch (const std::logic_error&) {
+                              return "refused";
+                          }
+                          return "sent";
+                      });
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0);
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto port = wait_for_port(*server_);
+
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(mcp::Endpoint::http("http://127.0.0.1:" + std::to_string(port) + "/mcp"),
+                       options);
+    std::atomic<int> seen{0};
+    client.on_notification("notifications/tools/list_changed",
+                           [&seen](const nlohmann::json&) { ++seen; });
+    client.sync().connect("sync-notify", "1.0");
+
+    EXPECT_EQ(
+        mcp::result_text(client.sync().call_tool("notify_from_handler", nlohmann::json::object())),
+        "refused");
+    // The client opens the stream that carries such notifications after connecting, so the
+    // notification is sent until it has one.
+    while (seen.load() == 0) {
+        server_->sync().notify_tools_list_changed();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_GT(seen.load(), 0);
+
+    client.close();
+    server_->stop();
     server_thread.join();
 }
 

@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -127,6 +128,20 @@ void add_tools(mcp::Server& server, int argc, char** argv) {
             }
             co_return json{{"steps", steps}};
         });
+    server.add_tool("stop", "Stops the server", json{{"type", "object"}},
+                    [&server](const json&) -> json {
+                        server.stop();
+                        return "stopping";
+                    });
+    server.add_tool("notify_from_handler", "Sends a blocking notification from its handler",
+                    json{{"type", "object"}}, [&server](const json&) -> json {
+                        try {
+                            server.sync().notify_tools_list_changed();
+                        } catch (const std::logic_error&) {
+                            return "refused";
+                        }
+                        return "sent";
+                    });
     server.add_tool<json, json>("crash", "Ends the process at once", json{{"type", "object"}},
                                 [](mcp::Context&, json args) -> mcp::Task<json> {
                                     std::cout.flush();

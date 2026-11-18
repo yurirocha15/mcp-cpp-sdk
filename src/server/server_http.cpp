@@ -1,3 +1,5 @@
+#include "run_control.hpp"
+
 #include <mcp/core/async.hpp>
 #include <mcp/core/signal.hpp>
 #include <mcp/server/server.hpp>
@@ -5,18 +7,21 @@
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio/steady_timer.hpp>
 
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
 
 namespace mcp {
 
-void Server::run_http(const std::string& host, uint16_t port) {
+void Server::run_http(const std::string& host, uint16_t port,
+                      const std::function<void(StreamableHttpSessionManager&)>& configure) {
     boost::asio::io_context io_ctx;
     const Executor executor(io_ctx.get_executor());
 
@@ -26,15 +31,28 @@ void Server::run_http(const std::string& host, uint16_t port) {
     auto manager = std::make_shared<StreamableHttpSessionManager>(
         executor, host, port, [this](const Executor&) { return session_server(); });
     manager->set_modern_server(std::shared_ptr<Server>(std::shared_ptr<Server>(), this));
+    if (configure) {
+        configure(*manager);
+    }
 
+    // SIGINT, SIGTERM and stop() end the run the same way, once.
     std::shared_ptr<boost::asio::steady_timer> watchdog;
+    const auto shut_down = [manager, &io_ctx, &watchdog] {
+        if (!watchdog) {
+            watchdog = graceful_shutdown(io_ctx, manager);
+        }
+    };
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([manager, &io_ctx, &watchdog](const boost::system::error_code& ec, int) {
+    signals.async_wait([&shut_down](const boost::system::error_code& ec, int) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        watchdog = graceful_shutdown(io_ctx, manager);
+        shut_down();
     });
+    const auto control = run_control();
+    const auto registration =
+        control->add([&io_ctx, shut_down] { boost::asio::post(io_ctx, shut_down); }, executor.get());
+    const detail::RunControl::BoundPort bound(*control, manager->port());
 
     std::exception_ptr ep;
     boost::asio::co_spawn(io_ctx, manager->listen(), [&](std::exception_ptr e) {

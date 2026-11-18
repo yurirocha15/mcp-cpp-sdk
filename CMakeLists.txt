@@ -135,6 +135,7 @@ set(MCP_CPP_SDK_SOURCES
     src/client/apps.cpp
     src/client/skills.cpp
     src/server/server_stdio.cpp
+    src/server/run_control.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
     src/server/apps.cpp
@@ -464,6 +465,7 @@ if(BUILD_TESTING)
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
       test/server/server_simple_registration_test.cpp
+      test/server/server_run_control_test.cpp
       test/transport/transport_stdio_test.cpp
       test/transport/transport_stdio_client_test.cpp
       test/transport/transport_ws_test.cpp

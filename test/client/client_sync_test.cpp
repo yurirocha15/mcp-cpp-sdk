@@ -333,4 +333,32 @@ TEST(ClientSyncTest, EveryCoroutineMemberHasABlockingTwin) {
     }
 }
 
+// A handler of a server that runs run_stdio() cannot wait for a notification on the event loop it
+// runs on, and stop() from a handler ends run_stdio(), and with it the server process.
+TEST(ClientSyncTest, AStdioServerRefusesABlockingNotifyFromItsHandlerAndStopsFromOne) {
+    mcp::Client client(test_server());
+    static_cast<void>(client.sync().connect("sync-test", "1.0"));
+    EXPECT_EQ(mcp::result_text(client.sync().call_tool("notify_from_handler", json::object())),
+              "refused");
+
+    try {
+        static_cast<void>(client.sync().call_tool("stop", json::object()));
+    } catch (const std::exception&) {
+        // The transport may close before the answer is written.
+    }
+    // The server process has ended: the next request fails with the connection, not by timing out.
+    bool failed = false;
+    bool timed_out = false;
+    try {
+        static_cast<void>(client.sync().list_tools());
+    } catch (const mcp::McpError& error) {
+        failed = true;
+        timed_out = error.code() == mcp::constants::jsonrpc::g_REQUEST_TIMEOUT;
+    } catch (const std::exception&) {
+        failed = true;
+    }
+    EXPECT_TRUE(failed);
+    EXPECT_FALSE(timed_out);
+}
+
 }  // namespace client_sync_test

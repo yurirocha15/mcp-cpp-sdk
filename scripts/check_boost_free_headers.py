@@ -24,7 +24,6 @@ BOOST_HEADERS = frozenset({
     "mcp/detail/serialized_transport_writer.hpp",
     "mcp/detail/signal.hpp",
     "mcp/transport/http_beast.hpp",
-    "mcp/transport/http_session_manager.hpp",
     "mcp/transport/websocket.hpp",
 })
 

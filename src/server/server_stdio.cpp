@@ -1,3 +1,5 @@
+#include "run_control.hpp"
+
 #include <mcp/core/async.hpp>
 #include <mcp/core/signal.hpp>
 #include <mcp/server/server.hpp>
@@ -5,6 +7,7 @@
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/signal_set.hpp>
 #include <boost/asio/steady_timer.hpp>
 
@@ -23,14 +26,22 @@ void Server::run_stdio(std::istream& input, std::ostream& output) {
 
     auto transport = std::make_shared<StdioTransport>(executor, input, output);
 
+    // SIGINT, SIGTERM and stop() end the run the same way, once.
     std::shared_ptr<boost::asio::steady_timer> watchdog;
+    const auto shut_down = [transport, &io_ctx, &watchdog] {
+        if (!watchdog) {
+            watchdog = graceful_shutdown(io_ctx, transport);
+        }
+    };
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
-    signals.async_wait([transport, &io_ctx, &watchdog](const boost::system::error_code& ec, int) {
+    signals.async_wait([&shut_down](const boost::system::error_code& ec, int) {
         if (ec == boost::asio::error::operation_aborted) {
             return;
         }
-        watchdog = graceful_shutdown(io_ctx, transport);
+        shut_down();
     });
+    const auto registration =
+        run_control()->add([&io_ctx, shut_down] { boost::asio::post(io_ctx, shut_down); }, executor);
 
     std::exception_ptr ep;
     boost::asio::co_spawn(

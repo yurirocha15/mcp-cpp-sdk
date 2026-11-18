@@ -253,12 +253,11 @@ worrying about the underlying networking boilerplate, the SDK provides `run_http
 
 ``Server::run_http()`` owns its ``StreamableHttpSessionManager`` internally,
 which gives each client of protocol revision 2025-11-25 or earlier a session of
-its own, and does not currently expose Origin allowlist or bearer-token
-validator configuration. Use
-it only on a suitable trusted boundary, such as the loopback example below. For
-a configurable deployment, construct ``HttpServerTransport`` or
-``StreamableHttpSessionManager`` directly, apply the security settings, and
-then start the listener.
+its own. Its optional third argument is a callback that receives the manager
+before it listens, where the Origin allowlist, bearer-token validation and the
+other manager settings are set. Without one, the manager keeps its default
+settings: use it that way only on a suitable trusted boundary, such as the
+loopback example below.
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp

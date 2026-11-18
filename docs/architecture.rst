@@ -322,8 +322,9 @@ synchronization.
 
 Complete server registrations before starting a session. Configure Origin and
 bearer-token setters directly on ``HttpServerTransport`` or
-``StreamableHttpSessionManager`` before ``listen()`` or ``run()``;
-``Server::run_http()`` does not expose those transport settings. The token store
+``StreamableHttpSessionManager`` before ``listen()`` or ``run()``, or, with
+``Server::run_http()``, in the callback it passes its manager to before it
+listens. The token store
 is independently synchronized, but that does not make every OAuth wrapper
 operation safe for arbitrary concurrent calls.
 

@@ -16,6 +16,7 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
+#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -295,7 +296,7 @@ struct StreamableHttpSessionManager::Impl {
     boost::asio::ip::tcp::acceptor acceptor;
 
     StreamableHttpSessionManager::ServerFactory factory;
-    StreamableHttpSessionManager::CustomRequestHandler custom_handler;
+    CustomRequestHandler custom_handler;
     std::size_t event_store_capacity;
     std::shared_ptr<std::atomic<bool>> json_only_mode_ = std::make_shared<std::atomic<bool>>(false);
     bool stateless_json_mode_{false};
@@ -378,6 +379,12 @@ struct StreamableHttpSessionManager::Impl {
         if (ec) {
             throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
         }
+
+        const auto bound = acceptor.local_endpoint(ec);
+        if (ec) {
+            throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+        }
+        port = bound.port();
     }
 
     void ensure_configurable() const {
@@ -1824,11 +1831,24 @@ StreamableHttpSessionManager::~StreamableHttpSessionManager() {
     }
 }
 
-void StreamableHttpSessionManager::set_custom_request_handler(CustomRequestHandler handler) {
-    std::lock_guard lock(impl_->configuration_mutex_);
-    impl_->ensure_configurable();
-    impl_->custom_handler = std::move(handler);
+namespace detail {
+
+struct CustomRouteAccess {
+    static void set(StreamableHttpSessionManager& manager, CustomRequestHandler handler) {
+        auto& impl = *manager.impl_;
+        std::lock_guard lock(impl.configuration_mutex_);
+        impl.ensure_configurable();
+        impl.custom_handler = std::move(handler);
+    }
+};
+
+}  // namespace detail
+
+void set_custom_request_handler(StreamableHttpSessionManager& manager, CustomRequestHandler handler) {
+    detail::CustomRouteAccess::set(manager, std::move(handler));
 }
+
+unsigned short StreamableHttpSessionManager::port() const { return impl_->port; }
 
 void StreamableHttpSessionManager::set_allowed_origins(std::vector<std::string> origins) {
     std::lock_guard lock(impl_->configuration_mutex_);

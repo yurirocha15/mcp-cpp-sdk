@@ -6,9 +6,7 @@
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/beast/http.hpp>
 #include <mcp/core/executor.hpp>
-#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_types.hpp>
 
 #include <chrono>
@@ -21,6 +19,12 @@
 #include <vector>
 
 namespace mcp {
+
+namespace detail {
+/// Gives set_custom_request_handler(), declared with the Beast types in
+/// <mcp/transport/http_beast.hpp>, its way into the manager.
+struct CustomRouteAccess;
+}  // namespace detail
 
 /** @brief What a StreamableHttpSessionManager holds for clients it has not heard from. */
 struct SessionLimits {
@@ -84,10 +88,6 @@ class MCP_API StreamableHttpSessionManager {
     /// Callback that creates a configured Server instance for a new session.
     using ServerFactory = std::function<std::unique_ptr<Server>(const Executor&)>;
 
-    /// Optional callback for handling non-MCP HTTP requests (e.g., health checks).
-    /// Return std::nullopt to let the session manager handle the request normally.
-    using CustomRequestHandler = std::function<std::optional<StringResponse>(const StringRequest&)>;
-
     /**
      * @brief Construct a multi-session HTTP endpoint.
      *
@@ -109,14 +109,10 @@ class MCP_API StreamableHttpSessionManager {
     StreamableHttpSessionManager& operator=(StreamableHttpSessionManager&&) = delete;
 
     /**
-     * @brief Set a custom request handler for non-MCP routes (e.g., health checks).
-     *
-     * @param handler A function that receives the HTTP request and optionally returns
-     *                a response. If it returns std::nullopt, the request is handled
-     *                as MCP protocol.
-     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     * @brief The local port the manager listens on: the one the constructor was given, or the one
+     *        the system chose when it was given 0.
      */
-    void set_custom_request_handler(CustomRequestHandler handler);
+    [[nodiscard]] unsigned short port() const;
 
     /**
      * @brief Replace the allowlist used for requests carrying an Origin header.
@@ -404,6 +400,8 @@ class MCP_API StreamableHttpSessionManager {
     Task<void> listen();
 
    private:
+    friend struct detail::CustomRouteAccess;
+
     struct Impl;
     static Task<void> listen_impl(std::shared_ptr<Impl> impl);
     std::shared_ptr<Impl> impl_;

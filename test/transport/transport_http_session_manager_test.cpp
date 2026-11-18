@@ -5,6 +5,7 @@
 #include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/transport/http_beast.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -706,8 +707,8 @@ TEST_F(SessionManagerTest, SecurityChecksRunBeforeCustomHttpHandlers) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
-    manager.set_custom_request_handler(
-        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+    mcp::set_custom_request_handler(
+        manager, [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
             if (request.target() != "/health") {
                 return std::nullopt;
             }
@@ -1210,17 +1211,19 @@ TEST_F(SessionManagerTest, CustomRequestHandler) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    manager.set_custom_request_handler([](const http::request<http::string_body>& request)
-                                           -> std::optional<http::response<http::string_body>> {
-        if (request.target() == "/health") {
-            http::response<http::string_body> response{http::status::ok, request.version()};
-            response.set(http::field::content_type, "application/json");
-            response.body() = R"({"status":"healthy"})";
-            response.prepare_payload();
-            return response;
-        }
-        return std::nullopt;
-    });
+    mcp::set_custom_request_handler(manager,
+                                    [](const http::request<http::string_body>& request)
+                                        -> std::optional<http::response<http::string_body>> {
+                                        if (request.target() == "/health") {
+                                            http::response<http::string_body> response{
+                                                http::status::ok, request.version()};
+                                            response.set(http::field::content_type, "application/json");
+                                            response.body() = R"({"status":"healthy"})";
+                                            response.prepare_payload();
+                                            return response;
+                                        }
+                                        return std::nullopt;
+                                    });
 
     mcp_test::spawn_detached(io_ctx_, manager.listen());
 
@@ -1722,19 +1725,21 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
             factory_calls.fetch_add(1, std::memory_order_relaxed);
             return echo_factory(executor);
         });
-    manager.set_custom_request_handler([&custom_handler_calls](const mcp::StringRequest& request)
-                                           -> std::optional<mcp::StringResponse> {
-        custom_handler_calls.fetch_add(1, std::memory_order_relaxed);
-        if (request.target() != "/health") {
-            return std::nullopt;
-        }
-        mcp::StringResponse response{http::status::ok, request.version()};
-        response.set(http::field::content_type, "application/json");
-        response.keep_alive(request.keep_alive());
-        response.body() = R"({"status":"ok"})";
-        response.prepare_payload();
-        return response;
-    });
+    mcp::set_custom_request_handler(
+        manager,
+        [&custom_handler_calls](
+            const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+            custom_handler_calls.fetch_add(1, std::memory_order_relaxed);
+            if (request.target() != "/health") {
+                return std::nullopt;
+            }
+            mcp::StringResponse response{http::status::ok, request.version()};
+            response.set(http::field::content_type, "application/json");
+            response.keep_alive(request.keep_alive());
+            response.body() = R"({"status":"ok"})";
+            response.prepare_payload();
+            return response;
+        });
 
     auto client = std::make_shared<beast::tcp_stream>(io_ctx_.get_executor());
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
@@ -1910,7 +1915,7 @@ TEST_F(SessionManagerTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     auto listener = manager.listen();
 
     EXPECT_NO_THROW(manager.set_json_only(true));
-    EXPECT_THROW(manager.set_custom_request_handler({}), std::logic_error);
+    EXPECT_THROW(mcp::set_custom_request_handler(manager, {}), std::logic_error);
     EXPECT_THROW(manager.set_allowed_origins({"https://trusted.example"}), std::logic_error);
     EXPECT_THROW(manager.set_allow_all_origins(true), std::logic_error);
     EXPECT_THROW(manager.set_bearer_token_validator({}), std::logic_error);
@@ -2412,8 +2417,8 @@ TEST_F(SessionManagerTest, MetadataRouteIsServedAheadOfTheCustomRequestHandler) 
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
-    manager.set_custom_request_handler(
-        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+    mcp::set_custom_request_handler(
+        manager, [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
             mcp::StringResponse response{http::status::ok, request.version()};
             response.body() = "from custom handler";
             response.prepare_payload();
@@ -2445,8 +2450,8 @@ TEST_F(SessionManagerTest, UnauthenticatedPathsBypassTheBearerCheck) {
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
     manager.set_unauthenticated_paths({"/health"});
-    manager.set_custom_request_handler(
-        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+    mcp::set_custom_request_handler(
+        manager, [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
             const auto target = request.target();
             if (mcp::http_request_path({target.data(), target.size()}) != "/health") {
                 return std::nullopt;

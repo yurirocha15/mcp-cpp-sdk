@@ -1,6 +1,7 @@
 // Compiled on its own, without <mcp/core/async.hpp>: Task is only declared here. Registering
 // synchronous handlers of every kind through <mcp/mcp.hpp> must still compile.
 #include <mcp/mcp.hpp>
+#include <mcp/transport/http_session_manager.hpp>
 
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -97,6 +98,26 @@ std::string first_text(const mcp::CallToolResult& result) { return mcp::result_t
 void serve(mcp::Server& server) {
     register_handlers(server);
     server.run_stdio();
+}
+
+void serve_http(mcp::Server& server) {
+    register_handlers(server);
+    server.run_http("127.0.0.1", 0, [](mcp::StreamableHttpSessionManager& http) {
+        http.set_allowed_origins({"https://app.example"});
+    });
+}
+
+void control(mcp::Server& server) {
+    server.sync().notify_resource_updated("notes://motd");
+    if (server.bound_port() != 0) {
+        server.stop();
+    }
+}
+
+void run_with_handler_executor(mcp::Server& server) {
+    mcp::Runtime runtime;
+    server.set_handler_executor(runtime.executor());
+    runtime.run(2);
 }
 
 }  // namespace simple_server_tu

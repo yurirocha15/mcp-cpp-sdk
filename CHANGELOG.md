@@ -65,6 +65,22 @@ Versioning; a `0.x` version is a stable release unless its version has an
   coroutine as well, and a `Resource` or `Prompt` definition in place of the
   name and description.
 - `mcp::result_text()` joins the text blocks of a `CallToolResult`.
+- `Server::run_http()` takes an optional callback that receives its
+  `StreamableHttpSessionManager` before it listens, so that the allowed
+  origins, bearer token validation, protected resource metadata, limits and
+  stream options are set with the manager's own setters. Port 0 lets the
+  system choose the port, which `Server::bound_port()` returns while the call
+  runs, as `StreamableHttpSessionManager::port()` does for a manager.
+- `Server::stop()` ends `run_stdio()` and `run_http()` as SIGINT does, and the
+  task of `run()` by closing its transport, from any thread or handler.
+- `Server::sync()` returns a `SyncServer`, whose `notify_` members block the
+  calling thread until the matching coroutine has run on the event loop of
+  `run_stdio()` or `run_http()`. They return at once when the server is not
+  running, and throw `std::logic_error` on that loop's thread or for a server
+  run only through `run()`.
+- `Runtime::executor()` returns its loop's executor, `Runtime::spawn()` starts
+  a coroutine on the loop, whose exception comes out of `run()`, and
+  `Runtime::run(threads)` runs the loop on that many threads.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around
@@ -605,9 +621,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 - `<mcp/mcp.hpp>` includes no Boost header, and neither do the server, client,
   context and transport headers, the stdio, memory and HTTP client and server
-  transports, `StdioClientSession` or the authentication headers; a check run
-  in CI compiles each public header on its own and lists the Boost headers it
-  reaches. Code that defines or awaits a coroutine includes
+  transports, `StreamableHttpSessionManager`, `StdioClientSession` or the
+  authentication headers; a check run in CI compiles each public header on its
+  own and lists the Boost headers it reaches. Code that defines or awaits a coroutine includes
   `<mcp/core/async.hpp>`, which defines `Task`; a coroutine handler registered
   without it fails with a message naming that header. `<mcp/mcp.hpp>` also
   includes `<mcp/client/client.hpp>`.
@@ -627,6 +643,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::add_raw_tool()` takes any coroutine JSON handler, with or without
   the request's `Context`, in place of a `TypeErasedHandler` only; a
   `TypeErasedHandler` is still accepted.
+- The custom request handler of a `StreamableHttpSessionManager`, which takes
+  Boost.Beast messages, is set with the free function
+  `mcp::set_custom_request_handler(manager, handler)` declared with
+  `CustomRequestHandler` in `<mcp/transport/http_beast.hpp>`, in place of the
+  member `set_custom_request_handler()`.
 - `Server::run_http()` serves any number of clients of protocol revision
   2025-11-25 or earlier, each in a session of its own, where it served one at
   a time: it listens through a `StreamableHttpSessionManager` whose sessions
