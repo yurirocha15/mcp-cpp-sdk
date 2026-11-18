@@ -727,12 +727,15 @@ class MCP_API Client {
     /**
      * @brief Connect to the server and settle on a protocol era.
      *
-     * @details Starts the read loop, then follows ClientOptions::protocol. A legacy session
-     * sends initialize and then notifications/initialized. A modern session sends
-     * server/discover once to learn the server's capabilities and sends nothing else; from then
-     * on every request carries `io.modelcontextprotocol/protocolVersion`, the capabilities
-     * (@p capabilities plus what the registered handlers imply, such as roots when a roots/list
-     * handler exists) and @p client_info in its `_meta`, merged with the `_meta` entries the
+     * @details Starts the read loop, then follows ClientOptions::protocol. The capabilities the
+     * client declares are @p capabilities plus what the registered handlers imply: roots,
+     * sampling and elicitation when a handler answers roots/list, sampling/createMessage or
+     * elicitation/create (on_roots_list(), set_roots(), on_sampling(), on_elicitation() or
+     * on_request()). A legacy session sends them in initialize, and then
+     * notifications/initialized. A modern session sends server/discover once to learn the
+     * server's capabilities and sends nothing else; from then on every request carries
+     * `io.modelcontextprotocol/protocolVersion`, the capabilities, counting handlers registered
+     * since connect(), and @p client_info in its `_meta`, merged with the `_meta` entries the
      * caller supplied. The era is fixed for the client's lifetime.
      *
      * In a modern session ping() and the removed subscription and log-level methods fail
@@ -1079,6 +1082,20 @@ class MCP_API Client {
      * @param handler Async handler: receives ElicitRequestParams, returns ElicitResult.
      */
     void on_elicitation(std::function<Task<ElicitResult>(const ElicitRequestParams&)> handler);
+
+    /**
+     * @brief Register a handler for sampling requests from the server.
+     *
+     * @details Registers a request handler for "sampling/createMessage": the handler receives the
+     * request's CreateMessageRequestParams and returns the CreateMessageResult sent back. A
+     * modern server's `input_required` sampling questions are answered by it too. Registering
+     * it declares the sampling capability, see connect().
+     *
+     * @param handler Async handler: receives CreateMessageRequestParams, returns
+     *        CreateMessageResult.
+     */
+    void on_sampling(
+        std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler);
 
     /**
      * @brief Set static roots and auto-register the roots/list handler.

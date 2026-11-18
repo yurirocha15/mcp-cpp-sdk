@@ -35,6 +35,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `complete()`, `start_tool()` and the `list_*()` members take
   `RequestOptions`, as `call_tool()` and `send_request()` do, and `SyncClient`
   has a twin of each.
+- `Client::on_sampling()` registers a typed handler for
+  `sampling/createMessage`, beside `on_elicitation()` and `on_roots_list()`;
+  it also answers a modern server's `input_required` sampling questions.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around
@@ -581,6 +584,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `<mcp/core/async.hpp>`, which defines `Task`; a coroutine handler registered
   without it fails with a message naming that header. `<mcp/mcp.hpp>` also
   includes `<mcp/client/client.hpp>`.
+- A legacy session's `initialize` declares the sampling and elicitation
+  capabilities when a handler for `sampling/createMessage` or
+  `elicitation/create` is registered, as it already declared roots and as
+  every request of a modern session does. Capabilities given to `connect()`
+  are kept as they are.
 - `StringRequest` and `StringResponse`, the Boost.Beast message types, are in
   `<mcp/transport/http_beast.hpp>` instead of `<mcp/transport/http_types.hpp>`.
 - `Client::call_tool()` with `nlohmann::json` arguments, with and without

@@ -283,6 +283,112 @@ TEST_F(ClientNotificationsTest, AnswerThatCannotBeEncodedIsAnError) {
     }
 }
 
+// The handlers registered before connect() decide what a legacy initialize declares, as they do
+// for every request of a modern session.
+TEST_F(ClientNotificationsTest, InitializeDeclaresWhatTheRegisteredHandlersAnswer) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+    client.on_sampling(
+        [](const mcp::CreateMessageRequestParams&) -> mcp::Task<mcp::CreateMessageResult> {
+            co_return mcp::CreateMessageResult{};
+        });
+    client.on_elicitation([](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
+        co_return mcp::ElicitResult{};
+    });
+    client.on_roots_list([](const nlohmann::json&) -> mcp::Task<mcp::ListRootsResult> {
+        co_return mcp::ListRootsResult{};
+    });
+
+    boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw](const boost::system::error_code& error) {
+        if (!error) {
+            raw->close();
+        }
+    });
+    nlohmann::json initialize;
+    raw->set_on_write([&](std::string_view msg) {
+        auto message = nlohmann::json::parse(msg);
+        if (message.value("method", "") == "initialize") {
+            initialize = message;
+            raw->enqueue_message(nlohmann::json{
+                {"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", make_initialize_result()}}
+                                     .dump());
+        } else if (message.value("method", "") == "notifications/initialized") {
+            guard.cancel();
+            raw->close();
+        }
+    });
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); });
+    io_ctx_.run();
+
+    ASSERT_FALSE(initialize.is_null()) << "no initialize was sent";
+    const auto& capabilities = initialize.at("params").at("capabilities");
+    EXPECT_TRUE(capabilities.contains("sampling")) << capabilities.dump();
+    EXPECT_TRUE(capabilities.contains("elicitation")) << capabilities.dump();
+    EXPECT_TRUE(capabilities.contains("roots")) << capabilities.dump();
+}
+
+TEST_F(ClientNotificationsTest, SamplingHandlerAnswersTheServersRequest) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+    std::optional<mcp::CreateMessageRequestParams> asked;
+    client.on_sampling(
+        [&](const mcp::CreateMessageRequestParams& params) -> mcp::Task<mcp::CreateMessageResult> {
+            asked = params;
+            mcp::CreateMessageResult result;
+            result.role = mcp::Role::eAssistant;
+            mcp::TextContent text;
+            text.text = "four";
+            result.content = std::move(text);
+            result.model = "test-model";
+            co_return result;
+        });
+
+    boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw](const boost::system::error_code& error) {
+        if (!error) {
+            raw->close();
+        }
+    });
+    nlohmann::json answer;
+    raw->set_on_write([&](std::string_view msg) {
+        auto message = nlohmann::json::parse(msg);
+        if (message.value("method", "") == "initialize") {
+            raw->enqueue_message(nlohmann::json{
+                {"jsonrpc", "2.0"}, {"id", message["id"]}, {"result", make_initialize_result()}}
+                                     .dump());
+        } else if (message.value("method", "") == "notifications/initialized") {
+            raw->enqueue_message(nlohmann::json{
+                {"jsonrpc", "2.0"},
+                {"id", "sample-1"},
+                {"method", "sampling/createMessage"},
+                {"params",
+                 {{"messages",
+                   {{{"role", "user"}, {"content", {{"type", "text"}, {"text", "2 + 2?"}}}}}},
+                  {"maxTokens",
+                   10}}}}.dump());
+        } else if (message.value("id", nlohmann::json()) == "sample-1") {
+            answer = message;
+            guard.cancel();
+            raw->close();
+        }
+    });
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); });
+    io_ctx_.run();
+
+    ASSERT_TRUE(asked.has_value()) << "the sampling handler never ran";
+    EXPECT_EQ(asked->maxTokens, 10);
+    ASSERT_EQ(asked->messages.size(), 1U);
+    ASSERT_TRUE(answer.contains("result")) << answer.dump();
+    EXPECT_EQ(answer["result"]["model"], "test-model");
+    EXPECT_EQ(answer["result"]["role"], "assistant");
+    EXPECT_EQ(answer["result"]["content"]["text"], "four");
+}
+
 TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();

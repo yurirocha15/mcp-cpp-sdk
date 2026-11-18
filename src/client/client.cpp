@@ -1637,9 +1637,9 @@ struct Client::Impl {
                                                            const std::string& version) {
         InitializeRequest initialize_request;
         initialize_request.protocolVersion = version;
+        initialize_request.capabilities = state->effective_capabilities();
         std::lock_guard lock(state->handlers_mutex);
         initialize_request.clientInfo = state->client_info;
-        initialize_request.capabilities = state->client_capabilities;
         return nlohmann::json(std::move(initialize_request));
     }
 
@@ -2555,9 +2555,10 @@ struct Client::Impl {
         return modern_protocol_version;
     }
 
-    /// What this client tells a modern server it can do: the capabilities given to connect(), plus
-    /// what its registered handlers imply. Read afresh for every request, so a handler registered
-    /// after connect() counts from the next request on.
+    /// What this client tells a server it can do: the capabilities given to connect(), plus what
+    /// its registered handlers imply. A legacy session sends it once, in initialize; a modern one
+    /// reads it afresh for every request, so a handler registered after connect() counts from the
+    /// next request on.
     ClientCapabilities effective_capabilities() const {
         std::lock_guard lock(handlers_mutex);
         auto capabilities = client_capabilities;
@@ -2851,10 +2852,6 @@ Task<ConnectResult> Client::connect(const Implementation& client_info,
         std::lock_guard lock(state->handlers_mutex);
         state->client_info = client_info;
         state->client_capabilities = capabilities;
-        if (state->request_handlers.contains("roots/list") &&
-            !state->client_capabilities.roots.has_value()) {
-            state->client_capabilities.roots = ClientCapabilities::RootsCapability{};
-        }
     }
     return Impl::connect_session(std::move(state));
 }
@@ -3161,6 +3158,15 @@ void Client::on_elicitation(std::function<Task<ElicitResult>(const ElicitRequest
             }
             co_return nlohmann::json(std::move(result));
         });
+}
+
+void Client::on_sampling(
+    std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler) {
+    on_request("sampling/createMessage",
+               [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
+                   auto result = co_await handler(params.get<CreateMessageRequestParams>());
+                   co_return nlohmann::json(std::move(result));
+               });
 }
 
 void Client::set_roots(const std::vector<Root>& roots, bool notify) {

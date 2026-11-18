@@ -240,6 +240,52 @@ TEST(ClientMrtr, TwoRounds) {
     EXPECT_EQ(handler_calls().size(), 2u);
 }
 
+// A typed on_sampling() handler answers a sampling question, and the request declares the sampling
+// capability it implies.
+TEST(ClientMrtr, TypedSamplingHandlerAnswersAQuestion) {
+    Harness harness;
+    std::optional<mcp::CreateMessageRequestParams> asked;
+    harness.client->on_sampling(
+        [&](const mcp::CreateMessageRequestParams& params) -> mcp::Task<mcp::CreateMessageResult> {
+            asked = params;
+            mcp::CreateMessageResult result;
+            result.role = mcp::Role::eAssistant;
+            mcp::TextContent text;
+            text.text = "Paris";
+            result.content = std::move(text);
+            result.model = "test-model";
+            co_return result;
+        });
+    const json question = {
+        {"method", "sampling/createMessage"},
+        {"params",
+         {{"messages", {{{"role", "user"}, {"content", {{"type", "text"}, {"text", "Capital?"}}}}}},
+          {"maxTokens", 5}}}};
+    harness.reply = [&](const json&, std::size_t index) -> json {
+        if (index == 1) {
+            return input_required({{"llm", question}});
+        }
+        return complete_tool_result();
+    };
+    harness.run([&]() -> mcp::Task<void> {
+        const json arguments = {{"x", 1}};
+        static_cast<void>(co_await harness.client->call_tool("ask", arguments));
+    });
+
+    ASSERT_TRUE(asked.has_value()) << "the sampling handler never ran";
+    EXPECT_EQ(asked->maxTokens, 5);
+    const auto calls = harness.requests("tools/call");
+    ASSERT_EQ(calls.size(), 2u);
+    EXPECT_TRUE(calls[0]
+                    .at("params")
+                    .at("_meta")
+                    .at("io.modelcontextprotocol/clientCapabilities")
+                    .contains("sampling"));
+    const auto& answer = calls[1].at("params").at("inputResponses").at("llm");
+    EXPECT_EQ(answer.at("model"), "test-model");
+    EXPECT_EQ(answer.at("content").at("text"), "Paris");
+}
+
 // Client Requirement 2: the exact value of requestState comes back, whatever it contains.
 TEST(ClientMrtr, StateEchoedByteForByte) {
     const std::string state = "  {\"a\":[1,2]} \xC3\xA9 \\n==\tpadding=  ";
