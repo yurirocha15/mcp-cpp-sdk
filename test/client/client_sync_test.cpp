@@ -80,6 +80,11 @@ TEST(ClientSyncTest, RunRethrowsTheCoroutinesException) {
                  std::runtime_error);
 }
 
+TEST(ClientSyncTest, RunRefusesAnEmptyTask) {
+    mcp::Client client(test_server());
+    EXPECT_THROW(client.run([]() { return mcp::Task<void>(); }), std::invalid_argument);
+}
+
 TEST(ClientSyncTest, BlockingCallsRunAndCoroutinesMix) {
     mcp::Client client(test_server());
     client.sync().connect("sync-test", "1.0");

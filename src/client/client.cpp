@@ -3246,7 +3246,14 @@ void Client::run(std::function<Task<void>()> body) {
     if (!body) {
         throw std::invalid_argument("mcp::Client::run() needs a coroutine");
     }
-    detail::run_blocking<void>(impl_->blocking_loop, std::move(body));
+    detail::run_blocking<void>(impl_->blocking_loop, [body = std::move(body)]() -> Task<void> {
+        Task<void> task = body();
+        if (!task.valid()) {
+            throw std::invalid_argument(
+                "mcp::Client::run() needs a coroutine; the function returned an empty Task");
+        }
+        co_await std::move(task);
+    });
 }
 
 SyncSubscription Subscription::sync() const {

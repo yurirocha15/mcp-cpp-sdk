@@ -59,7 +59,9 @@ class MCP_API Runtime {
      * @brief Start @p task on the event loop, such as
      *        `runtime.spawn(server.run(transport, runtime.executor()));`.
      *
-     * @details The task runs when run() does. An exception it throws comes out of run().
+     * @details The task runs when run() does. An exception it throws comes out of run(). A
+     * program that calls spawn() includes `<mcp/core/async.hpp>`, which defines Task.
+     * @throws std::invalid_argument If @p task is empty.
      */
     void spawn(Task<void> task);
 

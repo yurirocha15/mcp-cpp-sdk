@@ -114,6 +114,9 @@ void Runtime::stop() {
 Executor Runtime::executor() { return impl_->io_ctx.get_executor(); }
 
 void Runtime::spawn(Task<void> task) {
+    if (!task.valid()) {
+        throw std::invalid_argument("mcp::Runtime::spawn() needs a coroutine; the Task is empty");
+    }
     boost::asio::co_spawn(impl_->io_ctx, std::move(task), [](const std::exception_ptr& failure) {
         if (failure) {
             std::rethrow_exception(failure);

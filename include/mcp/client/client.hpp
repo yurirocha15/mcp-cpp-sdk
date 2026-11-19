@@ -700,6 +700,7 @@ class MCP_API Client {
      * capture what the coroutine uses.
      * @throws std::logic_error If the client runs on the application's executor, or the call is
      *         made on the client's own event loop thread.
+     * @throws std::invalid_argument If @p body is empty or returns an empty Task.
      */
     void run(std::function<Task<void>()> body);
 

@@ -98,6 +98,11 @@ TEST(RuntimeTest, ExceptionOfASpawnedTaskComesOutOfRun) {
     EXPECT_THROW(threaded.run(3), std::runtime_error);
 }
 
+TEST(RuntimeTest, SpawnRefusesAnEmptyTask) {
+    mcp::Runtime rt;
+    EXPECT_THROW(rt.spawn(mcp::Task<void>()), std::invalid_argument);
+}
+
 TEST(RuntimeTest, RunWithThreadsRunsTheLoopOnThatManyThreads) {
     EXPECT_THROW(mcp::Runtime().run(0), std::invalid_argument);
 
