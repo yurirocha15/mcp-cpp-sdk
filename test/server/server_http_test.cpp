@@ -10,6 +10,9 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/beast/core.hpp>
@@ -369,6 +372,57 @@ TEST_F(ServerHttpTest, ConfigureAndStopRunHttpOnTheBoundPort) {
     server_->stop();
     server_thread.join();
     EXPECT_EQ(server_->bound_port(), 0);
+}
+
+// stop() ends run_http() after the shutdown timeout while a handler that never finishes still runs.
+TEST_F(ServerHttpTest, StopEndsRunHttpWhileAHandlerStillRuns) {
+    std::atomic<bool> handler_started{false};
+    std::atomic<bool> release{false};
+    server_->add_tool("stuck", "Runs until released", nlohmann::json{{"type", "object"}},
+                      [&](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                          handler_started = true;
+                          auto executor = co_await asio::this_coro::executor;
+                          // Cancellation does not end it; only release does.
+                          while (!release.load()) {
+                              asio::steady_timer timer(executor, std::chrono::milliseconds(20));
+                              boost::system::error_code ec;
+                              co_await timer.async_wait(asio::redirect_error(asio::use_awaitable, ec));
+                          }
+                          co_return nlohmann::json("released");
+                      });
+
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0);
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto port = wait_for_port(*server_);
+
+    std::thread client_thread([port] {
+        asio::io_context client_ctx;
+        beast::tcp_stream stream(client_ctx);
+        connect_when_listening(stream, port);
+        try {
+            const auto init_resp = send_json_rpc(stream, make_initialize_request("1"));
+            const std::string session_id(init_resp["MCP-Session-Id"]);
+            static_cast<void>(send_json_rpc(stream, make_initialized_notification(), session_id));
+            static_cast<void>(send_json_rpc(
+                stream, make_tool_call_request("2", "stuck", nlohmann::json::object()), session_id));
+        } catch (const std::exception&) {
+            // The server closes the connection before it answers the call.
+        }
+    });
+
+    while (!handler_started.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    server_->stop();
+    server_thread.join();
+    EXPECT_TRUE(finished.load());
+    EXPECT_FALSE(release.load());
+    release = true;
+    client_thread.join();
 }
 
 TEST_F(ServerHttpTest, ConfigureThatThrowsEndsRunHttpBeforeItListens) {

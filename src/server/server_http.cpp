@@ -1,7 +1,7 @@
 #include "run_control.hpp"
 
 #include <mcp/core/async.hpp>
-#include <mcp/core/signal.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
@@ -9,8 +9,8 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/signal_set.hpp>
-#include <boost/asio/steady_timer.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -35,12 +35,13 @@ void Server::run_http(const std::string& host, uint16_t port,
         configure(*manager);
     }
 
-    // SIGINT, SIGTERM and stop() end the run the same way, once.
-    std::shared_ptr<boost::asio::steady_timer> watchdog;
-    const auto shut_down = [manager, &io_ctx, &watchdog] {
-        if (!watchdog) {
-            watchdog = graceful_shutdown(io_ctx, manager);
-        }
+    // SIGINT, SIGTERM and stop() end the run the same way, once: the manager stops listening and
+    // closes its connections, and the loop runs until the handlers still running have finished, or
+    // until the deadline stops it.
+    detail::ShutdownDeadline deadline;
+    const auto shut_down = [manager, &io_ctx, &deadline] {
+        manager->close();
+        deadline.start(io_ctx, std::chrono::milliseconds(constants::shutdown::g_TIMEOUT_MS));
     };
     boost::asio::signal_set signals(io_ctx, SIGINT, SIGTERM);
     signals.async_wait([&shut_down](const boost::system::error_code& ec, int) {
@@ -58,12 +59,12 @@ void Server::run_http(const std::string& host, uint16_t port,
     boost::asio::co_spawn(io_ctx, manager->listen(), [&](std::exception_ptr e) {
         ep = std::move(e);
         signals.cancel();
-        if (watchdog) {
-            watchdog->cancel();
-        }
+        // The listener is gone, whether it was closed or failed; nothing new can arrive.
+        shut_down();
     });
 
     io_ctx.run();
+    deadline.finish();
 
     if (ep) {
         std::rethrow_exception(ep);

@@ -81,4 +81,30 @@ void RunControl::run_blocking(const std::function<Task<void>()>& start) {
     }
 }
 
+ShutdownDeadline::~ShutdownDeadline() { finish(); }
+
+void ShutdownDeadline::start(boost::asio::io_context& io_ctx, std::chrono::milliseconds timeout) {
+    const std::lock_guard lock(mutex_);
+    if (thread_.joinable() || finished_) {
+        return;
+    }
+    thread_ = std::thread([this, &io_ctx, timeout] {
+        std::unique_lock wait_lock(mutex_);
+        if (!finished_changed_.wait_for(wait_lock, timeout, [this] { return finished_; })) {
+            io_ctx.stop();
+        }
+    });
+}
+
+void ShutdownDeadline::finish() {
+    {
+        const std::lock_guard lock(mutex_);
+        finished_ = true;
+    }
+    finished_changed_.notify_all();
+    if (thread_.joinable() && thread_.get_id() != std::this_thread::get_id()) {
+        thread_.join();
+    }
+}
+
 }  // namespace mcp::detail

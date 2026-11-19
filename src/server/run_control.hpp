@@ -3,8 +3,11 @@
 #include <mcp/core/async_fwd.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <boost/asio/io_context.hpp>
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -94,6 +97,37 @@ class RunControl : public std::enable_shared_from_this<RunControl> {
     std::map<std::uint64_t, Run> runs_;
     std::uint64_t next_id_ = 0;
     std::atomic<std::uint16_t> port_{0};
+};
+
+/**
+ * @brief Stops an io_context that has not run out of work by a deadline.
+ *
+ * @details The wait runs on a thread of its own, so it is not work of the io_context: its run()
+ * returns as soon as the work it has is done, and the deadline only cuts off work that would
+ * otherwise go on, such as a handler that never returns. Destroy it, or call finish(), before the
+ * io_context.
+ */
+class ShutdownDeadline {
+   public:
+    ShutdownDeadline() = default;
+    ~ShutdownDeadline();
+    ShutdownDeadline(const ShutdownDeadline&) = delete;
+    ShutdownDeadline& operator=(const ShutdownDeadline&) = delete;
+    ShutdownDeadline(ShutdownDeadline&&) = delete;
+    ShutdownDeadline& operator=(ShutdownDeadline&&) = delete;
+
+    /// Stops @p io_ctx after @p timeout unless finish() comes first. Calls after the first do
+    /// nothing.
+    void start(boost::asio::io_context& io_ctx, std::chrono::milliseconds timeout);
+
+    /// Ends the wait, without stopping the io_context, and joins its thread.
+    void finish();
+
+   private:
+    std::mutex mutex_;
+    std::condition_variable finished_changed_;
+    bool finished_ = false;
+    std::thread thread_;
 };
 
 }  // namespace mcp::detail
