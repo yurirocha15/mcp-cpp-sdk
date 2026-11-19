@@ -114,10 +114,11 @@ void control(mcp::Server& server) {
     }
 }
 
-void run_with_handler_executor(mcp::Server& server) {
-    mcp::Runtime runtime;
-    server.set_handler_executor(runtime.executor());
-    runtime.run(2);
+void run_with_handler_pool(mcp::Server& server) {
+    mcp::Runtime pool;
+    pool.start(4);
+    server.set_handler_executor(pool.executor());
+    server.run_stdio();
 }
 
 }  // namespace simple_server_tu

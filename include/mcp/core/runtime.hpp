@@ -35,7 +35,20 @@ class MCP_API Runtime {
      */
     void run(std::size_t threads);
 
-    /// Request the event loop to stop.
+    /**
+     * @brief Run the event loop on @p threads new threads until stop() or the Runtime's
+     *        destruction, which joins them, even while it has no work.
+     *
+     * @details For an executor that waits for work, such as a pool of handler threads:
+     * `pool.start(4); server.set_handler_executor(pool.executor());`. An exception that a task given
+     * to spawn() throws on one of these threads is not caught there, so it ends the program, as an
+     * exception leaving any std::thread does.
+     * @throws std::invalid_argument When @p threads is 0.
+     * @throws std::logic_error When the Runtime has been started already.
+     */
+    void start(std::size_t threads);
+
+    /// Request the event loop to stop; threads start() made end once their current work does.
     void stop();
 
     /// The executor of the event loop, for Server::run(), Client(transport, executor), a

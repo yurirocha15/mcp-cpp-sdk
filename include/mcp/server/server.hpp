@@ -1485,9 +1485,10 @@ class MCP_API Server {
  * blocks the calling thread until it finishes, rethrowing what it throws. When the server is not
  * running there is no client to notify, and the member returns at once; a run that ends before the
  * notification is sent ends the wait as well.
- * @throws std::logic_error From each member when called on that event loop's thread, such as from a
- *         synchronous handler without a handler executor, where waiting would never end; and when
- *         the server runs only through Server::run(), whose coroutines are awaited instead.
+ * @throws std::logic_error From each member when called on that event loop's thread, where
+ *         synchronous handlers run (tool handlers excepted when set_handler_executor() moves
+ *         them) and waiting would never end; and when the server runs only through
+ *         Server::run(), whose coroutines are awaited instead.
  */
 class MCP_API SyncServer {
    public:

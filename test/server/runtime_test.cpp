@@ -7,6 +7,7 @@
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/post.hpp>
 #include <chrono>
+#include <future>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -125,6 +126,45 @@ TEST(RuntimeTest, RunWithThreadsRunsTheLoopOnThatManyThreads) {
     rt.run(2);
     EXPECT_EQ(met.load(), 2);
     EXPECT_EQ(threads.size(), 2U);
+}
+
+TEST(RuntimeTest, StartedThreadsWaitForWorkUntilStop) {
+    EXPECT_THROW(mcp::Runtime().start(0), std::invalid_argument);
+
+    mcp::Runtime pool;
+    pool.start(2);
+    EXPECT_THROW(pool.start(1), std::logic_error);
+    // Work posted after the loop has been idle still runs, and on two threads at once.
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::atomic<int> started{0};
+    std::promise<int> first;
+    std::promise<int> second;
+    auto meet = [&started](std::promise<int>& done) {
+        ++started;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (started.load() < 2 && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+        done.set_value(started.load());
+    };
+    boost::asio::post(pool.executor().get(), [&] { meet(first); });
+    boost::asio::post(pool.executor().get(), [&] { meet(second); });
+    EXPECT_EQ(first.get_future().get(), 2);
+    EXPECT_EQ(second.get_future().get(), 2);
+    pool.stop();
+}
+
+TEST(RuntimeTest, DestroyingAStartedRuntimeJoinsItsThreads) {
+    std::atomic<bool> ran{false};
+    {
+        mcp::Runtime pool;
+        pool.start(1);
+        boost::asio::post(pool.executor().get(), [&ran] { ran = true; });
+        while (!ran.load()) {
+            std::this_thread::yield();
+        }
+    }
+    EXPECT_TRUE(ran.load());
 }
 
 }  // namespace runtime_test

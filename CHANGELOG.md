@@ -81,6 +81,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Runtime::executor()` returns its loop's executor, `Runtime::spawn()` starts
   a coroutine on the loop, whose exception comes out of `run()`, and
   `Runtime::run(threads)` runs the loop on that many threads.
+  `Runtime::start(threads)` runs it on that many new threads until `stop()`
+  or the Runtime's destruction, even while it has no work, so that a
+  `Runtime` serves as a pool for `Server::set_handler_executor()`.
 - `SyncTypeErasedHandler` names the synchronous form of `TypeErasedHandler`.
   The typed `add_tool`, `add_resource`, `add_resource_template` and
   `add_prompt` store a synchronous handler as one, without a coroutine around
