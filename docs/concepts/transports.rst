@@ -367,18 +367,18 @@ see :doc:`/guides/older-protocols`.
 
 For more information on writing effective tests, see the :doc:`/guides/testing` guide.
 
-TransportFactory and Runtime
-----------------------------
+Runtime
+-------
 
-The `Runtime` class is a high-level wrapper around the Boost.Asio event loop,
-providing a simple `run()` and `stop()` interface. The `TransportFactory`
-further simplifies transport creation by binding them to a specific runtime.
+``mcp::Runtime`` is an event loop that a program uses without Boost:
+``executor()`` binds a transport, a ``Client`` or ``Server::run()`` to it, such
+as ``std::make_shared<mcp::StdioTransport>(runtime.executor())``, ``spawn()``
+starts a coroutine on it, ``run()`` runs the loop on the calling thread until
+its work is done, and ``start(threads)`` runs it on threads of its own until
+``stop()``. :doc:`/guides/growing-a-server` serves a server on one this way:
 
-.. literalinclude:: ../../examples/features/transport_memory.cpp
-   :language: cpp
-   :start-after: void demo_transport_factory() {
-   :end-before: std::cout << "[Main] Demo 2 completed
-   :dedent: 4
+.. literalinclude:: /_generated/progression/server_add_own_loop.diff
+   :language: diff
 
 Choosing the Right Transport
 ----------------------------

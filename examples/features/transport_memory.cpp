@@ -1,17 +1,13 @@
 /// @file transport_memory.cpp
-/// @brief Demonstrates MemoryTransport and TransportFactory for in-process communication.
+/// @brief Demonstrates MemoryTransport for in-process communication.
 ///
 /// This example shows:
 /// - MemoryTransport: In-memory bidirectional transport for testing
 /// - create_memory_transport_pair(): Creating connected transport pairs
-/// - TransportFactory: Factory pattern for creating transports bound to Runtime
-/// - Runtime: Event loop management with run() and stop()
 /// - Bidirectional message exchange via MemoryTransport
 
 #include <mcp/core/async.hpp>
-#include <mcp/core/runtime.hpp>
 #include <mcp/transport/memory.hpp>
-#include <mcp/transport/transport_factory.hpp>
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -80,43 +76,15 @@ void demo_memory_transport() {
     }
 }
 
-// ========== DEMO 2: TransportFactory with Runtime ==========
-void demo_transport_factory() {
-    std::cout << "\n" << std::string(70, '=') << "\n";
-    std::cout << "DEMO 2: TransportFactory with Runtime\n";
-    std::cout << std::string(70, '=') << "\n\n";
-
-    try {
-        using namespace mcp;
-
-        Runtime runtime;
-        TransportFactory factory(runtime);
-
-        std::cout << "[Main] Runtime and TransportFactory created\n";
-        std::cout << "[Main] Factory methods available:\n";
-        std::cout << "  - factory.create_stdio() -> stdio transport\n";
-        std::cout << "  - factory.create_http_client(url) -> HTTP transport\n\n";
-
-        (void)factory;
-        std::cout << "[Main] Demo 2 completed (use Runtime.run() in production event loops)\n";
-
-    } catch (const std::exception& e) {
-        std::cerr << "Demo 2 error: " << e.what() << '\n';
-    }
-}
-
 // ========== MAIN ==========
 int main() {
     try {
         std::cout << "\n" << std::string(70, '=') << "\n";
-        std::cout << "MCP Transport Examples: MemoryTransport & TransportFactory\n";
+        std::cout << "MCP Transport Example: MemoryTransport\n";
         std::cout << std::string(70, '=') << "\n";
 
         // Run Demo 1: MemoryTransport
         demo_memory_transport();
-
-        // Run Demo 2: TransportFactory
-        demo_transport_factory();
 
         std::cout << "\n" << std::string(70, '=') << "\n";
         std::cout << "All examples completed successfully\n";

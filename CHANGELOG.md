@@ -1024,6 +1024,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 - `<mcp/core/core.hpp>`. `Task` is in `<mcp/core/async.hpp>`, and
   `<mcp/core/async_fwd.hpp>` declares it without Boost.
+- `mcp::TransportFactory`. A transport is constructed with
+  `Runtime::executor()` instead, such as
+  `std::make_shared<mcp::StdioTransport>(runtime.executor())`. The deprecated
+  `make_stdio_transport()` and `make_http_client_transport()` remain.
 - The task types of the experimental shape of 2025-11-25: the `tasks` member of
   `ClientCapabilities` and `ServerCapabilities` (a legacy peer that sends it
   still parses, and the member is dropped), `ToolExecution` and `Tool::execution`,
