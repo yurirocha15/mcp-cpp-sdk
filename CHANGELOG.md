@@ -8,10 +8,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Fixed
 
-- The friend declaration of `decode_elicitation_content()` in
-  `mcp/protocol/elicitation.hpp` is exported like its first declaration. MSVC
-  reported warning C4273 (inconsistent DLL linkage) for it in code that links
-  the shared SDK.
+- The friend declaration of `decode_elicitation_content()` is exported like its
+  first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key
   is not certified when it checks the source signature.
 
