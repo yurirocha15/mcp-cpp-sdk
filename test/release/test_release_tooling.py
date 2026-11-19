@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -730,6 +731,40 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("shared-targets", debian_devel)
         self.assertNotIn("static-targets", debian_devel)
         self.assertIn("static-targets", debian_static)
+
+    def test_package_builds_set_only_options_the_project_reads(self) -> None:
+        # The distribution builds turn off CMake's unused-variable warning, because their build
+        # helpers pass variables this project does not read, so a misspelled option would go unseen.
+        repository = Path(__file__).resolve().parents[2]
+        cmake_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (repository / "CMakeLists.txt", *sorted((repository / "cmake").rglob("*.cmake")))
+        )
+        cmake_variables = {
+            "CMAKE_BUILD_TYPE",
+            "CMAKE_CXX_FLAGS_RELWITHDEBINFO",
+            "CMAKE_SKIP_INSTALL_ALL_DEPENDENCY",
+        }
+        for template, command in (
+            ("packaging/debian/rules.in", "\tdh_auto_configure -- "),
+            ("packaging/rpm/mcp-cpp-sdk.spec.in", "%cmake "),
+        ):
+            with self.subTest(template=template):
+                lines = [
+                    line
+                    for line in (repository / template).read_text(encoding="utf-8").splitlines()
+                    if line.startswith(command)
+                ]
+                self.assertEqual(len(lines), 1)
+                self.assertIn(" --no-warn-unused-cli ", lines[0])
+                names = re.findall(r" -D([A-Za-z_][A-Za-z0-9_]*)(?::[A-Z]+)?=", lines[0])
+                self.assertIn("BUILD_TESTING", names)
+                unread = [
+                    name
+                    for name in names
+                    if name not in cmake_variables and re.search(rf"\b{name}\b", cmake_text) is None
+                ]
+                self.assertEqual(unread, [], f"{template} sets options the project does not read")
 
     def test_package_templates_render_and_parse_offline(self) -> None:
         repository = Path(__file__).resolve().parents[2]

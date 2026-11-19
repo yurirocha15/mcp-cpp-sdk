@@ -53,7 +53,9 @@ Static library and private dependency metadata for explicit static consumers.
 cp -p third_party/jsoncons/LICENSE LICENSE.jsoncons
 
 %build
-%cmake -G Ninja -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG
+# The cmake macro also passes CMake variables this project does not read, such as
+# CMAKE_Fortran_FLAGS_RELEASE. The release tests check that it reads the ones below.
+%cmake -G Ninja --no-warn-unused-cli -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG
 %cmake_build
 # The test binary is linked; its objects are not needed again and would only use build space.
 rm -rf %{__cmake_builddir}/CMakeFiles/mcp-sdk-tests.dir
