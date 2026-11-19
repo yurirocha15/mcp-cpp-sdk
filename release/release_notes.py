@@ -5,6 +5,9 @@ A release section of CHANGELOG.md opens with a ``### Highlights`` part: the
 few entries a reader of the release page needs. The notes are those
 highlights, a pointer to the section's migration notes when it has them, and
 links to the full section and the installation guide at the tag.
+
+Every other entry of the changelog is one short sentence about what changed
+for users (``long_entries()``); the documentation holds the details.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from .model import SemVer, ValidationError
 # GitHub refuses release notes longer than this.
 MAX_NOTES_CHARACTERS = 125_000
 HIGHLIGHTS = "### Highlights"
+# The longest changelog entry, in characters with its line breaks read as spaces.
+MAX_ENTRY_CHARACTERS = 200
 
 
 def github_anchor(heading: str) -> str:
@@ -84,3 +89,39 @@ def release_notes(changelog: str, version: SemVer, *, repository: str) -> str:
             f"the release notes of {version} exceed GitHub's {MAX_NOTES_CHARACTERS} characters"
         )
     return notes
+
+
+def long_entries(changelog: str) -> list[str]:
+    """Return a message for each changelog entry longer than ``MAX_ENTRY_CHARACTERS``.
+
+    An entry is a ``- `` item with the indented lines that continue it. The
+    entries of a ``### Highlights`` part are exempt: they are the release page.
+    """
+
+    problems: list[str] = []
+    part = ""
+    entry: list[str] = []
+    first_line = 0
+
+    def finish() -> None:
+        text = " ".join(" ".join(entry).split())
+        if entry and part != HIGHLIGHTS and len(text) > MAX_ENTRY_CHARACTERS:
+            problems.append(
+                f"CHANGELOG.md:{first_line}: entry of {len(text)} characters, more than "
+                f"{MAX_ENTRY_CHARACTERS}: {text[:60]}..."
+            )
+        entry.clear()
+
+    for number, line in enumerate(changelog.splitlines(), start=1):
+        if line.startswith("- "):
+            finish()
+            entry.append(line[2:])
+            first_line = number
+        elif entry and line.startswith("  "):
+            entry.append(line)
+        else:
+            finish()
+            if line.startswith("#"):
+                part = line.strip()
+    finish()
+    return problems

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
 from release.model import SemVer, ValidationError
-from release.release_notes import MAX_NOTES_CHARACTERS, github_anchor, release_notes
+from release.release_notes import (
+    MAX_ENTRY_CHARACTERS,
+    MAX_NOTES_CHARACTERS,
+    github_anchor,
+    long_entries,
+    release_notes,
+)
 
+ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY = "yurirocha15/mcp-cpp-sdk"
 CHANGELOG = """# Changelog
 
@@ -80,6 +88,33 @@ class ReleaseNotesTests(unittest.TestCase):
     def test_anchors_follow_github(self) -> None:
         self.assertEqual(github_anchor("[0.3.0] - 2026-11-17"), "030---2026-11-17")
         self.assertEqual(github_anchor("Migrating from 0.2.0"), "migrating-from-020")
+
+    def test_repository_changelog_entries_are_short(self) -> None:
+        self.assertEqual(long_entries((ROOT / "CHANGELOG.md").read_text(encoding="utf-8")), [])
+
+    def test_repository_changelog_gives_the_notes_of_its_version(self) -> None:
+        # The release build writes these notes, so a missing Highlights part fails here first.
+        version = SemVer.parse((ROOT / "VERSION").read_text(encoding="utf-8").strip())
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("## Highlights", release_notes(changelog, version, repository=REPOSITORY))
+
+    def test_long_entries_reports_each_entry_over_the_limit(self) -> None:
+        words = ("word " * MAX_ENTRY_CHARACTERS)[: MAX_ENTRY_CHARACTERS - 1]
+        at_limit = words + "."
+        over_limit = words + "s."
+        wrapped = at_limit[:100] + "\n  " + at_limit[100:].lstrip()
+        changelog = (
+            "# Changelog\n\n## [Unreleased]\n\n### Fixed\n\n"
+            f"- {at_limit}\n- {wrapped}\n- {over_limit}\n\n"
+            "## [0.4.0] - 2026-12-01\n\n### Highlights\n\n"
+            f"- **Long.** {over_limit}\n\n### Added\n\n"
+            f"- {over_limit[:100]}\n  {over_limit[100:]}\n  - and a nested item.\n\n"
+            "Text after a list.\n"
+        )
+        problems = long_entries(changelog)
+        self.assertEqual(len(problems), 2, problems)
+        self.assertTrue(problems[0].startswith("CHANGELOG.md:10: entry of 201 characters"), problems)
+        self.assertTrue(problems[1].startswith("CHANGELOG.md:20: entry of 222 characters"), problems)
 
 
 if __name__ == "__main__":

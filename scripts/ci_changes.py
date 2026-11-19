@@ -17,7 +17,8 @@ workflow builds and validates every package again before publishing.
 
 The release checks also read the text in the documentation that names the
 release version (release/version_bump.py PINS), so a change to that text counts
-for them.
+for them, and CHANGELOG.md, whose entries they check and from which the release
+notes are written.
 
 conformance.yml, conformance-guards.yml and docs.yml filter their own triggers
 with `paths:`, and CodeQL is GitHub's default setup, which has no path filter.
@@ -201,6 +202,8 @@ PACKAGED_SOURCE = LIBRARY + TESTS + (
     "scripts/run_examples.py",
 )
 # Same block syntax as scripts/check_readme_snippets.py.
+# The release checks read it, though no job reads the other Markdown files.
+CHANGELOG = "CHANGELOG.md"
 CPP_FENCE_RE = re.compile(r"^```cpp\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 ZERO_SHA = "0" * 40
 
@@ -286,6 +289,8 @@ def needed_jobs(event, base, head):
             jobs.add("code")
         if any(version_pins(base, path) != version_pins(head, path)
                for path in changed if path in {pin.path for pin in PINS}):
+            jobs.add("release")
+        if CHANGELOG in changed:
             jobs.add("release")
     if jobs & PACKAGE_JOBS:
         jobs.add("package_core")

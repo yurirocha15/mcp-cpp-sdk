@@ -133,6 +133,11 @@ class ClassifierTests(unittest.TestCase):
         self.write("docs/installation.rst", "choco install mcp-cpp-sdk --version=9.9.9\n\nProse.\n")
         self.assertEqual(self.jobs("pull_request", self.commit(), base=pinned), set())
 
+    def test_changelog_runs_the_release_checks(self) -> None:
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                self.assertEqual(self.jobs_for_change("CHANGELOG.md", event), {"release"})
+
     def test_doc_prose_and_fragments_run_nothing(self) -> None:
         self.write("docs/guide.rst",
                    GUIDE.replace("Prose.", "Better prose.").replace("ping", "close"))
