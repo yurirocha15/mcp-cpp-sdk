@@ -40,6 +40,22 @@ SERVER_REQUESTS = [
 # in the build directory is skipped, so this runs against partial builds.
 CASES = [
     ("example-server-stdio", SERVER_REQUESTS),
+    ("example-simple-server-base", SERVER_REQUESTS),
+    ("example-simple-server-add-resource", SERVER_REQUESTS),
+    ("example-simple-server-add-prompt", SERVER_REQUESTS),
+    ("example-simple-server-add-context", SERVER_REQUESTS),
+    ("example-simple-server-add-completions", SERVER_REQUESTS),
+    ("example-simple-server-add-handler-pool", SERVER_REQUESTS),
+    ("example-simple-server-add-own-loop", SERVER_REQUESTS),
+    ("example-simple-server-add-elicitation", SERVER_REQUESTS),
+    ("example-simple-server-add-sampling", SERVER_REQUESTS),
+    ("example-simple-server-add-roots", SERVER_REQUESTS),
+    ("example-simple-server-add-middleware", SERVER_REQUESTS),
+    ("example-simple-server-add-pagination", SERVER_REQUESTS),
+    ("example-simple-server-add-tasks", SERVER_REQUESTS),
+    ("example-simple-server-add-subscriptions", SERVER_REQUESTS),
+    ("example-simple-server-add-apps", SERVER_REQUESTS),
+    ("example-simple-server-add-skills", SERVER_REQUESTS),
 ]
 
 

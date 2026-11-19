@@ -192,6 +192,14 @@ jobs:
       if: runner.os != 'Windows'
       run: python scripts/check_boost_free_headers.py
 
+    # Each simple-mode add-on in examples/simple is its base program plus one feature, which the
+    # docs show as a diff. The check fails when an add-on changes a base line it does not declare.
+    - name: Check simple-mode example progression
+      if: runner.os != 'Windows'
+      run: |
+        PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_example_progression
+        python scripts/check_example_progression.py
+
     - name: Run Examples
       run: python scripts/run_examples.py
 

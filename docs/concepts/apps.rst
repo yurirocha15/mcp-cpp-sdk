@@ -15,6 +15,17 @@ sandbox, and the messages between a view and its host are the host
 application's work and are not part of the SDK. The types follow revision
 2026-01-26 of the extension specification.
 
+Adding this to a simple-mode program
+------------------------------------
+
+The server of :doc:`/getting-started` gets a view with two calls:
+``add_view_resource()`` registers the page and ``add_view_tool()`` a tool
+linked to it, beside the tools it already has. :doc:`/guides/growing-a-server` adds the
+other features the same way.
+
+.. literalinclude:: /_generated/progression/server_add_apps.diff
+   :language: diff
+
 Serving views
 -------------
 

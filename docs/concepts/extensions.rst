@@ -40,6 +40,14 @@ falls back to the core protocol: a server offering MCP Apps still returns
 ordinary tool results, and a server that requires an authorization extension
 refuses the request.
 
+Adding this to a simple-mode program
+------------------------------------
+
+The extensions the SDK implements are added to the server of
+:doc:`/getting-started` as its other features are: :doc:`/guides/growing-a-server` shows an MCP
+Apps view, an Agent Skill and a tool that runs as a task, each as a diff
+against that server.
+
 Declaring an extension
 ----------------------
 

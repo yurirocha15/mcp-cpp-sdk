@@ -92,6 +92,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
   it, and a synchronous tool is called in place when its call already runs on
   the strand it belongs on.
 - `Client::executor()` returns the executor the client was constructed with.
+- `examples/simple/` holds a base server and a base client, one program per
+  feature that adds it to them, and `server_all.cpp` and `client_all.cpp`,
+  which combine the features. `scripts/check_example_progression.py` checks
+  that each program keeps its base and changes only the lines
+  `examples/simple/progression.json` names, and CI runs each client against
+  its server. The getting-started page shows the two base programs, the new
+  guides `docs/guides/growing-a-server.rst` and
+  `docs/guides/growing-a-client.rst` add one feature at a time as a diff, and
+  each concept page shows its feature added to a base program.
 - Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as
   the entries below describe, and is the newest revision the SDK supports.
 - Requests of protocol revision 2026-07-28, which carry their protocol
@@ -629,8 +638,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
   transports, `StreamableHttpSessionManager`, `StdioClientSession` or the
   authentication headers; a check run in CI compiles each public header on its
   own and lists the Boost headers it reaches. Code that defines or awaits a coroutine includes
-  `<mcp/core/async.hpp>`, which defines `Task`; a coroutine handler registered
-  without it fails with a message naming that header. `<mcp/mcp.hpp>` also
+  `<mcp/core/async.hpp>`, which defines `Task`; a coroutine handler of the
+  typed `add_tool<In, Out>()` registered without it fails with a message naming
+  that header, and the other forms fail to compile where they use the
+  incomplete `Task`. `<mcp/mcp.hpp>` also
   includes `<mcp/client/client.hpp>`.
 - A legacy session's `initialize` declares the sampling and elicitation
   capabilities when a handler for `sampling/createMessage` or
@@ -647,7 +658,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   it instead of refusing that server.
 - `Server::add_raw_tool()` takes any coroutine JSON handler, with or without
   the request's `Context`, in place of a `TypeErasedHandler` only; a
-  `TypeErasedHandler` is still accepted.
+  `TypeErasedHandler` is still accepted where `<mcp/core/async.hpp>` is
+  included.
 - The custom request handler of a `StreamableHttpSessionManager`, which takes
   Boost.Beast messages, is set with the free function
   `mcp::set_custom_request_handler(manager, handler)` declared with

@@ -14,6 +14,20 @@ When testing your MCP applications, you should focus on three levels of verifica
 
 This guide focuses primarily on Integration and E2E testing using the built-in :cpp:class:`mcp::MemoryTransport`.
 
+Testing a Simple-Mode Program
+-----------------------------
+
+A simple-mode server is a program, so the plainest test runs it: a simple-mode
+client such as the one of :doc:`/getting-started` launches it with ``Endpoint::stdio()``,
+calls its tools with the blocking calls, and the test checks what they return.
+CI tests the programs of ``examples/simple`` this way, each client against its
+server. For an HTTP server, ``run_http("127.0.0.1", 0)`` on a thread of the
+test lets the system choose a free port, which ``server.bound_port()`` returns
+once the server listens (0 until then), and ``server.stop()`` ends
+``run_http()`` when the test is done. For a test in one process, without a child
+process or a socket, the same ``Server`` is served over a memory transport pair
+with ``run()``, as below.
+
 MemoryTransport for Testing
 ---------------------------
 

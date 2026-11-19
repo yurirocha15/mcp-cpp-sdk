@@ -30,11 +30,15 @@ Convenience API (run_http)
 
 For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up a :cpp:class:`mcp::StreamableHttpSessionManager` that serves each older-protocol client in a session of its own with the same server, and handles signal mapping automatically.
 
-.. literalinclude:: ../../examples/features/http_server_convenience.cpp
+.. literalinclude:: ../../examples/simple/server_add_auth.cpp
    :language: cpp
-   :start-after: // Spawn server in background thread
-   :end-before: // Give server time to start
-   :dedent: 8
+   :start-at: #include
+
+``run_http()`` blocks until SIGINT or SIGTERM, or until ``server.stop()`` is
+called from another thread or a handler. ``server.bound_port()`` returns the
+port it listens on, which is the one the system chose when it was given port 0.
+:doc:`growing-a-server` builds this program up from the stdio server of
+:doc:`/getting-started`.
 
 Manual HTTP Setup
 ~~~~~~~~~~~~~~~~~
@@ -201,6 +205,10 @@ In production, servers are frequently restarted or moved. Graceful shutdown ensu
 
 Signal Handling
 ~~~~~~~~~~~~~~~
+
+``run_stdio()`` and ``run_http()`` handle ``SIGINT`` and ``SIGTERM`` themselves,
+and ``server.stop()`` ends them the same way. A program that runs the event loop
+itself, with ``Server::run()``, handles the signals as below.
 
 You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdown process. The SDK provides ``mcp::graceful_shutdown()`` in ``mcp/core/signal.hpp`` to close the transport and stop the ``io_context`` after in-flight work finishes or times out.
 

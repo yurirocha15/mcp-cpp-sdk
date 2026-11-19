@@ -1214,8 +1214,10 @@ class MCP_API Server {
      * receives before it listens: its setters choose the allowed origins, bearer token validation,
      * protected resource metadata, limits and stream options, such as
      * `server.run_http("127.0.0.1", 8080, [](mcp::StreamableHttpSessionManager& http) {
-     * http.set_allowed_origins({"https://app.example"}); });`. Without @p configure the endpoint
-     * keeps its default settings, so a request carrying an Origin header is answered with 403.
+     * http.set_allowed_origins({"https://app.example"}); });`. A program that passes @p configure
+     * includes `<mcp/transport/http_session_manager.hpp>`, which declares the manager. Without
+     * @p configure the endpoint keeps its default settings, so a request carrying an Origin
+     * header is answered with 403.
      *
      * stop() ends the call as SIGINT does, and bound_port() gives the port it listens on.
      *

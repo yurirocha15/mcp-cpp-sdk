@@ -9,6 +9,16 @@ In ``mcp-cpp-sdk``, resources can be registered either directly or via templates
 Resources are identified by URIs, which should follow a hierarchical structure
 appropriate for your application.
 
+Adding This to a Simple-Mode Program
+------------------------------------
+
+The server of :doc:`/getting-started` gets a resource with ``add_text_resource()``, whose
+function returns the text that each read returns. :doc:`/guides/growing-a-server` also
+adds a resource that changes and tells its subscribers.
+
+.. literalinclude:: /_generated/progression/server_add_resource.diff
+   :language: diff
+
 Static Resources
 ----------------
 

@@ -26,6 +26,19 @@ The server side is the same in both: the server calls ``notify_resource_updated(
 and the ``notify_*_list_changed()`` methods, and the SDK sends each
 notification to the clients that asked for it.
 
+Adding This to a Simple-Mode Program
+------------------------------------
+
+The server of :doc:`/getting-started` gets a resource that changes and a tool that changes
+it and tells the subscribers; the client subscribes with ``listen()`` and
+waits for the update.
+
+.. literalinclude:: /_generated/progression/server_add_subscriptions.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_subscriptions.diff
+   :language: diff
+
 Listening for Notifications
 ---------------------------
 
