@@ -8,6 +8,35 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [0.3.0] - 2026-11-17
 
+### Highlights
+
+- **Protocol revision 2026-07-28.** Servers serve it alongside 2025-11-25 and
+  earlier revisions. The client finds out which revision a server speaks
+  (`ClientProtocol::automatic()`, the default), or keeps to one with
+  `ClientProtocol::legacy()` or `pinned()`.
+- **Multi round-trip requests and subscriptions.** The handler of a 2026-07-28
+  `tools/call`, `prompts/get` or `resources/read` can ask the client to elicit,
+  sample or list roots, and the request resumes with the answers.
+  `subscriptions/listen` streams list-changed and resource-updated
+  notifications.
+- **Schema validation.** `CompiledSchema` validates JSON Schema 2020-12,
+  2019-09, draft-07, draft-06 and draft-04. Tool arguments and structured
+  results are checked against the tool's schemas, and elicitation answers
+  against `requestedSchema`, on both sides; each check can be turned off.
+- **Tasks.** The tasks extension (`io.modelcontextprotocol/tasks`) on the server
+  and the client.
+- **Cancellation.** `CancellationToken` cancels requests from any thread,
+  without their ids.
+- **Launching stdio servers.** `StdioClientTransport` starts an MCP server as a
+  child process, and `StdioClientSession` can start it again when it ends
+  unexpectedly.
+- **Typed elicitation forms.** `ElicitationSchema` builds a form's
+  `requestedSchema` from typed fields and decodes the answer into typed values.
+- **Extensions.** MCP Apps, Skills, OAuth client credentials and
+  enterprise-managed authorization.
+- **Builds** with Boost 1.74 and 1.75, the documented minimum, and with Boost
+  1.87 and later.
+
 ### Migrating from 0.2.0
 
 Code written for 0.2.0 needs these changes to compile with 0.3.0:
