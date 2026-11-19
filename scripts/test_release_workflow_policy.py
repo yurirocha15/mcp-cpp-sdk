@@ -407,6 +407,31 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
             )
         )
 
+    def graph_error(self, blocks=None, candidate_blocks=None) -> None:
+        self.assert_policy_error(
+            lambda: policy.check_job_graph(
+                self.blocks if blocks is None else blocks,
+                self.combined_text,
+                self.candidate_blocks if candidate_blocks is None else candidate_blocks,
+                self.publication_blocks,
+            )
+        )
+
+    def test_chocolatey_package_is_validated_before_the_anchor(self) -> None:
+        candidate_blocks = self.copied(self.candidate_blocks)
+        candidate_blocks["package-validation-gate"] = [
+            line.replace("--chocolatey-result", "--skip-result")
+            for line in candidate_blocks["package-validation-gate"]
+        ]
+        self.graph_error(candidate_blocks=candidate_blocks)
+        candidate_blocks = self.copied(self.candidate_blocks)
+        candidate_blocks["validate-chocolatey-package"] = [
+            line
+            for line in candidate_blocks["validate-chocolatey-package"]
+            if line != "      - candidate-gate"
+        ]
+        self.graph_error(candidate_blocks=candidate_blocks)
+
     def test_rejects_inline_python_or_missing_policy_hook(self) -> None:
         self.assert_policy_error(
             lambda: policy.check_delegation_and_ci(self.blocks, self.text + "\npython3 - <<'PY'")

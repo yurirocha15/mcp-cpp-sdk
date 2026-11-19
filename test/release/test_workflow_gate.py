@@ -24,6 +24,7 @@ class WorkflowGateTests(unittest.TestCase):
             conan_linux_result="success",
             conan_windows_result="success",
             aur_result="success",
+            chocolatey_result="success",
         )
         for release_kind, anchor_exists in (("rc", False), ("stable", True)):
             require_package_validation(
@@ -33,6 +34,7 @@ class WorkflowGateTests(unittest.TestCase):
                 conan_linux_result="skipped",
                 conan_windows_result="skipped",
                 aur_result="skipped",
+                chocolatey_result="skipped",
             )
         with self.assertRaisesRegex(WorkflowGateError, "package validation"):
             require_package_validation(
@@ -42,6 +44,17 @@ class WorkflowGateTests(unittest.TestCase):
                 conan_linux_result="failure",
                 conan_windows_result="success",
                 aur_result="success",
+                chocolatey_result="success",
+            )
+        with self.assertRaisesRegex(WorkflowGateError, "package validation"):
+            require_package_validation(
+                release_kind="stable",
+                anchor_exists=False,
+                homebrew_result="success",
+                conan_linux_result="success",
+                conan_windows_result="success",
+                aur_result="success",
+                chocolatey_result="failure",
             )
         with self.assertRaisesRegex(WorkflowGateError, "package validation"):
             require_package_validation(
@@ -51,6 +64,7 @@ class WorkflowGateTests(unittest.TestCase):
                 conan_linux_result="success",
                 conan_windows_result="success",
                 aur_result="skipped",
+                chocolatey_result="skipped",
             )
 
 

@@ -75,6 +75,7 @@ CANDIDATE_JOB_PERMISSIONS = {
     "validate-conan-windows": READ,
     "package-validation-gate": READ,
     "validate-aur-packages": READ,
+    "validate-chocolatey-package": READ,
 }
 CANDIDATE_ENVIRONMENTS = {"signing": "release-signing"}
 
@@ -502,6 +503,7 @@ def check_job_graph(
         "validate-conan-linux",
         "validate-conan-windows",
         "validate-aur-packages",
+        "validate-chocolatey-package",
     ):
         block = "\n".join(candidate_blocks[job])
         if scalar(candidate_blocks[job], "if") != fresh_stable or "candidate-gate" not in block:
@@ -509,7 +511,13 @@ def check_job_graph(
     package_gate = "\n".join(candidate_blocks["package-validation-gate"])
     require_fragments(
         package_gate,
-        ("release.workflow_gate packages", "--aur-result", "validate-aur-packages.result"),
+        (
+            "release.workflow_gate packages",
+            "--aur-result",
+            "validate-aur-packages.result",
+            "--chocolatey-result",
+            "validate-chocolatey-package.result",
+        ),
         "package validation gate",
     )
     require_fragments(
