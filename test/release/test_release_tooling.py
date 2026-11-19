@@ -736,9 +736,17 @@ class TemplateTests(unittest.TestCase):
         # The distribution builds turn off CMake's unused-variable warning, because their build
         # helpers pass variables this project does not read, so a misspelled option would go unseen.
         repository = Path(__file__).resolve().parents[2]
+        # The package builds configure the root project and the directories it adds.
+        lists = [repository / "CMakeLists.txt"]
+        for path in lists:
+            for directory in re.findall(
+                r"^\s*add_subdirectory\(\s*([\w./-]+)", path.read_text(encoding="utf-8"), re.MULTILINE
+            ):
+                lists.append(path.parent / directory / "CMakeLists.txt")
+        self.assertIn(repository / "conformance/CMakeLists.txt", lists)
         cmake_text = "\n".join(
             path.read_text(encoding="utf-8")
-            for path in (repository / "CMakeLists.txt", *sorted((repository / "cmake").rglob("*.cmake")))
+            for path in (*lists, *sorted((repository / "cmake").rglob("*.cmake")))
         )
         cmake_variables = {
             "CMAKE_BUILD_TYPE",
