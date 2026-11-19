@@ -417,6 +417,39 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_secret_jobs_wait_for_the_run_approval(self) -> None:
+        for job in (*policy.PREFLIGHT_CONDITIONS, "candidate"):
+            with self.subTest(job=job):
+                blocks = self.copied(self.blocks)
+                blocks[job] = [line for line in blocks[job] if line != "      - run-approval"]
+                self.graph_error(blocks)
+        blocks = self.copied(self.blocks)
+        blocks["run-approval"] = [
+            line for line in blocks["run-approval"] if line != "      - repository-readiness"
+        ]
+        self.graph_error(blocks)
+
+    def test_publishing_jobs_wait_for_the_publication_approval(self) -> None:
+        for job in ("attestation", "github-release", "publication"):
+            with self.subTest(job=job):
+                blocks = self.copied(self.blocks)
+                blocks[job] = [
+                    line for line in blocks[job] if line != "      - publication-approval"
+                ]
+                self.graph_error(blocks)
+        blocks = self.copied(self.blocks)
+        blocks["publication-approval"] = [
+            line for line in blocks["publication-approval"] if "    if: " not in line
+        ]
+        self.graph_error(blocks)
+
+    def test_approval_jobs_hold_no_secrets(self) -> None:
+        for job in ("run-approval", "publication-approval"):
+            with self.subTest(job=job):
+                blocks = self.copied(self.blocks)
+                blocks[job] = [*blocks[job], "        run: echo ${{ secrets.CLOUDSMITH_API_KEY }}"]
+                self.graph_error(blocks)
+
     def test_chocolatey_package_is_validated_before_the_anchor(self) -> None:
         candidate_blocks = self.copied(self.candidate_blocks)
         candidate_blocks["package-validation-gate"] = [

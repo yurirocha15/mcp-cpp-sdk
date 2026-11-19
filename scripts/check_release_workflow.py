@@ -41,6 +41,7 @@ MAIN_JOB_PERMISSIONS = {
     "repository-readiness": READ,
     "immutability-gate": READ,
     "existing-anchor-policy": READ,
+    "run-approval": READ,
     "preflight-cloudsmith": READ,
     "preflight-aur": READ,
     "preflight-homebrew": READ,
@@ -48,6 +49,7 @@ MAIN_JOB_PERMISSIONS = {
     "preflight-conan-broker": READ,
     "preparation-gate": READ,
     "candidate": READ,
+    "publication-approval": READ,
     "attestation": {"contents": "read", "id-token": "write", "attestations": "write"},
     "github-release": {"contents": "write"},
     "github-anchor": READ,
@@ -57,6 +59,8 @@ MAIN_JOB_PERMISSIONS = {
 
 MAIN_ENVIRONMENTS = {
     "immutability-gate": "release-admin-read",
+    "run-approval": "release-approval",
+    "publication-approval": "release-publication-approval",
     "preflight-cloudsmith": "release-cloudsmith",
     "preflight-aur": "release-aur",
     "attestation": "release-github",
@@ -157,8 +161,21 @@ PREFLIGHT_CONDITIONS = {
 # A resume skips the fresh-anchor jobs, so the default success() check would skip publication.
 PUBLICATION_CONDITION = (
     "${{ !cancelled() && needs.contract.outputs.mode == 'publish' && "
-    "needs.candidate.result == 'success' && needs.github-anchor.result == 'success' }}"
+    "needs.candidate.result == 'success' && needs.publication-approval.result == 'success' && "
+    "needs.github-anchor.result == 'success' }}"
 )
+
+# The environments of these two jobs are the release's reviews: one before any job reads a
+# release secret or signs, and one before anything is published. They hold no secrets.
+RUN_APPROVAL_NEEDS = frozenset(
+    {"contract", "repository-readiness", "immutability-gate", "existing-anchor-policy"}
+)
+RUN_APPROVED_JOBS = (*PREFLIGHT_CONDITIONS, "candidate")
+PUBLICATION_APPROVAL_CONDITION = (
+    "${{ !cancelled() && needs.contract.outputs.mode == 'publish' && "
+    "needs.candidate.result == 'success' }}"
+)
+PUBLICATION_APPROVED_JOBS = ("attestation", "github-release", "publication")
 
 PUBLISHER_CONDITIONS = {
     "publish-cloudsmith": (
@@ -411,6 +428,23 @@ def check_job_graph(
             raise PolicyError(
                 f"preflight {job!r} does not cover fresh anchors and selected resumes"
             )
+
+    for job in ("run-approval", "publication-approval"):
+        block = "\n".join(blocks[job])
+        if "secrets." in block or "uses:" in block:
+            raise PolicyError(f"approval job {job!r} must not read secrets or run actions")
+    if not RUN_APPROVAL_NEEDS <= set(sequence(blocks["run-approval"], "needs")):
+        raise PolicyError("the run approval is requested before the run is validated")
+    for job in RUN_APPROVED_JOBS:
+        if "run-approval" not in sequence(blocks[job], "needs"):
+            raise PolicyError(f"job {job!r} can start before the run is approved")
+    if expression(blocks["publication-approval"], "if") != PUBLICATION_APPROVAL_CONDITION or (
+        "candidate" not in sequence(blocks["publication-approval"], "needs")
+    ):
+        raise PolicyError("the publication approval is requested before the candidate is verified")
+    for job in PUBLICATION_APPROVED_JOBS:
+        if "publication-approval" not in sequence(blocks[job], "needs"):
+            raise PolicyError(f"job {job!r} can start before publication is approved")
 
     candidate_call = "\n".join(blocks["candidate"])
     if expression(blocks["candidate"], "if") != (
