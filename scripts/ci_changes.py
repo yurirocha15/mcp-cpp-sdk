@@ -84,6 +84,7 @@ PACKAGE_CORE = (
     "release/native_builder_lock.py",
     "release/native_targets.py",
     "release/publication_contract.py",
+    "release/release_notes.py",
     "release/source-archive-inventory.txt",
     "release/strict_json.py",
     "release/templates.py",

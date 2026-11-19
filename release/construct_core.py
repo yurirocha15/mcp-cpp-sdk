@@ -24,6 +24,7 @@ from .artifacts import (
 )
 from .model import SemVer, ValidationError
 from .publication_contract import CONTRACT_ASSET, write_publication_contract
+from .release_notes import release_notes
 from .templates import render_file
 
 
@@ -86,6 +87,10 @@ def construct_core(
         raise ValidationError("release kind does not match the version")
     if source_date_epoch < 1:
         raise ValidationError("source date epoch must be positive")
+    # Checked first, so a changelog without highlights fails before any archive is built.
+    notes = release_notes(
+        (root / "CHANGELOG.md").read_text(encoding="utf-8"), version, repository=repository
+    )
 
     if output.exists():
         shutil.rmtree(output)
@@ -119,9 +124,7 @@ def construct_core(
         "source_sha256": source_sha256,
     }
     write_atomic(output / "core-metadata.json", canonical_json_bytes(metadata))
-    (output / "RELEASE_NOTES.md").write_bytes(
-        f"mcp-cpp-sdk {version}\n\nSee CHANGELOG.md in the signed source archive.\n".encode("utf-8")
-    )
+    (output / "RELEASE_NOTES.md").write_bytes(notes.encode("utf-8"))
     if release_kind == "rc":
         return
 
