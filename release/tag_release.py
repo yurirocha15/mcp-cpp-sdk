@@ -17,6 +17,7 @@ names. Pushing the tag and dispatching the release each ask for a yes first.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -25,9 +26,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Iterator, Mapping, Sequence
 
 from .model import SemVer, ValidationError
+from .trusted_signers import TrustedSigner, load_trusted_signers
 
 SIGNERS = "release/trusted-release-signers.json"
 # The channels of the release workflow's dispatch inputs (scripts/release_dispatch_contract.py).
@@ -67,22 +69,13 @@ def run(
     return completed.stdout if capture else ""
 
 
-def active_signer(signers_json: str) -> dict[str, str]:
-    """Return the fingerprints and key path of the active release signer."""
+def active_signer(registry: Path) -> TrustedSigner:
+    """Return the active release signer of the trusted signer registry at ``registry``."""
 
-    document = json.loads(signers_json)
-    active = document.get("active_signer_id")
-    for signer in document.get("signers", []):
-        if signer.get("id") == active:
-            fields = (
-                "public_key",
-                "primary_fingerprint",
-                "tag_subkey_fingerprint",
-                "artifact_subkey_fingerprint",
-            )
-            if all(isinstance(signer.get(field), str) for field in fields):
-                return {field: signer[field] for field in fields}
-    raise TagReleaseError(f"{SIGNERS} has no complete active signer")
+    try:
+        return load_trusted_signers(registry).active
+    except (OSError, ValidationError) as error:
+        raise TagReleaseError(f"{SIGNERS}: {error}") from error
 
 
 def signature_fingerprints(status: str) -> tuple[str, str] | None:
@@ -141,41 +134,14 @@ def confirm(question: str, answer: Callable[[str], str] = input) -> bool:
     return answer(f"{question} [y/N] ").strip().lower() in {"y", "yes"}
 
 
-def _readiness(commit: str, tag: str, version: SemVer, signer: Mapping[str, str]) -> None:
-    worktree = Path(tempfile.mkdtemp(prefix="mcp-release-readiness-"))
+@contextlib.contextmanager
+def _checkout(commit: str) -> Iterator[Path]:
+    """Yield a temporary worktree of ``commit``."""
+
+    worktree = Path(tempfile.mkdtemp(prefix="mcp-release-tag-"))
     try:
         run("git", "worktree", "add", "--detach", "--force", str(worktree / "tree"), commit)
-        tree = worktree / "tree"
-        output = worktree / "readiness-output.txt"
-        run(
-            sys.executable,
-            "-I",
-            "-S",
-            "scripts/run_release_tool.py",
-            "release.repository_readiness",
-            "--tag",
-            tag,
-            "--version",
-            str(version),
-            "--dispatch-head-sha",
-            commit,
-            "--anchor-exists",
-            "false",
-            "--dry-run",
-            "false",
-            "--primary-fingerprint",
-            signer["primary_fingerprint"],
-            "--tag-fingerprint",
-            signer["tag_subkey_fingerprint"],
-            "--artifact-fingerprint",
-            signer["artifact_subkey_fingerprint"],
-            "--public-key",
-            signer["public_key"],
-            *REPOSITORY_FILES,
-            "--github-output",
-            str(output),
-            cwd=tree,
-        )
+        yield worktree / "tree"
     finally:
         subprocess.run(
             ("git", "worktree", "remove", "--force", str(worktree / "tree")),
@@ -183,6 +149,38 @@ def _readiness(commit: str, tag: str, version: SemVer, signer: Mapping[str, str]
             capture_output=True,
         )
         shutil.rmtree(worktree, ignore_errors=True)
+
+
+def _readiness(tree: Path, commit: str, tag: str, version: SemVer, signer: TrustedSigner) -> None:
+    run(
+        sys.executable,
+        "-I",
+        "-S",
+        "scripts/run_release_tool.py",
+        "release.repository_readiness",
+        "--tag",
+        tag,
+        "--version",
+        str(version),
+        "--dispatch-head-sha",
+        commit,
+        "--anchor-exists",
+        "false",
+        "--dry-run",
+        "false",
+        "--primary-fingerprint",
+        signer.primary_fingerprint,
+        "--tag-fingerprint",
+        signer.tag_subkey_fingerprint,
+        "--artifact-fingerprint",
+        signer.artifact_subkey_fingerprint,
+        "--public-key",
+        str(signer.public_key),
+        *REPOSITORY_FILES,
+        "--github-output",
+        str(tree.parent / "readiness-output.txt"),
+        cwd=tree,
+    )
 
 
 def _repository_variable(name: str) -> str | None:
@@ -223,30 +221,31 @@ def tag_release(args: argparse.Namespace, answer: Callable[[str], str] = input) 
             )
         print(f"dry run passed: {dry_run}")
 
-    signer = active_signer(run("git", "show", f"{commit}:{SIGNERS}"))
-    tag_key = signer["tag_subkey_fingerprint"]
-    if run("git", "tag", "--list", tag).strip():
-        if run("git", "rev-parse", f"{tag}^{{commit}}").strip() != commit:
-            raise TagReleaseError(f"the local {tag} points elsewhere; delete it with: git tag -d {tag}")
-        print(f"using the existing local {tag}")
-    else:
-        print(f"signing {tag} with {tag_key}; gpg asks for the release key passphrase")
-        run(
-            "git", "tag", "-s", "-u", f"{tag_key}!", "-m", f"mcp-cpp-sdk {version}", tag, commit,
-            env=gpg_env, capture=False,
+    with _checkout(commit) as tree:
+        signer = active_signer(tree / SIGNERS)
+        tag_key = signer.tag_subkey_fingerprint
+        if run("git", "tag", "--list", tag).strip():
+            if run("git", "rev-parse", f"{tag}^{{commit}}").strip() != commit:
+                raise TagReleaseError(f"the local {tag} points elsewhere; delete it with: git tag -d {tag}")
+            print(f"using the existing local {tag}")
+        else:
+            print(f"signing {tag} with {tag_key}; gpg asks for the release key passphrase")
+            run(
+                "git", "tag", "-s", "-u", f"{tag_key}!", "-m", f"mcp-cpp-sdk {version}", tag, commit,
+                env=gpg_env, capture=False,
+            )
+        status = subprocess.run(
+            ("git", "verify-tag", "--raw", tag),
+            env={**os.environ, **gpg_env},
+            check=False,
+            capture_output=True,
+            text=True,
         )
-    status = subprocess.run(
-        ("git", "verify-tag", "--raw", tag),
-        env={**os.environ, **gpg_env},
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if signature_fingerprints(status.stderr) != (tag_key, signer["primary_fingerprint"]):
-        raise TagReleaseError(f"{tag} does not carry a good signature by {tag_key}")
-    print(f"{tag} is signed by {tag_key}")
+        if signature_fingerprints(status.stderr) != (tag_key, signer.primary_fingerprint):
+            raise TagReleaseError(f"{tag} does not carry a good signature by {tag_key}")
+        print(f"{tag} is signed by {tag_key}")
 
-    _readiness(commit, tag, version, signer)
+        _readiness(tree, commit, tag, version, signer)
     print("release readiness passed")
     # Checked before the push, so a missing or wrong variable stops before the tag is public.
     dispatch = release_dispatch(version, _repository_variable("RELEASE_CHANNELS"))

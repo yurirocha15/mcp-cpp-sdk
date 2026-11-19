@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+import shutil
+import tempfile
 import unittest
 
 from release.model import SemVer
@@ -23,15 +25,31 @@ COMMIT = "6e72df9b5a6db687d78b8cb43fafdacd3b1e6891"
 
 class TagReleaseTests(unittest.TestCase):
     def test_active_signer_comes_from_the_trusted_signers(self) -> None:
-        text = (ROOT / "release/trusted-release-signers.json").read_text(encoding="utf-8")
-        document = json.loads(text)
-        signer = active_signer(text)
+        registry = ROOT / "release/trusted-release-signers.json"
+        document = json.loads(registry.read_text(encoding="utf-8"))
         expected = next(s for s in document["signers"] if s["id"] == document["active_signer_id"])
-        self.assertEqual(signer["tag_subkey_fingerprint"], expected["tag_subkey_fingerprint"])
-        self.assertEqual(signer["public_key"], expected["public_key"])
-        document["active_signer_id"] = "missing"
-        with self.assertRaises(TagReleaseError):
-            active_signer(json.dumps(document))
+        signer = active_signer(registry)
+        self.assertEqual(signer.tag_subkey_fingerprint, expected["tag_subkey_fingerprint"])
+        self.assertEqual(signer.public_key, ROOT / expected["public_key"])
+
+    def test_active_signer_rejects_a_malformed_registry(self) -> None:
+        source = ROOT / "release/trusted-release-signers.json"
+        text = source.read_text(encoding="utf-8")
+        document = json.loads(text)
+        key = document["signers"][0]["public_key"]
+        unknown_active = json.dumps({**document, "active_signer_id": "missing"})
+        repeated_key = text.replace('"schema_version": 1,', '"schema_version": 1, "schema_version": 1,', 1)
+        self.assertNotEqual(repeated_key, text)
+        for name, content in (("unknown active signer", unknown_active), ("repeated key", repeated_key)):
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / key).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / key, root / key)
+                registry = root / "release/trusted-release-signers.json"
+                registry.parent.mkdir(parents=True, exist_ok=True)
+                registry.write_text(content, encoding="utf-8")
+                with self.assertRaises(TagReleaseError):
+                    active_signer(registry)
 
     def test_signature_fingerprints_read_the_good_signature(self) -> None:
         status = (
