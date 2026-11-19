@@ -232,8 +232,8 @@ TEST(ClientSyncTest, AProgressTokenTheParamsNameIsKept) {
     request.on_progress = [&](const mcp::ProgressNotificationParams& progress) {
         routed.push_back(progress.progressToken.correlation_key());
     };
-    const json call{
-        {"name", "progress"}, {"arguments", {{"steps", 2}}}, {"_meta", {{"progressToken", "mine"}}}};
+    const std::optional<json> call{json{
+        {"name", "progress"}, {"arguments", {{"steps", 2}}}, {"_meta", {{"progressToken", "mine"}}}}};
     static_cast<void>(client.sync().send_request("tools/call", call, request));
     EXPECT_EQ(routed, (std::vector<std::string>(2, mcp::ProgressToken{"mine"}.correlation_key())));
     EXPECT_TRUE(unrouted.empty());
@@ -247,9 +247,9 @@ TEST(ClientSyncTest, AProgressTokenTheParamsNameIsKept) {
 TEST(ClientSyncTest, AProgressTokenInUseIsRefused) {
     mcp::Client client(test_server());
     client.sync().connect("sync-test", "1.0");
-    const json call{{"name", "progress"},
-                    {"arguments", {{"steps", 1}, {"wait_ms", 600000}}},
-                    {"_meta", {{"progressToken", "shared"}}}};
+    const std::optional<json> call{json{{"name", "progress"},
+                                        {"arguments", {{"steps", 1}, {"wait_ms", 600000}}},
+                                        {"_meta", {{"progressToken", "shared"}}}}};
     std::promise<void> reported;
     auto first_report = reported.get_future();
     std::once_flag once;
@@ -278,7 +278,7 @@ TEST(ClientSyncTest, AProgressTokenInUseIsRefused) {
     EXPECT_TRUE(first_cancelled);
 
     // The first call's end released the token.
-    json short_call = call;
+    json short_call = *call;
     short_call["arguments"]["wait_ms"] = 0;
     int reports = 0;
     second.on_progress = [&](const mcp::ProgressNotificationParams&) { ++reports; };
