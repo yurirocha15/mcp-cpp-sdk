@@ -249,8 +249,18 @@ namespace detail {
 
 /// The event loop a Client constructed from an Endpoint runs on, for the calls that wait for it.
 struct BlockingLoop {
+    BlockingLoop(std::shared_ptr<void> loop_owner, boost::asio::any_io_executor loop_executor,
+                 std::thread::id loop_thread)
+        : owner(std::move(loop_owner)), executor(std::move(loop_executor)), thread(loop_thread) {}
+
+    /// Owns the loop's io_context. Every state that holds this BlockingLoop declares it first, so
+    /// that the io_context is destroyed after that state's timers and strand, also when a
+    /// TaskHandle or Subscription keeps the state after the Client is gone.
+    std::shared_ptr<void> owner;
     boost::asio::any_io_executor executor;
     std::thread::id thread;
+    /// Set once the Client has stopped the loop for good: nothing runs a blocking call after that.
+    mutable std::atomic<bool> ended{false};
 };
 
 /// Runs the coroutine @p start makes on @p loop and waits for it; see Client::sync().
@@ -265,6 +275,10 @@ T run_blocking(const std::shared_ptr<const BlockingLoop>& loop, std::function<Ta
         throw std::logic_error(
             "mcp::Client: a blocking call on the client's own event loop thread would wait for "
             "itself; await the coroutine instead");
+    }
+    if (loop->ended.load(std::memory_order_acquire)) {
+        throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                       "The client has been destroyed, and its connection with it");
     }
     // The coroutine is made on the loop as well, so that no part of the call runs on this thread.
     return boost::asio::co_spawn(
@@ -283,10 +297,11 @@ struct SubscriptionState {
                       std::size_t limit)
         : wake(strand), queue_limit(limit) {}
 
+    /// The loop of a Client constructed from an Endpoint, for Subscription::sync(); null otherwise.
+    /// Declared first, as BlockingLoop::owner requires.
+    std::shared_ptr<const BlockingLoop> blocking_loop;
     /// Wakes whoever waits for the acknowledgment or the next notification.
     boost::asio::steady_timer wake;
-    /// The loop of a Client constructed from an Endpoint, for Subscription::sync(); null otherwise.
-    std::shared_ptr<const BlockingLoop> blocking_loop;
     std::size_t queue_limit;
     RequestId id;
     SubscriptionFilter requested;
@@ -2503,11 +2518,12 @@ struct Client::Impl {
         }
     }
 
+    /// The loop of a Client constructed from an Endpoint, for the blocking calls; null otherwise.
+    /// Declared first, as BlockingLoop::owner requires.
+    std::shared_ptr<const detail::BlockingLoop> blocking_loop;
     std::shared_ptr<ITransport> transport;
     /// The executor the Client was constructed with, as Client::executor() returns it.
     Executor executor;
-    /// The loop of a Client constructed from an Endpoint, for the blocking calls; null otherwise.
-    std::shared_ptr<const detail::BlockingLoop> blocking_loop;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     /// How many requests of the server are being answered. Touched on the strand only.
     std::size_t incoming_requests{0};
@@ -2740,12 +2756,12 @@ Client::Client(std::shared_ptr<ITransport> transport, const Executor& executor, 
     start(std::move(transport), executor, std::move(options));
 }
 
-Client::Client(const Endpoint& endpoint, ClientOptions options) : loop_(std::make_unique<OwnedLoop>()) {
+Client::Client(const Endpoint& endpoint, ClientOptions options) : loop_(std::make_shared<OwnedLoop>()) {
     try {
         const Executor executor = loop_->io.get_executor();
         start(endpoint.make_transport(executor), executor, std::move(options));
         impl_->blocking_loop = std::make_shared<const detail::BlockingLoop>(
-            detail::BlockingLoop{loop_->io.get_executor(), loop_->thread.get_id()});
+            loop_, loop_->io.get_executor(), loop_->thread.get_id());
     } catch (...) {
         loop_->work.reset();
         loop_->io.stop();
@@ -2826,6 +2842,9 @@ Client::~Client() {
         loop_->io.stop();
     }
     loop_->thread.join();
+    if (impl_->blocking_loop) {
+        impl_->blocking_loop->ended.store(true, std::memory_order_release);
+    }
     impl_.reset();
 }
 

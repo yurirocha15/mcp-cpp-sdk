@@ -24,7 +24,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   coroutine on the client's loop and blocks until it ends, rethrowing what it
   throws. Both are for a client built from an `Endpoint`: on a client built on
   an application executor, or when called on the client's own loop thread,
-  they throw `std::logic_error`.
+  they throw `std::logic_error`. A `TaskHandle` or `Subscription` may outlive
+  its `Client`; its blocking calls then throw `McpError`
+  (`g_CONNECTION_CLOSED`).
 - `RequestOptions::on_progress` receives the progress the server reports for
   one request: the request carries a `progressToken` in its `_meta`, a new one
   unless its params name one, and the `notifications/progress` with that token

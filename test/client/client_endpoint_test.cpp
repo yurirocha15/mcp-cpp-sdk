@@ -11,6 +11,7 @@
 #include <boost/asio/use_future.hpp>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -188,6 +189,27 @@ TEST(ClientEndpointTest, AListenStreamEndsWhenTheServerIsRestarted) {
     ASSERT_TRUE(subscription.end_error().has_value());
     EXPECT_EQ(subscription.end_error()->code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
     EXPECT_FALSE(client.sync().list_tools().tools.empty());
+}
+
+// A subscription and a task handle may outlive their client: their blocking calls then fail as a
+// closed connection does, and destroying them afterwards is safe.
+TEST(ClientEndpointTest, HandlesThatOutliveTheClientRefuseBlockingCalls) {
+    std::optional<mcp::Subscription> subscription;
+    std::optional<mcp::TaskHandle> handle;
+    {
+        mcp::Client client(mcp::Endpoint::stdio(test_server()));
+        client.sync().connect("endpoint-test", "1.0");
+        mcp::SubscriptionFilter filter;
+        filter.toolsListChanged = true;
+        subscription = client.sync().listen(filter);
+        handle = client.task_handle("task-of-a-closed-client");
+    }
+    EXPECT_EQ(failure_code([&] { static_cast<void>(subscription->sync().next()); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_EQ(failure_code([&] { static_cast<void>(handle->sync().get()); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    subscription.reset();
+    handle.reset();
 }
 
 TEST(ClientEndpointTest, HttpEndpointConfiguresTheTransportAndMakesTheAuthenticator) {

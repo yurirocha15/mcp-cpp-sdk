@@ -527,6 +527,9 @@ class MCP_API Subscription {
 
     /// @brief Blocking calls to this stream, for a subscription of a Client constructed from an
     /// Endpoint (see Client::sync()).
+    /// @details The subscription may outlive its Client. Once that Client has been destroyed,
+    /// each blocking call throws McpError (mcp::constants::jsonrpc::g_CONNECTION_CLOSED), since
+    /// the event loop it would run on has ended.
     /// @throws std::logic_error If the client runs on the application's executor.
     [[nodiscard]] SyncSubscription sync() const;
 
@@ -589,6 +592,9 @@ class MCP_API TaskHandle {
 
     /// @brief Blocking calls to this task, for a handle of a Client constructed from an Endpoint
     /// (see Client::sync()).
+    /// @details The handle may outlive its Client. Once that Client has been destroyed, each
+    /// blocking call throws McpError (mcp::constants::jsonrpc::g_CONNECTION_CLOSED), since the
+    /// event loop it would run on has ended; the task itself goes on on the server.
     /// @throws std::logic_error If the client runs on the application's executor.
     [[nodiscard]] SyncTaskHandle sync() const;
 
@@ -1130,9 +1136,10 @@ class MCP_API Client {
     void start(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options);
 
     /// The event loop of a client constructed from an Endpoint; null otherwise. Declared before
-    /// impl_ so that impl_ is destroyed first.
+    /// impl_ so that impl_ is destroyed first. The state of a TaskHandle or Subscription shares it,
+    /// so that the loop's io_context outlives the objects of that state that belong to it.
     struct OwnedLoop;
-    std::unique_ptr<OwnedLoop> loop_;
+    std::shared_ptr<OwnedLoop> loop_;
 
     struct Impl;
     std::shared_ptr<Impl> impl_;
