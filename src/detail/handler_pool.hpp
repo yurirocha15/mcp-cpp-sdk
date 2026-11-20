@@ -63,10 +63,11 @@ class LoopGate final : public boost::asio::execution_context::service {
 template <typename Object>
 void keep_forever(Object object) {
     static std::mutex s_mutex;
-    static std::vector<void*> s_kept;  // reachable, so a leak checker does not report them
+    // Never destroyed, so what it holds is still reachable when a leak checker looks at exit.
+    static auto* const s_kept = new std::vector<void*>();
     auto* held = new Object(std::move(object));
     std::lock_guard lock(s_mutex);
-    s_kept.push_back(held);
+    s_kept->push_back(held);
 }
 
 /// The completion of the task run_on_pool() starts: resumes the waiting coroutine on its own
