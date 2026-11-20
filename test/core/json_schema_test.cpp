@@ -1971,6 +1971,141 @@ const std::vector<SuiteFileCount> g_draft7_counts = {
     {"uniqueItems.json", 65, 0},
 };
 
+const std::vector<SuiteExclusion> g_2019_09_exclusions = {
+    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
+    {"vocabulary.json", "schema that uses custom metaschema with with no validation vocabulary",
+     SuiteGap::eByDesign, g_remote_metaschema_reason},
+    {"vocabulary.json", "ignore unrecognized optional vocabulary", SuiteGap::eByDesign,
+     g_remote_metaschema_reason},
+};
+
+const std::vector<SuiteExclusion> g_draft6_exclusions = {
+    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
+};
+
+const std::vector<SuiteExclusion> g_draft4_exclusions = {
+    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
+};
+
+const std::vector<SuiteFileCount> g_2019_09_counts = {
+    {"additionalItems.json", 19, 0},
+    {"additionalProperties.json", 21, 0},
+    {"allOf.json", 30, 0},
+    {"anchor.json", 8, 0},
+    {"anyOf.json", 18, 0},
+    {"boolean_schema.json", 18, 0},
+    {"const.json", 54, 0},
+    {"contains.json", 21, 0},
+    {"content.json", 18, 0},
+    {"default.json", 7, 0},
+    {"defs.json", 2, 0},
+    {"dependentRequired.json", 20, 0},
+    {"dependentSchemas.json", 20, 0},
+    {"enum.json", 53, 0},
+    {"exclusiveMaximum.json", 4, 0},
+    {"exclusiveMinimum.json", 4, 0},
+    {"format.json", 114, 0},
+    {"if-then-else.json", 30, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 28, 0},
+    {"maxContains.json", 14, 0},
+    {"maxItems.json", 6, 0},
+    {"maxLength.json", 7, 0},
+    {"maxProperties.json", 10, 0},
+    {"maximum.json", 8, 0},
+    {"minContains.json", 28, 0},
+    {"minItems.json", 6, 0},
+    {"minLength.json", 7, 0},
+    {"minProperties.json", 10, 0},
+    {"minimum.json", 11, 0},
+    {"multipleOf.json", 13, 0},
+    {"not.json", 40, 0},
+    {"oneOf.json", 27, 0},
+    {"pattern.json", 9, 0},
+    {"patternProperties.json", 23, 0},
+    {"properties.json", 28, 0},
+    {"propertyNames.json", 22, 0},
+    {"recursiveRef.json", 34, 0},
+    {"ref.json", 81, 0},
+    {"refRemote.json", 0, 31},
+    {"required.json", 18, 0},
+    {"type.json", 80, 0},
+    {"unevaluatedItems.json", 56, 0},
+    {"unevaluatedProperties.json", 129, 0},
+    {"uniqueItems.json", 65, 0},
+    {"vocabulary.json", 0, 5},
+};
+const std::vector<SuiteFileCount> g_draft6_counts = {
+    {"additionalItems.json", 19, 0},
+    {"additionalProperties.json", 16, 0},
+    {"allOf.json", 30, 0},
+    {"anyOf.json", 18, 0},
+    {"boolean_schema.json", 18, 0},
+    {"const.json", 54, 0},
+    {"contains.json", 19, 0},
+    {"default.json", 7, 0},
+    {"definitions.json", 2, 0},
+    {"dependencies.json", 36, 0},
+    {"enum.json", 47, 0},
+    {"exclusiveMaximum.json", 4, 0},
+    {"exclusiveMinimum.json", 4, 0},
+    {"format.json", 54, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 28, 0},
+    {"maxItems.json", 6, 0},
+    {"maxLength.json", 7, 0},
+    {"maxProperties.json", 10, 0},
+    {"maximum.json", 8, 0},
+    {"minItems.json", 6, 0},
+    {"minLength.json", 7, 0},
+    {"minProperties.json", 10, 0},
+    {"minimum.json", 11, 0},
+    {"multipleOf.json", 13, 0},
+    {"not.json", 38, 0},
+    {"oneOf.json", 27, 0},
+    {"pattern.json", 9, 0},
+    {"patternProperties.json", 23, 0},
+    {"properties.json", 28, 0},
+    {"propertyNames.json", 22, 0},
+    {"ref.json", 70, 0},
+    {"refRemote.json", 0, 23},
+    {"required.json", 18, 0},
+    {"type.json", 80, 0},
+    {"uniqueItems.json", 65, 0},
+};
+const std::vector<SuiteFileCount> g_draft4_counts = {
+    {"additionalItems.json", 17, 0},
+    {"additionalProperties.json", 16, 0},
+    {"allOf.json", 27, 0},
+    {"anyOf.json", 15, 0},
+    {"default.json", 7, 0},
+    {"definitions.json", 2, 0},
+    {"dependencies.json", 29, 0},
+    {"enum.json", 49, 0},
+    {"format.json", 36, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 21, 0},
+    {"maxItems.json", 4, 0},
+    {"maxLength.json", 5, 0},
+    {"maxProperties.json", 8, 0},
+    {"maximum.json", 14, 0},
+    {"minItems.json", 4, 0},
+    {"minLength.json", 5, 0},
+    {"minProperties.json", 8, 0},
+    {"minimum.json", 17, 0},
+    {"multipleOf.json", 13, 0},
+    {"not.json", 20, 0},
+    {"oneOf.json", 23, 0},
+    {"pattern.json", 9, 0},
+    {"patternProperties.json", 18, 0},
+    {"properties.json", 24, 0},
+    {"ref.json", 45, 0},
+    {"refRemote.json", 0, 17},
+    {"required.json", 17, 0},
+    {"type.json", 79, 0},
+    {"uniqueItems.json", 65, 0},
+};
+
 TEST(Suite, Required2020_12) {
     expect_suite(run_suite("draft2020-12", g_2020_12_exclusions), g_2020_12_counts);
 }
@@ -1978,6 +2113,22 @@ TEST(Suite, Required2020_12) {
 TEST(Suite, RequiredDraft7) {
     expect_suite(run_suite("draft7", g_draft7_exclusions, "http://json-schema.org/draft-07/schema#"),
                  g_draft7_counts);
+}
+
+TEST(Suite, Required2019_09) {
+    expect_suite(
+        run_suite("draft2019-09", g_2019_09_exclusions, "https://json-schema.org/draft/2019-09/schema"),
+        g_2019_09_counts);
+}
+
+TEST(Suite, RequiredDraft6) {
+    expect_suite(run_suite("draft6", g_draft6_exclusions, "http://json-schema.org/draft-06/schema#"),
+                 g_draft6_counts);
+}
+
+TEST(Suite, RequiredDraft4) {
+    expect_suite(run_suite("draft4", g_draft4_exclusions, "http://json-schema.org/draft-04/schema#"),
+                 g_draft4_counts);
 }
 
 }  // namespace
