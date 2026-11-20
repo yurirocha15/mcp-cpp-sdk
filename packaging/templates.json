@@ -50,7 +50,8 @@
         "PROJECT_URL",
         "PACKAGE_SOURCE_URL",
         "COPYRIGHT",
-        "TAGS"
+        "TAGS",
+        "VCREDIST_MIN_VERSION"
     ],
     "chocolatey/chocolateyinstall.ps1.in": [
         "VERSION",

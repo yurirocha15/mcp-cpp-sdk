@@ -285,6 +285,7 @@ Use descriptive branch names:
 * Update documentation (Doxygen comments, .rst files)
 * Run tests locally: ``python scripts/build.py --test``
 * Format code: ``make format``
+* Add a changelog entry for a change users notice (see `Changelog`_)
 
 3. Commit
 ^^^^^^^^^
@@ -371,6 +372,20 @@ All PRs require:
 
 Once approved, a maintainer will merge your PR. The project uses squash merging
 to keep the main branch history clean.
+
+Changelog
+---------
+
+A change that users notice gets one entry in the ``[Unreleased]`` section of
+``CHANGELOG.md``: under ``Added``, ``Changed``, ``Deprecated``, ``Removed``,
+``Fixed`` or ``Security``, and also under ``Migrating from X.Y.Z`` when code
+written for the last release needs a change to compile.
+
+* Write one sentence about what changed for users, and name the API it
+  concerns. The documentation and the commit message hold the details.
+* Keep each entry to 200 characters. The release tests check this.
+* Before a release, a ``Highlights`` part lists the few changes the release
+  page shows; ``release/README.md`` describes the release steps.
 
 Reporting Bugs
 --------------

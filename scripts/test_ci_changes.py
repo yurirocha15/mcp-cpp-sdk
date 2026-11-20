@@ -124,6 +124,20 @@ class ClassifierTests(unittest.TestCase):
         self.write("README.md", README.replace("return 0;", "return 1;"))
         self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
 
+    def test_version_pin_text_runs_the_release_checks(self) -> None:
+        self.write("README.md", README.replace("Prose.", "Prose.\n\n    GIT_TAG v9.9.9\n"))
+        self.assertEqual(self.jobs("pull_request", self.commit()), {"release"})
+        self.write("docs/installation.rst", "choco install mcp-cpp-sdk --version=9.9.9\n")
+        pinned = self.commit()
+        self.assertEqual(self.jobs("pull_request", pinned), {"release"})
+        self.write("docs/installation.rst", "choco install mcp-cpp-sdk --version=9.9.9\n\nProse.\n")
+        self.assertEqual(self.jobs("pull_request", self.commit(), base=pinned), set())
+
+    def test_changelog_runs_the_release_checks(self) -> None:
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                self.assertEqual(self.jobs_for_change("CHANGELOG.md", event), {"release"})
+
     def test_doc_prose_and_fragments_run_nothing(self) -> None:
         self.write("docs/guide.rst",
                    GUIDE.replace("Prose.", "Better prose.").replace("ping", "close"))
@@ -151,7 +165,7 @@ class ClassifierTests(unittest.TestCase):
             "examples/features/pagination.cpp": {"code", "naming"},
             "scripts/run_examples.py": {"code", "release"},
             "scripts/check_doc_snippets.py": {"code", "release"},
-            "test_package/conanfile.py": {"conan", "package_core"},
+            "test_package/conanfile.py": {"conan"} | PACKAGES,
             "LICENSE": {"conan"},
             "benchmark/run.sh": {"benchmark"},
             "test/release/test_signing.py": {"release"},
@@ -162,20 +176,20 @@ class ClassifierTests(unittest.TestCase):
             ".github/workflows/release-candidate.yml": {"release"},
             ".github/workflows/conformance.yml": {"release"},
             "packaging/aur/PKGBUILD.in": {"release", "package_core"},
-            "packaging/debian/control.in": {"release", "package_core"},
-            "release/native-builders/lock.json": {"release", "package_core"},
-            "packaging/homebrew/mcp-cpp-sdk.rb.in": {"release", "package_core"},
-            "scripts/release/validate_homebrew_candidate.sh": {"release", "package_core"},
-            "packaging/chocolatey/mcp-cpp-sdk.nuspec.in": {"release", "package_core"},
-            "scripts/release/build_windows.ps1": {"release", "powershell", "package_core"},
+            "packaging/debian/control.in": {"release", "package_core", "native_package"},
+            "release/native-builders/lock.json": {"release", "package_core", "native_package"},
+            "packaging/homebrew/mcp-cpp-sdk.rb.in": {"release", "package_core", "homebrew_package"},
+            "scripts/release/validate_homebrew_candidate.sh": {"release", "package_core", "homebrew_package"},
+            "packaging/chocolatey/mcp-cpp-sdk.nuspec.in": {"release", "package_core", "windows_package"},
+            "scripts/release/build_windows.ps1": {"release", "powershell", "package_core", "windows_package"},
             "scripts/release/check_powershell_syntax.ps1": {"release", "powershell"},
-            "packaging/targets.json": {"release", "package_core"},
-            "release/construct_core.py": {"release", "package_core"},
-            "scripts/package_build.py": {"release", "package_core"},
+            "packaging/targets.json": {"release"} | PACKAGES,
+            "release/construct_core.py": {"release"} | PACKAGES,
+            "scripts/package_build.py": {"release"} | PACKAGES,
             "CMakeLists.txt": LIBRARY_JOBS | {"release", "package_core"},
             "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core"},
             "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release", "package_core"},
-            "VERSION": LIBRARY_JOBS | {"release", "package_core"},
+            "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
             "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release", "package_core"},
             ".github/workflows/ci.yml": PULL_REQUEST_JOBS,
         }

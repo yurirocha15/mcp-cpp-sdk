@@ -1369,11 +1369,11 @@ TEST(ClientPinned, PinnedModernConnectsAndNamesThePin) {
 }
 
 TEST(ClientPinned, InvalidPinThrows) {
-    EXPECT_THROW(mcp::ClientProtocol::pinned("1999-01-01"), std::invalid_argument);
-    EXPECT_THROW(mcp::ClientProtocol::pinned(""), std::invalid_argument);
-    EXPECT_THROW(mcp::ClientProtocol::pinned("2026-07-29"), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::ClientProtocol::pinned("1999-01-01")), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::ClientProtocol::pinned("")), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::ClientProtocol::pinned("2026-07-29")), std::invalid_argument);
     for (const auto* version : {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"}) {
-        EXPECT_NO_THROW(mcp::ClientProtocol::pinned(version));
+        EXPECT_NO_THROW(static_cast<void>(mcp::ClientProtocol::pinned(version)));
     }
     EXPECT_EQ(mcp::ClientProtocol::legacy().version(), "2025-11-25");
     EXPECT_EQ(mcp::ClientProtocol::automatic().kind(), mcp::ClientProtocol::Kind::eAuto);

@@ -10,12 +10,17 @@ include /usr/share/dpkg/architecture.mk
 %:
 	dh $@ --buildsystem=cmake+ninja
 
+# debhelper also passes CMake variables this project does not read, such as
+# FETCHCONTENT_FULLY_DISCONNECTED. The release tests check that it reads the ones below.
 override_dh_auto_configure:
-	dh_auto_configure -- -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
+	dh_auto_configure -- --no-warn-unused-cli -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG -DCMAKE_SKIP_INSTALL_ALL_DEPENDENCY=ON
 
 # The release publishes the runtime, development and static packages only.
 override_dh_strip:
 	dh_strip --no-automatic-dbgsym
+
+# The build makes no debug information, so dwz has none to compress.
+override_dh_dwz:
 
 # The tests are not packaged. Their objects go once the test program is linked, as in the RPM
 # build, and the program once the tests pass, which leaves the build space to the packaging tests,

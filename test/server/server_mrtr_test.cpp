@@ -47,6 +47,10 @@ mcp::Task<bool> wait_until(std::function<bool()> condition) {
     co_return condition();
 }
 
+/// Fails a handler that was released while parked. A handler coroutine returns its call, so the
+/// coroutine ends in a co_return; MSVC asks for one after a final throw.
+json fail_while_parked() { throw std::runtime_error("failed while parked"); }
+
 /// Counts the live instances, so a test can tell that a parked handler's frame was released.
 struct Probe {
     explicit Probe(std::shared_ptr<std::atomic<int>> live) : live_(std::move(live)) {
@@ -365,7 +369,7 @@ class MrtrTest : public ::testing::Test {
             [this, ask_on_the_side](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                 ask_on_the_side(ctx, co_await asio::this_coro::executor);
                 co_await wait_until([this] { return release_handler_.load(); });
-                throw std::runtime_error("failed while parked");
+                co_return fail_while_parked();
             });
         server->add_tool<json, json>(
             "ask_then_work", "Works on once its question is given up, until released",

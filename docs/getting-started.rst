@@ -48,7 +48,7 @@ Add mcp-cpp-sdk to your CMakeLists.txt:
    FetchContent_Declare(
      mcp-cpp-sdk
      GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-     GIT_TAG v0.2.0
+     GIT_TAG v0.3.0
    )
    # Skip the SDK's own tests, examples and docs.
    set(BUILD_TESTING OFF)
@@ -75,7 +75,7 @@ Then in your CMakeLists.txt:
    add_subdirectory(third_party/mcp-cpp-sdk)
    target_link_libraries(your_target PRIVATE mcp::sdk)
 
-After 0.2.0, ``BUILD_TESTING``, ``BUILD_EXAMPLES`` and ``BUILD_DOCS`` default
+Since 0.3.0, ``BUILD_TESTING``, ``BUILD_EXAMPLES`` and ``BUILD_DOCS`` default
 to ``ON`` only when the SDK is the top-level project, so a project that adds it
 with FetchContent or ``add_subdirectory`` builds only the libraries and does
 not need GTest. With 0.2.0, set the three options to ``OFF`` before adding the

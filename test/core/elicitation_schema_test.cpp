@@ -218,15 +218,20 @@ TEST(ElicitationSchema, DecodeReturnsTypedValues) {
 
 TEST(ElicitationSchema, DecodeRejectsContentThatDoesNotConform) {
     const auto form = contact_form();
-    EXPECT_THROW(form.decode(json::parse(R"({})")), std::invalid_argument);
-    EXPECT_THROW(form.decode(json::parse(R"({"name":"Ada","age":17})")), std::invalid_argument);
-    EXPECT_THROW(form.decode(json::parse(R"({"name":"Ada","age":18.5})")), std::invalid_argument);
-    EXPECT_THROW(form.decode(json::parse(R"({"name":"Ada","color":"blue"})")), std::invalid_argument);
-    EXPECT_THROW(form.decode(json::parse(R"({"name":"Ada","tags":["a","b","c"]})")),
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"({})"))), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"({"name":"Ada","age":17})"))),
                  std::invalid_argument);
-    EXPECT_THROW(form.decode(json::parse(R"({"name":"Ada","tags":["z"]})")), std::invalid_argument);
-    EXPECT_THROW(form.decode(json::parse(R"({"name":"Ada","extra":1})")), std::invalid_argument);
-    EXPECT_THROW(form.decode(json::parse(R"(["Ada"])")), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"({"name":"Ada","age":18.5})"))),
+                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"({"name":"Ada","color":"blue"})"))),
+                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"({"name":"Ada","tags":["a","b","c"]})"))),
+                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"({"name":"Ada","tags":["z"]})"))),
+                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"({"name":"Ada","extra":1})"))),
+                 std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(form.decode(json::parse(R"(["Ada"])"))), std::invalid_argument);
     try {
         static_cast<void>(form.decode(json::parse(R"({"name":"Ada","age":17})")));
         FAIL() << "the content should not decode";

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tarfile
@@ -671,10 +672,27 @@ class TemplateTests(unittest.TestCase):
             text = (packaging / relative).read_text(encoding="utf-8")
             self.assertIn("Apache-2.0", text, relative)
             self.assertNotIn("MIT", text, relative)
-        # Chocolatey CLI rejects <license>, so the nuspec links the tagged LICENSE it also ships.
+        # Chocolatey CLI rejects <license>, so the nuspec links the tagged LICENSE. The package
+        # downloads the archive at install time, so it holds no license or verification file.
         nuspec = (packaging / "chocolatey/mcp-cpp-sdk.nuspec.in").read_text(encoding="utf-8")
         self.assertIn("<licenseUrl>@PROJECT_URL@/blob/v@VERSION@/LICENSE</licenseUrl>", nuspec)
         self.assertNotIn("<license ", nuspec)
+        self.assertNotIn("LICENSE.txt", nuspec)
+        self.assertNotIn("VERIFICATION.txt", nuspec)
+        # jsoncons is compiled into the library, so every package carries its notice as well.
+        self.assertIn(
+            "Boost Software License",
+            (repository / "third_party/jsoncons/LICENSE").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            'FILES third_party/jsoncons/LICENSE\n'
+            '  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk/jsoncons"',
+            (repository / "CMakeLists.txt").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "%license LICENSE LICENSE.jsoncons",
+            (packaging / "rpm/mcp-cpp-sdk.spec.in").read_text(encoding="utf-8"),
+        )
         self.assertIn(
             "Apache License\n                           Version 2.0",
             (repository / "LICENSE").read_text(encoding="utf-8"),
@@ -700,7 +718,8 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG\n", rpm_spec)
         self.assertEqual(
             (packaging / "debian/not-installed.in").read_text(encoding="utf-8"),
-            "usr/share/licenses/mcp-cpp-sdk/LICENSE\n",
+            "usr/share/licenses/mcp-cpp-sdk/LICENSE\n"
+            "usr/share/licenses/mcp-cpp-sdk/jsoncons/LICENSE\n",
         )
 
         debian_devel = (packaging / "debian/libmcp-cpp-sdk-dev.install.in").read_text(
@@ -712,6 +731,48 @@ class TemplateTests(unittest.TestCase):
         self.assertIn("shared-targets", debian_devel)
         self.assertNotIn("static-targets", debian_devel)
         self.assertIn("static-targets", debian_static)
+
+    def test_package_builds_set_only_options_the_project_reads(self) -> None:
+        # The distribution builds turn off CMake's unused-variable warning, because their build
+        # helpers pass variables this project does not read, so a misspelled option would go unseen.
+        repository = Path(__file__).resolve().parents[2]
+        # The package builds configure the root project and the directories it adds.
+        lists = [repository / "CMakeLists.txt"]
+        for path in lists:
+            for directory in re.findall(
+                r"^\s*add_subdirectory\(\s*([\w./-]+)", path.read_text(encoding="utf-8"), re.MULTILINE
+            ):
+                lists.append(path.parent / directory / "CMakeLists.txt")
+        self.assertIn(repository / "conformance/CMakeLists.txt", lists)
+        cmake_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (*lists, *sorted((repository / "cmake").rglob("*.cmake")))
+        )
+        cmake_variables = {
+            "CMAKE_BUILD_TYPE",
+            "CMAKE_CXX_FLAGS_RELWITHDEBINFO",
+            "CMAKE_SKIP_INSTALL_ALL_DEPENDENCY",
+        }
+        for template, command in (
+            ("packaging/debian/rules.in", "\tdh_auto_configure -- "),
+            ("packaging/rpm/mcp-cpp-sdk.spec.in", "%cmake "),
+        ):
+            with self.subTest(template=template):
+                lines = [
+                    line
+                    for line in (repository / template).read_text(encoding="utf-8").splitlines()
+                    if line.startswith(command)
+                ]
+                self.assertEqual(len(lines), 1)
+                self.assertIn(" --no-warn-unused-cli ", lines[0])
+                names = re.findall(r" -D([A-Za-z_][A-Za-z0-9_]*)(?::[A-Z]+)?=", lines[0])
+                self.assertIn("BUILD_TESTING", names)
+                unread = [
+                    name
+                    for name in names
+                    if name not in cmake_variables and re.search(rf"\b{name}\b", cmake_text) is None
+                ]
+                self.assertEqual(unread, [], f"{template} sets options the project does not read")
 
     def test_package_templates_render_and_parse_offline(self) -> None:
         repository = Path(__file__).resolve().parents[2]
@@ -739,7 +800,8 @@ class TemplateTests(unittest.TestCase):
             "SUMMARY": "C++20 Model Context Protocol SDK",
             "DESCRIPTION": "C++20 MCP SDK & tools",
             "PROJECT_URL": "https://github.com/yurirocha15/mcp-cpp-sdk",
-            "PACKAGE_SOURCE_URL": "https://github.com/yurirocha15/mcp-cpp-sdk",
+            "PACKAGE_SOURCE_URL": "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0/packaging/chocolatey",
+            "VCREDIST_MIN_VERSION": "14.44",
             "TAGS": "mcp cpp20 sdk",
             "ARCHIVE_URL": "https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/v0.2.0/mcp-cpp-sdk-0.2.0-windows-x64-v143-md.zip",
             "ARCHIVE_SHA256": "2" * 64,
@@ -762,8 +824,35 @@ class TemplateTests(unittest.TestCase):
             dependencies = nuspec.findall(".//n:dependency", namespace)
             self.assertEqual(
                 [(item.attrib.get("id"), item.attrib.get("version")) for item in dependencies],
-                [("vcredist140", None)],
+                [("vcredist140", "14.44")],
             )
+            fields = {
+                name: nuspec.findtext(f".//n:{name}", namespaces=namespace)
+                for name in ("title", "projectSourceUrl", "packageSourceUrl", "releaseNotes")
+            }
+            self.assertEqual(
+                fields,
+                {
+                    "title": "Model Context Protocol C++ SDK",
+                    "projectSourceUrl": "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0",
+                    "packageSourceUrl": (
+                        "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0/packaging/chocolatey"
+                    ),
+                    "releaseNotes": (
+                        "https://github.com/yurirocha15/mcp-cpp-sdk/releases/tag/v0.2.0"
+                    ),
+                },
+            )
+            nuspec_values = {
+                name: values[name] for name in inventory["chocolatey/mcp-cpp-sdk.nuspec.in"]
+            }
+            for invalid in ("14", "14.4", "15.44", "14.44.35207"):
+                with self.assertRaises(ValidationError):
+                    render_file(
+                        packaging / "chocolatey/mcp-cpp-sdk.nuspec.in",
+                        output_root / "invalid.nuspec",
+                        {**nuspec_values, "VCREDIST_MIN_VERSION": invalid},
+                    )
             control = (output_root / "debian/control").read_text(encoding="utf-8")
             self.assertIn("Package: libmcp-cpp-sdk0.2.0\n", control)
             self.assertIn("Depends: libmcp-cpp-sdk0.2.0 (= ${binary:Version})", control)
