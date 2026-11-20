@@ -42,7 +42,12 @@ namespace detail {
 template <typename AsioExecutor>
 struct ExecutorWrap {
     static std::shared_ptr<const void> wrap(const AsioExecutor& executor) {
-        return std::make_shared<const boost::asio::any_io_executor>(executor);
+        boost::asio::any_io_executor held(executor);
+        if (!held) {
+            // An empty Asio executor, such as a default-constructed any_io_executor.
+            return nullptr;
+        }
+        return std::make_shared<const boost::asio::any_io_executor>(std::move(held));
     }
 };
 

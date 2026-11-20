@@ -1,5 +1,6 @@
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
 
 #include <gtest/gtest.h>
@@ -59,6 +60,14 @@ TEST(ExecutorTest, EmptyExecutorIsRefused) {
     const mcp::Executor empty;
     EXPECT_FALSE(empty);
     EXPECT_THROW(static_cast<void>(empty.get()), std::invalid_argument);
+}
+
+TEST(ExecutorTest, AnEmptyAsioExecutorMakesAnEmptyExecutor) {
+    const mcp::Executor empty = boost::asio::any_io_executor();
+    EXPECT_FALSE(empty);
+    EXPECT_THROW(static_cast<void>(empty.get()), std::invalid_argument);
+    mcp::Server server("executor-test", "1.0");
+    EXPECT_THROW(server.set_handler_executor(empty), std::invalid_argument);
 }
 
 TEST(ExecutorTest, ClientReturnsItsConstructorExecutor) {

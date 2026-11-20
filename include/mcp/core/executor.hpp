@@ -39,7 +39,8 @@ concept AsioExecutorLike =
  * @details Holds a boost::asio::any_io_executor. An Asio executor such as io.get_executor()
  * converts to an Executor implicitly, and get() returns the Asio executor; both need
  * <mcp/core/async.hpp>. Copies share the executor they hold. A default-constructed Executor holds
- * none, and the SDK refuses it with std::invalid_argument.
+ * none, nor does one made from an empty Asio executor, and the SDK refuses it with
+ * std::invalid_argument.
  */
 class Executor {
    public:
