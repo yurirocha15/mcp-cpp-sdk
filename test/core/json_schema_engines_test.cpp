@@ -1,25 +1,23 @@
 #include <mcp/protocol/schema.hpp>
 
 #include "../../src/protocol/schema_cache.hpp"
+#include "../support/schema_corpus.hpp"
 
 #include <gtest/gtest.h>
 
 #include <nlohmann/json.hpp>
 
-#include <algorithm>
 #include <cstddef>
-#include <filesystem>
-#include <fstream>
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace json_schema_engines_test {
 
 namespace {
 
 using mcp::CompiledSchema;
+namespace schema_corpus = mcp::test::schema_corpus;
 using mcp::detail::SchemaEngine;
 using mcp::detail::ScopedSchemaEngine;
 using nlohmann::json;
@@ -81,46 +79,35 @@ TEST(SchemaEngines, ForcedNativeRefusesWhatItDoesNotImplement) {
     EXPECT_THROW((void)CompiledSchema::compile({{"type", 1}}), mcp::SchemaError);
 }
 
-// Every case of the JSON-Schema-Test-Suite's 2020-12 data, the excluded groups too, through the
-// evaluation a schema gets on its own and through the jsoncons evaluation: both must give the
-// same verdict, so a keyword moving to the native evaluation cannot change a result. Draft-07
-// schemas always go to jsoncons, so only 2020-12 has two evaluations to compare.
+// Every case of the JSON-Schema-Test-Suite data of the five dialects, the excluded groups too,
+// through the evaluation a schema gets on its own and through the jsoncons evaluation: both must
+// give the same verdict, so a keyword or dialect moving to the native evaluation cannot change a
+// result.
 TEST(SchemaEngines, AgreeOnEverySuiteCase) {
-    const std::filesystem::path dir =
-        std::filesystem::path(MCP_TEST_DATA_DIR) / "json-schema" / "draft2020-12";
-    std::vector<std::filesystem::path> files;
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-        if (entry.path().extension() == ".json") {
-            files.push_back(entry.path());
-        }
-    }
-    std::sort(files.begin(), files.end());
-
     std::size_t compared = 0;
-    for (const auto& file : files) {
-        std::ifstream stream(file);
-        const json groups = json::parse(stream);
-        for (const auto& group : groups) {
-            const auto name =
-                file.filename().string() + " | " + group.at("description").get<std::string>();
-            const auto& schema_json = group.at("schema");
-            const auto own = try_compile(schema_json, SchemaEngine::eAutomatic);
-            const auto forced = try_compile(schema_json, SchemaEngine::eJsoncons);
-            EXPECT_EQ(own.has_value(), forced.has_value()) << name << ": compile outcomes differ";
-            const auto& tests = group.at("tests");
-            if (!own || !forced) {
-                compared += tests.size();
-                continue;
-            }
-            for (const auto& test : tests) {
-                ++compared;
-                EXPECT_EQ(own->validate(test.at("data")).valid, forced->validate(test.at("data")).valid)
-                    << name << " | " << test.at("description").get<std::string>();
+    for (const auto& dialect : schema_corpus::dialects()) {
+        for (const auto& file : schema_corpus::suite_files(dialect)) {
+            for (std::size_t index = 0; index < file.groups.size(); ++index) {
+                const auto& group = file.groups[index];
+                const auto name = std::string(dialect.directory) + "/" + file.name + " group " +
+                                  std::to_string(index);
+                const auto own = try_compile(group.schema, SchemaEngine::eAutomatic);
+                const auto forced = try_compile(group.schema, SchemaEngine::eJsoncons);
+                EXPECT_EQ(own.has_value(), forced.has_value()) << name << ": compile outcomes differ";
+                compared += group.values.size();
+                if (!own || !forced) {
+                    continue;
+                }
+                for (std::size_t value = 0; value < group.values.size(); ++value) {
+                    EXPECT_EQ(own->validate(group.values[value]).valid,
+                              forced->validate(group.values[value]).valid)
+                        << name << " value " << value;
+                }
             }
         }
     }
-    // 1300 cases: the run and the excluded ones of the 2020-12 suite data.
-    EXPECT_EQ(compared, 1300u);
+    // 4941 cases: the run and the excluded ones of the five dialects' suite data.
+    EXPECT_EQ(compared, 4941U);
 }
 
 }  // namespace

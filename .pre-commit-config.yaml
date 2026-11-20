@@ -1,5 +1,6 @@
-# Generated vendored code and upstream test data keep their upstream bytes.
-exclude: ^(third_party|test/data/json-schema(-meta)?)/
+# Generated vendored code, upstream test data and recorded verdicts keep the bytes their
+# sources and tools write.
+exclude: ^(third_party/|test/data/json-schema(-meta)?/|test/data/schema-goldens\.json$)
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
