@@ -1822,6 +1822,16 @@ StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& execu
     : impl_(std::make_shared<Impl>(executor.get(), std::move(host), port, std::move(factory),
                                    event_store_capacity)) {}
 
+StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& executor, std::string host,
+                                                           unsigned short port, Server& server,
+                                                           std::size_t event_store_capacity)
+    : StreamableHttpSessionManager(
+          executor, std::move(host), port,
+          [&server](const Executor&) { return server.session_server(); }, event_store_capacity) {
+    // The manager does not own the server, which the application keeps alive.
+    set_modern_server(std::shared_ptr<Server>(std::shared_ptr<Server>(), &server));
+}
+
 StreamableHttpSessionManager::~StreamableHttpSessionManager() {
     try {
         close();

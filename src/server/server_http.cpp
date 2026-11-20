@@ -25,12 +25,7 @@ void Server::run_http(const std::string& host, uint16_t port,
     boost::asio::io_context io_ctx;
     const Executor executor(io_ctx.get_executor());
 
-    // Each legacy session is served by a server of its own that shares this one's registrations.
-    // A 2026-07-28 request belongs to no session, and this server answers it; the manager does not
-    // own it, since it outlives the call.
-    auto manager = std::make_shared<StreamableHttpSessionManager>(
-        executor, host, port, [this](const Executor&) { return session_server(); });
-    manager->set_modern_server(std::shared_ptr<Server>(std::shared_ptr<Server>(), this));
+    auto manager = std::make_shared<StreamableHttpSessionManager>(executor, host, port, *this);
     if (configure) {
         configure(*manager);
     }

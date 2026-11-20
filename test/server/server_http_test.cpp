@@ -2,6 +2,7 @@
 #include "mcp/core/async.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
+#include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
 #include <gtest/gtest.h>
@@ -23,7 +24,9 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <exception>
 #include <mcp/core/constants.hpp>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -478,6 +481,54 @@ TEST_F(ServerHttpTest, SyncNotifiesTheSessionsOfRunHttpFromAnotherThread) {
     client.close();
     server_->stop();
     server_thread.join();
+}
+
+// A manager constructed with a server serves it on the application's loop as run_http() does: the
+// server answers 2026-07-28 requests, and each legacy session gets a server with its registrations.
+TEST_F(ServerHttpTest, ManagerServesTheServerItIsGiven) {
+    asio::io_context io_ctx;
+    mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", 0, *server_);
+    EXPECT_EQ(manager.modern_server().get(), server_.get());
+    const auto url = "http://127.0.0.1:" + std::to_string(manager.port()) + "/mcp";
+
+    mcp::ClientOptions legacy_options;
+    legacy_options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client modern(std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), url),
+                       io_ctx.get_executor());
+    mcp::Client legacy(std::make_shared<mcp::HttpClientTransport>(io_ctx.get_executor(), url),
+                       io_ctx.get_executor(), legacy_options);
+
+    std::vector<std::string> protocols;
+    std::vector<nlohmann::json> greetings;
+    std::exception_ptr failure;
+    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+    asio::co_spawn(
+        io_ctx,
+        [&]() -> mcp::Task<void> {
+            for (auto* client : {&modern, &legacy}) {
+                const auto connected = co_await client->connect("manager-test", "1.0");
+                protocols.push_back(connected.protocolVersion);
+                const nlohmann::json args{{"name", "Ada"}};
+                const auto result = co_await client->call_tool("greet", args);
+                greetings.push_back(result.structuredContent.value_or(nlohmann::json()));
+                client->close();
+            }
+        },
+        [&](std::exception_ptr error) {
+            failure = std::move(error);
+            manager.close();
+        });
+    io_ctx.run();
+
+    if (failure) {
+        std::rethrow_exception(failure);
+    }
+    ASSERT_EQ(protocols.size(), 2U);
+    EXPECT_EQ(protocols[0], protocol::g_LATEST_PROTOCOL_VERSION);
+    EXPECT_EQ(protocols[1], protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    ASSERT_EQ(greetings.size(), 2U);
+    EXPECT_EQ(greetings[0].value("greeting", ""), "Hello, Ada");
+    EXPECT_EQ(greetings[1].value("greeting", ""), "Hello, Ada");
 }
 
 }  // namespace server_http_test

@@ -101,6 +101,24 @@ class MCP_API StreamableHttpSessionManager {
         const Executor& executor, std::string host, unsigned short port, ServerFactory factory,
         std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
+    /**
+     * @brief Construct a multi-session HTTP endpoint that serves @p server, as Server::run_http()
+     *        does, on the program's own event loop.
+     *
+     * @details @p server answers the 2026-07-28 requests, and each session of an older revision
+     * is served by a server that shares its tools, resources, prompts, handlers and settings.
+     * @p server must outlive the manager and the task listen() returns.
+     *
+     * @param executor Executor for async operations.
+     * @param host Local bind address.
+     * @param port Local bind port, or 0 for one the system chooses (see port()).
+     * @param server The server to serve.
+     * @param event_store_capacity Per-session event store capacity.
+     */
+    StreamableHttpSessionManager(
+        const Executor& executor, std::string host, unsigned short port, Server& server,
+        std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
+
     ~StreamableHttpSessionManager();
 
     StreamableHttpSessionManager(const StreamableHttpSessionManager&) = delete;

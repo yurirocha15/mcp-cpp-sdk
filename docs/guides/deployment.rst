@@ -81,7 +81,9 @@ tools, resources and prompts, they must not depend on the connection.
 ``Server::run_http()`` serves through a manager, which keeps its default
 settings unless the callback ``run_http()`` takes changes them before it
 listens: the server itself answers 2026-07-28 requests, and each session gets a
-server that shares its tools, resources, prompts, handlers and settings.
+server that shares its tools, resources, prompts, handlers and settings. A
+manager constructed with a ``Server`` instead of a factory serves it the same
+way, on the application's event loop, and the ``Server`` must outlive it.
 
 Configure that server before ``listen()``, for example its cache hints:
 

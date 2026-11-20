@@ -1471,6 +1471,7 @@ class MCP_API Server {
     [[nodiscard]] std::unique_ptr<Server> session_server() const;
 
     friend class SyncServer;
+    friend class StreamableHttpSessionManager;
 
     /// The runs of this server in progress, which the run forms register with.
     [[nodiscard]] std::shared_ptr<detail::RunControl> run_control() const;
