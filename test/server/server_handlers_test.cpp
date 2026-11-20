@@ -21,6 +21,7 @@
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -287,6 +288,95 @@ TEST(ServerHandlerPoolTest, AHandlerWhoseExecutorEndsAfterItsEventLoopEndsWithou
     release.set_value();
     pool.reset();
     server.reset();
+}
+
+// A coroutine handler that outlives its event loop and then sends to the client gets an error
+// instead of reaching the loop's destroyed objects.
+TEST(ServerHandlerPoolTest, AHandlerThatOutlivesItsEventLoopCannotReachTheClient) {
+    boost::asio::thread_pool pool(1);
+    std::promise<void> started;
+    std::promise<void> release;
+    std::promise<std::string> outcome;
+    const std::shared_future<void> released = release.get_future().share();
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool.get_executor());
+    server->add_tool("late", "Logs once released", nlohmann::json{{"type", "object"}},
+                     [&started, released, &outcome](
+                         mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                         started.set_value();
+                         released.wait();
+                         try {
+                             co_await ctx.log_info("after the loop ended");
+                             outcome.set_value("sent");
+                         } catch (const std::runtime_error& error) {
+                             outcome.set_value(error.what());
+                         }
+                         co_return "done";
+                     });
+
+    auto io_ctx = std::make_unique<boost::asio::io_context>();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx->get_executor());
+    transport->enqueue_message(make_initialize_request("1").dump());
+    transport->enqueue_message(make_initialized_notification().dump());
+    transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "late"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    boost::asio::co_spawn(*io_ctx, server->run(transport, io_ctx->get_executor()),
+                          boost::asio::detached);
+    std::thread loop([&io_ctx] { io_ctx->run(); });
+    started.get_future().wait();
+    io_ctx->stop();
+    loop.join();
+    transport.reset();
+    io_ctx.reset();
+
+    release.set_value();
+    EXPECT_EQ(outcome.get_future().get(), "The server has stopped");
+    pool.join();
+    server.reset();
+}
+
+// A coroutine handler on the handler executor reaches the client through the server's loop.
+TEST_F(ServerHandlersTest, AToolOnTheHandlerExecutorLogsToTheClient) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    boost::asio::thread_pool pool(1);
+    setup.server.set_handler_executor(pool.get_executor());
+    setup.server.add_tool("log_then_answer", "Logs, then answers", nlohmann::json{{"type", "object"}},
+                          [](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                              co_await ctx.log_info("from the pool");
+                              co_return "answered";
+                          });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 3) {
+            setup.raw_transport->close();
+        }
+    });
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "2"},
+        {"method", "tools/call"},
+        {"params", {{"name", "log_then_answer"}, {"arguments", nlohmann::json::object()}}}}
+                                             .dump());
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+    io_ctx_.run();
+    pool.join();
+
+    ASSERT_EQ(responses.size(), 3);
+    EXPECT_EQ(responses[1]["method"], "notifications/message");
+    EXPECT_EQ(responses[1]["params"]["data"], "from the pool");
+    EXPECT_FALSE(responses[2]["result"].value("isError", false)) << responses[2];
 }
 
 // When the handler executor ends while a tool handler runs on it and the server's loop goes on,

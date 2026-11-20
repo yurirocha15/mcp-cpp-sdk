@@ -850,6 +850,12 @@ class MCP_API Server {
      * server resumes on its own executor when it returns. A handler that blocks then ties up a
      * thread of @p executor rather than one the transport needs. Read unsynchronized by request
      * handlers; must be called before run().
+     *
+     * A handler still running on @p executor when run_stdio() or run_http() stop waiting for it
+     * (see stop()) can no longer reach the client: its Context calls throw std::runtime_error.
+     * What it returns goes nowhere, and the server state it holds, with what the registered
+     * handlers capture, is never destroyed.
+     * @throws std::invalid_argument If @p executor holds none.
      */
     void set_handler_executor(const Executor& executor);
 

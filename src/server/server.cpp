@@ -1422,7 +1422,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// Calls @p handler on a strand of its own, over the handler executor when one is set, and
     /// otherwise over the executor the caller runs on unless that is a strand already. A handler
     /// may fan out with `co_await (a || b)` or `co_await (a && b)`, which Boost.Asio makes safe
-    /// only when every branch runs one at a time.
+    /// only when every branch runs one at a time. On the handler executor, @p ctx then reaches the
+    /// client through the caller's executor (detail::ContextRouting).
     Task<nlohmann::json> call_on_handler_strand(const TypeErasedHandler& handler, Context& ctx,
                                                 const nlohmann::json& arguments);
     /// Checks @p arguments against the tool's input schema and runs its handler. A tool that
@@ -3895,6 +3896,8 @@ Task<nlohmann::json> Server::Impl::call_on_handler_strand(const TypeErasedHandle
                                                           Context& ctx,
                                                           const nlohmann::json& arguments) {
     if (handler_executor) {
+        const auto loop = co_await boost::asio::this_coro::executor;
+        detail::ContextRouting::through_loop(ctx, loop);
         co_return co_await detail::run_on_pool(*handler_executor,
                                                call_handler(handler, ctx, arguments));
     }

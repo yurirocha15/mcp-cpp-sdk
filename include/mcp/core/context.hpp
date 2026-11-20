@@ -55,6 +55,10 @@ using MessageSender = std::function<Task<void>(std::string_view)>;
 using ProgressSink = std::function<void(double progress, std::optional<double> total,
                                         const std::optional<std::string>& message)>;
 
+namespace detail {
+struct ContextRouting;
+}  // namespace detail
+
 /**
  * @brief Request-scoped context provided to server handlers.
  *
@@ -337,6 +341,8 @@ class Context {
     MCP_API Task<ListRootsResult> request_roots(InputOptions options = {});
 
    private:
+    friend struct detail::ContextRouting;
+
     /// Throws when @p result accepts the form request @p params with content its schema rejects.
     static void check_form_content(const ElicitRequestParams& params, const ElicitResult& result) {
         const auto* form = std::get_if<ElicitRequestFormParams>(&params);
