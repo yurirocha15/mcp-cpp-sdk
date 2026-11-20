@@ -73,8 +73,9 @@ class MCP_API Endpoint {
      * (mcp::constants::jsonrpc::g_CONNECTION_CLOSED); requests made while it starts again wait for
      * it, within their own timeouts. A legacy session sends its initialize request to the new
      * process again. What the old process kept for the session, such as a log level, resource
-     * subscriptions or tasks, is gone, and `subscriptions/listen` streams end. When the policy
-     * allows no more starts, or a start fails, the client closes as it does without a restart.
+     * subscriptions or tasks, is gone, and `subscriptions/listen` streams end. A start that fails
+     * uses one of the restarts the policy allows; when it allows no more, the client closes as it
+     * does without a restart.
      * StdioProcessOptions::on_exit runs for each process that ends.
      */
     static Endpoint stdio(std::vector<std::string> command, StdioRestartPolicy restart);

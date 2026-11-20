@@ -161,8 +161,8 @@ The requests waiting for an answer when the process ended fail with
 their own timeouts. A legacy session sends its ``initialize`` request to the new
 process again. What the old process kept for the session, such as a log level,
 resource subscriptions or tasks, is gone, and ``subscriptions/listen`` streams
-end. When the policy allows no more starts, or a start fails, the client closes
-as it does without a restart.
+end. A start that fails uses one of the restarts the policy allows; when it
+allows no more, the client closes as it does without a restart.
 
 With a ``StdioClientSession`` the application opens the streams again: the
 session makes a new ``Client`` for each process and runs the application's

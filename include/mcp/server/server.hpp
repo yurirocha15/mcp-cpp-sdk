@@ -579,7 +579,7 @@ class MCP_API Server {
                   std::function<nlohmann::json(const nlohmann::json&)> handler);
 
     /// @brief As add_tool() above, with a synchronous handler that takes the request's Context
-    /// first, for logging or progress from the handler.
+    /// first, such as for Context::is_cancelled() or, in a task, Context::report_progress_sync().
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema,
                   std::function<nlohmann::json(Context&, const nlohmann::json&)> handler);

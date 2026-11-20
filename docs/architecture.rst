@@ -84,7 +84,7 @@ Server
 
 * Protocol compliance (2026-07-28 requests served one by one, and the ``initialize`` handshake of older revisions, on the same transport)
 * Handler type erasure and invocation
-* ``ensure_async_handler`` — automatically normalizes handler signatures (sync/async, with/without ``Context``) into unified async form; called internally by ``add_tool``, ``add_resource``, etc.
+* Handler wrapping: ``add_tool``, ``add_resource`` and the other registrations turn each handler signature (synchronous or coroutine, with or without ``Context``) into a type-erased coroutine handler; a synchronous tool handler is also kept as it is, and called without a coroutine when the call already runs on its strand
 * Error handling: tool-handler exceptions become ``CallToolResult`` values with
   ``isError=true``; other request-dispatch failures use JSON-RPC error responses
 * Context creation and lifecycle management

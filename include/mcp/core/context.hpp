@@ -191,7 +191,9 @@ class Context {
      * @return true once the request has been cancelled: by notifications/cancelled for this
      * request's ID, by the client disconnecting while a 2026-07-28 request runs on
      * StreamableHttpSessionManager, or through the cancellation flag given to
-     * Server::dispatch_request_direct().
+     * Server::dispatch_request_direct(). The server reads a cancellation on its event loop, which
+     * a synchronous handler running there holds up: such a handler sees it only on the executor
+     * of Server::set_handler_executor().
      */
     [[nodiscard]] bool is_cancelled() const {
         if (cancelled_) {

@@ -103,7 +103,9 @@ The next three steps ask the client for something in the same way. See
 A handler that only needs to know whether its request was cancelled can stay
 synchronous and take the ``Context`` as its first argument:
 ``[](mcp::Context& ctx, const nlohmann::json& args) -> nlohmann::json``, which
-calls ``ctx.is_cancelled()``.
+calls ``ctx.is_cancelled()``. The server reads the cancellation on its event
+loop, so a synchronous tool handler sees it only when it runs on a thread pool,
+as `Run Handlers on a Thread Pool`_ sets up.
 
 Ask the User a Question
 -----------------------
