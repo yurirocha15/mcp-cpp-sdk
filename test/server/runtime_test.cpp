@@ -172,4 +172,48 @@ TEST(RuntimeTest, DestroyingAStartedRuntimeJoinsItsThreads) {
     EXPECT_TRUE(ran.load());
 }
 
+TEST(RuntimeTest, RunRunsAgainAfterTheLoopEnded) {
+    int runs = 0;
+    const auto count = [](int& counter) -> mcp::Task<void> {
+        ++counter;
+        co_return;
+    };
+    mcp::Runtime rt;
+    rt.spawn(count(runs));
+    rt.run();
+    rt.spawn(count(runs));
+    rt.run();
+    EXPECT_EQ(runs, 2);
+
+    // After a task that threw, and after stop(), on one thread and on several.
+    rt.spawn([]() -> mcp::Task<void> {
+        throw std::runtime_error("task failed");
+        co_return;
+    }());
+    EXPECT_THROW(rt.run(2), std::runtime_error);
+    rt.spawn(count(runs));
+    rt.run(2);
+    EXPECT_EQ(runs, 3);
+    rt.stop();
+    rt.spawn(count(runs));
+    rt.run();
+    EXPECT_EQ(runs, 4);
+}
+
+TEST(RuntimeTest, ARuntimeMayBeDestroyedByATaskOnItsOwnThread) {
+    auto* pool = new mcp::Runtime;
+    pool->start(2);
+    std::promise<void> destroyed;
+    auto done = destroyed.get_future();
+    pool->spawn([](mcp::Runtime* self, std::promise<void>& finished) -> mcp::Task<void> {
+        delete self;  // NOLINT(cppcoreguidelines-owning-memory)
+        finished.set_value();
+        co_return;
+    }(pool, destroyed));
+    done.get();
+    // The thread that destroyed it returns from the loop it still runs, which outlives the
+    // Runtime until then.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
 }  // namespace runtime_test

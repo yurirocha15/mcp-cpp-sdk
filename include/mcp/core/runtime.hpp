@@ -21,7 +21,8 @@ class MCP_API Runtime {
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
 
-    /// Run the event loop (blocks until stop() or no more work).
+    /// Run the event loop (blocks until stop() or no more work). Each call runs the loop again
+    /// after an earlier run ended, unless start() has run it.
     /// @throws What a task given to spawn() throws, after which the loop may be run again.
     void run();
 
@@ -30,7 +31,8 @@ class MCP_API Runtime {
      *        or no more work, and join them.
      *
      * @details A task given to spawn() that throws stops the loop; its exception is rethrown here
-     * once every thread has returned.
+     * once every thread has returned. As with run(), each call runs the loop again after an
+     * earlier run ended.
      * @throws std::invalid_argument When @p threads is 0.
      */
     void run(std::size_t threads);
