@@ -1,0 +1,5 @@
+{
+    "about":
+        "Positions where the SDK's schema evaluation deliberately differs from the verdicts recorded in schema-goldens.json. Each row names the corpus ('suite', 'generated' or 'mutants'), the dialect directory, the suite file ('' for generated schemas), the position (group, generated case or mutant index) and the reason. json_schema_goldens_test fails on an unlisted difference and on a listed position whose verdicts agree.",
+    "differences": []
+}

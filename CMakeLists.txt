@@ -429,6 +429,7 @@ if(BUILD_TESTING)
       test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
       test/core/json_schema_engines_test.cpp
+      test/core/json_schema_goldens_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
       test/core/tasks_test.cpp
@@ -491,8 +492,20 @@ if(BUILD_TESTING)
       test/support/test_timeout.cpp)
   # The sealed-state codec is internal and not exported from the shared library,
   # so its test builds the source itself.
-  add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
+  add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp
+                               test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # Records the schema verdicts that json_schema_goldens_test compares with; run
+  # only to record them again (see test/support/record_schema_goldens.cpp).
+  add_executable(mcp-schema-goldens test/support/record_schema_goldens.cpp
+                                    test/support/schema_corpus.cpp)
+  target_link_libraries(mcp-schema-goldens PRIVATE mcp-cpp-sdk)
+  target_compile_definitions(
+    mcp-schema-goldens
+    PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+  # The workload scripts/schema_ir_gate.py counts the instructions of.
+  add_executable(mcp-schema-workload test/perf/schema_workload.cpp)
+  target_link_libraries(mcp-schema-workload PRIVATE mcp-cpp-sdk)
   # The server the stdio client tests launch as a child process.
   add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
   target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)

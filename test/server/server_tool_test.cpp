@@ -1082,7 +1082,7 @@ TEST_F(ServerToolOutputTest, TypedToolResultIsChecked) {
 // JSON has no NaN or Infinity, and nlohmann::json writes them as null, so a structured result
 // holding one would reach the client as null, which a `number` schema refuses.
 TEST_F(ServerToolOutputTest, NonFiniteNumberIsRefused) {
-    // `$defs` sends the schema through jsoncons instead of the native evaluation.
+    // The NaN case runs on the native evaluation and the Infinity case on jsoncons.
     for (const auto& [value, through_jsoncons] :
          std::vector<std::pair<double, bool>>{{std::numeric_limits<double>::quiet_NaN(), false},
                                               {std::numeric_limits<double>::infinity(), true}}) {
@@ -1093,9 +1093,9 @@ TEST_F(ServerToolOutputTest, NonFiniteNumberIsRefused) {
         tool.outputSchema = nlohmann::json{{"type", "object"},
                                            {"properties", {{"value", {{"type", "number"}}}}},
                                            {"required", {"value"}}};
-        if (through_jsoncons) {
-            (*tool.outputSchema)["$defs"] = nlohmann::json::object();
-        }
+        const mcp::detail::ScopedSchemaEngine engine(through_jsoncons
+                                                         ? mcp::detail::SchemaEngine::eJsoncons
+                                                         : mcp::detail::SchemaEngine::eNative);
         setup.server.add_raw_tool(tool, [value = value](const nlohmann::json&) -> nlohmann::json {
             return mcp::make_tool_structured_result(nlohmann::json{{"value", value}});
         });

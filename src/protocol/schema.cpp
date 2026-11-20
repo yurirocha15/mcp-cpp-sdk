@@ -24,6 +24,7 @@
 #include <list>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -560,6 +561,10 @@ CompiledSchemaCache& compiled_schema_cache() {
     return s_cache;
 }
 
+/// The evaluation CompiledSchema::compile() gives schemas on this thread; set by
+/// detail::ScopedSchemaEngine.
+thread_local detail::SchemaEngine g_schema_engine = detail::SchemaEngine::eAutomatic;
+
 }  // namespace
 
 SchemaError::SchemaError(Category category, const std::string& message)
@@ -576,8 +581,10 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     // A schema the cache holds passed every check below when it was compiled, and a repeat is the
     // same document, so a hit needs neither measuring nor checking. NaN, the one value unequal to
     // itself, never matches, and Infinity is never in the cache.
+    const auto engine = g_schema_engine;
+    const bool use_cache = engine == detail::SchemaEngine::eAutomatic;
     const auto hash = document_hash(schema, options);
-    if (hash) {
+    if (hash && use_cache) {
         if (auto cached = compiled_schema_cache().find(*hash, schema, options)) {
             return CompiledSchema(std::move(cached));
         }
@@ -696,13 +703,21 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
 
     // NativeSchema compiles the patterns again, within a budget of its own; one it cannot compile
     // leaves the schema to jsoncons.
-    auto native = [&schema, &options] {
+    auto native = [&schema, &options, engine]() -> std::optional<detail::NativeSchema> {
+        if (engine == detail::SchemaEngine::eJsoncons) {
+            return std::nullopt;
+        }
         const detail::PatternBudget native_patterns(options.max_pattern_instructions);
         return detail::NativeSchema::compile(schema);
     }();
+    if (engine == detail::SchemaEngine::eNative && !native) {
+        throw std::domain_error("the native schema evaluation does not implement this schema");
+    }
     auto result = std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
         schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)});
-    compiled_schema_cache().insert(*hash, result);
+    if (use_cache) {
+        compiled_schema_cache().insert(*hash, result);
+    }
     return CompiledSchema(std::move(result));
 }
 
@@ -750,6 +765,12 @@ const nlohmann::json& CompiledSchema::schema() const noexcept { return impl_->so
 namespace detail {
 
 std::size_t compiled_schema_cache_live_entries() { return compiled_schema_cache().live_entries(); }
+
+ScopedSchemaEngine::ScopedSchemaEngine(SchemaEngine engine) noexcept : previous_(g_schema_engine) {
+    g_schema_engine = engine;
+}
+
+ScopedSchemaEngine::~ScopedSchemaEngine() { g_schema_engine = previous_; }
 
 }  // namespace detail
 
