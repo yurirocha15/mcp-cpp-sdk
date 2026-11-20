@@ -288,16 +288,16 @@ The SDK provides a built-in logging system that is essential for debugging and m
 
    server.add_tool<nlohmann::json, nlohmann::json>("example", "...", schema,
        [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
-           std::string error;
+           // A json, not a std::string, which must not live across co_await on GCC 11.
+           nlohmann::json message;
            try {
                co_return do_work(args);
            } catch (const std::exception& e) {
-               error = e.what();
+               message = std::string("Tool failed: ") + e.what();
            }
            // A catch block cannot contain co_await, so the error is logged after it.
-           std::string message = "Tool failed: " + error;
-           co_await ctx.log(mcp::LoggingLevel::eError, message);
-           throw std::runtime_error(message);
+           co_await ctx.log(mcp::LoggingLevel::eError, message.get_ref<const std::string&>());
+           throw std::runtime_error(message.get<std::string>());
        });
 
 By logging at the server level, you can aggregate errors across multiple clients and identify systemic issues. For more details on logging, see the :doc:`../concepts/context` guide.

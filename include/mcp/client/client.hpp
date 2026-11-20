@@ -469,6 +469,10 @@ struct SubscriptionState;
 struct BlockingLoop;
 }  // namespace detail
 
+class SyncClient;
+class SyncSubscription;
+class SyncTaskHandle;
+
 /**
  * @brief A subscriptions/listen stream opened with Client::listen().
  *
@@ -480,10 +484,6 @@ struct BlockingLoop;
  * Reconnecting is the application's job: after a transport drop, connect a new client and call
  * Client::listen() again; the server keeps no subscription across connections.
  */
-class SyncClient;
-class SyncSubscription;
-class SyncTaskHandle;
-
 class MCP_API Subscription {
    public:
     /** @brief A handle that is not attached to a stream; it reads as cancelled and next() yields

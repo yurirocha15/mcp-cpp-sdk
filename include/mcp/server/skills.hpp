@@ -74,10 +74,9 @@ struct SkillsOptions {
 class MCP_API SkillsExtension {
    public:
     /**
-     * @param server The server to extend.
+     * @param server The server to extend, whose capabilities gain `resources` when they lack it.
      * @param options Extension behaviour.
-     * @throws std::invalid_argument When the server declares no `resources` capability, which the
-     *         extension requires, or when `options.page_size` is 0.
+     * @throws std::invalid_argument When `options.page_size` is 0.
      */
     explicit SkillsExtension(Server& server, SkillsOptions options = {});
 

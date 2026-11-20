@@ -1250,8 +1250,10 @@ class MCP_API Server {
      * @details May be called from any thread, including from a handler. As on SIGINT, the transport
      * closes at once, so a request still being served is not answered, and run_stdio() and
      * run_http() return once the handlers still running have finished, or after
-     * mcp::constants::shutdown::g_TIMEOUT_MS. Does nothing when the server is not running: a run
-     * that starts after the call is not ended by it.
+     * mcp::constants::shutdown::g_TIMEOUT_MS. A synchronous handler that runs on the server's own
+     * loop holds that loop, and with it the deadline, until it returns; one on the
+     * set_handler_executor() executor is left running. Does nothing when the server is not
+     * running: a run that starts after the call is not ended by it.
      */
     void stop();
 
