@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -11,12 +12,19 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <mcp/core/constants.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace server_handlers_test {
+
+namespace protocol = mcp::constants::protocol;
 
 struct AddParams {
     int augend = 0;
@@ -78,12 +86,9 @@ class ServerHandlersTest : public ::testing::Test {
         setup.raw_transport->enqueue_message(make_initialized_notification().dump());
         setup.raw_transport->enqueue_message(request.dump());
 
-        boost::asio::co_spawn(
-            io_ctx_,
-            [&]() -> mcp::Task<void> {
-                co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-            },
-            boost::asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+        });
         io_ctx_.run();
         return responses;
     }
@@ -124,12 +129,9 @@ TEST_F(ServerHandlersTest, SyncToolCallReturnsResult) {
     call_req["params"] = std::move(call_params);
     setup.raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -177,12 +179,9 @@ TEST_F(ServerHandlersTest, AsyncToolCallReturnsResult) {
     call_req["params"] = std::move(call_params);
     setup.raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -306,12 +305,9 @@ TEST_F(ServerHandlersTest, ToolWithContextLogsMessage) {
     call_req["params"] = std::move(call_params);
     setup.raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -361,12 +357,9 @@ TEST_F(ServerHandlersTest, ToolsListReturnsRegisteredTools) {
     list_req["method"] = "tools/list";
     setup.raw_transport->enqueue_message(list_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -452,12 +445,9 @@ TEST_F(ServerHandlersTest, ResourcesReadReturnsContent) {
     read_req["params"] = nlohmann::json{{"uri", "file:///hello.txt"}};
     setup.raw_transport->enqueue_message(read_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -507,12 +497,9 @@ TEST_F(ServerHandlersTest, ResourcesListReturnsRegisteredResources) {
     list_req["method"] = "resources/list";
     setup.raw_transport->enqueue_message(list_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -556,12 +543,9 @@ TEST_F(ServerHandlersTest, ResourceTemplatesListReturnsRegisteredTemplates) {
     list_req["method"] = "resources/templates/list";
     setup.raw_transport->enqueue_message(list_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -689,7 +673,7 @@ TEST_F(ServerHandlersTest, AmbiguousResourceTemplateMatchReturnsInvalidParams) {
                                           {"params", {{"uri", "file:///fixed/item.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("Ambiguous"), std::string::npos);
 }
 
@@ -726,7 +710,8 @@ TEST_F(ServerHandlersTest, MetadataOnlyTemplateDoesNotBlockHandledTemplate) {
     EXPECT_EQ(responses[1]["result"]["contents"][0]["text"], "handled");
 }
 
-TEST_F(ServerHandlersTest, UnknownResourceReturnsInvalidParams) {
+// 2025-11-25 and earlier name a resource that does not exist with -32002, and its URI in data.
+TEST_F(ServerHandlersTest, UnknownResourceReturnsResourceNotFound) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
     ServerSetup setup(io_ctx_, std::move(caps));
@@ -738,10 +723,11 @@ TEST_F(ServerHandlersTest, UnknownResourceReturnsInvalidParams) {
                                           {"params", {{"uri", "file:///does-not-exist.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["data"], nlohmann::json({{"uri", "file:///does-not-exist.txt"}}));
 }
 
-TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsInvalidParams) {
+TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsResourceNotFound) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
     ServerSetup setup(io_ctx_, std::move(caps));
@@ -759,7 +745,8 @@ TEST_F(ServerHandlersTest, UnknownResourceTemplateReturnsInvalidParams) {
                                           {"params", {{"uri", "file:///other/item.txt"}}}});
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
+    EXPECT_EQ(responses[1]["error"]["data"], nlohmann::json({{"uri", "file:///other/item.txt"}}));
 }
 
 TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching) {
@@ -781,7 +768,7 @@ TEST_F(ServerHandlersTest, OverlongUriIsRejectedWithoutReachingTemplateMatching)
 
     ASSERT_EQ(responses.size(), 2);
     ASSERT_TRUE(responses[1].contains("error"));
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     // Says the URI was too long, rather than that no such resource exists, and does not echo it.
     const auto message = responses[1]["error"]["message"].get<std::string>();
     EXPECT_NE(message.find("limit"), std::string::npos);
@@ -829,12 +816,9 @@ TEST_F(ServerHandlersTest, UriAtTheLengthLimitIsStillMatchedByTemplate) {
         {"method", "resources/read"},
         {"params", {{"uri", uri}}}}.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     std::thread pump([this]() { io_ctx_.run(); });
     pump.join();
@@ -919,12 +903,9 @@ TEST_F(ServerHandlersTest, TemplateExpressionsMatchWhatTheirOperatorExpandsTo) {
                            {"params", {{"uri", requests[index].second->uri}}}}
                 .dump());
     }
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), requests.size() + 1);
@@ -939,7 +920,7 @@ TEST_F(ServerHandlersTest, TemplateExpressionsMatchWhatTheirOperatorExpandsTo) {
             EXPECT_EQ(response["result"]["contents"][0]["text"], uri_template);
         } else {
             ASSERT_TRUE(response.contains("error")) << response.dump();
-            EXPECT_EQ(response["error"]["code"], mcp::g_INVALID_PARAMS);
+            EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
         }
     }
 }
@@ -971,7 +952,7 @@ TEST_F(ServerHandlersTest, ANearlyMatchingUriIsAnsweredInBoundedTime) {
     const auto elapsed = std::chrono::steady_clock::now() - started;
 
     ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_RESOURCE_NOT_FOUND);
     EXPECT_LT(elapsed, std::chrono::seconds(1));
 }
 
@@ -1095,7 +1076,7 @@ TEST_F(ServerHandlersTest, UnknownPromptReturnsInvalidParams) {
     auto& error_response = responses[1];
     EXPECT_EQ(error_response["id"], "2");
     ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
-    EXPECT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_NE(error_response["error"]["message"].get<std::string>().find("nonexistent"),
               std::string::npos);
 }
@@ -1156,12 +1137,9 @@ TEST_F(ServerHandlersTest, PromptsGetReturnsPromptMessages) {
     get_req["params"] = nlohmann::json{{"name", "greeting"}, {"arguments", {{"name", "Alice"}}}};
     setup.raw_transport->enqueue_message(get_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1209,12 +1187,9 @@ TEST_F(ServerHandlersTest, PromptsListReturnsRegisteredPrompts) {
     list_req["method"] = "prompts/list";
     setup.raw_transport->enqueue_message(list_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1255,12 +1230,9 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     call_req["params"] = std::move(call_params);
     setup.raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1268,14 +1240,14 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
     auto& error_response = responses[1];
     EXPECT_EQ(error_response["id"], "2");
     ASSERT_TRUE(error_response.contains("error"));
-    EXPECT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
     EXPECT_TRUE(error_response["error"]["message"].get<std::string>().find("nonexistent") !=
                 std::string::npos);
 }
 
 // --- Pagination Tests ---
 
-TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
+TEST_F(ServerHandlersTest, ToolsListPagesThroughTheToolsByCursor) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::ToolsCapability tools_cap;
     caps.tools = std::move(tools_cap);
@@ -1291,39 +1263,66 @@ TEST_F(ServerHandlersTest, ToolsListPaginationFirstPage) {
             [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
     }
 
-    std::vector<nlohmann::json> responses;
+    std::map<std::string, nlohmann::json> responses;
     setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
+        auto response = nlohmann::json::parse(msg);
+        const auto id = response.at("id").get<std::string>();
+        responses[id] = std::move(response);
+        if (responses.size() == 5) {
             setup.raw_transport->close();
         }
     });
 
     setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
     setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    const auto list = [&setup](const std::string& id, std::optional<nlohmann::json> params) {
+        nlohmann::json list_req;
+        list_req["jsonrpc"] = "2.0";
+        list_req["id"] = id;
+        list_req["method"] = "tools/list";
+        if (params) {
+            list_req["params"] = std::move(*params);
+        }
+        setup.raw_transport->enqueue_message(list_req.dump());
+    };
+    list("first", std::nullopt);
+    list("middle", nlohmann::json{{"cursor", "2"}});
+    list("last", nlohmann::json{{"cursor", "4"}});
+    // Only reachable with a page size set and a non-empty collection: paginate() returns the
+    // whole slice before it ever looks at the cursor when either is absent.
+    list("null", nlohmann::json{{"cursor", nullptr}});
 
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
-    ASSERT_EQ(responses.size(), 2);
-    auto& result = responses[1]["result"];
-    ASSERT_EQ(result["tools"].size(), 2);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_0");
-    EXPECT_EQ(result["tools"][1]["name"], "tool_1");
-    ASSERT_TRUE(result.contains("nextCursor"));
-    EXPECT_EQ(result["nextCursor"], "2");
+    ASSERT_EQ(responses.size(), 5);
+    const auto& first = responses["first"]["result"];
+    ASSERT_EQ(first["tools"].size(), 2);
+    EXPECT_EQ(first["tools"][0]["name"], "tool_0");
+    EXPECT_EQ(first["tools"][1]["name"], "tool_1");
+    ASSERT_TRUE(first.contains("nextCursor"));
+    EXPECT_EQ(first["nextCursor"], "2");
+
+    const auto& middle = responses["middle"]["result"];
+    ASSERT_EQ(middle["tools"].size(), 2);
+    EXPECT_EQ(middle["tools"][0]["name"], "tool_2");
+    EXPECT_EQ(middle["tools"][1]["name"], "tool_3");
+    EXPECT_EQ(middle["nextCursor"], "4");
+
+    const auto& last = responses["last"]["result"];
+    ASSERT_EQ(last["tools"].size(), 1);
+    EXPECT_EQ(last["tools"][0]["name"], "tool_4");
+    EXPECT_FALSE(last.contains("nextCursor"));
+
+    const auto& null_cursor = responses["null"];
+    ASSERT_FALSE(null_cursor.contains("error")) << "actual error: " << null_cursor["error"].dump();
+    ASSERT_EQ(null_cursor["result"]["tools"].size(), 2);
+    EXPECT_EQ(null_cursor["result"]["tools"][0]["name"], "tool_0");
+    ASSERT_TRUE(null_cursor["result"].contains("nextCursor"));
+    EXPECT_EQ(null_cursor["result"]["nextCursor"], "2");
 }
 
 TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredTools) {
@@ -1368,12 +1367,9 @@ TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredToo
     setup.raw_transport->enqueue_message(
         nlohmann::json{{"jsonrpc", "2.0"}, {"id", "2"}, {"method", "tools/list"}}.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1383,107 +1379,6 @@ TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredToo
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[1],
               (nlohmann::json{{"jsonrpc", "2.0"}, {"id", "2"}, {"result", nlohmann::json(expected)}}));
-}
-
-TEST_F(ServerHandlersTest, ToolsListPaginationWithCursor) {
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    setup.server.set_page_size(2);
-
-    for (int i = 0; i < 5; ++i) {
-        auto name = "tool_" + std::to_string(i);
-        setup.server.add_tool<AddParams, AddResult>(
-            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
-            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-    }
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    list_req["params"] = nlohmann::json{{"cursor", "2"}};
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& result = responses[1]["result"];
-    ASSERT_EQ(result["tools"].size(), 2);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_2");
-    EXPECT_EQ(result["tools"][1]["name"], "tool_3");
-    EXPECT_EQ(result["nextCursor"], "4");
-}
-
-TEST_F(ServerHandlersTest, ToolsListPaginationLastPage) {
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    setup.server.set_page_size(2);
-
-    for (int i = 0; i < 5; ++i) {
-        auto name = "tool_" + std::to_string(i);
-        setup.server.add_tool<AddParams, AddResult>(
-            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
-            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-    }
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    list_req["params"] = nlohmann::json{{"cursor", "4"}};
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& result = responses[1]["result"];
-    ASSERT_EQ(result["tools"].size(), 1);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_4");
-    EXPECT_FALSE(result.contains("nextCursor"));
 }
 
 TEST_F(ServerHandlersTest, PaginationDisabledByDefault) {
@@ -1517,12 +1412,9 @@ TEST_F(ServerHandlersTest, PaginationDisabledByDefault) {
     list_req["method"] = "tools/list";
     setup.raw_transport->enqueue_message(list_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1570,12 +1462,9 @@ TEST_F(ServerHandlersTest, ResourcesListPagination) {
     list_req["method"] = "resources/list";
     setup.raw_transport->enqueue_message(list_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1625,12 +1514,9 @@ TEST_F(ServerHandlersTest, ToolWithOutputSchemaIncludesStructuredContent) {
         nlohmann::json{{"name", "add_structured"}, {"arguments", {{"augend", 10}, {"addend", 20}}}};
     setup.raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1698,12 +1584,9 @@ TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaStillReturnsStructuredContent)
         nlohmann::json{{"name", "add_plain"}, {"arguments", {{"augend", 5}, {"addend", 3}}}};
     setup.raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1711,54 +1594,6 @@ TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaStillReturnsStructuredContent)
     auto& result = responses[1]["result"];
     EXPECT_EQ(result["structuredContent"]["sum"], 8);
     EXPECT_EQ(result["content"][0]["type"], "text");
-}
-
-TEST_F(ServerHandlersTest, ToolsListIncludesOutputSchema) {
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    nlohmann::json output_schema = {{"type", "object"},
-                                    {"properties", {{"result", {{"type", "string"}}}}}};
-
-    setup.server.add_tool<AddParams, AddResult>(
-        "schema_tool", "Has output schema", nlohmann::json{{"type", "object"}}, output_schema,
-        [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& tools = responses[1]["result"]["tools"];
-    ASSERT_EQ(tools.size(), 1);
-    EXPECT_EQ(tools[0]["name"], "schema_tool");
-    ASSERT_TRUE(tools[0].contains("outputSchema"));
-    EXPECT_EQ(tools[0]["outputSchema"]["type"], "object");
 }
 
 // --- Completion Tests ---
@@ -1797,12 +1632,9 @@ TEST_F(ServerHandlersTest, CompletionReturnsResults) {
                                             {"argument", {{"name", "arg1"}, {"value", "hel"}}}};
     setup.raw_transport->enqueue_message(complete_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -1842,19 +1674,16 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
                                             {"argument", {{"name", "arg"}, {"value", "val"}}}};
     setup.raw_transport->enqueue_message(complete_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 2);
     auto& error_response = responses[1];
     ASSERT_TRUE(error_response.contains("error"));
-    EXPECT_EQ(error_response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 // A tool name is chosen entirely by the client, and an unknown one is the ordinary error path of
@@ -1890,10 +1719,10 @@ TEST_F(ServerHandlersTest, UnknownToolDiagnosticFlattensClientChosenName) {
     // rejected earlier by params validation or routed to some other diagnostic that flattens its
     // own message; either would make the assertions below pass for a reason unrelated to the site
     // under test. The code pins WHICH of the two "Unknown tool" sites this is: the RPC path refuses
-    // in handle_tools_call_wire with g_INVALID_PARAMS, whereas the invoke_tool path throws and
-    // surfaces as g_INTERNAL_ERROR through the dispatcher. Dump the message on failure so a vacuous
-    // pass cannot hide.
-    ASSERT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS)
+    // in handle_tools_call_wire with mcp::constants::jsonrpc::g_INVALID_PARAMS, whereas the invoke_tool
+    // path throws and surfaces as mcp::constants::jsonrpc::g_INTERNAL_ERROR through the dispatcher.
+    // Dump the message on failure so a vacuous pass cannot hide.
+    ASSERT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS)
         << "response: " << error_response.dump();
     ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U) << "actual message: " << message;
     ASSERT_NE(message.find("zqtripwire"), std::string::npos) << "actual message: " << message;
@@ -1925,7 +1754,7 @@ TEST_F(ServerHandlersTest, UnknownToolDiagnosticBoundsClientChosenName) {
     ASSERT_TRUE(error_response.contains("error")) << "response: " << error_response.dump();
     const auto message = error_response["error"]["message"].get<std::string>();
 
-    ASSERT_EQ(error_response["error"]["code"], mcp::g_INVALID_PARAMS)
+    ASSERT_EQ(error_response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS)
         << "actual message prefix: " << message.substr(0, 64);
     ASSERT_EQ(message.rfind("Unknown tool: ", 0), 0U)
         << "actual message prefix: " << message.substr(0, 64);
@@ -1949,18 +1778,14 @@ TEST_F(ServerHandlersTest, InvokeToolUnknownNameDiagnosticIsFlattened) {
 
     std::string message;
     bool threw = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            try {
-                static_cast<void>(
-                    co_await setup.server.invoke_tool(forged_name, nlohmann::json::object()));
-            } catch (const std::exception& error) {
-                threw = true;
-                message = error.what();
-            }
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            static_cast<void>(co_await setup.server.invoke_tool(forged_name, nlohmann::json::object()));
+        } catch (const std::exception& error) {
+            threw = true;
+            message = error.what();
+        }
+    });
     io_ctx_.run();
 
     // Tripwire: the name must have reached the invoke_tool site itself, not some earlier refusal.
@@ -2021,12 +1846,9 @@ TEST_F(ServerHandlersTest, PromptsGetAcceptsExplicitNullArguments) {
     get_req["params"] = nlohmann::json{{"name", "greeting"}, {"arguments", nullptr}};
     setup.raw_transport->enqueue_message(get_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -2038,61 +1860,6 @@ TEST_F(ServerHandlersTest, PromptsGetAcceptsExplicitNullArguments) {
     auto& messages = get_response["result"]["messages"];
     ASSERT_EQ(messages.size(), 1);
     EXPECT_EQ(messages[0]["content"]["text"], "Hello, World!");
-}
-
-TEST_F(ServerHandlersTest, ToolsListPaginationAcceptsExplicitNullCursor) {
-    // Only reachable with a page size set and a non-empty collection: paginate() returns the
-    // whole slice before it ever looks at the cursor when either is absent.
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ToolsCapability tools_cap;
-    caps.tools = std::move(tools_cap);
-
-    ServerSetup setup(io_ctx_, std::move(caps));
-
-    setup.server.set_page_size(2);
-
-    for (int i = 0; i < 5; ++i) {
-        auto name = "tool_" + std::to_string(i);
-        setup.server.add_tool<AddParams, AddResult>(
-            name, "Tool " + std::to_string(i), nlohmann::json{{"type", "object"}},
-            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
-    }
-
-    std::vector<nlohmann::json> responses;
-    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            setup.raw_transport->close();
-        }
-    });
-
-    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
-    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json list_req;
-    list_req["jsonrpc"] = "2.0";
-    list_req["id"] = "2";
-    list_req["method"] = "tools/list";
-    list_req["params"] = nlohmann::json{{"cursor", nullptr}};
-    setup.raw_transport->enqueue_message(list_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    auto& list_response = responses[1];
-    ASSERT_FALSE(list_response.contains("error")) << "actual error: " << list_response["error"].dump();
-    auto& result = list_response["result"];
-    ASSERT_EQ(result["tools"].size(), 2);
-    EXPECT_EQ(result["tools"][0]["name"], "tool_0");
-    ASSERT_TRUE(result.contains("nextCursor"));
-    EXPECT_EQ(result["nextCursor"], "2");
 }
 
 TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
@@ -2112,12 +1879,9 @@ TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
     init_req["params"]["clientInfo"]["icons"] = nullptr;
     setup.raw_transport->enqueue_message(init_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -2125,7 +1889,8 @@ TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullClientInfoOptionals) {
     auto& init_response = responses[0];
     ASSERT_FALSE(init_response.contains("error")) << "actual error: " << init_response["error"].dump();
     ASSERT_TRUE(init_response.contains("result"));
-    EXPECT_EQ(init_response["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(init_response["result"]["protocolVersion"],
+              std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullCapabilityFlags) {
@@ -2142,12 +1907,9 @@ TEST_F(ServerHandlersTest, InitializeAcceptsExplicitNullCapabilityFlags) {
     init_req["params"]["capabilities"]["extensions"] = nullptr;
     setup.raw_transport->enqueue_message(init_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
@@ -2177,26 +1939,27 @@ TEST_F(ServerHandlersTest, MessageNestedBeyondTheDepthLimitIsAParseError) {
     setup.raw_transport->enqueue_message(ping_nested_to("at-limit", 128));
     setup.raw_transport->enqueue_message(ping_nested_to("over-limit", 129));
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await setup.server.run(setup.transport, io_ctx_.get_executor());
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
 
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 2U);
     const auto with_id = [&responses](const nlohmann::json& id) {
-        const auto found = std::find_if(responses.begin(), responses.end(),
-                                        [&id](const nlohmann::json& r) { return r.at("id") == id; });
+        const auto found =
+            std::find_if(responses.begin(), responses.end(), [&id](const nlohmann::json& r) {
+                return r.contains("id") ? r.at("id") == id : id.is_null();
+            });
         return found == responses.end() ? nlohmann::json() : *found;
     };
     const auto answered = with_id("at-limit");
     ASSERT_TRUE(answered.is_object()) << "the ping at the limit got no response";
     EXPECT_TRUE(answered.contains("result")) << answered.dump();
-    // The id of a message that was never decoded is unknown, so the error carries a null id.
+    // The id of a message that was never decoded is unknown, so the error carries none.
     const auto refused = with_id(nullptr);
     ASSERT_TRUE(refused.is_object()) << "the ping over the limit got no parse error";
-    EXPECT_EQ(refused.at("error").at("code"), mcp::g_PARSE_ERROR);
+    EXPECT_EQ(refused.at("error").at("code"), mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
+
+}  // namespace server_handlers_test

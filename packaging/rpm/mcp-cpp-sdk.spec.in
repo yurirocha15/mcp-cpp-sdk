@@ -8,6 +8,9 @@ URL:            https://github.com/yurirocha15/mcp-cpp-sdk
 Provides:       bundled(jsoncons) = 1.10.0
 Source0:        @SOURCE_URL@
 # Canonical Source0 SHA-256: @SOURCE_SHA256@
+# The packages ship stripped files and no debug packages, so the build makes no debug
+# information: with it, the test objects alone would fill most of the build space.
+%global optflags %{optflags} -g0
 
 BuildRequires:  cmake >= 3.20
 BuildRequires:  gcc-c++ >= 11
@@ -47,10 +50,15 @@ Static library and private dependency metadata for explicit static consumers.
 
 %prep
 %autosetup
+cp -p third_party/jsoncons/LICENSE LICENSE.jsoncons
 
 %build
-%cmake -G Ninja -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
+# The cmake macro also passes CMake variables this project does not read, such as
+# CMAKE_Fortran_FLAGS_RELEASE. The release tests check that it reads the ones below.
+%cmake -G Ninja --no-warn-unused-cli -DMCP_CPP_SDK_BUILD_SHARED=ON -DMCP_CPP_SDK_BUILD_STATIC=ON -DBUILD_TESTING=ON -DBUILD_EXAMPLES=OFF -DBUILD_DOCS=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-DNDEBUG
 %cmake_build
+# The test binary is linked; its objects are not needed again and would only use build space.
+rm -rf %{__cmake_builddir}/CMakeFiles/mcp-sdk-tests.dir
 
 %check
 %ctest --output-on-failure
@@ -60,7 +68,7 @@ Static library and private dependency metadata for explicit static consumers.
 rm -rf %{buildroot}%{_licensedir}/mcp-cpp-sdk
 
 %files -n mcp-cpp-sdk@ABI_VERSION@-libs
-%license LICENSE
+%license LICENSE LICENSE.jsoncons
 %{_libdir}/libmcp-cpp-sdk.so.@ABI_VERSION@*
 
 %files devel

@@ -30,12 +30,18 @@ if(NOT BENCHMARK_SDK OR NOT EXISTS "${BENCHMARK_SDK_SOURCE}/CMakeLists.txt")
     FATAL_ERROR "BENCHMARK_SDK and a valid BENCHMARK_SDK_SOURCE are required")
 endif()
 
+set(BENCHMARK_OURS_MODEL
+    "threads"
+    CACHE STRING
+          "Tool handler model of the ours adapter: threads or coroutines")
+
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 find_library(HIREDIS_LIBRARY NAMES hiredis REQUIRED)
 find_path(HIREDIS_INCLUDE_DIR NAMES hiredis/hiredis.h REQUIRED)
 
-add_library(benchmark-workload STATIC common/benchmark_workload.cpp)
+add_library(benchmark-workload STATIC common/benchmark_workload.cpp
+                                      common/benchmark_schemas.cpp)
 target_include_directories(
   benchmark-workload
   PUBLIC common
@@ -66,9 +72,22 @@ if(BENCHMARK_SDK STREQUAL "ours")
       static
       CACHE STRING "" FORCE)
   add_subdirectory("${BENCHMARK_SDK_SOURCE}" sdk)
-  add_executable(alternative-benchmark-server adapters/ours.cpp)
-  target_link_libraries(alternative-benchmark-server PRIVATE mcp-cpp-sdk
-                                                             benchmark-workload)
+  if(BENCHMARK_OURS_MODEL STREQUAL "coroutines")
+    add_library(benchmark-async-workload STATIC common/async_workload.cpp
+                                                common/benchmark_schemas.cpp)
+    target_include_directories(benchmark-async-workload PUBLIC common)
+    target_link_libraries(benchmark-async-workload PUBLIC mcp-cpp-sdk
+                                                          Threads::Threads)
+    add_executable(alternative-benchmark-server adapters/ours_coroutines.cpp)
+    target_link_libraries(alternative-benchmark-server
+                          PRIVATE mcp-cpp-sdk benchmark-async-workload)
+  elseif(BENCHMARK_OURS_MODEL STREQUAL "threads")
+    add_executable(alternative-benchmark-server adapters/ours.cpp)
+    target_link_libraries(alternative-benchmark-server
+                          PRIVATE mcp-cpp-sdk benchmark-workload)
+  else()
+    message(FATAL_ERROR "BENCHMARK_OURS_MODEL must be threads or coroutines")
+  endif()
 elseif(BENCHMARK_SDK STREQUAL "hkr04")
   set(MCP_BUILD_TESTS
       OFF

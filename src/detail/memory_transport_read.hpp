@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -17,6 +18,14 @@ namespace mcp::detail {
 struct MemoryTransportAccess {
     static Task<std::optional<std::string>> read_message_until_closed(MemoryTransport& transport);
     static Task<std::optional<nlohmann::json>> read_json_until_closed(MemoryTransport& transport);
+
+    /// A message and the id, as JSON text, of the request it was written as related to (see
+    /// ITransport::write_related_message()), or null.
+    struct RelatedMessage {
+        std::string message;
+        std::shared_ptr<const std::string> related_request;
+    };
+    static Task<std::optional<RelatedMessage>> read_related_until_closed(MemoryTransport& transport);
 };
 
 }  // namespace mcp::detail

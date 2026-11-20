@@ -3,13 +3,17 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
+#include <mcp/server/request_context.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,6 +28,29 @@ namespace detail {
 /// Number of sessions `transport` has ended in response to an HTTP DELETE. The Server compares it
 /// across `initialize` requests to recognise the start of a new session on the same transport.
 std::uint64_t terminated_session_count(const HttpServerTransport& transport) noexcept;
+
+/// Checks the `Mcp-Param-{Name}` headers ({Name, value} pairs) of a 2026-07-28 tools/call against
+/// the arguments of the request, returning why they do not match or nullopt when they do.
+using ParamHeaderCheck = std::function<std::optional<std::string>(
+    const nlohmann::json& request, const std::vector<std::pair<std::string, std::string>>& headers)>;
+
+/// What Server::run() tells the HttpServerTransport it serves about itself.
+struct HttpServerBinding {
+    /// Knows which arguments each tool mirrors into headers.
+    ParamHeaderCheck param_header_check;
+    /// The protocol versions the server serves, named in the error that answers an initialize
+    /// sent with a 2026-07-28 version header.
+    std::vector<std::string> served_versions;
+    /// Serves a request of 2026-07-28 and returns its serialized response; null while nothing
+    /// serves them, when the transport hands them to whoever reads it. The server it belongs to is
+    /// held weakly: once that server is gone it answers with an error.
+    std::function<Task<std::string>(nlohmann::json, RequestContext)> modern_dispatch;
+    /// Where modern_dispatch runs.
+    boost::asio::any_io_executor dispatch_executor;
+};
+
+/// Installed by Server::run().
+void bind_server(HttpServerTransport& transport, HttpServerBinding binding);
 }  // namespace detail
 
 /**
@@ -31,7 +58,9 @@ std::uint64_t terminated_session_count(const HttpServerTransport& transport) noe
  *
  * Stores recent SSE events with monotonically increasing IDs. When the
  * store exceeds its capacity, the oldest events are evicted. Clients can replay
- * missed events by providing the last event ID they received.
+ * missed events by providing the last event ID they received. Each event belongs
+ * to a stream, and a replay holds only the later events of the stream that the
+ * given event belongs to.
  *
  * Not thread-safe. External synchronization is required for concurrent access.
  */
@@ -40,32 +69,52 @@ class EventStore {
     /**
      * @brief Construct an event store with a given capacity.
      *
-     * @param capacity Maximum number of events to retain.
+     * @param capacity Maximum number of events to retain. Past
+     *        mcp::constants::event_store::g_MAX_BYTES the oldest go first as well.
      */
-    explicit EventStore(std::size_t capacity = constants::g_event_store_default_capacity)
+    explicit EventStore(std::size_t capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY)
         : capacity_(capacity) {}
 
     /**
      * @brief Append an event to the store and return its assigned ID.
      *
      * @param data The serialized event data (JSON-RPC message).
+     * @param stream The stream the event is sent on. Events appended without one share a stream.
      * @return The monotonically increasing event ID assigned to this event.
      */
-    std::string append(std::string data) {
+    std::string append(std::string data, std::string stream = {}) {
         auto id = std::to_string(++next_id_);
-        events_.push_back(StoredEvent{id, std::move(data)});
-        while (events_.size() > capacity_) {
+        stored_bytes_ += data.size();
+        events_.push_back(StoredEvent{id, std::move(stream), std::move(data)});
+        while (events_.size() > capacity_ ||
+               (events_.size() > 1 && stored_bytes_ > mcp::constants::event_store::g_MAX_BYTES)) {
+            stored_bytes_ -= events_.front().data.size();
             events_.pop_front();
         }
         return id;
     }
 
     /**
-     * @brief Retrieve all events after a given event ID.
+     * @brief The stream an event was sent on.
+     *
+     * @param event_id The ID of the event.
+     * @return The stream given to append(), or std::nullopt if the event is not stored.
+     */
+    [[nodiscard]] std::optional<std::string> stream_of(const std::string& event_id) const {
+        for (const auto& event : events_) {
+            if (event.id == event_id) {
+                return event.stream;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /**
+     * @brief Retrieve the events after a given event ID on that event's stream.
      *
      * @param last_event_id The ID of the last event the client received.
-     * @return A vector of (id, data) pairs for events after the given ID,
-     *         or std::nullopt if the last_event_id has been evicted.
+     * @return A vector of (id, data) pairs for the later events of the stream that
+     *         last_event_id belongs to, or std::nullopt if last_event_id has been evicted.
      */
     [[nodiscard]] std::optional<SseEventList> events_after(const std::string& last_event_id) const {
         if (events_.empty()) {
@@ -86,9 +135,12 @@ class EventStore {
             return std::nullopt;
         }
 
+        const auto& stream = std::prev(it)->stream;
         SseEventList result;
         for (; it != events_.end(); ++it) {
-            result.emplace_back(it->id, it->data);
+            if (it->stream == stream) {
+                result.emplace_back(it->id, it->data);
+            }
         }
         return result;
     }
@@ -126,16 +178,19 @@ class EventStore {
      */
     void clear() {
         events_.clear();
+        stored_bytes_ = 0;
         next_id_ = 0;
     }
 
    private:
     struct StoredEvent {
         std::string id;
+        std::string stream;
         std::string data;
     };
 
     std::size_t capacity_;
+    std::size_t stored_bytes_{0};
     std::deque<StoredEvent> events_;
     std::uint64_t next_id_{0};
 };
@@ -146,6 +201,28 @@ class EventStore {
  * Accepts HTTP connections, processes inbound JSON-RPC messages, and routes
  * outbound responses back to their matching HTTP requests. Supports SSE
  * replay via an in-memory event store.
+ *
+ * In its legacy session, a POST from a client that accepts SSE over HTTP/1.1 is answered with a
+ * stream once the server sends anything else for the request first, such as a notification or a
+ * request of its own: those go on the stream as they come, and the response ends it. A GET opens
+ * the session's stream for messages that belong to no request, and a GET with Last-Event-ID
+ * resumes a stream from there, still live when it has not ended.
+ *
+ * Alongside its one legacy session, it serves requests of protocol revision 2026-07-28, which
+ * need no session: their mirrored headers are checked, they are answered with the status the
+ * specification gives their errors, and they never read or receive `Mcp-Session-Id`. The answer
+ * is plain JSON unless a handler sends a notification (a log message, progress) while serving the
+ * request and the client accepts `text/event-stream`: then it becomes an SSE stream carrying those
+ * notifications and finally the response. A `subscriptions/listen` request is an SSE stream that
+ * lasts until the client closes it or the server ends the subscription. A client that
+ * disconnects while its request runs cancels it, and so does a reset after a half-close. A client
+ * that accepts `text/event-stream` and half-closes gets an SSE stream even when no notification is
+ * sent, carrying comments that probe whether it is still there, because a client that closed
+ * cleanly cannot be told from one that only half-closed until a write fails; the HTTP status of
+ * such an answer is 200 even for an error, which the JSON-RPC body still carries. Notifications
+ * wait in a queue limited by StreamOptions::max_queued_notifications and max_queued_bytes. These
+ * requests are served once a Server::run() reads from the transport; before that they reach
+ * whoever calls read_message().
  */
 class MCP_API HttpServerTransport final : public ITransport {
    public:
@@ -159,7 +236,7 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     HttpServerTransport(
         const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
-        std::size_t event_store_capacity = mcp::constants::g_event_store_default_capacity);
+        std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~HttpServerTransport() override;
 
@@ -195,6 +272,18 @@ class MCP_API HttpServerTransport final : public ITransport {
     void set_json_only(bool json_only);
 
     /**
+     * @brief Set how the answer to a 2026-07-28 request is streamed.
+     *
+     * @throws std::invalid_argument If an interval is not positive, or max_queued_notifications or
+     *         max_queued_bytes is zero.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_stream_options(StreamOptions options);
+
+    /// What the 2026-07-28 streams of this transport have done.
+    [[nodiscard]] StreamStats stream_stats() const;
+
+    /**
      * @brief Replace the allowlist used for requests carrying an Origin header.
      *
      * Requests without an Origin header remain valid for non-browser MCP clients. An Origin header
@@ -222,7 +311,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
@@ -239,7 +329,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose token the validator refuses is answered 401 with the bearer challenge. A
      * validator that throws is answered 500, without a challenge, so a failing introspection
-     * endpoint does not send clients into re-authorization.
+     * endpoint does not send clients into re-authorization. A validator that accepts a token may
+     * name the principal it stands for (TokenValidation); handlers see it as Context::principal().
      *
      * @throws std::logic_error If a synchronous validator is already installed, or if listen() has
      *         already been called or the transport is closed.
@@ -251,8 +342,8 @@ class MCP_API HttpServerTransport final : public ITransport {
      *
      * A request whose body exceeds the cap is answered `413 Payload Too Large` and its connection is
      * closed; it never reaches MCP dispatch. Defaults to
-     * mcp::constants::g_default_max_request_body_bytes. Binary content travels as base64 inside the
-     * JSON body, so a cap near the size of the raw content rejects it.
+     * mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES. Binary content travels as base64
+     * inside the JSON body, so a cap near the size of the raw content rejects it.
      *
      * The body is read, up to this cap, before the origin and bearer token are checked, so the cap
      * is also what one unauthenticated connection can make the transport buffer. The body is parsed
@@ -264,6 +355,29 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
     void set_max_request_body_bytes(std::size_t max_bytes);
+
+    /**
+     * @brief Set what the connections and requests of this transport may hold at once.
+     *
+     * @details The headers of a request are read first, and the Origin and bearer token checks
+     * run on them, so a request they refuse never has its body read. See HttpConnectionLimits for
+     * the defaults. Must be called before listen().
+     *
+     * @throws std::invalid_argument If `max_requests` or `max_request_bytes` is 0.
+     */
+    void set_connection_limits(const HttpConnectionLimits& limits);
+
+    /**
+     * @brief Set how long a session may sit idle before a new client can take its place.
+     *
+     * @details This transport serves one session at a time. Without this, a client that left
+     * without a DELETE would keep every other client out until the process restarts. An
+     * initialize then ends a session that has no request waiting and has been idle this long.
+     *
+     * @param timeout The time, or zero to keep a session until its DELETE. The default is five
+     *        minutes.
+     */
+    void set_session_idle_timeout(std::chrono::milliseconds timeout);
 
     /**
      * @brief Set the parameters sent in the `WWW-Authenticate` header of every 401.
@@ -278,6 +392,34 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
     void set_bearer_challenge(BearerChallengeConfig challenge);
+
+    /**
+     * @brief Name the scopes each request needs, so a token without them is answered 403.
+     *
+     * @details After a validator accepts a token, the provider is asked about every POSTed JSON-RPC
+     * message that has a method (see ScopeRequirementProvider). When the token's scopes
+     * (TokenValidation::scopes) lack one the provider named, the message is not dispatched and no
+     * response stream is opened: the answer is `403` with a
+     * `WWW-Authenticate: Bearer error="insufficient_scope", scope="...", resource_metadata="..."`
+     * challenge naming every scope the operation needs, which a client such as
+     * OAuthClientTransport answers by authorizing again with the wider scope. The challenge keeps
+     * the realm and metadata URL of set_bearer_challenge() and set_protected_resource_metadata().
+     * A validator that reports no scopes grants none, so a request that needs a scope is refused.
+     * Requests that carry no JSON-RPC method (answers to the server's own requests, GET and DELETE)
+     * are not checked.
+     *
+     * The scopes the provider returns are written into the challenge as quoted header text, so
+     * each must consist of printable ASCII (0x20-0x7E); a provider that returns anything else is
+     * answered `500` with no challenge, as one that throws is.
+     *
+     * Passing an empty provider removes the check. Configure it before listen() or run() starts.
+     * A provider needs a token validator to report the scopes a token holds, so
+     * listen() throws when one is set without the other, whichever was set first.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed. listen()
+     * also throws it when a provider is set and no validator is.
+     */
+    void set_scope_requirements(ScopeRequirementProvider provider);
 
     /**
      * @brief Serve an RFC 9728 protected-resource metadata document.
@@ -313,17 +455,46 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     void set_unauthenticated_paths(std::vector<std::string> paths);
 
+    /// 2026-07-28 requests refused with `mcp::constants::jsonrpc::g_HEADER_MISMATCH` because their
+    /// MCP-Protocol-Version, Mcp-Method, Mcp-Name or Mcp-Param-* header was missing, malformed,
+    /// repeated or did not match the body.
+    [[nodiscard]] std::uint64_t header_mismatch_rejections() const;
+
     /**
      * @brief Read the next queued JSON-RPC message from HTTP POST bodies.
      */
     Task<std::string> read_message() override;
 
     /**
-     * @brief Send a JSON-RPC response for the pending HTTP request.
+     * @brief Read the next queued JSON-RPC message with the principal of the request that carried
+     *        it.
      *
-     * @param message Serialized JSON-RPC response.
+     * @details The principal is the id the bearer token validator returned in TokenValidation,
+     * or else `h:` followed by the hex SHA-256 of the request's bearer token, or of its
+     * Authorization header when that holds no bearer token, or empty when the request had none. It is
+     * kept with each queued message, so the requests of several clients waiting together are each
+     * attributed to their own sender.
+     */
+    Task<IncomingMessage> read_incoming() override;
+
+    /**
+     * @brief Send a JSON-RPC message: a response answers its pending HTTP request, and any other
+     *        message goes on the session's GET stream, or on the stream of the only request
+     *        waiting when no GET opened one.
+     *
+     * @param message Serialized JSON-RPC message.
      */
     Task<void> write_message(std::string_view message) override;
+
+    /**
+     * @brief Send a message the server sends while it serves a request, on that request's stream
+     *        while it waits, or as write_message() does otherwise.
+     *
+     * @param message Serialized JSON-RPC message.
+     * @param related_request The id of the client request, as JSON text.
+     */
+    Task<void> write_related_message(std::string_view message,
+                                     std::string_view related_request) override;
 
     /**
      * @brief Close the transport and stop accepting connections.
@@ -337,9 +508,15 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     Task<void> listen();
 
+    /**
+     * @brief This transport, which Server::run() serves as an HttpServerTransport.
+     */
+    HttpServerTransport* http_server_transport() noexcept override { return this; }
+
    private:
     friend std::uint64_t detail::terminated_session_count(
         const HttpServerTransport& transport) noexcept;
+    friend void detail::bind_server(HttpServerTransport& transport, detail::HttpServerBinding binding);
 
     struct Impl;
     static Task<void> listen_impl(std::shared_ptr<Impl> impl);

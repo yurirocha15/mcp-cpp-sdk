@@ -1,5 +1,7 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/transport/memory.hpp"
 
@@ -16,17 +18,23 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
+#include <optional>
 #include <queue>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
+
+namespace client_core_test {
 
 namespace {
 
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -263,6 +271,81 @@ class QueuedWriteTransport final : public mcp::ITransport {
     bool closed_{false};
 };
 
+/// A transport whose write of `slow/request` waits `wait` for a person and reports the wait from a
+/// thread of its own, as ITransport allows.
+class ReportsFromAnotherThreadTransport final : public mcp::ITransport {
+   public:
+    ReportsFromAnotherThreadTransport(const boost::asio::any_io_executor& executor,
+                                      std::chrono::milliseconds wait)
+        : executor_(executor), read_signal_(executor), wait_(wait) {
+        read_signal_.expires_at(std::chrono::steady_clock::time_point::max());
+    }
+
+    void set_interaction_observer(InteractionObserver observer) override {
+        observer_ = std::move(observer);
+    }
+
+    mcp::Task<std::string> read_message() override {
+        for (;;) {
+            if (!incoming_.empty()) {
+                auto message = std::move(incoming_.front());
+                incoming_.pop();
+                co_return message;
+            }
+            if (closed_) {
+                throw std::runtime_error("transport closed");
+            }
+            read_signal_.expires_at(std::chrono::steady_clock::time_point::max());
+            try {
+                co_await read_signal_.async_wait(boost::asio::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                if (error.code() != boost::asio::error::operation_aborted) {
+                    throw;
+                }
+            }
+        }
+    }
+
+    mcp::Task<void> write_message(std::string_view message) override {
+        const auto request = nlohmann::json::parse(message);
+        if (!request.contains("id")) {
+            co_return;
+        }
+        const auto id = request.at("id").get<std::string>();
+        const auto method = request.value("method", "");
+        if (method == "slow/request") {
+            const auto key = mcp::RequestId{id}.correlation_key();
+            report_from_another_thread(key, true);
+            boost::asio::steady_timer person(executor_, wait_);
+            co_await person.async_wait(boost::asio::use_awaitable);
+            report_from_another_thread(key, false);
+        }
+        respond(id, method == "initialize" ? make_initialize_result() : nlohmann::json{{"ok", true}});
+    }
+
+    void close() override {
+        closed_ = true;
+        read_signal_.cancel();
+    }
+
+   private:
+    void report_from_another_thread(const std::string& key, bool waiting) {
+        std::thread([this, &key, waiting] { observer_(key, waiting); }).join();
+    }
+
+    void respond(const std::string& id, const nlohmann::json& result) {
+        incoming_.push(make_result_response(id, result).dump());
+        read_signal_.cancel();
+    }
+
+    boost::asio::any_io_executor executor_;
+    boost::asio::steady_timer read_signal_;
+    std::chrono::milliseconds wait_;
+    InteractionObserver observer_;
+    std::queue<std::string> incoming_;
+    bool closed_{false};
+};
+
 void run_on_thread_pool(boost::asio::io_context& io_context, std::size_t thread_count = 4) {
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
@@ -299,22 +382,19 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     nlohmann::json result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            nlohmann::json req_params = {{"key", "value"}};
-            result = co_await client.send_request("test/method", std::move(req_params));
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        nlohmann::json req_params = {{"key", "value"}};
+        result = co_await client.send_request("test/method", std::move(req_params));
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -322,9 +402,37 @@ TEST_F(ClientCoreTest, SendRequestAddsToMapAndReturnsResult) {
     EXPECT_EQ(client.pending_request_count(), 0);
 }
 
+// A transport may report a wait for a person from any thread, and the deadline still stops for it.
+// The wait lasts as long as the deadline and starts after it, so a deadline that kept running would
+// end the request first, at any speed.
+TEST_F(ClientCoreTest, WaitReportedFromAnotherThreadStopsTheDeadline) {
+    constexpr auto deadline = std::chrono::milliseconds(3000);
+    auto transport =
+        std::make_shared<ReportsFromAnotherThreadTransport>(io_ctx_.get_executor(), deadline);
+    auto options = legacy_client_options();
+    options.request_timeout = deadline;
+    mcp::Client client(transport, io_ctx_.get_executor(), options);
+
+    nlohmann::json result;
+    std::string error;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            co_await client.connect("test-client", "0.1");
+            result = co_await client.send_request("slow/request", std::nullopt);
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
+        transport->close();
+    });
+    io_ctx_.run();
+
+    EXPECT_EQ(error, "");
+    EXPECT_EQ(result.value("ok", false), true);
+}
+
 TEST_F(ClientCoreTest, RequestsFailImmediatelyBeforeConnect) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     EXPECT_THROW(static_cast<void>(client.send_request("ping", std::nullopt)), mcp::McpError);
     EXPECT_THROW(static_cast<void>(client.send_notification("notifications/test", std::nullopt)),
@@ -344,19 +452,16 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
-    mcp::InitializeResult init_result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            init_result = co_await client.connect(std::move(info), mcp::ClientCapabilities{});
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp::ConnectResult init_result;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        init_result = co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -366,7 +471,8 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_EQ(first["method"], "initialize");
     EXPECT_TRUE(first.contains("id"));
     EXPECT_EQ(first["jsonrpc"], "2.0");
-    EXPECT_EQ(first["params"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(first["params"]["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     EXPECT_EQ(first["params"]["clientInfo"]["name"], "test-client");
     EXPECT_EQ(first["params"]["clientInfo"]["version"], "0.1");
 
@@ -375,9 +481,10 @@ TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
     EXPECT_FALSE(second.contains("id"));
     EXPECT_EQ(second["jsonrpc"], "2.0");
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
-    EXPECT_EQ(init_result.serverInfo.name, "test-server");
-    EXPECT_EQ(init_result.serverInfo.version, "1.0");
+    EXPECT_EQ(init_result.protocolVersion,
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.serverInfo->name, "test-server");
+    EXPECT_EQ(init_result.serverInfo->version, "1.0");
 }
 
 TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
@@ -390,29 +497,26 @@ TEST_F(ClientCoreTest, NullIdErrorDoesNotStopReadLoop) {
             return;
         }
 
-        raw_transport->enqueue_message(
-            nlohmann::json{{"jsonrpc", "2.0"},
-                           {"id", nullptr},
-                           {"error", {{"code", mcp::g_PARSE_ERROR}, {"message", "parse error"}}}}
-                .dump());
+        raw_transport->enqueue_message(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", nullptr},
+            {"error", {{"code", mcp::constants::jsonrpc::g_PARSE_ERROR}, {"message", "parse error"}}}}
+                                           .dump());
         raw_transport->enqueue_message(
             make_result_response(json_msg.at("id").get<std::string>(), make_initialize_result())
                 .dump());
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
-    mcp::InitializeResult result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            result = co_await client.connect("test-client", "0.1");
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+    mcp::ConnectResult result;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        result = co_await client.connect("test-client", "0.1");
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
-    EXPECT_EQ(result.serverInfo.name, "test-server");
+    EXPECT_EQ(result.serverInfo->name, "test-server");
 }
 
 TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
@@ -427,29 +531,27 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         } else if (json_msg.contains("id")) {
             auto id = json_msg["id"].get<std::string>();
             raw_transport->enqueue_message(
-                make_error_response(id, mcp::g_METHOD_NOT_FOUND, "method not found").dump());
+                make_error_response(id, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND, "method not found")
+                    .dump());
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::exception_ptr captured_ex;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            try {
-                co_await client.send_request("nonexistent/method", std::nullopt);
-            } catch (...) {
-                captured_ex = std::current_exception();
-            }
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        try {
+            co_await client.send_request("nonexistent/method", std::nullopt);
+        } catch (...) {
+            captured_ex = std::current_exception();
+        }
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -458,7 +560,8 @@ TEST_F(ClientCoreTest, SendRequestErrorResponseThrows) {
         std::rethrow_exception(captured_ex);
     } catch (const std::runtime_error& err) {
         std::string msg = err.what();
-        EXPECT_TRUE(msg.find(std::to_string(mcp::g_METHOD_NOT_FOUND)) != std::string::npos);
+        EXPECT_TRUE(msg.find(std::to_string(mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)) !=
+                    std::string::npos);
         EXPECT_TRUE(msg.find("method not found") != std::string::npos);
     }
 }
@@ -475,21 +578,18 @@ TEST_F(ClientCoreTest, SendNotificationDoesNotExpectResponse) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            nlohmann::json progress_params = {{"token", "abc"}};
-            co_await client.send_notification("notifications/progress", std::move(progress_params));
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        nlohmann::json progress_params = {{"token", "abc"}};
+        co_await client.send_notification("notifications/progress", std::move(progress_params));
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -521,24 +621,21 @@ TEST_F(ClientCoreTest, MultipleRequestsDispatchCorrectly) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     nlohmann::json result_a;
     nlohmann::json result_b;
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            result_a = co_await client.send_request("tools/list", std::nullopt);
-            result_b = co_await client.send_request("resources/list", std::nullopt);
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        result_a = co_await client.send_request("tools/list", std::nullopt);
+        result_b = co_await client.send_request("resources/list", std::nullopt);
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -568,22 +665,19 @@ TEST_F(ClientCoreTest, ReadLoopIgnoresServerNotifications) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     nlohmann::json result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            nlohmann::json call_params = {{"name", "test"}};
-            result = co_await client.send_request("tools/call", std::move(call_params));
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        nlohmann::json call_params = {{"name", "test"}};
+        result = co_await client.send_request("tools/call", std::move(call_params));
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -596,7 +690,7 @@ TEST_F(ClientCoreTest, PendingRequestCountReflectsInFlightRequests) {
 
     std::size_t count_during_flight = 0;
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     raw_transport->set_on_write([raw_transport, &count_during_flight, &client](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -616,20 +710,17 @@ TEST_F(ClientCoreTest, PendingRequestCountReflectsInFlightRequests) {
 
     EXPECT_EQ(client.pending_request_count(), 0);
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            co_await client.send_request("tools/list", std::nullopt);
+        co_await client.send_request("tools/list", std::nullopt);
 
-            EXPECT_EQ(client.pending_request_count(), 0);
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        EXPECT_EQ(client.pending_request_count(), 0);
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -654,24 +745,22 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
             }
         });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
-    mcp::InitializeResult init_result;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            init_result = co_await client.connect(std::move(info), mcp::ClientCapabilities{});
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp::ConnectResult init_result;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        init_result = co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
-    EXPECT_EQ(init_result.protocolVersion, std::string(mcp::g_LATEST_PROTOCOL_VERSION));
-    EXPECT_EQ(init_result.serverInfo.name, "test-server");
+    EXPECT_EQ(init_result.protocolVersion,
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    EXPECT_EQ(init_result.serverInfo->name, "test-server");
     ASSERT_TRUE(init_result.instructions.has_value());
     EXPECT_EQ(*init_result.instructions, "Welcome to the test server");
     ASSERT_TRUE(init_result.capabilities.tools.has_value());
@@ -698,22 +787,19 @@ TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     bool ping_completed = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
-            co_await client.ping();
-            ping_completed = true;
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        co_await client.ping();
+        ping_completed = true;
+        raw_transport->close();
+    });
 
     io_ctx_.run();
 
@@ -733,40 +819,37 @@ TEST_F(ClientCoreTest, RequestTimeoutThrowsStructuredMcpError) {
         }
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
     std::optional<int> error_code;
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("test-client", "0.1");
-            try {
-                mcp::RequestOptions options;
-                options.timeout = std::chrono::milliseconds(5);
-                co_await client.send_request("tools/list", std::nullopt, options);
-            } catch (const mcp::McpError& error) {
-                error_code = error.code();
-            }
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("test-client", "0.1");
+        try {
+            mcp::RequestOptions options;
+            options.timeout = std::chrono::milliseconds(5);
+            co_await client.send_request("tools/list", std::nullopt, options);
+        } catch (const mcp::McpError& error) {
+            error_code = error.code();
+        }
+        client.close();
+    });
 
     io_ctx_.run();
 
     ASSERT_TRUE(error_code.has_value());
-    EXPECT_EQ(*error_code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(*error_code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(client.pending_request_count(), 0);
 }
 
 TEST_F(ClientCoreTest, RequestTimeoutIncludesTimeQueuedInTransportWrite) {
     auto transport = std::make_shared<BlockingRequestWriteTransport>(io_ctx_.get_executor());
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::optional<int> error_code;
     bool request_completed = false;
     bool watchdog_fired = false;
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(std::chrono::milliseconds(250));
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
             watchdog_fired = true;
@@ -774,22 +857,19 @@ TEST_F(ClientCoreTest, RequestTimeoutIncludesTimeQueuedInTransportWrite) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("test-client", "0.1");
-            try {
-                mcp::RequestOptions options;
-                options.timeout = std::chrono::milliseconds(10);
-                co_await client.send_request("tools/list", std::nullopt, options);
-            } catch (const mcp::McpError& error) {
-                error_code = error.code();
-            }
-            request_completed = true;
-            watchdog.cancel();
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("test-client", "0.1");
+        try {
+            mcp::RequestOptions options;
+            options.timeout = std::chrono::milliseconds(10);
+            co_await client.send_request("tools/list", std::nullopt, options);
+        } catch (const mcp::McpError& error) {
+            error_code = error.code();
+        }
+        request_completed = true;
+        watchdog.cancel();
+        client.close();
+    });
 
     io_ctx_.run();
 
@@ -797,46 +877,41 @@ TEST_F(ClientCoreTest, RequestTimeoutIncludesTimeQueuedInTransportWrite) {
     EXPECT_TRUE(request_completed);
     EXPECT_FALSE(watchdog_fired);
     ASSERT_TRUE(error_code.has_value());
-    EXPECT_EQ(*error_code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(*error_code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(client.pending_request_count(), 0);
 }
 
 TEST_F(ClientCoreTest, TimedOutQueuedRequestIsNotTransmittedLater) {
     auto transport = std::make_shared<QueuedWriteTransport>(io_ctx_.get_executor());
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::optional<int> error_code;
     std::exception_ptr notification_error;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("test-client", "0.1");
-            boost::asio::co_spawn(io_ctx_,
-                                  client.send_notification("notifications/block", std::nullopt),
-                                  [&notification_error](std::exception_ptr error) {
-                                      notification_error = std::move(error);
-                                  });
-            co_await transport->wait_until_blocked();
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("test-client", "0.1");
+        mcp_test::spawn_then(
+            io_ctx_, client.send_notification("notifications/block", std::nullopt),
+            [&notification_error](std::exception_ptr error) { notification_error = std::move(error); });
+        co_await transport->wait_until_blocked();
 
-            try {
-                mcp::RequestOptions options;
-                options.timeout = std::chrono::milliseconds(10);
-                co_await client.send_request("tools/list", std::nullopt, options);
-            } catch (const mcp::McpError& error) {
-                error_code = error.code();
-            }
+        try {
+            mcp::RequestOptions options;
+            options.timeout = std::chrono::milliseconds(10);
+            co_await client.send_request("tools/list", std::nullopt, options);
+        } catch (const mcp::McpError& error) {
+            error_code = error.code();
+        }
 
-            transport->release_blocked_write();
-            boost::asio::steady_timer settle(io_ctx_, std::chrono::milliseconds(10));
-            co_await settle.async_wait(boost::asio::use_awaitable);
-            client.close();
-        },
-        boost::asio::detached);
+        transport->release_blocked_write();
+        boost::asio::steady_timer settle(io_ctx_, std::chrono::milliseconds(10));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+        client.close();
+    });
 
     io_ctx_.run();
 
     ASSERT_TRUE(error_code.has_value());
-    EXPECT_EQ(*error_code, mcp::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(*error_code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
     EXPECT_EQ(notification_error, nullptr);
     EXPECT_EQ(std::count(transport->methods().begin(), transport->methods().end(), "tools/list"), 0);
     EXPECT_EQ(client.pending_request_count(), 0);
@@ -856,31 +931,29 @@ TEST_F(ClientCoreTest, RemoteErrorPreservesJsonRpcData) {
             raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
             return;
         }
-        auto response = make_error_response(id, mcp::g_INVALID_PARAMS, "invalid arguments");
+        auto response =
+            make_error_response(id, mcp::constants::jsonrpc::g_INVALID_PARAMS, "invalid arguments");
         response["error"]["data"] = {{"field", "limit"}};
         raw_transport->enqueue_message(response.dump());
     });
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
     std::optional<mcp::Error> captured_error;
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("test-client", "0.1");
-            try {
-                co_await client.send_request("tools/call", nlohmann::json::object());
-            } catch (const mcp::McpError& error) {
-                captured_error = error.error();
-            }
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("test-client", "0.1");
+        try {
+            co_await client.send_request("tools/call", nlohmann::json::object());
+        } catch (const mcp::McpError& error) {
+            captured_error = error.error();
+        }
+        client.close();
+    });
 
     io_ctx_.run();
 
     ASSERT_TRUE(captured_error.has_value());
-    EXPECT_EQ(captured_error->code, mcp::g_INVALID_PARAMS);
+    EXPECT_EQ(captured_error->code, mcp::constants::jsonrpc::g_INVALID_PARAMS);
     ASSERT_TRUE(captured_error->data.has_value());
     EXPECT_EQ(captured_error->data->at("field"), "limit");
 }
@@ -888,11 +961,13 @@ TEST_F(ClientCoreTest, RemoteErrorPreservesJsonRpcData) {
 TEST_F(ClientCoreTest, ImmediateResponseCannotBeLostBeforeWaitStarts) {
     auto transport = std::make_shared<ImmediateResponseTransport>(io_ctx_.get_executor());
     mcp::ClientOptions client_options;
-    client_options.request_timeout = std::chrono::seconds(2);
+    // Longer than the watchdog, so a lost response is reported by the watchdog.
+    client_options.request_timeout = g_release_guard;
+    client_options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx_.get_executor(), client_options);
 
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(std::chrono::milliseconds(250));
+    watchdog.expires_after(g_hang_guard);
     bool watchdog_fired = false;
     bool request_completed = false;
     nlohmann::json result;
@@ -904,16 +979,13 @@ TEST_F(ClientCoreTest, ImmediateResponseCannotBeLostBeforeWaitStarts) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("immediate-response-client", "1.0");
-            result = co_await client.send_request("test/immediate", std::nullopt);
-            request_completed = true;
-            watchdog.cancel();
-            client.close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("immediate-response-client", "1.0");
+        result = co_await client.send_request("test/immediate", std::nullopt);
+        request_completed = true;
+        watchdog.cancel();
+        client.close();
+    });
 
     io_ctx_.run();
 
@@ -933,16 +1005,14 @@ TEST_F(ClientCoreTest, DestructionSafelyStopsActiveReadLoop) {
         }
     });
 
-    auto client = std::make_unique<mcp::Client>(transport, io_ctx_.get_executor());
+    auto client =
+        std::make_unique<mcp::Client>(transport, io_ctx_.get_executor(), legacy_client_options());
     bool initialized = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client->connect("destruction-client", "1.0");
-            initialized = true;
-            client.reset();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client->connect("destruction-client", "1.0");
+        initialized = true;
+        client.reset();
+    });
 
     io_ctx_.run();
 
@@ -961,7 +1031,8 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     // This timeout and the watchdog below only end a run that has gone wrong. They are wide
     // because a sanitizer can stop every thread for seconds while it prepares a report, including
     // one a suppression then discards.
-    options.request_timeout = 30s;
+    options.request_timeout = g_hang_guard;
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(client_transport, io_ctx_.get_executor(), options);
 
     std::atomic_size_t completed{0};
@@ -969,7 +1040,7 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     std::atomic_size_t errors{0};
     std::atomic_bool stop_poll{false};
 
-    boost::asio::co_spawn(
+    mcp_test::spawn_then(
         io_ctx_,
         [server_transport]() -> mcp::Task<void> {
             std::size_t responses = 0;
@@ -997,35 +1068,32 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
             }
         });
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&client, &completed, &correct, &errors]() -> mcp::Task<void> {
-            try {
-                co_await client.connect("threaded-client", "1.0");
-                auto executor = co_await boost::asio::this_coro::executor;
-                for (std::size_t sequence = 0; sequence < request_count; ++sequence) {
-                    boost::asio::co_spawn(
-                        executor,
-                        client.send_request("test/repeat", nlohmann::json{{"sequence", sequence}}),
-                        [sequence, &completed, &correct, &errors](std::exception_ptr error,
-                                                                  nlohmann::json result) {
-                            if (error) {
-                                errors.fetch_add(1, std::memory_order_relaxed);
-                            } else if (result.at("sequence").get<std::size_t>() == sequence) {
-                                correct.fetch_add(1, std::memory_order_relaxed);
-                            }
-                            completed.fetch_add(1, std::memory_order_release);
-                        });
-                }
-            } catch (...) {
-                errors.fetch_add(1, std::memory_order_relaxed);
-                client.close();
+    mcp_test::spawn_detached(io_ctx_, [&client, &completed, &correct, &errors]() -> mcp::Task<void> {
+        try {
+            co_await client.connect("threaded-client", "1.0");
+            auto executor = co_await boost::asio::this_coro::executor;
+            for (std::size_t sequence = 0; sequence < request_count; ++sequence) {
+                mcp_test::spawn_then(
+                    executor,
+                    client.send_request("test/repeat", nlohmann::json{{"sequence", sequence}}),
+                    [sequence, &completed, &correct, &errors](std::exception_ptr error,
+                                                              nlohmann::json result) {
+                        if (error) {
+                            errors.fetch_add(1, std::memory_order_relaxed);
+                        } else if (result.at("sequence").get<std::size_t>() == sequence) {
+                            correct.fetch_add(1, std::memory_order_relaxed);
+                        }
+                        completed.fetch_add(1, std::memory_order_release);
+                    });
             }
-        },
-        boost::asio::detached);
+        } catch (...) {
+            errors.fetch_add(1, std::memory_order_relaxed);
+            client.close();
+        }
+    });
 
     boost::asio::steady_timer watchdog(io_ctx_);
-    watchdog.expires_after(60s);
+    watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&client, &completed, &stop_poll](const boost::system::error_code& error) {
         if (!error && completed.load(std::memory_order_acquire) != request_count) {
             stop_poll.store(true, std::memory_order_release);
@@ -1092,25 +1160,22 @@ RejectedVersionOutcome connect_against_protocol_version(boost::asio::io_context&
                 .dump());
     });
 
-    mcp::Client client(transport, io_ctx.get_executor());
+    mcp::Client client(transport, io_ctx.get_executor(), legacy_client_options());
 
     RejectedVersionOutcome outcome;
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            try {
-                static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
-            } catch (const mcp::McpError& error) {
-                outcome.threw = true;
-                outcome.code = error.code();
-                outcome.message = error.message();
-            }
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        try {
+            static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
+        } catch (const mcp::McpError& error) {
+            outcome.threw = true;
+            outcome.code = error.code();
+            outcome.message = error.message();
+        }
+        raw_transport->close();
+    });
 
     io_ctx.run();
     return outcome;
@@ -1136,7 +1201,8 @@ TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticFlattensServerChosenV
     // each of those would make the assertions below pass for a reason unrelated to the site under
     // test. Dump the message on failure so a vacuous pass cannot hide.
     ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
-    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST) << "actual message: " << outcome.message;
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INVALID_REQUEST)
+        << "actual message: " << outcome.message;
     ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
         << "actual message: " << outcome.message;
     ASSERT_NE(outcome.message.find("zqtripwire"), std::string::npos)
@@ -1156,7 +1222,7 @@ TEST_F(ClientCoreTest, UnsupportedProtocolVersionDiagnosticBoundsServerChosenVer
     const auto outcome = connect_against_protocol_version(io_ctx_, forged_version);
 
     ASSERT_TRUE(outcome.threw) << "connect() did not reject the version at all";
-    ASSERT_EQ(outcome.code, mcp::g_INVALID_REQUEST)
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INVALID_REQUEST)
         << "actual message prefix: " << outcome.message.substr(0, 80);
     ASSERT_EQ(outcome.message.rfind("Server selected unsupported protocol version: ", 0), 0U)
         << "actual message prefix: " << outcome.message.substr(0, 80);
@@ -1203,30 +1269,27 @@ PeerErrorOutcome send_request_against_peer_error(boost::asio::io_context& io_ctx
         // bytes rather than as the two-character escapes: the encoder escapes them, the decoder
         // turns them back. That decode is what makes a parsed field sharper than raw wire bytes.
         raw_transport->enqueue_message(
-            make_error_response(id, mcp::g_INTERNAL_ERROR, peer_message).dump());
+            make_error_response(id, mcp::constants::jsonrpc::g_INTERNAL_ERROR, peer_message).dump());
     });
 
-    mcp::Client client(transport, io_ctx.get_executor());
+    mcp::Client client(transport, io_ctx.get_executor(), legacy_client_options());
 
     PeerErrorOutcome outcome;
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::Implementation info;
-            info.name = "test-client";
-            info.version = "0.1";
-            static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
-            try {
-                static_cast<void>(co_await client.send_request("tools/list", std::nullopt));
-            } catch (const mcp::McpError& error) {
-                outcome.threw = true;
-                outcome.code = error.code();
-                outcome.what = error.what();
-                outcome.raw_message = error.message();
-            }
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        static_cast<void>(co_await client.connect(std::move(info), mcp::ClientCapabilities{}));
+        try {
+            static_cast<void>(co_await client.send_request("tools/list", std::nullopt));
+        } catch (const mcp::McpError& error) {
+            outcome.threw = true;
+            outcome.code = error.code();
+            outcome.what = error.what();
+            outcome.raw_message = error.message();
+        }
+        raw_transport->close();
+    });
 
     io_ctx.run();
     return outcome;
@@ -1252,7 +1315,8 @@ TEST_F(ClientCoreTest, PeerErrorDiagnosticFlattensThePeerChosenMessage) {
     // SDK authored, and would satisfy everything below without the peer's bytes ever reaching a
     // diagnostic. Dump what() on failure so a vacuous pass cannot hide.
     ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
-    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR) << "actual what(): " << outcome.what;
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+        << "actual what(): " << outcome.what;
     ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U) << "actual what(): " << outcome.what;
     ASSERT_NE(outcome.what.find("zqtripwire"), std::string::npos) << "actual what(): " << outcome.what;
 
@@ -1276,7 +1340,7 @@ TEST_F(ClientCoreTest, PeerErrorDiagnosticBoundsThePeerChosenMessage) {
     const auto outcome = send_request_against_peer_error(io_ctx_, forged);
 
     ASSERT_TRUE(outcome.threw) << "send_request() raised nothing at all";
-    ASSERT_EQ(outcome.code, mcp::g_INTERNAL_ERROR)
+    ASSERT_EQ(outcome.code, mcp::constants::jsonrpc::g_INTERNAL_ERROR)
         << "actual what() prefix: " << outcome.what.substr(0, 80);
     ASSERT_EQ(outcome.what.rfind("JSON-RPC error ", 0), 0U)
         << "actual what() prefix: " << outcome.what.substr(0, 80);
@@ -1337,35 +1401,33 @@ SecondRequestOutcome send_two_requests(
     });
 
     mcp::ClientOptions options;
-    // Short enough that a response the client never delivers surfaces as a test failure instead of
-    // a stalled run.
-    options.request_timeout = std::chrono::seconds(5);
+    // Bounded, so that a response the client never delivers surfaces as a test failure instead of a
+    // stalled run.
+    options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx.get_executor(), options);
 
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            static_cast<void>(co_await client.connect("test-client", "0.1"));
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        static_cast<void>(co_await client.connect("test-client", "0.1"));
 
-            try {
-                co_await client.ping();
-            } catch (const mcp::McpError& error) {
-                outcome.first_threw = true;
-                outcome.first_code = error.code();
-                outcome.first_message = error.what();
-            }
+        try {
+            co_await client.ping();
+        } catch (const mcp::McpError& error) {
+            outcome.first_threw = true;
+            outcome.first_code = error.code();
+            outcome.first_message = error.what();
+        }
 
-            try {
-                co_await client.ping();
-                outcome.second_succeeded = true;
-            } catch (const mcp::McpError& error) {
-                outcome.second_failure = error.what();
-            }
+        try {
+            co_await client.ping();
+            outcome.second_succeeded = true;
+        } catch (const mcp::McpError& error) {
+            outcome.second_failure = error.what();
+        }
 
-            raw_transport->close();
-        },
-        boost::asio::detached);
+        raw_transport->close();
+    });
 
     io_ctx.run();
     return outcome;
@@ -1378,13 +1440,15 @@ SecondRequestOutcome send_two_requests(
 TEST_F(ClientCoreTest, ErrorResponseWithoutMessageDoesNotStopReadLoop) {
     const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
         return std::vector<nlohmann::json>{
-            {{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", mcp::g_METHOD_NOT_FOUND}}}}};
+            {{"jsonrpc", "2.0"},
+             {"id", id},
+             {"error", {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND}}}}};
     });
 
     EXPECT_TRUE(outcome.second_succeeded)
         << "the session died on one malformed response: " << outcome.second_failure;
     ASSERT_TRUE(outcome.first_threw);
-    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND)
+    EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)
         << "the error code did not survive the missing message: " << outcome.first_message;
 }
 
@@ -1392,16 +1456,18 @@ TEST_F(ClientCoreTest, ErrorResponseWithoutMessageDoesNotStopReadLoop) {
 // without omitempty -- sends `message: null` rather than omitting the key.
 TEST_F(ClientCoreTest, ErrorResponseWithNullMessageDoesNotStopReadLoop) {
     const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
-        return std::vector<nlohmann::json>{
-            {{"jsonrpc", "2.0"},
-             {"id", id},
-             {"error", {{"code", mcp::g_METHOD_NOT_FOUND}, {"message", nullptr}, {"data", nullptr}}}}};
+        return std::vector<nlohmann::json>{{{"jsonrpc", "2.0"},
+                                            {"id", id},
+                                            {"error",
+                                             {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND},
+                                              {"message", nullptr},
+                                              {"data", nullptr}}}}};
     });
 
     EXPECT_TRUE(outcome.second_succeeded)
         << "the session died on one malformed response: " << outcome.second_failure;
     ASSERT_TRUE(outcome.first_threw);
-    EXPECT_EQ(outcome.first_code, mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 // An `error` member that is not an object yields no code, so the request it answers fails -- but
@@ -1415,7 +1481,8 @@ TEST_F(ClientCoreTest, ErrorMemberThatIsNotAnObjectFailsOnlyItsOwnRequest) {
     EXPECT_TRUE(outcome.second_succeeded)
         << "the session died on one malformed response: " << outcome.second_failure;
     ASSERT_TRUE(outcome.first_threw);
-    EXPECT_EQ(outcome.first_code, mcp::g_INVALID_REQUEST) << "actual: " << outcome.first_message;
+    EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_INVALID_REQUEST)
+        << "actual: " << outcome.first_message;
 }
 
 // A message the client cannot classify at all is dropped. Dropping it silently would leave an
@@ -1431,7 +1498,7 @@ TEST_F(ClientCoreTest, UndecodableMessageIsReportedAndDropped) {
         << "the session died on one malformed message: " << outcome.second_failure;
     EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
 
 // A request from the peer whose id is neither string nor integer can never be answered. Dispatching
@@ -1447,7 +1514,7 @@ TEST_F(ClientCoreTest, PeerRequestWithUnusableIdDoesNotStopReadLoop) {
         << "the session died on one malformed request: " << outcome.second_failure;
     EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
 
 // `result` and `error` are not symmetric. A null `result` is a legitimate empty result, but a null
@@ -1469,3 +1536,5 @@ TEST_F(ClientCoreTest, ResultWithNullErrorMemberIsNotAProtocolViolation) {
         << outcome.second_failure;
     EXPECT_TRUE(outcome.reported.empty()) << "a well-formed response was reported as an error";
 }
+
+}  // namespace client_core_test

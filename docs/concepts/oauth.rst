@@ -66,6 +66,31 @@ Hand that header to the manager and it runs the whole exchange:
 challenge to act on, and throws when discovery is refused by the policy or the
 authorization response is rejected.
 
+A manager serves the one server its ``server_url`` names. The transport sends
+the manager's tokens to whatever server ``inner`` talks to, and does not compare
+that with ``server_url``, which may use ``https`` while an ``HttpClientTransport``
+speaks plain HTTP. Give each server its own manager, and wrap only transports
+that talk to that server with it.
+
+.. _oauth-authorization-server-change:
+
+When the authorization server changes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every ``try_handle_challenge`` call reads the protected-resource metadata again
+instead of serving the cached copy, because a challenge means the token in hand
+was refused and the resource may have moved to another authorization server.
+The authorization server the document names now is the one the manager
+authorizes at. Client credentials are kept per issuer in the
+``credential_store``, so a new server gets a registration of its own (or the
+client metadata document, or the pre-registered credentials bound to that
+issuer) and never receives another server's client identifier or secret. The
+token and the token endpoint the manager refreshes with are replaced together
+when the exchange at the new server succeeds; until then a refresh still goes
+to the server that issued the token. A concurrent burst of requests that meet
+the same challenge shares one flight, so the document is read once for the
+burst. Authorization server metadata keeps the discovery cache.
+
 .. _oauth-what-the-manager-validates:
 
 What the manager validates
@@ -106,6 +131,253 @@ metadata document, or a dynamic registration.
 
 A complete runnable flow, including a mock authorization server, is in
 ``examples/features/oauth_flow.cpp``.
+
+.. _oauth-scopes-and-step-up:
+
+Scopes, step-up and refresh tokens
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The scope of an authorization request is chosen in this order: the
+``scope`` set on ``OAuthAuthorizationConfig``, which wins and is used as it is;
+else the ``scope`` of the challenge; else the ``scopes_supported`` of the
+protected-resource metadata; else no ``scope`` parameter at all. The challenge
+is authoritative for the operation it refused, and the SDK assumes no set
+relationship between it and ``scopes_supported``.
+
+A ``403`` whose challenge carries ``error="insufficient_scope"`` names only the
+scopes the refused operation needs. When the scope came from the challenge or
+from ``scopes_supported``, the manager sends the union of that scope and the
+scope the previous authorization **granted**, so a step-up does not drop what
+the user already approved. The union is built from what the authorization
+server granted, not from what the client asked for: the ``scope`` of the token
+response, or the requested scope when the response omits it. Scopes the server
+refused are therefore not requested again on every step-up. The granted scope
+is kept in memory with the issuer that granted it and is used only for that
+issuer; a step-up that moves to another authorization server asks for the
+challenge's scope alone. It is not persisted, so after a restart the first
+step-up starts from the challenge's scope.
+
+A challenge whose every scope is literally present in the granted scope of the
+current issuer adds nothing a new authorization could give, so the manager does
+not ask the user again: ``try_handle_challenge`` returns ``false`` and
+``OAuthClientTransport`` reports the ``403`` to the caller. The comparison is
+exact. A scope the server grants under another spelling, or through a scope
+hierarchy, is not recognised and the challenge is acted on. Independently of
+that, a request costs at most the authorization its ``401`` asks for and the
+step-ups ``OAuthClientTransportOptions::max_step_ups_per_request`` allows.
+
+Refresh tokens are the authorization server's to issue, and a client must not
+assume it will. When the authorization server lists ``offline_access`` in its
+``scopes_supported``, the manager adds it to the scope of the authorization
+request, so the server may issue a refresh token. A server that does not list
+it is never sent it. A scope set in ``OAuthAuthorizationConfig::scope`` is used
+as it is, without ``offline_access``. Set
+``OAuthAuthorizationConfig::request_offline_access`` to ``false`` to request
+exactly the selected scope.
+
+``OAuthClientTransport`` handles these challenges for a ``Client`` in every
+protocol era: a ``401`` to the ``server/discover`` request that
+``ClientProtocol::automatic()`` sends first is authorized and replayed like any
+other, and so is a ``403`` on a request retried in a multi round trip
+exchange.
+
+Timeouts while the user decides
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The consent callback is the user's time, not the request's.
+While ``OAuthClientTransport`` waits for the manager to handle a challenge,
+which includes the callback and the discovery and token requests around it, the
+deadline of the request being written does not run: neither
+``ClientOptions::request_timeout`` nor, for the first request of
+``ClientProtocol::automatic()``, ``ClientOptions::probe_timeout``. The deadline
+resumes with the time that was left when the authorization ends, so a request
+the server then never answers still times out, and a slow prompt never makes
+``connect()`` fall back to ``initialize`` against a server that speaks
+2026-07-28. Only the request whose write is waiting is affected. A refresh runs
+no prompt and keeps the deadline running, and so does any transport other than
+``OAuthClientTransport``; a transport of your own reports such a wait through
+``ITransport::set_interaction_observer()``.
+
+Nothing bounds the callback itself, so an application whose prompt may never
+return must bound it, for example by throwing from the callback after its own
+limit. Closing the client fails the waiting request at once.
+
+Client identity
+~~~~~~~~~~~~~~~
+
+The manager picks the client identity in this order: credentials injected with
+``client_id`` or ``client_identity.pre_registered``, a client ID metadata
+document when the authorization server supports them, a registration already
+stored for the issuer, and dynamic client registration. Dynamic registration is deprecated by the specification and kept
+for compatibility, so prefer one of the first two. A client ID metadata
+document URL, ``client_identity.client_metadata_url``, must be an ``https`` URL
+with a path, and no fragment, username or password, or ``.`` or ``..`` path
+segment; the manager's constructor throws
+``std::invalid_argument`` for any other. The SDK neither hosts that document nor
+checks that its ``client_id`` equals the URL, which stay the application's
+responsibility. Stored registrations are kept per authorization server, so a change of
+server never reuses another server's ``client_id`` or secret.
+
+.. _oauth-machine-to-machine:
+
+Machine-to-machine authorization
+--------------------------------
+
+Two optional extensions authorize a client without a person at a browser. Both
+are implemented as ``Authenticator`` classes that take the place of
+``OAuthAuthorizationManager`` under ``OAuthClientTransport``, so discovery, the
+fetch policy, the token store and the replay of a refused request work as
+described above. Both parse the challenge, read the protected resource metadata
+it names (or the well-known location), require that the document's ``resource``
+identify the configured ``server_url`` and that the authorization server's
+metadata come from the issuer the document names, and request the token with
+the RFC 8707 ``resource`` indicator, all before any credential is sent. They
+store the token under ``server_url``, like the manager, and keep a token per
+authorization server issuer for ``authorize()``. They run no consent step.
+
+Each declares itself to the peer with a helper on the capabilities, as
+:doc:`extensions` describes: ``declare_client_credentials_support()`` and
+``declare_enterprise_authorization_support()`` accept a ``ClientCapabilities``
+or a ``Server``.
+
+Neither authenticator coalesces concurrent callers: two requests refused at the
+same moment each run their own discovery and token request. Both leave the
+fetch policy as the only gate on the origins contacted, so the policy has to
+list every origin involved, including an identity provider's.
+
+.. _oauth-client-credentials:
+
+Client credentials
+~~~~~~~~~~~~~~~~~~
+
+``io.modelcontextprotocol/oauth-client-credentials`` uses the OAuth 2.0 client
+credentials grant for automated systems. The client holds pre-registered
+credentials and no dynamic client registration is involved.
+``mcp::auth::ClientCredentialsAuthenticator`` runs the grant:
+
+.. code-block:: cpp
+
+   #include <mcp/auth/client_credentials.hpp>
+
+   mcp::auth::ClientCredentialsConfig config;
+   config.server_url = "https://mcp.example.com/mcp";
+   config.client.client_id = "ci-pipeline";
+   config.client.client_secret = read_secret("ci-pipeline");
+   config.policy.allowed_origins = {"https://mcp.example.com", "https://auth.example.com"};
+
+   auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+   auto authenticator = std::make_shared<mcp::auth::ClientCredentialsAuthenticator>(
+       executor, store, std::move(config));
+
+   // Optional: obtain a token before the first request instead of after a 401.
+   co_await authenticator->authorize();
+
+   auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(inner, authenticator);
+
+The extension names two ways to authenticate at the token endpoint, both in
+``ClientAuthentication``:
+
+* ``private_key_jwt`` (recommended): set ``client.private_key_jwt`` to a PEM
+  private key, an RSA key of at least 2048 bits (``RS256`` or ``PS256``) or an EC key on P-256
+  (``ES256``). Each request carries a fresh assertion with the claims ``iss``
+  and ``sub`` (the client identifier), ``aud`` (the authorization server's issuer
+  unless ``audience`` is set), ``iat``, ``exp`` (60 seconds later unless ``lifetime``
+  is set) and a random ``jti``, signed with an algorithm the key allows and the
+  server's ``token_endpoint_auth_signing_alg_values_supported`` lists. The form
+  holds ``client_assertion_type`` and ``client_assertion`` and no ``client_id``.
+* A client secret, sent in the HTTP Basic header (``client_secret_basic``) or in
+  the form body (``client_secret_post``).
+
+When ``client.method`` is unset, the method follows from the credentials and
+the ``token_endpoint_auth_methods_supported`` the server publishes:
+``private_key_jwt`` first, then ``client_secret_basic``, then
+``client_secret_post``. A server that publishes no list is assumed to accept
+``client_secret_basic``, as RFC 8414 says. If the server lists
+``grant_types_supported`` without ``client_credentials``, the grant is refused
+before a credential is sent. The scope is ``config.scope``, else the
+challenge's ``scope``, else every scope in the resource's
+``scopes_supported``, the scope selection strategy of the core authorization
+specification, which the extension defers to. A server that lists scopes it
+only grants to some clients should therefore name the scope in its challenge or
+the client should set ``config.scope``. A step-up
+challenge (``insufficient_scope``) requests its scope together with what the
+earlier grant covered.
+
+The grant issues no refresh token, so ``try_refresh_token()`` requests a new
+token from the authorization server of the last grant. It returns ``false``
+when there was none or the request failed, and the transport then falls back to
+the challenge.
+
+.. _oauth-enterprise-managed-authorization:
+
+Enterprise-managed authorization
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``io.modelcontextprotocol/enterprise-managed-authorization`` lets an
+organization's identity provider (IdP) control which MCP servers its users'
+clients may use, with no per-server consent. A client that signed the user in
+through the IdP exchanges the identity assertion it holds for an Identity
+Assertion JWT Authorization Grant (ID-JAG) at the IdP, then presents the ID-JAG
+as a JWT bearer grant to the MCP server's authorization server.
+``mcp::auth::EnterpriseAuthorizationAuthenticator`` runs both steps. Signing
+the user in and keeping the ID token fresh are the application's work; it
+supplies the assertion through a callback:
+
+.. code-block:: cpp
+
+   #include <mcp/auth/enterprise_authorization.hpp>
+
+   mcp::auth::EnterpriseAuthorizationConfig config;
+   config.server_url = "https://mcp.chat.example/";
+   config.idp_token_endpoint = "https://acme.idp.example/oauth2/token";
+   config.idp_client.client_id = "2ec954a1d60620116d36d9ceb7";
+   config.idp_client.client_secret = read_secret("idp");
+   config.client.client_id = "https://client.example.com/client.json";  // a client ID metadata document
+   config.policy.allowed_origins = {"https://mcp.chat.example", "https://auth.chat.example",
+                                    "https://acme.idp.example"};
+
+   auto authenticator = std::make_shared<mcp::auth::EnterpriseAuthorizationAuthenticator>(
+       executor, store, std::move(config),
+       []() -> mcp::Task<mcp::auth::IdentityAssertion> {
+           co_return mcp::auth::IdentityAssertion{current_id_token()};  // an OpenID Connect ID token
+       });
+
+For each token the authenticator:
+
+#. discovers the protected resource and its authorization server, and refuses a
+   server whose ``authorization_grant_profiles_supported`` omits
+   ``urn:ietf:params:oauth:grant-profile:id-jag``, before the callback runs (a
+   server that publishes no such list is tried);
+#. calls the callback, which returns the token and its type URN
+   (``IdentityAssertion::token_type`` is an ID token by default; a refresh token
+   obtained for a SAML assertion has ``g_REFRESH_TOKEN_TYPE``);
+#. posts an RFC 8693 token exchange to ``idp_token_endpoint`` with
+   ``requested_token_type=urn:ietf:params:oauth:token-type:id-jag``, the
+   authorization server's issuer as ``audience``, the protected resource's
+   identifier as ``resource``, and the scope, and requires that the IdP answer
+   with an ``issued_token_type`` of ``id-jag``;
+#. posts the ID-JAG as the ``assertion`` of a
+   ``urn:ietf:params:oauth:grant-type:jwt-bearer`` request to the authorization
+   server's token endpoint.
+
+A token is cached per authorization server and per identity assertion (the
+SHA-256 of the callback's token and type), so ``authorize()`` reuses it only
+while the callback returns the assertion the token was issued for.
+
+``idp_client`` is how the client authenticates at the IdP; with a secret and no
+``method`` it is sent in the request body, as in the extension's example, and a
+private key's assertion names the IdP's token endpoint as its audience unless
+``audience`` is set.
+``client`` is how it authenticates at the authorization server, with the same
+choices as above; a client with neither a secret nor a key sends only its
+``client_id``, which fits a client ID metadata document URL used as the
+identifier. At the authorization server, ``client_secret_basic`` puts the
+credentials in the header and nothing in the body, and ``private_key_jwt`` also
+sends ``client_id``.
+
+The access token the authorization server issues is bound to the resource the
+ID-JAG names; the SDK does not inspect the ID-JAG. ``try_refresh_token()`` runs
+the exchange again and so calls the callback again.
 
 .. _oauth-protecting-a-server:
 
@@ -194,7 +466,7 @@ blocking the executor that is concurrently serving MCP traffic:
 .. code-block:: cpp
 
    manager.set_async_bearer_token_validator(
-       [](std::string token) -> mcp::Task<bool> {
+       [](std::string token) -> mcp::Task<mcp::TokenValidation> {
            co_return co_await introspect(std::move(token));
        });
 
@@ -210,13 +482,103 @@ a ``401`` would send the client into re-authorization for a token that may be
 perfectly valid.
 
 The two signatures are exported as :cpp:type:`mcp::BearerTokenValidator`
-(``bool(std::string_view)``) and :cpp:type:`mcp::AsyncBearerTokenValidator`
-(``Task<bool>(std::string)``), so a validator can be stored and passed around
+(``TokenValidation(std::string_view)``) and
+:cpp:type:`mcp::AsyncBearerTokenValidator`
+(``Task<TokenValidation>(std::string)``), so a validator can be stored and passed around
 rather than written inline at the call. Neither is ever handed the
 ``Authorization`` header itself: the transports strip the scheme first with
 :cpp:func:`mcp::http_bearer_token`, which returns the characters after
 ``Bearer`` and an empty view when the scheme is absent, and an empty token is
 rejected before any validator runs.
+
+A validator decides with a :cpp:struct:`mcp::TokenValidation`, which a
+``bool`` converts to. To say who a token stands for, return the principal
+with the decision, for example the token's subject:
+
+.. code-block:: cpp
+
+   manager.set_bearer_token_validator(
+       [](std::string_view token) -> mcp::TokenValidation {
+           const auto subject = lookup_subject(token);  // your own lookup
+           if (!subject) {
+               return false;
+           }
+           return {true, *subject};
+       });
+
+A handler reads it with ``Context::principal()``. Without one from the
+validator, the principal is ``h:`` followed by the hex SHA-256 of the
+request's bearer token, or of its ``Authorization`` header when that holds no
+bearer token: it identifies the token without revealing it, and it changes
+when the client refreshes its token, which a principal from the validator does
+not. A request without an ``Authorization`` header
+has an empty principal, and so do the requests of a
+``StreamableHttpSessionManager`` session, which belong to the session.
+A session is bound to the principal that created it only when a validator is
+installed: without one the ``Authorization`` header is not checked, and a
+client may change it within the session. A request naming a session of another
+principal is answered ``404``, as for a session that does not exist, so a client
+whose principal changed with its token starts a new session. On
+``HttpServerTransport``, which holds one session, that new session can start
+once the old one has been idle for the session idle timeout.
+
+.. _oauth-required-scopes:
+
+Requiring scopes
+~~~~~~~~~~~~~~~~
+
+A token the validator accepts may still lack what a request needs. Name the
+scopes each request needs with ``set_scope_requirements``, and report the scopes
+a token grants in ``TokenValidation::scopes``:
+
+.. code-block:: cpp
+
+   manager.set_bearer_token_validator(
+       [](std::string_view token) -> mcp::TokenValidation {
+           const auto grant = lookup_grant(token);  // your own lookup
+           if (!grant) {
+               return false;
+           }
+           mcp::TokenValidation validation(true, grant->subject);
+           validation.scopes = grant->scopes;
+           return validation;
+       });
+   manager.set_scope_requirements(
+       [](const mcp::ScopeRequestContext& request) -> std::vector<std::string> {
+           if (request.method == "tools/call" &&
+               request.params.value("name", "") == "write_file") {
+               return {"files:read", "files:write"};
+           }
+           return {};
+       });
+
+The provider is called for every POSTed JSON-RPC message that has a method,
+after the token is accepted and before the message is dispatched or any response
+stream is opened, on both ``HttpServerTransport`` and
+``StreamableHttpSessionManager``. Return every scope the operation needs at
+once. When the token lacks any of them the answer is ``403`` with
+
+.. code-block:: text
+
+   WWW-Authenticate: Bearer error="insufficient_scope", scope="files:read files:write",
+                     resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp"
+
+The ``scope`` parameter lists all the scopes the operation needs, not only the
+missing ones, so a client authorizes once for the operation, and the realm and
+metadata URL come from ``set_bearer_challenge`` and
+``set_protected_resource_metadata``. ``OAuthClientTransport`` answers this
+challenge with a step-up authorization (see
+:ref:`oauth-scopes-and-step-up`). A scope is held only when it appears literally
+in ``TokenValidation::scopes``; a validator that reports no scopes grants none,
+and a scope hierarchy is expanded by the validator, which lists every scope the
+token implies. A provider that throws is answered ``500`` with no challenge, as
+a validator that throws is, and so is a provider that returns a scope containing
+anything but printable ASCII, because it cannot be written into the challenge.
+Scopes must be quotable header text. A provider needs a validator to report the
+scopes a token holds, so ``listen()`` throws ``std::logic_error`` when
+``set_scope_requirements`` is used without a token validator, whichever was set
+first. Answers to the server's own requests, ``GET`` and
+``DELETE`` carry no method and are not checked.
 
 Health checks and other routes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -267,13 +629,31 @@ Request body size
 
 Both transports cap the HTTP request body they will read, answering
 ``413 Payload Too Large`` and closing the connection beyond it. The default is
-:cpp:var:`mcp::constants::g_default_max_request_body_bytes`, 8 MiB, and
-``set_max_request_body_bytes`` overrides it.
+:cpp:var:`mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES`, 8 MiB, and
+``set_max_request_body_bytes`` overrides it. A request's headers may take up to
+8 KiB, the HTTP parser's limit: a request past it is answered
+``431 Request Header Fields Too Large``, and one that is not valid HTTP
+``400 Bad Request``, and either answer closes the connection.
 
-The body is read before the bearer token is checked, so the cap also bounds
-what a client without a valid token can make the server buffer on each
-connection. The body is parsed as JSON only after the origin and bearer checks
-pass.
+The headers are read first, and the origin and bearer checks run on them, so
+the body of a request they refuse is never read and the connection is closed.
+
+``set_connection_limits()`` takes an :cpp:struct:`mcp::HttpConnectionLimits`.
+By default a transport accepts connections up to three quarters of the
+process's descriptor limit, closes a connection that takes more than
+60 seconds to send a request or to read its answer, and handles at most 4096
+requests at once holding at most 1 GiB together, a body counted by what has
+arrived and a JSON-RPC message by what it takes parsed. A request past either is answered
+``503 Service Unavailable``. These limits cover all sessions of a
+``StreamableHttpSessionManager`` together.
+
+A connection past the connection limit is closed as soon as it is accepted,
+without an answer, so its client sees the connection end. The descriptor limit
+is the soft ``RLIMIT_NOFILE`` (``ulimit -n``). systemd gives a service a soft
+limit of 1024 unless its unit sets ``LimitNOFILE=``, and three quarters of that
+is 768 connections, with each SSE stream on GET holding one. To serve more,
+raise the soft limit, up to the hard limit with ``setrlimit()`` or in the unit
+with ``LimitNOFILE=``, or set ``max_connections``.
 
 The default is deliberately well above Boost.Beast's own 1 MB. Binary content
 reaches an MCP server as base64 inside the JSON body — ``ImageContent::data``,
@@ -342,7 +722,9 @@ Discovery and PKCE
 ~~~~~~~~~~~~~~~~~~
 
 ``OAuthDiscoveryClient`` reads protected-resource and authorization-server
-metadata. Discovery results are cached for a configurable interval. Install a
+metadata. Discovery results are cached for a configurable interval; the manager drops the
+cached protected-resource document before each challenge it handles (see
+:ref:`oauth-authorization-server-change`). Install a
 :cpp:struct:`mcp::auth::MetadataFetchPolicy` on the ``OAuthHttpClient`` first,
 or every fetch is refused.
 
@@ -385,7 +767,12 @@ stored refresh token once and retries; if renewal is not possible, or the
 renewed token is refused too, it runs the authorization flow the challenge
 names, once per request: a 401 after that new grant fails the request. A 403
 whose challenge carries ``error="insufficient_scope"`` runs that flow
-directly. For non-HTTP transports it also understands the legacy JSON-RPC
+directly, for the scope already granted together with the one the challenge
+asks for. Each such step-up asks for consent again, so a request gets one by
+default and then fails with the 403;
+``OAuthClientTransportOptions::max_step_ups_per_request`` changes that, and
+zero leaves every such 403 to the caller. For non-HTTP transports it also
+understands the legacy JSON-RPC
 ``g_UNAUTHORIZED`` path. ``OAuthAuthorizationManager`` can renew a grant only
 after it has authorized in the same process, because the token endpoint and
 client identity it renews with are held in memory: after a restart, a refresh

@@ -36,35 +36,39 @@ done
 **What it demonstrates:**
 - `ctx.report_progress()` for real-time progress updates
 - `ctx.is_cancelled()` for cancellation detection
-- Client-side cancellation requests
+- Client-side cancellation requests; in a 2026-07-28 session the cancelled call fails with `mcp::constants::jsonrpc::g_REQUEST_CANCELLED`
+- `RequestOptions::log_level` asking for the log messages of one request
 
 **Key APIs:**
 - `Context::report_progress(current, total, message)`
 - `Context::is_cancelled()`
+- `RequestOptions::log_level`
 
 **Run:** `./build/release/example-feature-progress-cancellation`
 
-**Expected output:** Progress percentages from 10% to 100%, then cancellation handling
+**Expected output:** Progress percentages up to 30%, the cancellation, and the log messages received
 
 ---
 
 ### 2. Notifications & Subscriptions (`notifications_subscriptions.cpp`)
 
 **What it demonstrates:**
-- `server.notify_tools_list_changed()` - notify clients of tool changes
-- `server.notify_resources_list_changed()` - notify of resource changes
-- `server.on_subscribe()` / `on_unsubscribe()` - subscription callbacks
-- Client-side notification handling
+- `client.listen()` opening a `subscriptions/listen` stream (protocol revision 2026-07-28) for the notifications the client wants
+- `Subscription::acknowledged()` / `unhonored()` - the subset the server agrees to send
+- `server.notify_tools_list_changed()`, `notify_resources_list_changed()` and `notify_resource_updated()` - sent to every open stream that asked for the type
+- `Subscription::next()` reading the notifications, `close()` ending a stream from the client, and `Server::close_subscriptions()` ending streams from the server
+- The `resources/subscribe` flow of the older revisions is in `legacy_protocols.cpp`
 
 **Key APIs:**
+- `Client::listen()` / `SubscriptionFilter` / `Subscription`
 - `Server::notify_tools_list_changed()`
 - `Server::notify_resources_list_changed()`
-- `Server::on_subscribe()` / `Server::on_unsubscribe()`
-- `Client::on_notification()`
+- `Server::notify_resource_updated()`
+- `Server::close_subscriptions()`
 
 **Run:** `./build/release/example-feature-notifications-subscriptions`
 
-**Expected output:** Resource registration, subscription callbacks, list change notifications
+**Expected output:** the requested, acknowledged and left-out filters, the three notifications in order, and how each of the two streams ended; the example exits with a failure status if a check differs
 
 ---
 
@@ -108,9 +112,11 @@ done
 - `server.set_page_size()` for controlling result pagination
 - Cursor-based pagination handling
 - `nextCursor` in list results
+- `Server::set_cache_hints()` and the `ttlMs` / `cacheScope` hints on each page
 
 **Key APIs:**
 - `Server::set_page_size()`
+- `Server::set_cache_hints()`
 
 **Run:** `./build/release/example-feature-pagination`
 
@@ -123,15 +129,20 @@ done
 **What it demonstrates:**
 - `ctx.elicit()` for server-initiated information requests
 - `client.on_elicitation()` for handling elicitation requests
-- Form-based elicitation patterns
+- Form-based elicitation patterns, with `ElicitationSchema` building the form from typed fields and decoding the accepted content
+- The client checking its answer against the requested schema before it sends it
+- In a 2026-07-28 session the question reaches the client in an `input_required` result and the answer comes back with a retry of the `tools/call`; the tool and the handler are written the same way in both eras
+- `ConnectResult::era` and `Server::mrtr_stats()`
 
 **Key APIs:**
 - `Context::elicit()`
 - `Client::on_elicitation()`
+- `ElicitationSchema` / `ElicitedContent`
+- `ConnectResult`
 
 **Run:** `./build/release/example-feature-elicitation`
 
-**Expected output:** Elicitation request sent from server, client responds with user info
+**Expected output:** the session era, the elicitation request, the client's form data, and one retry that resumed the tool
 
 ---
 
@@ -141,6 +152,7 @@ done
 - `client.set_roots()` for declaring client root URIs
 - `ctx.request_roots()` for server to discover client roots
 - `client.on_roots_list()` for responding to roots/list
+- Roots are a deprecated feature in protocol revision 2026-07-28; they still work, through a multi round-trip request
 
 **Key APIs:**
 - `Client::set_roots()`
@@ -196,14 +208,15 @@ done
 ### 10. Graceful Shutdown (`graceful_shutdown.cpp`)
 
 **What it demonstrates:**
-- Signal handling with `io_context`
-- `graceful_shutdown()` for clean server shutdown
-- Timer-based forced shutdown
-- `server.run_stdio()` convenience method
+- `graceful_shutdown()` for clean server shutdown, triggered by a timer where a real server
+  would use a signal (`Server::run_stdio()` and `run_http()` handle SIGINT and SIGTERM this way)
+- Cancelling the watchdog timer `graceful_shutdown()` returns once the server has stopped, so
+  the `io_context` ends at once instead of at the timeout
+- The manual `StdioTransport` + `Server::run()` pattern
 
 **Key APIs:**
 - `mcp::graceful_shutdown()`
-- `Server::run_stdio()`
+- `Server::run()`
 
 **Run:** `./build/release/example-feature-graceful-shutdown`
 
@@ -263,7 +276,7 @@ done
 **What it demonstrates:**
 - Registration refusing a tool whose schema cannot be used, with `SchemaError::category()` (a misspelled `type`, a remote `$ref`)
 - Arguments that break the input schema answered with an `isError` result listing the violations, without running the handler
-- A `structuredContent` that breaks the tool's `outputSchema` refused by the server with `g_INTERNAL_ERROR`
+- A `structuredContent` that breaks the tool's `outputSchema` refused by the server with `mcp::constants::jsonrpc::g_INTERNAL_ERROR`
 - The client's own check of `structuredContent`, which throws `StructuredContentError`, against a server whose output check is turned off
 - `Server::tool_validation_stats()`
 
@@ -276,6 +289,64 @@ done
 **Run:** `./build/release/example-feature-schema-validation`
 
 **Expected output:** one `[ok]` line per check and `All checks passed`; the example exits with a failure status if any check differs
+
+---
+
+### 14. Modern Client (`modern_client.cpp`)
+
+**What it demonstrates:**
+- `Client::connect()` with the default `ClientProtocol::automatic()`, which speaks protocol revision 2026-07-28 with a server that serves it
+- `ClientOptions::on_era_decision` reporting why the client chose that era
+- `ConnectResult`: `era`, `protocolVersion`, optional `serverInfo`, `instructions`, `supportedVersions`
+- `RequestOptions::log_level`: a handler's log messages reach the client only for a request that sets it
+- `Server::set_cache_hints()` and the `ttlMs` / `cacheScope` hints on a `tools/list` result
+
+**Key APIs:**
+- `ConnectResult`
+- `RequestOptions::log_level`
+- `Server::set_cache_hints()` / `CacheTarget` / `CacheHint`
+
+**Run:** `./build/release/example-feature-modern-client`
+
+**Expected output:** the era decision, the connect result, one log message for the call that sets a log level and none for the call that does not, and the cache hints; the example exits with a failure status if a check differs
+
+---
+
+### 15. Legacy Protocols (`legacy_protocols.cpp`)
+
+**What it demonstrates:**
+- This example is about the older protocol revisions (2025-11-25 and earlier), which start a session with `initialize`
+- `ClientProtocol::pinned()` pinning each of the four older revisions, and `ClientProtocol::legacy()`
+- `ping()` and `resources/subscribe`, which exist only in those revisions, with `Server::on_subscribe()` / `on_unsubscribe()`
+- `ServerProtocolPolicy` and `Server::set_protocol_policy()`: legacy-only and 2026-07-28-only servers
+- The same calls failing locally in a 2026-07-28 session
+
+**Key APIs:**
+- `ClientProtocol::pinned()` / `ClientProtocol::legacy()`
+- `ServerProtocolPolicy` / `Server::set_protocol_policy()`
+- `Client::ping()`
+
+**Run:** `./build/release/example-feature-legacy-protocols`
+
+**Expected output:** one `[ok]` line per check; the example exits with a failure status if a check differs
+
+---
+
+### 16. Stdio Launch (`stdio_launch.cpp`)
+
+**What it demonstrates:**
+- `StdioClientTransport` launching an MCP server as a child process (the `example-server-simple` executable beside it, or the program named by the first argument)
+- `StdioProcessOptions`: command, arguments, environment, working directory, and standard error captured to a callback
+- Shutdown as the specification describes it: standard input closed first, then SIGTERM and SIGKILL (`TerminateProcess` on Windows) only for a server that does not exit
+- `StdioClientSession`, which connects a `Client` to the launched server and starts the server again when it ends on its own
+
+**Key APIs:**
+- `StdioClientTransport` / `StdioProcessOptions` / `ProcessExit`
+- `StdioClientSession` / `StdioSessionOptions`
+
+**Run:** `./build/release/example-feature-stdio-launch`
+
+**Expected output:** the tool's answer over each connection, the server process ending with code 0, and a success line
 
 ---
 
@@ -342,7 +413,9 @@ python scripts/build.py --examples --test
 
 ### Example hangs or times out
 
-All examples have auto-exit timers (typically 2-5 seconds). If an example hangs:
+The examples that run a client end the `io_context` as soon as the client is done, and have a
+watchdog timer (typically 10 seconds) that fails the example if something never answers. If an
+example hangs or times out:
 - Check for missing server/client initialization
 - Verify transport is properly connected
 - Check for uncaught exceptions

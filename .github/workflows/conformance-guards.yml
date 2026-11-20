@@ -1,21 +1,27 @@
 name: Conformance guardrails
 
 on:
-  # Manual runs only. The automatic triggers below stay scoped to `main` on purpose; this
-  # lets a feature branch be checked on the full matrix without spending CI on every push.
+  # A manual run checks any branch. Pull requests are checked whatever branch they target,
+  # so a pull request stacked on another one gets the same checks; pushes only on main.
   workflow_dispatch:
   push:
     branches: [main]
     paths:
       - '.github/workflows/**'
       - 'conformance/run.sh'
+      - 'conformance/runner/package.json'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
   pull_request:
-    branches: [main]
+    branches: ['**']
     paths:
       - '.github/workflows/**'
       - 'conformance/run.sh'
+      - 'conformance/runner/package.json'
+      - 'include/**'
       - 'scripts/**'
+      - 'src/**'
 
 permissions:
   contents: read
@@ -28,7 +34,7 @@ concurrency:
 jobs:
   alpha-runner-non-gating:
     name: Alpha runner stays non-gating
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
 
     steps:
@@ -42,4 +48,49 @@ jobs:
           python-version: '3.12'
 
       - name: Assert the alpha conformance runner cannot gate CI
-        run: python3 scripts/check_alpha_runner_guard.py
+        run: |
+          python3 scripts/check_alpha_runner_guard.py
+          PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_alpha_runner_guard
+
+  protocol-constants:
+    name: Protocol constants name their era
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      # g_LATEST_PROTOCOL_VERSION and the supported list change meaning when a new revision
+      # becomes the latest, and 2026-07-28 retires -32002 and -32042.
+      - name: Check uses of protocol constants and retired error codes
+        run: |
+          python3 scripts/check_protocol_constants.py
+          PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_protocol_constants
+
+  deprecation-attributes:
+    name: Deprecated declarations carry an attribute
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      # A documented deprecation without MCP_DEPRECATED warns nobody who builds against it.
+      - name: Check @deprecated tags against declaration attributes
+        run: |
+          python3 scripts/check_deprecations.py
+          PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_deprecations

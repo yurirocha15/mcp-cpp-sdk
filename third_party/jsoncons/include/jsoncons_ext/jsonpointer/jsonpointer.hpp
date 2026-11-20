@@ -17,6 +17,7 @@
 #include <utility> // std::move
 #include <vector>
 #include <map>
+#include <stdexcept>
 
 #include <jsoncons/utility/number_writers.hpp>
 #include <jsoncons/json_type.hpp>
@@ -89,6 +90,47 @@ namespace jsonpointer {
         return result;
     }
 
+    // Added by mcp-cpp-sdk (scripts/vendor_jsoncons.py): the evaluation work budget of the
+    // JSON Schema validation running on this thread (see jsonschema::evaluation_limits), kept here
+    // so that copies of a pointer are charged to it.
+    class evaluation_limit_error : public std::runtime_error
+    {
+    public:
+        using std::runtime_error::runtime_error;
+    };
+
+    struct evaluation_work
+    {
+        // The initial value does not limit anything.
+        static std::size_t& left()
+        {
+            static thread_local std::size_t work = static_cast<std::size_t>(-1);
+            return work;
+        }
+
+        static void charge(std::size_t units)
+        {
+            std::size_t& work = left();
+            if (work < units)
+            {
+                throw evaluation_limit_error("schema evaluation takes too much work");
+            }
+            work -= units;
+        }
+
+        // A copy of n tokens holding b bytes costs n + b / 32.
+        template <typename Tokens>
+        static void charge_copy(const Tokens& tokens)
+        {
+            std::size_t units = tokens.size();
+            for (const auto& token : tokens)
+            {
+                units += token.size() / 32;
+            }
+            charge(units);
+        }
+    };
+
     // basic_json_pointer
 
     template <typename CharT>
@@ -141,7 +183,11 @@ namespace jsonpointer {
             }
         }
 
-        basic_json_pointer(const basic_json_pointer&) = default;
+        basic_json_pointer(const basic_json_pointer& other)
+        {
+            evaluation_work::charge_copy(other.tokens_);
+            tokens_ = other.tokens_;
+        }
 
         basic_json_pointer(basic_json_pointer&&) = default;
 
@@ -237,7 +283,12 @@ namespace jsonpointer {
         }
 
         // operator=
-        basic_json_pointer& operator=(const basic_json_pointer&) = default;
+        basic_json_pointer& operator=(const basic_json_pointer& other)
+        {
+            evaluation_work::charge_copy(other.tokens_);
+            tokens_ = other.tokens_;
+            return *this;
+        }
 
         basic_json_pointer& operator=(basic_json_pointer&&) = default;
 
@@ -258,6 +309,7 @@ namespace jsonpointer {
         typename std::enable_if<nonstd::is_string_view_of<StringViewLike,char_type>::value,basic_json_pointer&>::type
         append(const StringViewLike& s) 
         {
+            evaluation_work::charge(1 + s.size() / 32);
             tokens_.emplace_back(s.data(), s.size());
             return *this;
         }

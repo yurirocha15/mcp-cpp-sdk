@@ -16,9 +16,9 @@ namespace mcp::auth {
  * @brief How the client identity presented to an authorization server was obtained.
  */
 enum class ClientIdentitySource {
-    pre_registered,               ///< Supplied by the application; never re-registered.
-    client_id_metadata_document,  ///< A published HTTPS document URL used as the client identifier.
-    dynamic_registration,         ///< Obtained from the server's RFC 7591 registration endpoint.
+    ePreRegistered,             ///< Supplied by the application; never re-registered.
+    eClientIdMetadataDocument,  ///< A published HTTPS document URL used as the client identifier.
+    eDynamicRegistration,       ///< Obtained from the server's RFC 7591 registration endpoint.
 };
 
 /**
@@ -73,7 +73,7 @@ struct OAuthClientInformation {
     std::optional<std::int64_t> client_id_issued_at;  ///< Issue time reported by the server.
     std::optional<std::int64_t> client_secret_expires_at;  ///< Secret expiry, 0 meaning "never".
     std::string issuer;                                    ///< Issuer these credentials are bound to.
-    ClientIdentitySource source{ClientIdentitySource::dynamic_registration};  ///< How they were got.
+    ClientIdentitySource source{ClientIdentitySource::eDynamicRegistration};  ///< How they were got.
 
     /**
      * @brief Determine whether the server-reported secret expiry has passed.
@@ -210,11 +210,11 @@ struct ClientIdentityServerFacts {
  * @brief The client identity path chosen for one authorization server.
  */
 enum class ClientIdentityDecision {
-    use_pre_registered,               ///< Present the application's injected credentials.
-    use_client_id_metadata_document,  ///< Present the configured document URL as the client ID.
-    reuse_stored_registration,        ///< Present credentials already registered with this issuer.
-    register_dynamically,             ///< Register with this issuer and present the result.
-    unavailable,                      ///< No path is available; authorization cannot proceed.
+    eUsePreRegistered,             ///< Present the application's injected credentials.
+    eUseClientIdMetadataDocument,  ///< Present the configured document URL as the client ID.
+    eReuseStoredRegistration,      ///< Present credentials already registered with this issuer.
+    eRegisterDynamically,          ///< Register with this issuer and present the result.
+    eUnavailable,                  ///< No path is available; authorization cannot proceed.
 };
 
 /**

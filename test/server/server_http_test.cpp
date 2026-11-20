@@ -15,9 +15,14 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <mcp/core/constants.hpp>
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+namespace server_http_test {
+
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -30,7 +35,7 @@ nlohmann::json make_initialize_request(std::string_view id) {
             {"id", id},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+             {{"protocolVersion", protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
               {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
               {"capabilities", nlohmann::json::object()}}}};
 }
@@ -61,7 +66,7 @@ http::response<http::string_body> send_json_rpc(beast::tcp_stream& stream,
     http::request<http::string_body> req{http::verb::post, "/mcp", 11};
     req.set(http::field::host, "127.0.0.1");
     req.set(http::field::content_type, "application/json");
-    req.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    req.set("MCP-Protocol-Version", std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
     if (!session_id.empty()) {
         req.set("MCP-Session-Id", session_id);
     }
@@ -75,6 +80,39 @@ http::response<http::string_body> send_json_rpc(beast::tcp_stream& stream,
     http::read(stream, buf, resp);
     return resp;
 }
+
+// Connects once the server accepts connections; the per-test timeout ends a test whose server
+// never does.
+void connect_when_listening(beast::tcp_stream& stream, uint16_t port) {
+    const asio::ip::tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), port);
+    while (true) {
+        beast::error_code ec;
+        stream.socket().connect(endpoint, ec);
+        if (!ec) {
+            return;
+        }
+        stream.socket().close(ec);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+// Stops the server and joins its thread when a test throws before its own join, so the joinable
+// std::thread is never destroyed.
+class ServerThreadGuard {
+   public:
+    explicit ServerThreadGuard(std::thread& thread) : thread_(thread) {}
+    ServerThreadGuard(const ServerThreadGuard&) = delete;
+    ServerThreadGuard& operator=(const ServerThreadGuard&) = delete;
+    ~ServerThreadGuard() {
+        if (thread_.joinable()) {
+            mcp::detail::trigger_shutdown_signal();
+            thread_.join();
+        }
+    }
+
+   private:
+    std::thread& thread_;
+};
 
 }  // namespace
 
@@ -104,15 +142,11 @@ TEST_F(ServerHttpTest, RunHttpInitializesAndResponds) {
     constexpr uint16_t port = 18070;
 
     std::thread server_thread([&] { server_->run_http("127.0.0.1", port); });
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const ServerThreadGuard guard(server_thread);
 
     asio::io_context client_ctx;
-    asio::ip::tcp::resolver resolver(client_ctx);
-    auto endpoints = resolver.resolve("127.0.0.1", std::to_string(port));
-
     beast::tcp_stream stream(client_ctx);
-    stream.connect(endpoints);
+    connect_when_listening(stream, port);
 
     auto init_resp = send_json_rpc(stream, make_initialize_request("1"));
     auto init_json = nlohmann::json::parse(init_resp.body());
@@ -151,9 +185,20 @@ TEST_F(ServerHttpTest, RunHttpShutdownOnSignal) {
     constexpr uint16_t port = 18072;
 
     std::thread server_thread([&] { server_->run_http("127.0.0.1", port); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    const ServerThreadGuard guard(server_thread);
+
+    // An answered request shows that run_http reached its event loop, which it starts after
+    // installing its SIGINT handler, so the signal below cannot end the test program.
+    asio::io_context client_ctx;
+    beast::tcp_stream stream(client_ctx);
+    connect_when_listening(stream, port);
+    static_cast<void>(send_json_rpc(stream, make_initialize_request("1")));
+    beast::error_code ec;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
 
     mcp::detail::trigger_shutdown_signal();
 
     server_thread.join();
 }
+
+}  // namespace server_http_test

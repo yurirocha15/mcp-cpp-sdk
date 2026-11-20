@@ -109,10 +109,10 @@ namespace jsonschema {
             
             for (const auto& prop : sch.object_range())
             {
-                mcp_detail_jsoncons::string_view sub_keys[] = {keyword};
+                mcp_detail_jsoncons::string_view sub_keys[] = {keyword, prop.key()};
                 pattern_properties.emplace_back(
                     std::make_pair(
-                        ::mcp::detail::Regex(prop.key()),
+                        ::mcp::detail::PatternBudget::compile(prop.key()),
                         factory_->make_cross_draft_schema_validator(context, prop.value(), sub_keys, anchor_dict)));
                 
             }
@@ -477,7 +477,7 @@ namespace jsonschema {
         {
             uri schema_location = context.make_schema_location("pattern");
             auto pattern_string = sch.template as<std::string>();
-            auto regex = ::mcp::detail::Regex(pattern_string);
+            auto regex = ::mcp::detail::PatternBudget::compile(pattern_string);
             return mcp_detail_jsoncons::make_unique<pattern_validator<Json>>(parent, schema_location, context.get_custom_message("pattern"), 
                 pattern_string, regex);
         }
@@ -664,7 +664,7 @@ namespace jsonschema {
                     case json_type::boolean:
                     case json_type::object:
                     {
-                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependencies"};
+                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependencies", dep.key()};
                         dependent_schemas.emplace(dep.key(),
                             factory_->make_cross_draft_schema_validator(context, dep.value(), sub_keys, anchor_dict));
                         break;
@@ -737,7 +737,7 @@ namespace jsonschema {
                     case json_type::boolean:
                     case json_type::object:
                     {
-                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependentSchemas"};
+                        mcp_detail_jsoncons::string_view sub_keys[] = {"dependentSchemas", dep.key()};
                         dependent_schemas.emplace(dep.key(),
                             factory_->make_cross_draft_schema_validator(context, dep.value(), sub_keys, anchor_dict));
                         break;

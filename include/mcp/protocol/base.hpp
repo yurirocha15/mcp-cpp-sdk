@@ -1,7 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <mcp/core/constants.hpp>
+#include <mcp/core/export.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -39,69 +43,9 @@ inline bool has_json_value(const nlohmann::json& json_obj, const char* key) {
 
 // MCP Protocol Constants
 
-/**
- * @brief JSON-RPC error code for unauthorized request.
- */
-inline constexpr int g_UNAUTHORIZED = -32000;
-
-/**
- * @brief JSON-RPC error code for request timeout.
- */
-inline constexpr int g_REQUEST_TIMEOUT = -32001;
-
-/**
- * @brief JSON-RPC-compatible client error code used when the transport closes.
- */
-inline constexpr int g_CONNECTION_CLOSED = -32002;
-
 // Error-code allocation policy: -32000..-32019 is a grandfathered legacy band
 // (pre-existing codes above); -32020..-32099 is the spec-reserved band for
 // codes introduced by newer MCP spec revisions, such as the ones below.
-
-/**
- * @brief JSON-RPC error code for a mismatched or missing required header.
- */
-inline constexpr int g_HEADER_MISMATCH = -32020;
-
-/**
- * @brief JSON-RPC error code for a missing required client capability.
- */
-inline constexpr int g_MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;
-
-/**
- * @brief JSON-RPC error code for an unsupported protocol version.
- */
-inline constexpr int g_UNSUPPORTED_PROTOCOL_VERSION = -32022;
-
-/**
- * @brief JSON-RPC error code for invalid requests.
- */
-inline constexpr int g_INVALID_REQUEST = -32600;
-
-/**
- * @brief JSON-RPC error code for method not found.
- */
-inline constexpr int g_METHOD_NOT_FOUND = -32601;
-
-/**
- * @brief JSON-RPC error code for invalid parameters.
- */
-inline constexpr int g_INVALID_PARAMS = -32602;
-
-/**
- * @brief JSON-RPC error code for internal errors.
- */
-inline constexpr int g_INTERNAL_ERROR = -32603;
-
-/**
- * @brief JSON-RPC error code for parse errors.
- */
-inline constexpr int g_PARSE_ERROR = -32700;
-
-/**
- * @brief JSON-RPC error code for request cancelled.
- */
-inline constexpr int g_REQUEST_CANCELLED = -32800;
 
 /**
  * @brief The sender or recipient of messages and data in a conversation.
@@ -169,19 +113,23 @@ struct RequestId {
     }
 };
 
-inline void to_json(nlohmann::json& json_obj, const RequestId& id) {
-    std::visit([&json_obj](auto&& val) { json_obj = val; }, id.value);
+MCP_API void to_json(nlohmann::json& json_obj, const RequestId& id);
+
+namespace detail {
+
+/// Whether @p value can be a request id: a string, or an integer that fits in int64_t. A larger one
+/// could not be echoed back unchanged, so its answer would never be matched to the request.
+[[nodiscard]] inline bool is_request_id(const nlohmann::json& value) {
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>() <=
+               static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    }
+    return value.is_string() || value.is_number_integer();
 }
 
-inline void from_json(const nlohmann::json& json_obj, RequestId& id) {
-    if (json_obj.is_string()) {
-        id.value = json_obj.get<std::string>();
-    } else if (json_obj.is_number_integer()) {
-        id.value = json_obj.get<int64_t>();
-    } else {
-        throw std::invalid_argument("RequestId must be a string or integer");
-    }
-}
+}  // namespace detail
+
+MCP_API void from_json(const nlohmann::json& json_obj, RequestId& id);
 
 /// @brief Token used to correlate progress updates with a request or task.
 using ProgressToken = RequestId;
@@ -195,27 +143,9 @@ struct Error {
     std::optional<nlohmann::json> data;  ///< Additional information about the error.
 };
 
-inline void to_json(nlohmann::json& json_obj, const Error& error) {
-    json_obj = nlohmann::json{{"code", error.code}, {"message", error.message}};
-    if (error.data) {
-        json_obj["data"] = *error.data;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Error& error);
 
-inline void from_json(const nlohmann::json& json_obj, Error& error) {
-    json_obj.at("code").get_to(error.code);
-    // JSON-RPC 2.0 requires `message`, but a peer that omits it or sends it as null has still
-    // told us which error occurred. Decoding to an empty message keeps `code` -- the part a
-    // caller acts on -- rather than discarding the whole error object.
-    if (detail::has_json_value(json_obj, "message")) {
-        json_obj.at("message").get_to(error.message);
-    } else {
-        error.message.clear();
-    }
-    if (detail::has_json_value(json_obj, "data")) {
-        error.data = json_obj.at("data");
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Error& error);
 
 /**
  * @brief The status of a task.
@@ -228,59 +158,11 @@ enum class TaskStatus : std::uint8_t {
     eWorking         ///< Task is currently in progress.
 };
 
-NLOHMANN_JSON_SERIALIZE_ENUM(TaskStatus, {{TaskStatus::eCancelled, "cancelled"},
-                                          {TaskStatus::eCompleted, "completed"},
-                                          {TaskStatus::eFailed, "failed"},
-                                          {TaskStatus::eInputRequired, "input_required"},
-                                          {TaskStatus::eWorking, "working"}})
+MCP_API void to_json(nlohmann::json& json_obj, const TaskStatus& status);
 
-/**
- * @brief Metadata about a related task.
- */
-struct RelatedTaskMetadata {
-    std::string id;                    ///< The ID of the related task.
-    std::optional<std::string> title;  ///< An optional title.
-};
-
-inline void to_json(nlohmann::json& j, const RelatedTaskMetadata& t) {
-    j = nlohmann::json{{"id", t.id}};
-    if (t.title) {
-        j["title"] = *t.title;
-    }
-}
-inline void from_json(const nlohmann::json& j, RelatedTaskMetadata& t) {
-    j.at("id").get_to(t.id);
-    if (detail::has_json_value(j, "title")) {
-        t.title = j.at("title").get<std::string>();
-    }
-}
-
-/**
- * @brief Metadata for augmenting a request with task execution.
- */
-struct TaskMetadata {
-    std::optional<int64_t> ttl;  ///< Requested retention duration from creation in milliseconds.
-    std::optional<std::vector<RelatedTaskMetadata>> relatedTasks;  ///< Related tasks.
-};
-
-inline void to_json(nlohmann::json& json_obj, const TaskMetadata& meta) {
-    json_obj = nlohmann::json::object();
-    if (meta.ttl) {
-        json_obj["ttl"] = *meta.ttl;
-    }
-    if (meta.relatedTasks) {
-        json_obj["relatedTasks"] = *meta.relatedTasks;
-    }
-}
-
-inline void from_json(const nlohmann::json& json_obj, TaskMetadata& meta) {
-    if (detail::has_json_value(json_obj, "ttl")) {
-        meta.ttl = json_obj.at("ttl").get<int64_t>();
-    }
-    if (detail::has_json_value(json_obj, "relatedTasks")) {
-        meta.relatedTasks = json_obj.at("relatedTasks").get<std::vector<RelatedTaskMetadata>>();
-    }
-}
+/// Not NLOHMANN_JSON_SERIALIZE_ENUM, which gives a value it does not know the first entry: a task
+/// from a server that sends something else would then read as cancelled.
+MCP_API void from_json(const nlohmann::json& json_obj, TaskStatus& status);
 
 /**
  * @brief A JSON-RPC request message.
@@ -292,25 +174,9 @@ struct JSONRPCRequest {
     std::optional<nlohmann::json> params;  ///< Optional parameters object.
 };
 
-inline void to_json(nlohmann::json& json_obj, const JSONRPCRequest& req) {
-    json_obj = nlohmann::json::object();
-    json_obj["id"] = req.id;
-    json_obj["jsonrpc"] = req.jsonrpc;
-    json_obj["method"] = req.method;
-    if (req.params) {
-        json_obj["params"] = *req.params;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const JSONRPCRequest& req);
 
-inline void from_json(const nlohmann::json& json_obj, JSONRPCRequest& req) {
-    req.id = json_obj.at("id").get<RequestId>();
-    json_obj.at("jsonrpc").get_to(req.jsonrpc);
-    detail::validate_jsonrpc_version(req.jsonrpc);
-    json_obj.at("method").get_to(req.method);
-    if (detail::has_json_value(json_obj, "params")) {
-        req.params = json_obj.at("params");
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, JSONRPCRequest& req);
 
 /**
  * @brief A JSON-RPC notification message.
@@ -321,21 +187,9 @@ struct JSONRPCNotification {
     std::optional<nlohmann::json> params;  ///< Optional parameters object.
 };
 
-inline void to_json(nlohmann::json& json_obj, const JSONRPCNotification& notif) {
-    json_obj = nlohmann::json{{"jsonrpc", notif.jsonrpc}, {"method", notif.method}};
-    if (notif.params) {
-        json_obj["params"] = *notif.params;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const JSONRPCNotification& notif);
 
-inline void from_json(const nlohmann::json& json_obj, JSONRPCNotification& notif) {
-    json_obj.at("jsonrpc").get_to(notif.jsonrpc);
-    detail::validate_jsonrpc_version(notif.jsonrpc);
-    json_obj.at("method").get_to(notif.method);
-    if (detail::has_json_value(json_obj, "params")) {
-        notif.params = json_obj.at("params");
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, JSONRPCNotification& notif);
 
 /**
  * @brief A successful JSON-RPC response message.
@@ -346,19 +200,9 @@ struct JSONRPCResultResponse {
     nlohmann::json result;        ///< The result payload.
 };
 
-inline void to_json(nlohmann::json& json_obj, const JSONRPCResultResponse& resp) {
-    json_obj = nlohmann::json::object();
-    json_obj["id"] = resp.id;
-    json_obj["jsonrpc"] = resp.jsonrpc;
-    json_obj["result"] = resp.result;
-}
+MCP_API void to_json(nlohmann::json& json_obj, const JSONRPCResultResponse& resp);
 
-inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& resp) {
-    resp.id = json_obj.at("id").get<RequestId>();
-    json_obj.at("jsonrpc").get_to(resp.jsonrpc);
-    detail::validate_jsonrpc_version(resp.jsonrpc);
-    json_obj.at("result").get_to(resp.result);
-}
+MCP_API void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& resp);
 
 /**
  * @brief An error JSON-RPC response message.
@@ -366,65 +210,28 @@ inline void from_json(const nlohmann::json& json_obj, JSONRPCResultResponse& res
 struct JSONRPCErrorResponse {
     Error error;                  ///< The error object.
     std::string jsonrpc = "2.0";  ///< JSON-RPC version (always "2.0").
-    std::optional<RequestId> id;  ///< The request ID, or no value when it cannot be determined.
+    /// The request ID, or no value when it cannot be determined. Then `id` is left out, as MCP's
+    /// schema has it; a null id is read as no value.
+    std::optional<RequestId> id;
 };
 
-inline void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp) {
-    json_obj = nlohmann::json::object();
-    json_obj["error"] = resp.error;
-    json_obj["id"] = nullptr;
-    json_obj["jsonrpc"] = resp.jsonrpc;
-    if (resp.id) {
-        json_obj["id"] = *resp.id;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const JSONRPCErrorResponse& resp);
 
-inline void from_json(const nlohmann::json& json_obj, JSONRPCErrorResponse& resp) {
-    json_obj.at("error").get_to(resp.error);
-    json_obj.at("jsonrpc").get_to(resp.jsonrpc);
-    detail::validate_jsonrpc_version(resp.jsonrpc);
-    if (detail::has_json_value(json_obj, "id")) {
-        resp.id = json_obj.at("id").get<RequestId>();
-    } else {
-        resp.id.reset();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, JSONRPCErrorResponse& resp);
 
 /// @brief Variant of all JSON-RPC response message forms.
 using JSONRPCResponse = std::variant<JSONRPCResultResponse, JSONRPCErrorResponse>;
 
-inline void to_json(nlohmann::json& json_obj, const JSONRPCResponse& resp) {
-    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, resp);
-}
+MCP_API void to_json(nlohmann::json& json_obj, const JSONRPCResponse& resp);
 
-inline void from_json(const nlohmann::json& json_obj, JSONRPCResponse& resp) {
-    // A null `error` alongside a real `result` is how some peers spell "no error"; selecting on
-    // presence alone would route such a response into the error branch and fail to decode it.
-    if (detail::has_json_value(json_obj, "error")) {
-        resp = json_obj.get<JSONRPCErrorResponse>();
-    } else {
-        resp = json_obj.get<JSONRPCResultResponse>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, JSONRPCResponse& resp);
 
 /// @brief Variant of all JSON-RPC message forms handled by the SDK.
 using JSONRPCMessage =
     std::variant<JSONRPCRequest, JSONRPCNotification, JSONRPCResultResponse, JSONRPCErrorResponse>;
 
-inline void to_json(nlohmann::json& json_obj, const JSONRPCMessage& msg) {
-    std::visit([&json_obj](auto&& arg) { json_obj = arg; }, msg);
-}
+MCP_API void to_json(nlohmann::json& json_obj, const JSONRPCMessage& msg);
 
-inline void from_json(const nlohmann::json& json_obj, JSONRPCMessage& msg) {
-    if (detail::has_json_value(json_obj, "error")) {
-        msg = json_obj.get<JSONRPCErrorResponse>();
-    } else if (json_obj.contains("result")) {
-        msg = json_obj.get<JSONRPCResultResponse>();
-    } else if (json_obj.contains("id")) {
-        msg = json_obj.get<JSONRPCRequest>();
-    } else {
-        msg = json_obj.get<JSONRPCNotification>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, JSONRPCMessage& msg);
 
 }  // namespace mcp

@@ -31,15 +31,16 @@ int main() {
     try {
         using namespace mcp;
 
-        const int NUM_ITERATIONS = 1000;
-        const std::string HOST = "127.0.0.1";
+        const int num_iterations = 1000;
+        const std::string host = "127.0.0.1";
 
         std::cout << "\n" << std::string(70, '=') << "\n";
         std::cout << "HTTP Transport Benchmark\n";
         std::cout << std::string(70, '=') << "\n";
-        std::cout << "Iterations: " << NUM_ITERATIONS << "\n";
+        std::cout << "Iterations: " << num_iterations << "\n";
 
         asio::io_context io_ctx;
+        bool completed = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -67,21 +68,19 @@ int main() {
 
         // ========== SERVER COROUTINE ==========
         auto http_server_transport =
-            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), HOST, 0);
+            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), host, 0);
         auto* http_transport_ptr = http_server_transport.get();
         const auto port = http_server_transport->port();
-        std::cout << "Server: " << HOST << ":" << port << "\n\n";
+        std::cout << "Server: " << host << ":" << port << "\n\n";
 
         asio::co_spawn(
             io_ctx,
             [&, transport = http_server_transport]() mutable -> Task<void> {
                 try {
+                    // The transport bound its port when it was constructed, so a client can
+                    // connect before listen() starts accepting.
                     asio::co_spawn(io_ctx, http_transport_ptr->listen(), asio::detached);
-                    // Give listen() time to start
-                    asio::steady_timer startup_delay(io_ctx.get_executor());
-                    startup_delay.expires_after(std::chrono::milliseconds(100));
-                    co_await startup_delay.async_wait(asio::use_awaitable);
-                    std::cout << "[Server] HTTP server listening on " << HOST << ":" << port << "\n";
+                    std::cout << "[Server] HTTP server listening on " << host << ":" << port << "\n";
                     co_await server.run(transport, io_ctx.get_executor());
                 } catch (const std::exception& e) {
                     std::cerr << "[Server] Error: " << e.what() << '\n';
@@ -94,23 +93,21 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    // Wait for server to start
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(200));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     Implementation client_info;
                     client_info.name = "http-benchmark-client";
                     client_info.version = "1.0.0";
 
-                    std::string url = "http://" + HOST + ":" + std::to_string(port) + "/mcp";
+                    std::string url = "http://" + host + ":" + std::to_string(port) + "/mcp";
                     auto http_client =
                         std::make_shared<HttpClientTransport>(io_ctx.get_executor(), url);
 
                     Client client(http_client, io_ctx.get_executor());
 
                     auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo.name << "\n\n";
+                    if (init_result.serverInfo) {
+                        std::cout << "[Client] Connected to: " << init_result.serverInfo->name
+                                  << "\n\n";
+                    }
                     std::cout.flush();
 
                     // Warmup
@@ -124,16 +121,16 @@ int main() {
                     std::cout.flush();
 
                     // Benchmark
-                    std::cout << "[Client] Starting benchmark (" << NUM_ITERATIONS
+                    std::cout << "[Client] Starting benchmark (" << num_iterations
                               << " iterations)...\n";
                     std::cout.flush();
                     auto start = std::chrono::steady_clock::now();
 
-                    for (int i = 0; i < NUM_ITERATIONS; ++i) {
+                    for (int i = 0; i < num_iterations; ++i) {
                         nlohmann::json args = {{"message", "benchmark_" + std::to_string(i)}};
                         co_await client.call_tool("echo", args);
                         if ((i + 1) % 100 == 0) {
-                            std::cout << "[Client] Progress: " << (i + 1) << "/" << NUM_ITERATIONS
+                            std::cout << "[Client] Progress: " << (i + 1) << "/" << num_iterations
                                       << "\n";
                             std::cout.flush();
                         }
@@ -144,21 +141,22 @@ int main() {
 
                     // Calculate metrics
                     double total_ms = duration.count();
-                    double avg_latency_ms = total_ms / NUM_ITERATIONS;
-                    double calls_per_sec = (NUM_ITERATIONS * 1000.0) / total_ms;
+                    double avg_latency_ms = total_ms / num_iterations;
+                    double calls_per_sec = (num_iterations * 1000.0) / total_ms;
 
                     std::cout << "\n" << std::string(70, '=') << "\n";
                     std::cout << "Benchmark Results (HTTP Transport)\n";
                     std::cout << std::string(70, '=') << "\n";
                     std::cout << std::fixed << std::setprecision(2);
                     std::cout << "Total time:        " << total_ms << " ms\n";
-                    std::cout << "Iterations:        " << NUM_ITERATIONS << "\n";
+                    std::cout << "Iterations:        " << num_iterations << "\n";
                     std::cout << "Avg latency:       " << avg_latency_ms << " ms/call\n";
                     std::cout << "Throughput:        " << calls_per_sec << " calls/sec\n";
                     std::cout << std::string(70, '=') << "\n\n";
 
                     std::cout << "[Client] Shutting down\n";
                     client.close();
+                    completed = true;
                     http_transport_ptr->close();
                     io_ctx.stop();
                 } catch (const std::exception& e) {
@@ -184,6 +182,10 @@ int main() {
         // ========== RUN IO CONTEXT ==========
         io_ctx.run();
 
+        if (!completed) {
+            std::cerr << "Benchmark did not complete\n";
+            return EXIT_FAILURE;
+        }
         return EXIT_SUCCESS;
 
     } catch (const std::exception& e) {

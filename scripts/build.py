@@ -158,7 +158,7 @@ def no_aslr():
     """Command prefix that disables ASLR, which ThreadSanitizer and MemorySanitizer need on kernels
     with high mmap entropy.
 
-    The test binary also runs at build time (gtest_discover_tests), so the build and ctest both use it.
+    The test binary also runs at build time to list its suites, so the build and ctest both use it.
     """
     setarch = shutil.which("setarch")
     if setarch and sys.platform.startswith("linux"):
@@ -432,6 +432,8 @@ def main():
     if args.msan:
         # The Conan toolchain file names the compiler and carries the flags.
         conan_args = msan_conan_args(build_msan_libcxx(MSAN_LIBCXX_DIR, clang, args.jobs), clang)
+        # MemorySanitizer runs the tests many times slower than a debug build.
+        extra_cmake.append("-DMCP_CPP_SDK_TEST_TIMEOUT=600")
     elif clang:
         extra_cmake += [f"-DCMAKE_C_COMPILER={clang[0]}", f"-DCMAKE_CXX_COMPILER={clang[1]}"]
     if args.sanitize:
@@ -474,9 +476,12 @@ def main():
                   "--output-on-failure", *ctest_args, quiet=args.quiet, extra_env=extra_env)
 
         if args.coverage:
-            run("gcovr", "-r", ".", "--html", "--html-details",
-                "-o", f"{build_dir}/coverage.html", "-f", "include/")
-            run("gcovr", "-r", ".", "-f", "include/")
+            # The HTML report is for reading; the Cobertura XML is what CI uploads to Codecov.
+            run("gcovr", "-r", ".", "-f", "include/", "-f", "src/", f"-j{args.jobs}",
+                "--exclude-unreachable-branches", "--exclude-throw-branches",
+                "--html-details", f"{build_dir}/coverage.html",
+                "--cobertura", f"{build_dir}/coverage.xml",
+                "--txt-summary")
 
     if args.docs:
         try:

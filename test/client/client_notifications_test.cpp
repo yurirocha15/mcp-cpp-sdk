@@ -1,5 +1,7 @@
+#include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 
 #include <gtest/gtest.h>
@@ -7,8 +9,11 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <chrono>
 #include <functional>
+#include <map>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -16,13 +21,15 @@
 #include <string_view>
 #include <vector>
 
+namespace client_notifications_test {
+
 namespace {
 
 // Returns just the result object (not a full JSON-RPC response) —
 // differs from the shared helper in test_utils.hpp which returns a
 // complete response envelope.  Callers here wrap it inline.
 nlohmann::json make_initialize_result() {
-    return {{"protocolVersion", mcp::g_LATEST_PROTOCOL_VERSION},
+    return {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},
             {"serverInfo", {{"name", "test-server"}, {"version", "1.0"}}}};
 }
@@ -38,7 +45,7 @@ TEST_F(ClientNotificationsTest, NotificationCallbackFires) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     bool callback_fired = false;
     nlohmann::json received_params;
@@ -69,9 +76,8 @@ TEST_F(ClientNotificationsTest, NotificationCallbackFires) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); });
 
     io_ctx_.run();
 
@@ -84,7 +90,7 @@ TEST_F(ClientNotificationsTest, UnhandledNotificationSilentlyDropped) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     int write_count = 0;
     raw->set_on_write([&](std::string_view msg) {
@@ -109,13 +115,10 @@ TEST_F(ClientNotificationsTest, UnhandledNotificationSilentlyDropped) {
     });
 
     bool completed = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect("test-client", "1.0");
-            completed = true;
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("test-client", "1.0");
+        completed = true;
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(completed);
@@ -125,7 +128,7 @@ TEST_F(ClientNotificationsTest, PingRequestHandledAutomatically) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::vector<std::string> written_messages;
     int write_count = 0;
@@ -150,9 +153,8 @@ TEST_F(ClientNotificationsTest, PingRequestHandledAutomatically) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); });
 
     io_ctx_.run();
 
@@ -167,7 +169,7 @@ TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     bool handler_called = false;
     nlohmann::json handler_params;
@@ -207,9 +209,8 @@ TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); });
 
     io_ctx_.run();
 
@@ -222,11 +223,70 @@ TEST_F(ClientNotificationsTest, CustomRequestHandlerDispatch) {
     EXPECT_EQ(response["result"]["roots"][0]["uri"], "file:///workspace");
 }
 
+// A handler whose result, or whose exception's text, is not UTF-8 still has the server answered,
+// with an error, instead of leaving the server's request to wait out its timeout.
+TEST_F(ClientNotificationsTest, AnswerThatCannotBeEncodedIsAnError) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw = transport.get();
+
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+    const std::string not_utf8 = "\xff\xfe";
+    client.on_request("test/result", [&](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+        co_return nlohmann::json{{"path", not_utf8}};
+    });
+    client.on_request("test/throw", [&](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+        throw std::runtime_error("cannot open " + not_utf8);
+        co_return nlohmann::json::object();
+    });
+
+    // Bounds a missing answer, which would otherwise leave the exchange open.
+    boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw](const boost::system::error_code& error) {
+        if (!error) {
+            raw->close();
+        }
+    });
+    std::vector<nlohmann::json> written;
+    raw->set_on_write([&](std::string_view msg) {
+        written.push_back(nlohmann::json::parse(msg));
+        if (written.size() == 1) {
+            raw->enqueue_message(nlohmann::json{
+                {"jsonrpc", "2.0"}, {"id", written[0]["id"]}, {"result", make_initialize_result()}}
+                                     .dump());
+        } else if (written.size() == 2) {
+            raw->enqueue_message(
+                nlohmann::json{{"jsonrpc", "2.0"}, {"id", "r"}, {"method", "test/result"}}.dump());
+            raw->enqueue_message(
+                nlohmann::json{{"jsonrpc", "2.0"}, {"id", "t"}, {"method", "test/throw"}}.dump());
+        } else if (written.size() == 4) {
+            guard.cancel();
+            raw->close();
+        }
+    });
+
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); });
+    io_ctx_.run();
+
+    std::map<std::string, nlohmann::json> answers;
+    for (const auto& message : written) {
+        if (message.contains("id") && message["id"].is_string()) {
+            answers[message["id"].get<std::string>()] = message;
+        }
+    }
+    for (const auto* id : {"r", "t"}) {
+        ASSERT_TRUE(answers.count(id) == 1) << id;
+        EXPECT_EQ(answers[id]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+            << answers[id].dump();
+        EXPECT_EQ(answers[id]["error"]["message"], "The answer could not be encoded as JSON");
+    }
+}
+
 TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
 
-    mcp::Client client(transport, io_ctx_.get_executor());
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     std::vector<std::string> written_messages;
     int write_count = 0;
@@ -251,9 +311,8 @@ TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
         }
     });
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await client.connect("test-client", "1.0"); });
 
     io_ctx_.run();
 
@@ -261,7 +320,7 @@ TEST_F(ClientNotificationsTest, UnknownRequestReturnsMethodNotFound) {
     auto response = nlohmann::json::parse(written_messages[2]);
     EXPECT_EQ(response["id"], "server-req-unknown");
     ASSERT_TRUE(response.contains("error"));
-    EXPECT_EQ(response["error"]["code"], mcp::g_METHOD_NOT_FOUND);
+    EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
 namespace {
@@ -284,9 +343,10 @@ NotificationSessionOutcome deliver_notifications(
     NotificationSessionOutcome outcome;
 
     mcp::ClientOptions options;
-    // Short enough that a swallowed response surfaces as a test failure instead of a stalled run.
-    options.request_timeout = std::chrono::seconds(5);
+    // Bounded, so that a swallowed response surfaces as a test failure instead of a stalled run.
+    options.request_timeout = g_hang_guard;
     options.on_protocol_error = [&](const mcp::Error& error) { outcome.reported.push_back(error); };
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
     mcp::Client client(transport, io_ctx.get_executor(), options);
     register_handlers(client);
 
@@ -314,19 +374,16 @@ NotificationSessionOutcome deliver_notifications(
                 .dump());
     });
 
-    boost::asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            static_cast<void>(co_await client.connect("test-client", "1.0"));
-            try {
-                co_await client.ping();
-                outcome.survived = true;
-            } catch (const mcp::McpError& error) {
-                outcome.failure = error.what();
-            }
-            raw->close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        static_cast<void>(co_await client.connect("test-client", "1.0"));
+        try {
+            co_await client.ping();
+            outcome.survived = true;
+        } catch (const mcp::McpError& error) {
+            outcome.failure = error.what();
+        }
+        raw->close();
+    });
 
     io_ctx.run();
     return outcome;
@@ -348,7 +405,7 @@ TEST_F(ClientNotificationsTest, MalformedCancelledNotificationDoesNotStopReadLoo
     EXPECT_TRUE(outcome.survived) << "the session died on one malformed notification: "
                                   << outcome.failure;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the drop was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
 }
 
 // `total` and `message` are optional. A peer that serializes absent optionals as explicit null --
@@ -419,7 +476,7 @@ TEST_F(ClientNotificationsTest, MessageNestedBeyondTheDepthLimitIsDroppedNotFata
 
     EXPECT_TRUE(outcome.survived) << "the session died on a deeply nested message: " << outcome.failure;
     ASSERT_EQ(outcome.reported.size(), 1U) << "expected only the message over the limit to be dropped";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_PARSE_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_NE(outcome.reported.front().message.find("nests deeper than 128 levels"), std::string::npos)
         << "actual: " << outcome.reported.front().message;
 }
@@ -442,9 +499,11 @@ TEST_F(ClientNotificationsTest, ThrowingNotificationCallbackDoesNotStopReadLoop)
     EXPECT_TRUE(outcome.survived) << "the session died on a throwing application callback: "
                                   << outcome.failure;
     ASSERT_EQ(outcome.reported.size(), 1U) << "the throw was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::g_INTERNAL_ERROR);
+    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
     EXPECT_NE(outcome.reported.front().message.find("notifications/message"), std::string::npos)
         << "actual: " << outcome.reported.front().message;
     EXPECT_NE(outcome.reported.front().message.find("callback blew up"), std::string::npos)
         << "actual: " << outcome.reported.front().message;
 }
+
+}  // namespace client_notifications_test

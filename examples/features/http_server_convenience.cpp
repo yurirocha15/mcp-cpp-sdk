@@ -68,12 +68,10 @@ int main() {
                                       {"properties", {{"text", {{"type", "string"}}}}},
                                       {"required", nlohmann::json::array({"text"})}};
 
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "echo", "Echo the input text", tool_schema,
-            [](nlohmann::json input_args) -> nlohmann::json {
-                std::string text = input_args.at("text").get<std::string>();
-                return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                                      {"type", "text"}, {"text", "Echo: " + text}}})}};
+            [](nlohmann::json input_args) -> CallToolResult {
+                return make_tool_text_result("Echo: " + input_args.at("text").get<std::string>());
             });
 
         asio::io_context probe_io_ctx;
@@ -107,6 +105,7 @@ int main() {
         // ========== CLIENT SIDE ==========
 
         asio::io_context client_io_ctx;
+        bool client_ok = false;
 
         asio::co_spawn(
             client_io_ctx,
@@ -124,9 +123,15 @@ int main() {
                     client_info.name = "http-convenience-client";
                     client_info.version = "1.0.0";
 
-                    std::cout << "Client: initializing connection\n";
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Connected to: " << init_result.serverInfo.name << '\n';
+                    std::cout << "Client: connecting\n";
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "Connected to: " << init_result.serverInfo->name << '\n';
+                        }
+                        std::cout << "Protocol version: " << init_result.protocolVersion << '\n';
+                    }
 
                     // List available tools
                     auto tools = co_await client.list_tools();
@@ -153,6 +158,7 @@ int main() {
 
                     std::cout << "\nClient: closing connection\n";
                     client.close();
+                    client_ok = true;
 
                 } catch (const std::exception& error) {
                     std::cerr << "Client error: " << error.what() << '\n';
@@ -174,6 +180,10 @@ int main() {
         // Wait for server thread to finish
         server_thread.join();
 
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         std::cout << "Example complete\n";
         return EXIT_SUCCESS;
 

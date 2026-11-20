@@ -10,7 +10,7 @@ The ``Context`` object handles three main categories of interaction:
 
 1.  **Downstream Communication**: Sending real-time updates to the client (logging and progress).
 2.  **Request Lifecycle**: Managing state specific to the current request (cancellation).
-3.  **Reverse RPC**: Initiating requests from the server back to the client (sampling, elicitation, and roots).
+3.  **Reverse RPC**: Initiating requests from the server back to the client (sampling, elicitation, and roots). In a 2026-07-28 session these calls work in the handler of a ``tools/call``, ``prompts/get`` or ``resources/read``: the server answers the request with an ``input_required`` result and the handler resumes when the client retries with the answer (see :doc:`protocol`). Any other 2026-07-28 request cannot ask the client anything, and the calls throw ``std::runtime_error``.
 
 Lifecycle and Safety
 --------------------
@@ -24,7 +24,7 @@ Logging
 -------
 
 
-You can send log messages to the client using various log levels. The SDK respects the server's current log level, automatically filtering messages that are less severe than the configured threshold.
+You can send log messages to the client using various log levels. The SDK respects the server's current log level, automatically filtering messages that are less severe than the configured threshold. For a request of protocol revision 2026-07-28 the threshold is the ``io.modelcontextprotocol/logLevel`` in the request's ``_meta``; without one nothing is sent.
 
 Available log levels (from most to least severe):
 
@@ -98,8 +98,37 @@ How it works
 ~~~~~~~~~~~~
 
 1.  A client sends a ``notifications/cancelled`` message for a specific request ID.
-2.  The server marks the corresponding ``Context`` as cancelled.
+2.  The server marks the corresponding ``Context`` as cancelled, for tool, resource and prompt handlers alike.
 3.  The tool handler checks ``ctx.is_cancelled()`` and exits gracefully.
+
+Cancelling from the client
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A client cancels requests by giving them a ``mcp::CancellationToken`` in
+``RequestOptions::cancellation`` and calling ``cancel()`` on a copy of the
+token, from any thread. The client tells the server about each request given
+the token that is still waiting, with ``notifications/cancelled`` (over HTTP, a
+2026-07-28 request's response stream is closed instead), and each call throws
+``McpError`` with ``g_REQUEST_CANCELLED`` at once; a response that arrives
+afterwards is dropped. A request given a token that is already cancelled is not
+sent. ``Client::call_tool()`` and ``Client::send_request()`` take the options.
+
+.. code-block:: cpp
+
+   mcp::CancellationToken cancellation;  // kept to cancel with, from any thread
+   mcp::RequestOptions options;
+   options.cancellation = cancellation;
+   try {
+       auto result = co_await client.call_tool("long_task", arguments, options);
+   } catch (const mcp::McpError& error) {
+       if (error.code() == mcp::constants::jsonrpc::g_REQUEST_CANCELLED) {
+           // cancellation.cancel() was called while the call waited.
+       }
+   }
+
+``examples/features/progress_cancellation.cpp`` cancels its call from its
+progress callback. ``Client::cancel()`` sends the notification for a request id
+the application already knows.
 
 Implementation Pattern
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -215,6 +244,19 @@ The ``Context`` holds:
 *   A ``ProgressToken`` extracted from the request's metadata.
 
 This architecture ensures that ``Context`` is lightweight and efficient to pass around, while providing a rich set of capabilities.
+
+Request Metadata and Principal
+------------------------------
+
+``ctx.request_meta()`` returns the parsed ``_meta`` fields of a 2026-07-28
+request (protocol version, client capabilities, client info, log level, and the
+whole ``_meta`` object), and a null pointer for a request of an older revision.
+``ctx.principal()`` says who sent a request. Over HTTP it is the principal that a
+bearer token validator named in its ``TokenValidation`` result, or ``h:``
+followed by the hex SHA-256 of the ``Authorization`` header, or empty when there
+is none. It is empty for stdio, WebSocket and memory transports, and for the
+requests of a ``StreamableHttpSessionManager`` session of an older revision,
+which are attributed to the session.
 
 Best Practices
 --------------

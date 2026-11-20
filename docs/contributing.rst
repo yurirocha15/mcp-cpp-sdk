@@ -18,10 +18,10 @@ To set up your development environment:
    # Initialize development environment
    python scripts/init.py --dev
 
-   # Build with tests
+   # Build
    python scripts/build.py
 
-   # Run tests
+   # Build with tests and run them
    python scripts/build.py --test
 
 The ``python scripts/init.py --dev`` target installs all development dependencies including:
@@ -54,15 +54,25 @@ Follow these guidelines:
 Naming Conventions
 ^^^^^^^^^^^^^^^^^^
 
-Follow these naming conventions:
+Follow these naming conventions, which ``.clang-tidy`` enforces with
+``readability-identifier-naming``:
 
-* **Classes/Structs**: ``PascalCase`` (e.g., ``Server``, ``ITransport``, ``CallToolRequest``)
-* **Functions/Methods**: ``snake_case`` (e.g., ``add_tool()``, ``call_tool()``, ``log_info()``)
-* **Variables**: ``snake_case`` (e.g., ``request_id``, ``tool_name``, ``json_result``)
-* **Private members**: ``snake_case_`` with trailing underscore (e.g., ``transport_``, ``strand_``)
-* **Constants**: ``kPascalCase`` (e.g., ``kDefaultTimeout``)
-* **Template parameters**: ``PascalCase`` (e.g., ``template <typename T>``)
-* **Namespaces**: ``snake_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
+* **Classes/Structs/Enums/Unions/Concepts**: ``CamelCase`` (e.g., ``Server``, ``ITransport``, ``CallToolRequest``)
+* **Functions/Methods**: ``lower_case`` (e.g., ``add_tool()``, ``call_tool()``, ``log_info()``)
+* **Variables**: ``lower_case`` (e.g., ``request_id``, ``tool_name``, ``json_result``)
+* **Class members**: ``lower_case_`` with a trailing underscore (e.g., ``transport_``, ``strand_``)
+* **Global variables and namespace-scope constants**: ``g_`` prefix; constants are ``g_UPPER_CASE``
+  (e.g., ``g_INVALID_PARAMS``), declared in ``mcp/core/constants.hpp`` or ``src/detail/constants.hpp``
+* **Static variables**: ``s_`` prefix (e.g., ``s_cache`` for a function-local static)
+* **Enum values**: ``eCamelCase`` (e.g., ``eServerError``)
+* **Class constants** (static data members): ``lower_case`` (e.g., ``max_repeat_count``)
+* **Macros**: ``UPPER_CASE`` (e.g., ``MCP_DEPRECATED``)
+* **Namespaces**: ``lower_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
+
+``make lint`` runs the check locally. The CI ``Identifier naming`` job runs only
+``readability-identifier-naming`` over ``src/``, ``include/`` and ``examples/``,
+the directories ``make lint`` checks, and fails on any violation. It runs when a
+change touches those directories, ``.clang-tidy`` or the CMake files.
 
 Code Formatting
 ^^^^^^^^^^^^^^^
@@ -135,6 +145,12 @@ Example test structure:
        // Assertions...
    }
 
+The test program compiles its files a few at a time in one translation unit
+(a unity build). Put the contents of a test file in a namespace named after the
+file, for example ``namespace server_core_test { ... }``, so that its helpers,
+aliases and using-declarations cannot collide with, or silently overload, those
+of another file compiled with it.
+
 Running Tests
 ^^^^^^^^^^^^^
 
@@ -147,10 +163,16 @@ Running Tests
    ctest --preset conan-release --output-on-failure
 
    # Run the GoogleTest binary directly with a filter
-   ./build/mcp-sdk-tests --gtest_filter=ServerCoreTest.*
+   ./build/release/mcp-sdk-tests --gtest_filter=ServerCoreTest.*
 
 A test build from a checkout needs Python 3.9+ for the peer-input matrix check;
 opt out with ``-DMCP_CPP_SDK_CHECK_JSON_MATRIX=OFF``.
+
+The unity build of the test program is controlled by two CMake options:
+``-DMCP_CPP_SDK_TEST_UNITY_BUILD=OFF`` compiles every test file on its own, and
+``-DMCP_CPP_SDK_TEST_UNITY_BATCH_SIZE=<n>`` sets how many files share a
+translation unit (the default is 4). Editing a test file recompiles all the
+files in its group.
 
 Code Coverage
 ^^^^^^^^^^^^^
@@ -159,11 +181,17 @@ Aim for >80% code coverage for new features:
 
 .. code-block:: bash
 
-   # Generate coverage report
+   # Generate coverage report (needs gcovr)
    python scripts/build.py --coverage --test
 
    # View report
-   open build/coverage/index.html
+   open build/coverage/coverage.html
+
+CI collects the report in its GCC sanitizer build
+(``python scripts/build.py --sanitize --coverage --test``, which writes
+``build/sanitize/coverage.xml``) and uploads it to
+`Codecov <https://app.codecov.io/gh/yurirocha15/mcp-cpp-sdk>`_, which comments
+on pull requests with the coverage of the changed lines.
 
 Sanitizers
 ^^^^^^^^^^
@@ -194,7 +222,8 @@ MemorySanitizer reports a read of any memory that uninstrumented code wrote,
 so ``--msan`` builds its own libc++ from a pinned LLVM commit into
 ``build/msan-libcxx`` on first use, and has Conan rebuild Boost, OpenSSL and
 GoogleTest against it. The first run is slow; later runs reuse both. It needs
-``clang-18`` and ``git``.
+``clang-18`` and ``git``. Its tests run many times slower than in a debug
+build, so each may take 600 seconds instead of 120.
 
 The ThreadSanitizer and MemorySanitizer builds run under ``setarch -R`` where
 it is available, because neither can start on kernels with a high ASLR
@@ -203,9 +232,12 @@ entropy.
 Distribution Builds
 ^^^^^^^^^^^^^^^^^^^
 
-The builds above use Conan's Boost. CI also builds the native ``.deb`` and
-``.rpm`` packages for every x86_64 release route exactly as a release does:
-inside the locked release builder images (``release/native-builders/lock.json``),
+The builds above use Conan's Boost. When a push to ``main`` changes the source
+or the packaging, CI also builds the Homebrew formula, the Windows payload and
+the native ``.deb`` and ``.rpm`` packages. Pull requests skip these builds;
+running the CI workflow by hand on a branch includes them. The native packages
+cover every x86_64 release route, built exactly as a release does: inside the
+locked release builder images (``release/native-builders/lock.json``),
 with each distribution's compiler, Boost, Python and packaging flags, from
 Boost 1.74 on Ubuntu 22.04 and Debian 12 up. Each build runs the test suite,
 then builds and runs a consumer against the extracted packages and another
@@ -252,6 +284,7 @@ Use descriptive branch names:
 * Update documentation (Doxygen comments, .rst files)
 * Run tests locally: ``python scripts/build.py --test``
 * Format code: ``make format``
+* Add a changelog entry for a change users notice (see `Changelog`_)
 
 3. Commit
 ^^^^^^^^^
@@ -338,6 +371,20 @@ All PRs require:
 
 Once approved, a maintainer will merge your PR. The project uses squash merging
 to keep the main branch history clean.
+
+Changelog
+---------
+
+A change that users notice gets one entry in the ``[Unreleased]`` section of
+``CHANGELOG.md``: under ``Added``, ``Changed``, ``Deprecated``, ``Removed``,
+``Fixed`` or ``Security``, and also under ``Migrating from X.Y.Z`` when code
+written for the last release needs a change to compile.
+
+* Write one sentence about what changed for users, and name the API it
+  concerns. The documentation and the commit message hold the details.
+* Keep each entry to 200 characters. The release tests check this.
+* Before a release, a ``Highlights`` part lists the few changes the release
+  page shows; ``release/README.md`` describes the release steps.
 
 Reporting Bugs
 --------------
@@ -437,6 +484,19 @@ argument instead of storing it in a named local, so no SSO string ever enters th
 
    // DO NOT: auto input = params.get<In>();  // named local stays in frame
    Out output = co_await handler(ctx, params.get<In>());  // direct: never in frame
+
+**Named aggregate arguments**: GCC releases before 13 can destroy a temporary
+built inside a ``co_await`` expression twice
+(`GCC Bug #101367 <https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101367>`_).
+On GCC 11 this hits braced aggregates (``T{...}``, ``T{.field = ...}`` or a bare
+``{...}``) and the result of a conditional expression passed as coroutine
+arguments. Build such an argument as a named local and move it in.
+
+.. code-block:: cpp
+
+   // DO NOT: co_await dispatch(msg, RequestScope{nullptr, std::move(cancelled)});
+   RequestScope scope{nullptr, std::move(cancelled)};
+   co_await dispatch(msg, std::move(scope));
 
 **Rule for wire builders**: ``make_result_wire()`` and ``make_error_wire()`` are
 **synchronous** static helpers. Do NOT convert them to ``Task<void>`` coroutines —

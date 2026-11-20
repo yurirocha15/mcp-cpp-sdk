@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/capabilities.hpp>
 #include <mcp/protocol/completion.hpp>
@@ -17,31 +18,9 @@ struct PromptArgument {
     std::optional<std::string> title;        ///< Human-readable title.
 };
 
-inline void to_json(nlohmann::json& json_obj, const PromptArgument& arg) {
-    json_obj = nlohmann::json{{"name", arg.name}};
-    if (arg.description) {
-        json_obj["description"] = *arg.description;
-    }
-    if (arg.required) {
-        json_obj["required"] = *arg.required;
-    }
-    if (arg.title) {
-        json_obj["title"] = *arg.title;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const PromptArgument& arg);
 
-inline void from_json(const nlohmann::json& json_obj, PromptArgument& arg) {
-    json_obj.at("name").get_to(arg.name);
-    if (detail::has_json_value(json_obj, "description")) {
-        arg.description = json_obj.at("description").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "required")) {
-        arg.required = json_obj.at("required").get<bool>();
-    }
-    if (detail::has_json_value(json_obj, "title")) {
-        arg.title = json_obj.at("title").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, PromptArgument& arg);
 
 /**
  * @brief A prompt or prompt template that the server offers.
@@ -55,43 +34,9 @@ struct Prompt {
     std::optional<std::vector<Icon>> icons;                ///< Icons for the prompt.
 };
 
-inline void to_json(nlohmann::json& json_obj, const Prompt& prompt) {
-    json_obj = nlohmann::json{{"name", prompt.name}};
-    if (prompt.description) {
-        json_obj["description"] = *prompt.description;
-    }
-    if (prompt.arguments) {
-        json_obj["arguments"] = *prompt.arguments;
-    }
-    if (prompt.meta) {
-        json_obj["_meta"] = *prompt.meta;
-    }
-    if (prompt.title) {
-        json_obj["title"] = *prompt.title;
-    }
-    if (prompt.icons) {
-        json_obj["icons"] = *prompt.icons;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Prompt& prompt);
 
-inline void from_json(const nlohmann::json& json_obj, Prompt& prompt) {
-    json_obj.at("name").get_to(prompt.name);
-    if (detail::has_json_value(json_obj, "description")) {
-        prompt.description = json_obj.at("description").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "arguments")) {
-        prompt.arguments = json_obj.at("arguments").get<std::vector<PromptArgument>>();
-    }
-    if (json_obj.contains("_meta")) {
-        prompt.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-    if (detail::has_json_value(json_obj, "title")) {
-        prompt.title = json_obj.at("title").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "icons")) {
-        prompt.icons = json_obj.at("icons").get<std::vector<Icon>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Prompt& prompt);
 
 /**
  * @brief Describes a message returned as part of a prompt.
@@ -101,7 +46,8 @@ struct PromptMessage {
     ContentBlock content;  ///< The content of the message.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PromptMessage, role, content)
+MCP_API void to_json(nlohmann::json& json_obj, const PromptMessage& value);
+MCP_API void from_json(const nlohmann::json& json_obj, PromptMessage& value);
 
 /**
  * @brief Parameters for a prompts/get request.
@@ -112,25 +58,9 @@ struct GetPromptRequestParams {
     std::optional<nlohmann::json> meta;                           ///< Reserved for protocol use.
 };
 
-inline void to_json(nlohmann::json& json_obj, const GetPromptRequestParams& params) {
-    json_obj = nlohmann::json{{"name", params.name}};
-    if (params.arguments) {
-        json_obj["arguments"] = *params.arguments;
-    }
-    if (params.meta) {
-        json_obj["_meta"] = *params.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const GetPromptRequestParams& params);
 
-inline void from_json(const nlohmann::json& json_obj, GetPromptRequestParams& params) {
-    json_obj.at("name").get_to(params.name);
-    if (detail::has_json_value(json_obj, "arguments")) {
-        params.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
-    }
-    if (json_obj.contains("_meta")) {
-        params.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, GetPromptRequestParams& params);
 
 /**
  * @brief Used by the client to get a prompt provided by the server.
@@ -140,7 +70,8 @@ struct GetPromptRequest {
     GetPromptRequestParams params;       ///< The request parameters.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(GetPromptRequest, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const GetPromptRequest& value);
+MCP_API void from_json(const nlohmann::json& json_obj, GetPromptRequest& value);
 
 /**
  * @brief The result returned by the server for a prompts/get request.
@@ -151,25 +82,9 @@ struct GetPromptResult {
     std::optional<nlohmann::json> meta;      ///< Reserved for protocol use.
 };
 
-inline void to_json(nlohmann::json& json_obj, const GetPromptResult& result) {
-    json_obj = nlohmann::json{{"messages", result.messages}};
-    if (result.description) {
-        json_obj["description"] = *result.description;
-    }
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const GetPromptResult& result);
 
-inline void from_json(const nlohmann::json& json_obj, GetPromptResult& result) {
-    json_obj.at("messages").get_to(result.messages);
-    if (detail::has_json_value(json_obj, "description")) {
-        result.description = json_obj.at("description").get<std::string>();
-    }
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, GetPromptResult& result);
 
 /**
  * @brief Sent from the client to request a list of prompts.
@@ -179,19 +94,9 @@ struct ListPromptsRequest {
     std::optional<PaginatedRequestParams> params;  ///< The request parameters.
 };
 
-inline void to_json(nlohmann::json& json_obj, const ListPromptsRequest& req) {
-    json_obj = nlohmann::json{{"method", req.method}};
-    if (req.params) {
-        json_obj["params"] = *req.params;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ListPromptsRequest& req);
 
-inline void from_json(const nlohmann::json& json_obj, ListPromptsRequest& req) {
-    json_obj.at("method").get_to(req.method);
-    if (json_obj.contains("params")) {
-        req.params = json_obj.at("params").get<PaginatedRequestParams>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ListPromptsRequest& req);
 
 /**
  * @brief The result returned by the server for a prompts/list request.
@@ -200,26 +105,12 @@ struct ListPromptsResult {
     std::vector<Prompt> prompts;            ///< The list of prompts.
     std::optional<std::string> nextCursor;  ///< An opaque token representing the pagination position.
     std::optional<nlohmann::json> meta;     ///< Reserved for protocol use.
+    std::optional<std::int64_t> ttlMs;      ///< Caching TTL hint, in milliseconds (2026-07-28).
+    std::optional<CacheScope> cacheScope;   ///< Caching scope hint (2026-07-28).
 };
 
-inline void to_json(nlohmann::json& json_obj, const ListPromptsResult& result) {
-    json_obj = nlohmann::json{{"prompts", result.prompts}};
-    if (result.nextCursor) {
-        json_obj["nextCursor"] = *result.nextCursor;
-    }
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ListPromptsResult& result);
 
-inline void from_json(const nlohmann::json& json_obj, ListPromptsResult& result) {
-    json_obj.at("prompts").get_to(result.prompts);
-    if (detail::has_json_value(json_obj, "nextCursor")) {
-        result.nextCursor = json_obj.at("nextCursor").get<std::string>();
-    }
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ListPromptsResult& result);
 
 }  // namespace mcp

@@ -264,7 +264,7 @@ namespace draft202012 {
                     for (const auto& def : (*it).value().object_range())
                     {
                         mcp_detail_jsoncons::string_view sub_keys[] = { "definitions", def.key() };
-                        defs.emplace(def.key(), this->make_cross_draft_schema_validator(context, def.value(), sub_keys, local_anchor_dict));
+                        defs.emplace("definitions/" + def.key(), this->make_cross_draft_schema_validator(context, def.value(), sub_keys, local_anchor_dict));
                     }
                 }
             }
@@ -274,7 +274,7 @@ namespace draft202012 {
                 for (const auto& def : (*it).value().object_range())
                 {
                     mcp_detail_jsoncons::string_view sub_keys[] = { "$defs", def.key() };
-                    defs.emplace(def.key(), this->make_cross_draft_schema_validator(context, def.value(), sub_keys, local_anchor_dict));
+                    defs.emplace("$defs/" + def.key(), this->make_cross_draft_schema_validator(context, def.value(), sub_keys, local_anchor_dict));
                 }
             }
 
@@ -412,7 +412,7 @@ namespace draft202012 {
             {
                 for (const auto& key_value : sch.object_range())
                 {
-                    auto factory_it = validation_factory_map_.find(key_value.key().c_str());
+                    auto factory_it = validation_factory_map_.find(key_value.key());
                     if (factory_it != validation_factory_map_.end())
                     {
                         auto validator = (*factory_it).second(context, key_value.value(), sch, local_anchor_dict);

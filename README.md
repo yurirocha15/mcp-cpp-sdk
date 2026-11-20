@@ -7,6 +7,7 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/yurirocha15/mcp-cpp-sdk/graph/badge.svg)](https://app.codecov.io/gh/yurirocha15/mcp-cpp-sdk)
 [![Conformance baseline](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/conformance.yml/badge.svg)](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/conformance.yml)
 
 ## Why mcp-cpp-sdk?
@@ -14,7 +15,8 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 - **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`.
 - **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
 - **Three transports**: Stdio, WebSocket and Streamable HTTP.
-- **Tested against the spec**: The official MCP conformance suites run in CI against protocol `2025-11-25`, and [known gaps](conformance/expected-failures.yml) are listed. This is not an official SDK tier rating.
+- **Protocol revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
+- **Tested against the spec**: The official MCP conformance suites run in CI against protocol `2025-11-25`, and [known gaps](conformance/expected-failures.yml) are listed. A separate job reports the alpha runner's `2026-07-28` scenarios without gating. This is not an official SDK tier rating.
 - **Fast**: Throughput and latency on par with the official Rust SDK in our [benchmark](benchmark/RESULTS.md).
 
 ## Quick Start
@@ -43,7 +45,7 @@ include(FetchContent)
 FetchContent_Declare(
     mcp-cpp-sdk
     GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-    GIT_TAG v0.2.0
+    GIT_TAG v0.3.0
 )
 # Skip the SDK's own tests, examples and docs.
 set(BUILD_TESTING OFF)
@@ -65,10 +67,12 @@ int main() {
     mcp::Server server({"hello-server", "1.0.0"}, capabilities);
 
     server.add_tool("hello", "Greets the user",
-        {{"type", "object"}, {"properties", {{"name", {{"type", "string"}}}}}},
+        {{"type", "object"},
+         {"properties", {{"name", {{"type", "string"}}}}},
+         {"required", nlohmann::json::array({"name"})}},
         [](const nlohmann::json& args) -> nlohmann::json {
             return nlohmann::json{
-                {"message", "Hello, " + args["name"].get<std::string>() + "!"}};
+                {"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
         });
 
     server.run_http("127.0.0.1", 3000); // Serves http://127.0.0.1:3000/mcp
@@ -94,7 +98,8 @@ int main() {
     mcp::Client client(transport, io.get_executor());
 
     boost::asio::co_spawn(io, [&]() -> mcp::Task<void> {
-        co_await client.connect("my-client", "1.0.0");
+        mcp::ConnectResult connected = co_await client.connect("my-client", "1.0.0");
+        std::cerr << "Connected using protocol " << connected.protocolVersion << '\n';
         nlohmann::json arguments{{"name", "World"}};
         auto result = co_await client.call_tool("hello", arguments);
         std::cerr << nlohmann::json(result).dump(2) << '\n';
@@ -105,8 +110,16 @@ int main() {
 }
 ```
 
-Note the named `arguments` variable. See [Compiler
-Notes](#compiler-notes) for why it is not built inline.
+`Client` defaults to `mcp::ClientProtocol::automatic()`: it sends `server/discover`
+first and falls back to `initialize` when the server does not answer as a
+2026-07-28 server. `connect()` returns a `mcp::ConnectResult` holding the
+session's `era`, the `protocolVersion` in use, the server's `capabilities`, and,
+when the server sent them, `serverInfo`, `instructions` and `supportedVersions`.
+To skip detection, set `ClientOptions::protocol` to
+`mcp::ClientProtocol::legacy()` or `mcp::ClientProtocol::pinned("2026-07-28")`.
+
+Note the named `arguments` variable. See [Compiler Notes](#compiler-notes) for
+why it is not built inline.
 
 ## Usage Highlights
 
@@ -159,9 +172,28 @@ nlohmann::json arguments{{"name", "World"}};
 auto result = co_await client.call_tool("hello", arguments);
 ```
 
-This is a compiler bug, not an SDK one. The contributing guide's
+This is a compiler bug, not an SDK one.
+
+### GCC 11: temporaries inside a `co_await`
+
+GCC releases before 13 can destroy a temporary created inside a `co_await`
+expression twice
+([GCC bug 101367](https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101367)). With
+GCC 11 a braced aggregate argument such as `mcp::Implementation{...}` crashes
+the program. Build such a value as a named variable before the `co_await`:
+
+```cpp
+// Crashes with GCC 11
+co_await client.connect(mcp::Implementation{"my-client", "1.0.0"}, capabilities);
+
+// Works
+mcp::Implementation client_info{"my-client", "1.0.0"};
+co_await client.connect(client_info, capabilities);
+```
+
+The contributing guide's
 [Known Issues](https://www.yurirocha.com/mcp-cpp-sdk/contributing.html#known-issues)
-section has the full list of affected code and a separate GCC 11 coroutine bug.
+section has the full list of affected code for both compiler bugs.
 
 ---
 
@@ -220,3 +252,23 @@ Package repository hosting is graciously provided by [Cloudsmith](https://clouds
 Cloudsmith is the only fully hosted, cloud-native, universal package management solution that
 enables your organization to create, store and share packages in any format, to any place, with total
 confidence.
+
+## Acknowledgements
+
+mcp-cpp-sdk is built on the work of these open-source projects. Thank you to their authors and
+maintainers.
+
+- [Boost](https://www.boost.org), in particular [Asio](https://github.com/boostorg/asio) and
+  [Beast](https://github.com/boostorg/beast): executors, coroutines, networking, HTTP and WebSocket.
+- [nlohmann/json](https://github.com/nlohmann/json): JSON and JSON-RPC serialization.
+- [OpenSSL](https://github.com/openssl/openssl): cryptographic randomness and OAuth helper
+  primitives.
+- [jsoncons](https://github.com/danielaparker/jsoncons): JSON Schema validation of tool schemas and
+  the values checked against them.
+- [Model Context Protocol](https://github.com/modelcontextprotocol/modelcontextprotocol) and its
+  [conformance suite](https://github.com/modelcontextprotocol/conformance): the specification this
+  SDK implements and the checks it is tested against.
+- [JSON-Schema-Test-Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite): the test
+  cases behind the schema validation.
+- [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2): the MCP server
+  benchmark whose workload and infrastructure our benchmark is based on.

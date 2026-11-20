@@ -7,9 +7,11 @@
 #include <mcp/protocol/elicitation.hpp>
 #include <mcp/protocol/notification.hpp>
 #include <mcp/protocol/prompts.hpp>
+#include <mcp/protocol/request_meta.hpp>
 #include <mcp/protocol/resources.hpp>
 #include <mcp/protocol/roots.hpp>
 #include <mcp/protocol/sampling.hpp>
 #include <mcp/protocol/schema.hpp>
+#include <mcp/protocol/skills.hpp>
 #include <mcp/protocol/tasks.hpp>
 #include <mcp/protocol/tools.hpp>

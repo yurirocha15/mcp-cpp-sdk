@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -22,15 +23,7 @@ struct Root {
  * @param json_obj The JSON object to populate.
  * @param root The Root object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const Root& root) {
-    json_obj = nlohmann::json{{"uri", root.uri}};
-    if (root.name) {
-        json_obj["name"] = *root.name;
-    }
-    if (root.meta) {
-        json_obj["_meta"] = *root.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Root& root);
 
 /**
  * @brief Deserializes Root from JSON.
@@ -38,15 +31,7 @@ inline void to_json(nlohmann::json& json_obj, const Root& root) {
  * @param json_obj The JSON object to read from.
  * @param root The Root object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, Root& root) {
-    json_obj.at("uri").get_to(root.uri);
-    if (detail::has_json_value(json_obj, "name")) {
-        root.name = json_obj.at("name").get<std::string>();
-    }
-    if (json_obj.contains("_meta")) {
-        root.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Root& root);
 
 /**
  * @brief Sent from the server to request a list of root URIs from the client.
@@ -55,7 +40,8 @@ struct ListRootsRequest {
     std::string method = "roots/list";  ///< The method name.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ListRootsRequest, method)
+MCP_API void to_json(nlohmann::json& json_obj, const ListRootsRequest& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ListRootsRequest& value);
 
 /**
  * @brief The result returned by the client for a roots/list request.
@@ -71,12 +57,7 @@ struct ListRootsResult {
  * @param json_obj The JSON object to populate.
  * @param result The ListRootsResult object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const ListRootsResult& result) {
-    json_obj = nlohmann::json{{"roots", result.roots}};
-    if (result.meta) {
-        json_obj["_meta"] = *result.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const ListRootsResult& result);
 
 /**
  * @brief Deserializes ListRootsResult from JSON.
@@ -84,11 +65,6 @@ inline void to_json(nlohmann::json& json_obj, const ListRootsResult& result) {
  * @param json_obj The JSON object to read from.
  * @param result The ListRootsResult object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, ListRootsResult& result) {
-    json_obj.at("roots").get_to(result.roots);
-    if (json_obj.contains("_meta")) {
-        result.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, ListRootsResult& result);
 
 }  // namespace mcp

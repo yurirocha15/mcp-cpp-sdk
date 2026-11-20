@@ -98,25 +98,56 @@ set(MCP_CPP_SDK_SOURCES
     src/core/runtime.cpp
     src/core/regex.cpp
     src/core/secure_random.cpp
+    src/core/json_dump.cpp
+    src/core/json_parse.cpp
     src/core/serialized_transport_writer.cpp
     src/protocol/native_schema.cpp
     src/protocol/schema.cpp
+    src/protocol/base.cpp
+    src/protocol/capabilities.cpp
+    src/protocol/content.cpp
+    src/protocol/completion.cpp
+    src/protocol/notification.cpp
+    src/protocol/request_meta.cpp
+    src/protocol/roots.cpp
+    src/protocol/resources.cpp
+    src/protocol/prompts.cpp
+    src/protocol/tasks.cpp
+    src/protocol/elicitation.cpp
     src/protocol/tools.cpp
+    src/protocol/sampling.cpp
+    src/protocol/skills.cpp
+    src/protocol/apps.cpp
     src/auth/challenge.cpp
     src/auth/client_identity.cpp
     src/auth/metadata_policy.cpp
     src/auth/oauth.cpp
+    src/auth/grant_flow.cpp
+    src/auth/client_authentication.cpp
+    src/auth/client_credentials.cpp
+    src/auth/enterprise_authorization.cpp
     src/client/client.cpp
+    src/detail/sealed_state.cpp
+    src/client/stdio_session.cpp
+    src/client/apps.cpp
+    src/client/skills.cpp
     src/server/server_stdio.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
+    src/server/apps.cpp
+    src/server/skills.cpp
+    src/server/mrtr.cpp
+    src/server/task_run.cpp
+    src/server/task_store.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
+    src/transport/stdio_client.cpp
     src/transport/memory.cpp
     src/transport/http_types.cpp
     src/transport/http_server.cpp
     src/transport/http_client.cpp
     src/transport/http_session_manager.cpp
+    src/transport/modern_exchange.cpp
     src/transport/websocket.cpp
     src/transport/transport_factories.cpp)
 
@@ -164,19 +195,29 @@ if(MCP_CPP_SDK_BUILD_SHARED)
       TARGET mcp-cpp-sdk-shared PROPERTY RUNTIME_OUTPUT_NAME
                                          "mcp-cpp-sdk-${MCP_CPP_SDK_SOVERSION}")
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    # Keeps Beast's error categories shared with the caller; see the header.
+    # Keeps Beast's error categories and nlohmann_json's exception types shared
+    # with the caller; see the headers.
     set(MCP_CPP_SDK_BEAST_VISIBILITY_HEADER
         "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/beast_error_visibility.hpp")
+    set(MCP_CPP_SDK_JSON_VISIBILITY_HEADER
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/json_error_visibility.hpp")
     target_compile_options(
       mcp-cpp-sdk-shared
-      PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}")
+      PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}"
+              "SHELL:-include ${MCP_CPP_SDK_JSON_VISIBILITY_HEADER}")
   endif()
   if(NOT WIN32 AND NOT APPLE)
     set(MCP_CPP_SDK_VENDORED_SYMBOLS_MAP
         "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vendored-symbols.map")
+    # --exclude-libs keeps the symbols of static archives linked into the
+    # library, such as a static OpenSSL or zlib, out of its exports. Exported,
+    # they take the place of the same functions for other code in the process: a
+    # system libssl loaded by libcurl, for example, then calls this copy's
+    # libcrypto functions with objects its own libcrypto built.
     target_link_options(
       mcp-cpp-sdk-shared PRIVATE
-      "LINKER:--version-script=${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}")
+      "LINKER:--version-script=${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}"
+      "LINKER:--exclude-libs,ALL")
     set_property(TARGET mcp-cpp-sdk-shared APPEND
                  PROPERTY LINK_DEPENDS "${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}")
   endif()
@@ -365,40 +406,79 @@ if(BUILD_TESTING)
   set(TEST_SRCS
       test/auth/auth_authorization_test.cpp
       test/auth/auth_challenge_test.cpp
+      test/auth/auth_client_credentials_test.cpp
       test/auth/auth_client_identity_test.cpp
+      test/auth/auth_enterprise_authorization_test.cpp
       test/auth/auth_integration_test.cpp
       test/auth/auth_oauth_test.cpp
       test/auth/auth_token_endpoint_auth_test.cpp
       test/client/client_core_test.cpp
+      test/client/client_listen_test.cpp
+      test/client/client_modern_test.cpp
+      test/client/client_mrtr_test.cpp
+      test/client/client_tasks_test.cpp
+      test/client/client_elicitation_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
       test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
+      test/core/elicitation_schema_test.cpp
       test/core/core_test.cpp
+      test/core/fifo_test.cpp
+      test/core/json_dump_test.cpp
+      test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
+      test/core/json_schema_engines_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
+      test/core/tasks_test.cpp
       test/core/regex_test.cpp
+      test/core/sealed_state_test.cpp
       test/core/serialized_transport_writer_test.cpp
+      test/core/strand_executor_test.cpp
       test/server/roots_test.cpp
       test/server/sampling_test.cpp
+      test/server/server_apps_test.cpp
       test/server/server_core_test.cpp
+      test/server/server_extension_test.cpp
+      test/server/server_skills_test.cpp
       test/server/server_cancellation_test.cpp
       test/server/server_elicitation_test.cpp
+      test/server/server_limits_test.cpp
       test/server/server_handlers_test.cpp
       test/server/server_logging_test.cpp
       test/server/server_middleware_test.cpp
+      test/server/server_modern_era_test.cpp
+      test/server/server_mrtr_test.cpp
+      test/server/server_tasks_test.cpp
+      test/server/server_listen_test.cpp
+      test/server/server_param_headers_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
-      test/transport/transport_test.cpp
       test/transport/transport_stdio_test.cpp
+      test/transport/transport_stdio_client_test.cpp
       test/transport/transport_ws_test.cpp
       test/transport/transport_http_test.cpp
       test/transport/transport_http_resumability_test.cpp
+      test/transport/transport_http_legacy_stream_test.cpp
       test/transport/transport_http_session_manager_test.cpp
+      test/transport/transport_http_modern_test.cpp
+      test/transport/transport_http_server_modern_test.cpp
+      test/transport/transport_http_server_stream_test.cpp
+      test/transport/transport_http_client_modern_test.cpp
+      test/transport/transport_http_principal_test.cpp
+      test/transport/transport_http_scope_test.cpp
+      test/transport/transport_http_mrtr_test.cpp
+      test/transport/transport_http_tasks_test.cpp
+      test/transport/transport_http_stream_test.cpp
+      test/transport/transport_http_listen_test.cpp
       test/transport/transport_memory_test.cpp
       test/transport/socket_deadline_test.cpp
-      test/e2e/e2e_integration_test.cpp
+      test/transport/transport_accept_retry_test.cpp
+      test/transport/transport_http_limits_test.cpp
+      test/transport/transport_http_version_header_test.cpp
+      test/transport/http_response_write_test.cpp
+      test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp
       test/server/server_stdio_test.cpp
@@ -406,9 +486,20 @@ if(BUILD_TESTING)
       test/server/server_tool_test.cpp
       test/transport/transport_factory_test.cpp
       test/core/gcc11_sso_crash_test.cpp
-      test/core/json_peer_input_matrix_test.cpp)
-  add_executable(mcp-sdk-tests ${TEST_SRCS})
+      test/core/json_peer_input_matrix_test.cpp
+      test/support/spawn.cpp
+      test/support/test_timeout.cpp)
+  # The sealed-state codec is internal and not exported from the shared library,
+  # so its test builds the source itself.
+  add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # The server the stdio client tests launch as a child process.
+  add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
+  target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)
+  add_dependencies(mcp-sdk-tests mcp-test-stdio-server)
+  target_compile_definitions(
+    mcp-sdk-tests
+    PRIVATE MCP_TEST_STDIO_SERVER="$<TARGET_FILE:mcp-test-stdio-server>")
   target_compile_definitions(
     mcp-sdk-tests
     PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
@@ -477,18 +568,81 @@ if(BUILD_TESTING)
         "scripts/ is not shipped in source archives)")
   endif()
 
-  include(GoogleTest)
+  include(cmake/McpCppSdkTestSuites.cmake)
   # Default per-test timeout so one deadlocked test cannot stall a ctest run for
-  # the 25-minute ctest default (or forever without --timeout).
-  gtest_discover_tests(
+  # the 25-minute ctest default (or forever without --timeout). Builds that run
+  # the tests many times slower, such as MemorySanitizer, raise it.
+  set(MCP_CPP_SDK_TEST_TIMEOUT
+      120
+      CACHE STRING "Seconds each test may run before ctest stops it")
+  if(NOT MCP_CPP_SDK_TEST_TIMEOUT MATCHES "^[0-9]+$" OR MCP_CPP_SDK_TEST_TIMEOUT
+                                                        LESS_EQUAL 20)
+    message(
+      FATAL_ERROR
+        "MCP_CPP_SDK_TEST_TIMEOUT must be a whole number of seconds above 20")
+  endif()
+  # The tests' hang guards follow it and stay below it, so that a hung test
+  # reports where it stopped before ctest stops it (see hang_guard.hpp).
+  target_compile_definitions(
     mcp-sdk-tests
-    PROPERTIES
-    TIMEOUT 120)
+    PRIVATE MCP_CPP_SDK_TEST_TIMEOUT_SECONDS=${MCP_CPP_SDK_TEST_TIMEOUT})
+  # One ctest test per suite: ctest starts the program for each test it
+  # registers, and a sanitizer build of it takes longer to start than most tests
+  # take to run. test/support/test_timeout.cpp keeps the per-test timeout.
+  mcp_cpp_sdk_add_test_suites(mcp-sdk-tests TIMEOUT ${MCP_CPP_SDK_TEST_TIMEOUT})
+
+  # Compiling the test files in batches of a few per translation unit parses the
+  # shared headers and instantiates the shared templates once per batch rather
+  # than once per file. Only the test program is batched, not the libraries.
+  option(MCP_CPP_SDK_TEST_UNITY_BUILD
+         "Compile the test program as a unity build" ON)
+  set(MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE
+      4
+      CACHE STRING "Test files compiled together in one unity translation unit")
+  if(MCP_CPP_SDK_TEST_UNITY_BUILD)
+    if(NOT MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE MATCHES "^[1-9][0-9]*$")
+      message(
+        FATAL_ERROR
+          "MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE must be a positive whole number")
+    endif()
+    set_target_properties(
+      mcp-sdk-tests
+      PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE
+                                ${MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE})
+    # The support sources are not tests: the gates replace libc functions and
+    # sealed_state.cpp is a library source that the test program rebuilds.
+    set_source_files_properties(
+      test/support/test_timeout.cpp test/support/resolve_gate.cpp
+      test/support/socket_gate.cpp src/detail/sealed_state.cpp
+      PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+    # A fixture in a test file's unnamed namespace is the base of the test
+    # classes that gtest defines in the enclosing namespace. GCC reports that as
+    # a linkage mismatch when the file is included from the unity source, where
+    # it cannot reach another translation unit.
+    target_compile_options(
+      mcp-sdk-tests PRIVATE "$<$<CXX_COMPILER_ID:GNU>:-Wno-subobject-linkage>")
+  endif()
+
+  # Optimizing the test code takes most of a test file's compile at -O3, so
+  # release builds compile the test program at -O1. The SDK libraries keep the
+  # build's own optimization.
+  set(GCC_OR_CLANG "$<CXX_COMPILER_ID:GNU,Clang,AppleClang>")
+  set(RELEASE_CONFIG "$<CONFIG:Release,RelWithDebInfo,MinSizeRel>")
+  target_compile_options(
+    mcp-sdk-tests PRIVATE "$<$<AND:${GCC_OR_CLANG},${RELEASE_CONFIG}>:-O1>")
 
   option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
   if(ENABLE_COVERAGE)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-      target_compile_options(mcp-sdk-tests PRIVATE --coverage -O0 -g)
+      # The libraries too, so that the report covers src/ as well as the
+      # headers. Whatever links them also links the coverage runtime. Counters
+      # are updated atomically because the tests run the SDK on many threads.
+      set(COVERAGE_FLAGS --coverage -fprofile-update=atomic -O0 -g)
+      foreach(sdk_target IN LISTS MCP_CPP_SDK_INSTALL_TARGETS)
+        target_compile_options(${sdk_target} PRIVATE ${COVERAGE_FLAGS})
+        target_link_options(${sdk_target} PUBLIC --coverage)
+      endforeach()
+      target_compile_options(mcp-sdk-tests PRIVATE ${COVERAGE_FLAGS})
       target_link_options(mcp-sdk-tests PRIVATE --coverage)
     endif()
   endif()
@@ -530,6 +684,12 @@ if(BUILD_TESTING)
       endforeach()
       target_compile_options(mcp-sdk-tests PRIVATE ${SANITIZER_FLAGS})
       target_link_options(mcp-sdk-tests PRIVATE -fsanitize=address,undefined)
+      if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # AddressSanitizer guards each UndefinedBehaviorSanitizer check record
+        # as a global, and a position-independent program relocates every one of
+        # them each time it starts.
+        target_link_options(mcp-sdk-tests PRIVATE -no-pie)
+      endif()
     else()
       message(WARNING "ENABLE_SANITIZERS is only supported with GCC or Clang")
     endif()
@@ -580,6 +740,10 @@ install(
 install(
   FILES LICENSE
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk"
+  COMPONENT Runtime)
+install(
+  FILES third_party/jsoncons/LICENSE
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk/jsoncons"
   COMPONENT Runtime)
 
 configure_package_config_file(
@@ -634,6 +798,8 @@ if(BUILD_EXAMPLES)
 
   add_executable(example-client-stdio examples/clients/stdio/client_stdio.cpp)
   target_link_libraries(example-client-stdio PRIVATE mcp-cpp-sdk)
+  # Launches the stdio server that is built beside it.
+  add_dependencies(example-client-stdio example-server-stdio)
 
   add_executable(example-interactive-client
                  examples/clients/stdio/interactive_client.cpp)
@@ -701,6 +867,20 @@ if(BUILD_EXAMPLES)
                  examples/features/http_server_convenience.cpp)
   target_link_libraries(example-feature-http-server-convenience
                         PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-modern-client
+                 examples/features/modern_client.cpp)
+  target_link_libraries(example-feature-modern-client PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-stdio-launch
+                 examples/features/stdio_launch.cpp)
+  target_link_libraries(example-feature-stdio-launch PRIVATE mcp-cpp-sdk)
+  # Launches the simple stdio server that is built beside it.
+  add_dependencies(example-feature-stdio-launch example-server-simple)
+
+  add_executable(example-feature-legacy-protocols
+                 examples/features/legacy_protocols.cpp)
+  target_link_libraries(example-feature-legacy-protocols PRIVATE mcp-cpp-sdk)
 
   # Benchmark targets
   add_executable(example-benchmark-stdio examples/benchmark/benchmark_stdio.cpp)

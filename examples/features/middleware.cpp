@@ -16,7 +16,6 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -31,6 +30,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
 
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
@@ -130,16 +130,17 @@ int main() {
             io_ctx,
             [&, transport = client_transport]() -> Task<void> {
                 try {
-                    // Wait for server to start
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(50));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "[Client] Connecting\n";
                     Client client(transport, io_ctx.get_executor());
 
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "[Client] Connected to: " << init_result.serverInfo.name << "\n\n";
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "[Client] Connected to: " << init_result.serverInfo->name
+                                      << "\n\n";
+                        }
+                    }
 
                     // ========== TEST 1: Normal execution (middleware chain) ==========
                     std::cout << "=== TEST 1: Normal execution (middleware chain) ===\n";
@@ -153,11 +154,6 @@ int main() {
                         std::cout << "[Client] Error flag: " << *result1.isError << "\n";
                     }
                     std::cout << "[Client] Content blocks: " << result1.content.size() << "\n\n";
-
-                    // Wait a bit between tests
-                    asio::steady_timer wait_timer(io_ctx.get_executor());
-                    wait_timer.expires_after(std::chrono::milliseconds(100));
-                    co_await wait_timer.async_wait(asio::use_awaitable);
 
                     // ========== TEST 2: Short-circuit execution ==========
                     std::cout << "=== TEST 2: Short-circuit execution (middleware C blocks) ===\n";
@@ -177,32 +173,31 @@ int main() {
                         std::cout << "[Client] Exception caught: " << e.what() << "\n\n";
                     }
 
-                    // Wait before shutdown
-                    wait_timer.expires_after(std::chrono::milliseconds(100));
-                    co_await wait_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "[Client] Shutting down\n";
+                    client.close();
+                    client_ok = true;
                 } catch (const std::exception& e) {
                     std::cerr << "[Client] Error: " << e.what() << '\n';
                 }
-            },
-            asio::detached);
-
-        // ========== AUTO-EXIT TIMER ==========
-        // Exit after 2 seconds to prevent hanging
-        asio::steady_timer exit_timer(io_ctx.get_executor());
-        exit_timer.expires_after(std::chrono::seconds(2));
-
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> Task<void> {
-                co_await exit_timer.async_wait(asio::use_awaitable);
-                std::cout << "\n[Main] Auto-exit timer triggered\n";
                 io_ctx.stop();
             },
             asio::detached);
 
+        // Fail rather than hang if something never answers.
+        asio::steady_timer watchdog(io_ctx.get_executor());
+        watchdog.expires_after(std::chrono::seconds(10));
+        watchdog.async_wait([&io_ctx](const boost::system::error_code& error) {
+            if (!error) {
+                std::cerr << "[Main] Timed out\n";
+                io_ctx.stop();
+            }
+        });
+
         io_ctx.run();
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         std::cout << "[Main] Exiting\n";
         return 0;
 

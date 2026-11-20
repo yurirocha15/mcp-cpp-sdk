@@ -6,6 +6,7 @@
 /// - Manual transport pattern (not run_stdio convenience)
 /// - Timer-based auto-exit for CI/testing
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/signal.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/stdio.hpp>
@@ -85,40 +86,34 @@ int main() {
                                        {"properties", {{"value", {{"type", "integer"}}}}},
                                        {"required", nlohmann::json::array({"value"})}};
 
-        server.add_tool("quick_task", "A quick task that completes immediately", quick_schema,
-                        [](const nlohmann::json& args) -> nlohmann::json {
-                            std::cerr << "[Server] quick_task called\n";
-                            int value = args.at("value").get<int>();
-                            CallToolResult result;
-                            TextContent content;
-                            content.text = "Quick task result: " + std::to_string(value * 2);
-                            result.content.emplace_back(std::move(content));
-                            return nlohmann::json(result);
-                        });
+        server.add_tool<nlohmann::json, CallToolResult>(
+            "quick_task", "A quick task that completes immediately", quick_schema,
+            [](const nlohmann::json& args) -> CallToolResult {
+                std::cerr << "[Server] quick_task called\n";
+                int value = args.at("value").get<int>();
+                return make_tool_text_result("Quick task result: " + std::to_string(value * 2));
+            });
 
         // Tool: slow_task — simulates work with delay
         nlohmann::json slow_schema = {{"type", "object"},
                                       {"properties", {{"duration_ms", {{"type", "integer"}}}}},
                                       {"required", nlohmann::json::array({"duration_ms"})}};
 
-        server.add_tool<nlohmann::json, nlohmann::json>(
+        server.add_tool<nlohmann::json, CallToolResult>(
             "slow_task", "A task that takes time to complete", slow_schema,
-            [](nlohmann::json args) -> Task<nlohmann::json> {
+            [](nlohmann::json args) -> Task<CallToolResult> {
                 std::cerr << "[Server] slow_task called\n";
                 int duration_ms = args.at("duration_ms").get<int>();
 
                 // Simulate work with async delay
-                asio::steady_timer work_timer(
-                    asio::get_associated_executor(co_await asio::this_coro::executor));
+                auto executor = co_await asio::this_coro::executor;
+                asio::steady_timer work_timer(executor);
                 work_timer.expires_after(std::chrono::milliseconds(duration_ms));
                 co_await work_timer.async_wait(asio::use_awaitable);
 
                 std::cerr << "[Server] slow_task completed after " << duration_ms << "ms\n";
-                CallToolResult result;
-                TextContent content;
-                content.text = "Slow task completed after " + std::to_string(duration_ms) + "ms";
-                result.content.emplace_back(std::move(content));
-                co_return nlohmann::json(result);
+                co_return make_tool_text_result("Slow task completed after " +
+                                                std::to_string(duration_ms) + "ms");
             });
 
         // ========== TRANSPORT SETUP ==========
@@ -130,6 +125,9 @@ int main() {
             std::make_shared<StdioTransport>(io_ctx.get_executor(), controlled_input, std::cout);
 
         // ========== GRACEFUL SHUTDOWN (auto-triggered for CI/testing) ==========
+        // graceful_shutdown() returns its watchdog timer. The server cancels it once it has
+        // stopped; otherwise the pending timer keeps io_ctx.run() going until the timeout.
+        std::shared_ptr<asio::steady_timer> watchdog;
         asio::co_spawn(
             io_ctx,
             [&, transport]() -> Task<void> {
@@ -138,9 +136,9 @@ int main() {
                 co_await trigger.async_wait(asio::use_awaitable);
                 std::cerr << "[Main] Initiating graceful shutdown\n";
                 input_buffer.close();
-                graceful_shutdown(io_ctx, transport);
+                watchdog = graceful_shutdown(io_ctx, transport);
                 std::cerr << "[Main] Graceful shutdown initiated (timeout: "
-                          << constants::g_shutdown_timeout_ms << "ms)\n";
+                          << mcp::constants::shutdown::g_TIMEOUT_MS << "ms)\n";
             },
             asio::detached);
 
@@ -154,6 +152,9 @@ int main() {
                     std::cerr << "[Server] Stopped normally\n";
                 } catch (const std::exception& e) {
                     std::cerr << "[Server] Stopped with exception: " << e.what() << "\n";
+                }
+                if (watchdog) {
+                    watchdog->cancel();
                 }
             },
             asio::detached);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/detail/signal.hpp>
 
 namespace mcp {
@@ -11,13 +12,16 @@ namespace mcp {
  * timer. If the io_context doesn't terminate within the specified timeout,
  * it is forcefully stopped.
  *
- * @return A shared pointer to the watchdog timer. Hold or discard — the
- *         timer self-captures in its callback and auto-destructs on fire.
+ * @return A shared pointer to the watchdog timer. The pending timer is work for
+ *         the io_context, so io_context::run() does not return before the timeout
+ *         unless the timer is cancelled: cancel it once the server has stopped.
+ *         The timer keeps itself alive until its wait ends, so the pointer may be
+ *         dropped when it is not needed for that.
  */
 template <typename TransportPtr>
 auto graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
                        std::chrono::milliseconds timeout =
-                           std::chrono::milliseconds(mcp::constants::g_shutdown_timeout_ms)) {
+                           std::chrono::milliseconds(mcp::constants::shutdown::g_TIMEOUT_MS)) {
     transport->close();
 
     auto timer = std::make_shared<boost::asio::steady_timer>(io_ctx);

@@ -1,0 +1,2387 @@
+#include "../support/hang_guard.hpp"
+#include "../test_utils.hpp"
+
+#include "../support/spawn.hpp"
+#include "mcp/server/server.hpp"
+
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <chrono>
+#include <functional>
+#include <mcp/core/constants.hpp>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+namespace server_mrtr_test {
+
+namespace jsonrpc = mcp::constants::jsonrpc;
+
+namespace {
+
+namespace asio = boost::asio;
+using nlohmann::json;
+
+/// Waits, a millisecond at a time, until @p condition holds. Gives up after g_hang_guard so a broken
+/// hand-off fails the test instead of hanging the run.
+mcp::Task<bool> wait_until(std::function<bool()> condition) {
+    auto executor = co_await asio::this_coro::executor;
+    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+    while (!condition() && std::chrono::steady_clock::now() < give_up) {
+        asio::steady_timer timer(executor, std::chrono::milliseconds(1));
+        co_await timer.async_wait(asio::use_awaitable);
+    }
+    co_return condition();
+}
+
+/// Fails a handler that was released while parked. A handler coroutine returns its call, so the
+/// coroutine ends in a co_return; MSVC asks for one after a final throw.
+json fail_while_parked() { throw std::runtime_error("failed while parked"); }
+
+/// Counts the live instances, so a test can tell that a parked handler's frame was released.
+struct Probe {
+    explicit Probe(std::shared_ptr<std::atomic<int>> live) : live_(std::move(live)) {
+        live_->fetch_add(1);
+    }
+    Probe(const Probe&) = delete;
+    Probe& operator=(const Probe&) = delete;
+    ~Probe() { live_->fetch_sub(1); }
+
+   private:
+    std::shared_ptr<std::atomic<int>> live_;
+};
+
+json form_elicitation(const std::string& message) {
+    mcp::ElicitRequestFormParams params;
+    params.message = message;
+    params.requestedSchema = {{"type", "object"}, {"properties", {{"name", {{"type", "string"}}}}}};
+    return params;
+}
+
+/// The capabilities of a client that answers form elicitations.
+json form_client() { return json::object({{"elicitation", json::object()}}); }
+
+/// A 2026-07-28 request from a client that declares @p capabilities.
+json modern(const json& id, std::string_view method, json params, json capabilities = form_client()) {
+    auto request = make_modern_request(id, method, std::move(params));
+    request["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"] = std::move(capabilities);
+    return request;
+}
+
+json call_tool(const json& id, std::string_view tool, json arguments = json::object(),
+               json capabilities = form_client()) {
+    return modern(id, "tools/call", {{"name", tool}, {"arguments", std::move(arguments)}},
+                  std::move(capabilities));
+}
+
+/// @p request retried with @p state and @p responses under a new id.
+json retry(json request, const json& id, const json& state, json responses = json::object()) {
+    request["id"] = id;
+    request["params"]["requestState"] = state;
+    if (!responses.empty()) {
+        request["params"]["inputResponses"] = std::move(responses);
+    }
+    return request;
+}
+
+/// An inputResponses object holding @p response under @p key.
+json answer(const std::string& key, json response) {
+    json responses = json::object();
+    responses[key] = std::move(response);
+    return responses;
+}
+
+/// A capabilities object declaring @p name.
+json declaring(const std::string& name, json settings = json::object()) {
+    json capabilities = json::object();
+    capabilities[name] = std::move(settings);
+    return capabilities;
+}
+
+json accept(const std::string& name) { return {{"action", "accept"}, {"content", {{"name", name}}}}; }
+
+/// The only key of an InputRequiredResult's inputRequests.
+std::string only_key(const json& response) {
+    const auto& requests = response["result"]["inputRequests"];
+    EXPECT_EQ(requests.size(), 1u) << response;
+    return requests.empty() ? std::string{} : requests.begin().key();
+}
+
+class MrtrTest : public ::testing::Test {
+   protected:
+    asio::io_context io_ctx_;
+    std::unique_ptr<mcp::Server> server_ = make_server();
+    std::shared_ptr<std::atomic<int>> live_probes_ = std::make_shared<std::atomic<int>>(0);
+    std::atomic<int> middleware_runs_{0};
+    std::atomic<bool> saw_cancel_{false};
+    std::atomic<int> abandoned_caught_{0};
+    std::atomic<bool> release_handler_{false};
+    std::atomic<bool> working_on_{false};
+    std::mutex replay_mutex_;
+    std::vector<bool> replay_log_;
+    std::atomic<int> effects_at_start_{0};
+    std::atomic<int> effects_after_first_{0};
+    std::atomic<int> diverge_runs_{0};
+    std::atomic<bool> replay_checked_{false};
+    std::atomic<bool> replay_ended_{false};
+
+    std::unique_ptr<mcp::Server> make_server(bool with_middleware = true) {
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        caps.prompts = mcp::ServerCapabilities::PromptsCapability{};
+        caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+        auto server = std::make_unique<mcp::Server>(mcp::Implementation{"mrtr", "1.0"}, caps);
+        server->add_tool<json, json>(
+            "ask", "Asks for a name", json{{"type", "object"}},
+            [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const Probe probe(live_probes_);
+                const auto answer = co_await ctx.elicit(form_elicitation("Your name?"));
+                co_return json{{"name", answer.content.value_or(json::object()).value("name", "")}};
+            });
+        server->add_tool<json, json>(
+            "ask_named", "Names its question", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const mcp::InputOptions options{.key = "user_name"};
+                const auto answer = co_await ctx.elicit(form_elicitation("Your name?"), options);
+                co_return json{{"name", answer.content.value_or(json::object()).value("name", "")}};
+            });
+        server->add_tool<json, json>(
+            "ask_mixed", "Names its first and last question, not the one between",
+            json{{"type", "object"}}, [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const mcp::InputOptions city_key{.key = "city"};
+                const mcp::InputOptions zip_key{.key = "zip"};
+                const auto city = co_await ctx.elicit(form_elicitation("City?"), city_key);
+                const auto street = co_await ctx.elicit(form_elicitation("Street?"));
+                const auto zip = co_await ctx.elicit(form_elicitation("Zip?"), zip_key);
+                co_return json{{"city", city.content->value("name", "")},
+                               {"street", street.content->value("name", "")},
+                               {"zip", zip.content->value("name", "")}};
+            });
+        server->add_tool<json, json>(
+            "ask_named_all", "Names a sampling and a roots question", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                mcp::CreateMessageRequestParams params;
+                params.maxTokens = 10;
+                const mcp::InputOptions sample_key{.key = "pick_model"};
+                const mcp::InputOptions roots_key{.key = "workspace"};
+                const auto sampled = co_await ctx.sample_llm(params, sample_key);
+                const auto roots = co_await ctx.request_roots(roots_key);
+                co_return json{{"model", sampled.model}, {"roots", roots.roots.size()}};
+            });
+        server->add_tool<json, json>(
+            "ask_key", "Asks under the key it is given", json{{"type", "object"}},
+            [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+                const mcp::InputOptions options{.key = args.at("key").get<std::string>()};
+                try {
+                    co_await ctx.elicit(form_elicitation("Name?"), options);
+                } catch (const std::invalid_argument& error) {
+                    co_return json{{"refused", error.what()}};
+                }
+                co_return json{{"refused", nullptr}};
+            });
+        server->add_tool<json, json>(
+            "ask_twice_named", "Reuses the key of its first question", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const mcp::InputOptions options{.key = "same"};
+                const auto first = co_await ctx.elicit(form_elicitation("First?"), options);
+                try {
+                    co_await ctx.elicit(form_elicitation("Second?"), options);
+                } catch (const std::invalid_argument& error) {
+                    co_return json{{"first", first.content->value("name", "")},
+                                   {"refused", error.what()}};
+                }
+                co_return json{{"refused", nullptr}};
+            });
+        server->add_tool<json, json>("quiet", "Never asks", json{{"type", "object"}},
+                                     [](mcp::Context& /*ctx*/, json args) -> mcp::Task<json> {
+                                         co_return json{{"ok", true}, {"echo", std::move(args)}};
+                                     });
+        server->add_tool<json, json>("quiet_progress", "Reports progress, never asks",
+                                     json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         co_await ctx.report_progress(1, 2);
+                                         co_return json{{"done", true}};
+                                     });
+        server->add_tool<json, json>("fails", "Throws", json{{"type", "object"}},
+                                     [](mcp::Context& /*ctx*/, json /*args*/) -> mcp::Task<json> {
+                                         throw std::runtime_error("tool failure");
+                                         co_return json::object();
+                                     });
+        server->add_tool<json, json>(
+            "ask_twice", "Asks two questions, one after the other", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const auto first = co_await ctx.elicit(form_elicitation("First?"));
+                const auto second = co_await ctx.elicit(form_elicitation("Second?"));
+                co_return json{{"first", first.content->value("name", "")},
+                               {"second", second.content->value("name", "")}};
+            });
+        server->add_tool<json, json>(
+            "replay_probe", "Asks twice and records where it re-executes earlier work",
+            json{{"type", "object"}}, [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const auto note = [this, &ctx] {
+                    std::lock_guard lock(replay_mutex_);
+                    replay_log_.push_back(ctx.is_replay());
+                };
+                note();
+                if (!ctx.is_replay()) {
+                    effects_at_start_.fetch_add(1);
+                }
+                const auto first = co_await ctx.elicit(form_elicitation("First?"));
+                note();
+                if (!ctx.is_replay()) {
+                    effects_after_first_.fetch_add(1);
+                }
+                const auto second = co_await ctx.elicit(form_elicitation("Second?"));
+                note();
+                co_return json{{"first", first.content->value("name", "")},
+                               {"second", second.content->value("name", "")}};
+            });
+        server->add_tool<json, json>(
+            "diverge", "Asks a question on its first run and another one on later runs",
+            json{{"type", "object"}}, [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                if (diverge_runs_.fetch_add(1) == 0) {
+                    co_await ctx.elicit(form_elicitation("First?"));
+                    co_return json{{"done", true}};
+                }
+                auto executor = co_await asio::this_coro::executor;
+                mcp_test::spawn_detached(executor, [](mcp::Context* context) -> mcp::Task<void> {
+                    co_await context->request_roots();
+                }(&ctx));
+                // The sibling's question is asked inline; one tick lets the round park before this
+                // coroutine finishes.
+                asio::steady_timer tick(executor, std::chrono::milliseconds(2));
+                co_await tick.async_wait(asio::use_awaitable);
+                replay_ended_ = !ctx.is_replay();
+                replay_checked_ = true;
+                co_return json{{"done", true}};
+            });
+        server->add_tool<json, json>("ask_url", "Sends the user to a URL", json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         mcp::ElicitRequestURLParams params;
+                                         params.message = "Sign in";
+                                         params.url = "https://example.com/sign-in";
+                                         const auto answer = co_await ctx.elicit(params);
+                                         co_return json{{"action", answer.action}};
+                                     });
+        server->add_tool<json, json>(
+            "ask_then_wait", "Asks, then waits for cancellation", json{{"type", "object"}},
+            [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                co_await ctx.elicit(form_elicitation("Name?"));
+                saw_cancel_ = co_await wait_until([&ctx] { return ctx.is_cancelled(); });
+                co_return json{{"cancelled", saw_cancel_.load()}};
+            });
+        server->add_tool<json, json>("ask_then_progress", "Asks, then reports progress",
+                                     json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         co_await ctx.elicit(form_elicitation("Name?"));
+                                         co_await ctx.report_progress(1, 2);
+                                         co_return json{{"done", true}};
+                                     });
+        server->add_tool<json, json>(
+            "meta_across_input", "Reads its request's _meta before and after asking",
+            json{{"type", "object"}}, [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                const json before = *ctx.request_meta()->meta;
+                co_await ctx.elicit(form_elicitation("Name?"));
+                co_return json{{"before", before}, {"after", *ctx.request_meta()->meta}};
+            });
+        server->add_tool<json, json>("ask_catching", "Swallows the abandonment of its question",
+                                     json{{"type", "object"}},
+                                     [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         const Probe probe(live_probes_);
+                                         try {
+                                             co_await ctx.elicit(form_elicitation("Name?"));
+                                         } catch (const std::exception&) {
+                                             abandoned_caught_.fetch_add(1);
+                                         }
+                                         co_return json{{"finished", true}};
+                                     });
+        server->add_tool<json, json>(
+            "ask_parallel", "Asks two questions at once", json{{"type", "object"}},
+            [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                auto executor = co_await asio::this_coro::executor;
+                auto sibling = std::make_shared<std::optional<mcp::ElicitResult>>();
+                mcp_test::spawn_detached(
+                    executor,
+                    [](mcp::Context* context,
+                       std::shared_ptr<std::optional<mcp::ElicitResult>> out) -> mcp::Task<void> {
+                        *out = co_await context->elicit(form_elicitation("B?"));
+                    }(&ctx, sibling));
+                const auto first = co_await ctx.elicit(form_elicitation("A?"));
+                const auto answered = [sibling] { return sibling->has_value(); };
+                co_await wait_until(answered);
+                co_return json{{"a", first.content->value("name", "")},
+                               {"b", (*sibling)->content->value("name", "")}};
+            });
+        server->add_tool<json, json>("sample", "Asks the client's model", json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         mcp::CreateMessageRequestParams params;
+                                         params.maxTokens = 10;
+                                         const auto result = co_await ctx.sample_llm(params);
+                                         co_return json{{"model", result.model}};
+                                     });
+        server->add_tool<json, json>("sample_with_tools", "Asks the client's model, offering a tool",
+                                     json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         mcp::CreateMessageRequestParams params;
+                                         params.maxTokens = 10;
+                                         mcp::Tool tool;
+                                         tool.name = "lookup";
+                                         tool.inputSchema = json{{"type", "object"}};
+                                         params.tools = std::vector<mcp::Tool>{tool};
+                                         const auto result = co_await ctx.sample_llm(params);
+                                         co_return json{{"model", result.model}};
+                                     });
+        server->add_tool<json, json>("roots", "Lists the client's roots", json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         const auto result = co_await ctx.request_roots();
+                                         co_return json{{"roots", result.roots.size()}};
+                                     });
+        const auto ask_on_the_side = [](mcp::Context& ctx, asio::any_io_executor executor) {
+            mcp_test::spawn_detached(executor,
+                                     [](std::shared_ptr<mcp::Context> context) -> mcp::Task<void> {
+                                         co_await context->elicit(form_elicitation("Name?"));
+                                     }(std::make_shared<mcp::Context>(ctx)));
+        };
+        server->add_tool<json, json>(
+            "ask_then_return", "Asks on the side, then answers without waiting for the answer",
+            json{{"type", "object"}},
+            [this, ask_on_the_side](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                ask_on_the_side(ctx, co_await asio::this_coro::executor);
+                co_await wait_until([this] { return release_handler_.load(); });
+                co_return json{{"gave_up", true}};
+            });
+        server->add_tool<json, json>(
+            "ask_then_throw", "Asks on the side, then fails without waiting for the answer",
+            json{{"type", "object"}},
+            [this, ask_on_the_side](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                ask_on_the_side(ctx, co_await asio::this_coro::executor);
+                co_await wait_until([this] { return release_handler_.load(); });
+                co_return fail_while_parked();
+            });
+        server->add_tool<json, json>(
+            "ask_then_work", "Works on once its question is given up, until released",
+            json{{"type", "object"}}, [this](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                try {
+                    co_await ctx.elicit(form_elicitation("Name?"));
+                } catch (const std::exception&) {
+                    working_on_ = true;
+                }
+                co_await wait_until([this] { return release_handler_.load(); });
+                co_return json::object();
+            });
+        server->add_tool<json, json>(
+            "at_once", "Answers at once", json{{"type", "object"}},
+            [](json /*args*/) -> mcp::Task<json> { co_return json::object(); });
+        mcp::Prompt prompt;
+        prompt.name = "greet";
+        server->add_prompt<json, json>(prompt, [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+            const auto answer = co_await ctx.elicit(form_elicitation("Whom to greet?"));
+            const auto name = answer.content->value("name", "");
+            co_return json{
+                {"messages", json::array({{{"role", "user"},
+                                           {"content", {{"type", "text"}, {"text", "Hi " + name}}}}})}};
+        });
+        if (with_middleware) {
+            server->use([this](mcp::Context& ctx, const json& params,
+                               mcp::TypeErasedHandler next) -> mcp::Task<json> {
+                middleware_runs_.fetch_add(1);
+                co_return co_await next(ctx, params);
+            });
+        }
+        return server;
+    }
+
+    /// Runs @p body on the io_context and stops it when the body returns, leaving handlers that
+    /// are still parked suspended.
+    template <typename Body>
+    void run(Body body) {
+        mcp_test::spawn_detached(io_ctx_, [this, &body]() -> mcp::Task<void> {
+            co_await body();
+            io_ctx_.stop();
+        });
+        io_ctx_.run();
+    }
+
+    mcp::Task<json> send(json request, std::string principal = std::string()) {
+        mcp::RequestContext context;
+        context.principal = std::move(principal);
+        co_return co_await send_with(server_.get(), std::move(request), std::move(context));
+    }
+
+    static mcp::Task<json> send_with(mcp::Server* server, json request, mcp::RequestContext context) {
+        const auto wire =
+            co_await server->dispatch_request_direct(std::move(request), std::move(context));
+        co_return json::parse(wire);
+    }
+
+    /// The first answer to @p tool, and the answer to its retry after the handler was let finish.
+    /// A retry nobody answers stops the run, so that it fails the test rather than hanging it.
+    std::pair<json, json> retry_after_the_handler_finished(const std::string& tool) {
+        asio::steady_timer guard(io_ctx_, g_hang_guard);
+        guard.async_wait([this](const boost::system::error_code& error) {
+            if (!error) {
+                io_ctx_.stop();
+            }
+        });
+        json first;
+        json second;
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, tool);
+            first = co_await send(request);
+            release_handler_ = true;
+            auto executor = co_await asio::this_coro::executor;
+            asio::steady_timer settle(executor, std::chrono::milliseconds(20));
+            co_await settle.async_wait(asio::use_awaitable);
+            second = co_await send(retry(request, 2, first["result"]["requestState"],
+                                         answer(only_key(first), accept("late"))));
+        });
+        return {std::move(first), std::move(second)};
+    }
+
+    static void expect_input_required(const json& response) {
+        ASSERT_TRUE(response.contains("result")) << response;
+        EXPECT_EQ(response["result"]["resultType"], "input_required") << response;
+        ASSERT_TRUE(response["result"]["requestState"].is_string()) << response;
+        ASSERT_TRUE(response["result"]["inputRequests"].is_object()) << response;
+        EXPECT_FALSE(response["result"]["inputRequests"].empty()) << response;
+    }
+
+    /// A question the handler names is asked and answered under the name it chose.
+    void check_named_question() {
+        json first;
+        json second;
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_named");
+            first = co_await send(request);
+            second = co_await send(
+                retry(request, 2, first["result"]["requestState"], answer("user_name", accept("Ada"))));
+        });
+
+        expect_input_required(first);
+        EXPECT_EQ(only_key(first), "user_name");
+        EXPECT_EQ(first["result"]["inputRequests"]["user_name"]["method"], "elicitation/create");
+        EXPECT_EQ(first["result"]["inputRequests"]["user_name"]["params"]["message"], "Your name?");
+        EXPECT_EQ(second["result"]["structuredContent"]["name"], "Ada") << second;
+    }
+
+    /// Named and generated keys alternate across rounds; a generated key counts only generated ones.
+    void check_mixed_keys() {
+        std::vector<std::string> keys;
+        json last;
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_mixed");
+            auto response = co_await send(request);
+            int id = 2;
+            while (response.contains("result") &&
+                   response["result"]["resultType"] == "input_required") {
+                keys.push_back(only_key(response));
+                const auto message =
+                    response["result"]["inputRequests"].begin().value()["params"]["message"];
+                response =
+                    co_await send(retry(request, id++, response["result"]["requestState"],
+                                        answer(keys.back(), accept(message.get<std::string>()))));
+            }
+            last = response;
+        });
+
+        EXPECT_EQ(keys, (std::vector<std::string>{"city", "elicitation-1", "zip"}));
+        EXPECT_EQ(last["result"]["structuredContent"],
+                  (json{{"city", "City?"}, {"street", "Street?"}, {"zip", "Zip?"}}))
+            << last;
+    }
+
+    /// Sampling and roots questions take caller-chosen keys too.
+    void check_named_sampling_and_roots() {
+        json first;
+        json second;
+        json third;
+        const json sampled = {
+            {"role", "assistant"}, {"content", {{"type", "text"}, {"text", "ok"}}}, {"model", "m"}};
+        const json roots = {{"roots", json::array({{{"uri", "file:///a"}}})}};
+        const auto capabilities = json{{"sampling", json::object()}, {"roots", json::object()}};
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_named_all", json::object(), capabilities);
+            first = co_await send(request);
+            second = co_await send(
+                retry(request, 2, first["result"]["requestState"], answer("pick_model", sampled)));
+            third = co_await send(
+                retry(request, 3, second["result"]["requestState"], answer("workspace", roots)));
+        });
+
+        EXPECT_EQ(only_key(first), "pick_model");
+        EXPECT_EQ(first["result"]["inputRequests"]["pick_model"]["method"], "sampling/createMessage");
+        EXPECT_EQ(only_key(second), "workspace");
+        EXPECT_EQ(second["result"]["inputRequests"]["workspace"]["method"], "roots/list");
+        EXPECT_EQ(third["result"]["structuredContent"], (json{{"model", "m"}, {"roots", 1}})) << third;
+    }
+
+    /// A key that is empty or looks like a generated one is refused before anything is asked.
+    void check_invalid_keys_are_refused() {
+        std::vector<json> responses;
+        run([&]() -> mcp::Task<void> {
+            int id = 1;
+            for (const char* key : {"", "elicitation-3", "sampling-1", "roots-12"}) {
+                const auto request = call_tool(id++, "ask_key", {{"key", key}});
+                responses.push_back(co_await send(request));
+            }
+            for (const char* key : {"elicitation", "roots-x"}) {
+                const auto request = call_tool(id++, "ask_key", {{"key", key}});
+                responses.push_back(co_await send(request));
+            }
+        });
+
+        ASSERT_EQ(responses.size(), 6u);
+        for (std::size_t i = 0; i < 4; ++i) {
+            ASSERT_TRUE(responses[i].contains("result")) << responses[i];
+            EXPECT_TRUE(responses[i]["result"]["structuredContent"]["refused"].is_string())
+                << responses[i];
+        }
+        // Names that only resemble the generated ones are fine.
+        EXPECT_EQ(only_key(responses[4]), "elicitation");
+        EXPECT_EQ(only_key(responses[5]), "roots-x");
+    }
+
+    /// A key a question of the request already uses is refused; the first question keeps its answer.
+    void check_repeated_key_is_refused() {
+        json first;
+        json second;
+        run([&]() -> mcp::Task<void> {
+            const auto request = call_tool(1, "ask_twice_named");
+            first = co_await send(request);
+            second = co_await send(
+                retry(request, 2, first["result"]["requestState"], answer("same", accept("one"))));
+        });
+
+        EXPECT_EQ(only_key(first), "same");
+        ASSERT_TRUE(second.contains("result")) << second;
+        EXPECT_EQ(second["result"]["structuredContent"]["first"], "one") << second;
+        EXPECT_TRUE(second["result"]["structuredContent"]["refused"].is_string()) << second;
+    }
+
+    static void expect_unknown_state(const json& response) {
+        ASSERT_TRUE(response.contains("error")) << response;
+        EXPECT_EQ(response["error"]["code"], jsonrpc::g_INVALID_PARAMS) << response;
+        EXPECT_EQ(response["error"]["message"], "Unknown or expired requestState") << response;
+    }
+};
+
+TEST_F(MrtrTest, RoundTripNewIdOnRetry) {
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        first = co_await send(request);
+        const auto key = first["result"]["inputRequests"].begin().key();
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(key, accept("octocat"))));
+    });
+
+    expect_input_required(first);
+    EXPECT_EQ(first["id"], 1);
+    const auto& input = first["result"]["inputRequests"].begin().value();
+    EXPECT_EQ(input["method"], "elicitation/create") << first;
+    EXPECT_EQ(input["params"]["message"], "Your name?") << first;
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["id"], 2);
+    EXPECT_EQ(second["result"]["resultType"], "complete") << second;
+    EXPECT_EQ(second["result"]["structuredContent"]["name"], "octocat") << second;
+    const auto stats = server_->mrtr_stats();
+    EXPECT_EQ(stats.parked, 0u);
+    EXPECT_EQ(stats.resume_hit, 1u);
+}
+
+// The text of the JSON library's exception describes the library and quotes the bytes it could not
+// encode; the client is told only that the result could not be encoded.
+TEST_F(MrtrTest, AResultThatCannotBeEncodedDoesNotExposeTheLibraryText) {
+    server_->add_tool<json, json>(
+        "not-text", "Returns bytes", json{{"type", "object"}},
+        [](json /*args*/) -> mcp::Task<json> { co_return json{{"bytes", std::string("\xff\xfe")}}; });
+    json answer;
+    run([&]() -> mcp::Task<void> { answer = co_await send(call_tool(1, "not-text")); });
+
+    EXPECT_EQ(answer["error"]["code"], jsonrpc::g_INTERNAL_ERROR) << answer;
+    EXPECT_EQ(answer["error"]["message"], "The result could not be encoded as JSON") << answer;
+}
+
+// Requests that belong to no session share one in-flight limit. A parked handler does not count:
+// the limits on parked handlers bound it instead.
+// The memory of sessionless requests is bounded together, as their number is.
+TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightByteLimit) {
+    server_->set_max_in_flight_bytes(64);
+    json refused;
+    // Named: GCC mishandles a temporary in a co_await operand.
+    const json padded = call_tool(1, "ask", {{"padding", std::string(4096, 'p')}});
+    run([&]() -> mcp::Task<void> { refused = co_await send(padded); });
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+}
+
+TEST_F(MrtrTest, SessionlessRequestsShareTheInFlightLimit) {
+    std::atomic<int> running{0};
+    std::atomic<bool> released{false};
+    server_->add_tool<json, json>("held", "Ends once released", json{{"type", "object"}},
+                                  [&running, &released](json /*args*/) -> mcp::Task<json> {
+                                      ++running;
+                                      auto executor = co_await asio::this_coro::executor;
+                                      while (!released) {
+                                          asio::steady_timer tick(executor,
+                                                                  std::chrono::milliseconds(1));
+                                          co_await tick.async_wait(asio::use_awaitable);
+                                      }
+                                      --running;
+                                      co_return json::object();
+                                  });
+    server_->add_tool<json, json>("quick", "Answers at once", json{{"type", "object"}},
+                                  [](json /*args*/) -> mcp::Task<json> { co_return json::object(); });
+    server_->set_max_in_flight_requests(1);
+    json parked;
+    json beside_the_parked;
+    json refused;
+    json after;
+    // Gives up after g_hang_guard, so a count that never arrives fails the test, not the run.
+    const auto wait_for_running = [&running](bool (*reached)(int)) -> mcp::Task<bool> {
+        auto executor = co_await asio::this_coro::executor;
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+        while (!reached(running.load()) && std::chrono::steady_clock::now() < give_up) {
+            asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+            co_await tick.async_wait(asio::use_awaitable);
+        }
+        co_return reached(running.load());
+    };
+    bool both_running = false;
+    run([&]() -> mcp::Task<void> {
+        parked = co_await send(call_tool(1, "ask"));
+        beside_the_parked = co_await send(call_tool(2, "quick"));
+        server_->set_max_in_flight_requests(2);
+        auto executor = co_await asio::this_coro::executor;
+        for (int id = 3; id <= 4; ++id) {
+            asio::co_spawn(executor, send_with(server_.get(), call_tool(id, "held"), {}),
+                           asio::detached);
+        }
+        both_running = co_await wait_for_running([](int count) { return count == 2; });
+        refused = co_await send(call_tool(5, "quick"));
+        released = true;
+        co_await wait_for_running([](int count) { return count == 0; });
+        // A request counts until its handler's frame is gone, which can be a moment after its
+        // handler returned. Room that never comes back fails the test after g_hang_guard.
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+        for (int id = 6;; ++id) {
+            after = co_await send(call_tool(id, "quick"));
+            if (after.contains("result") || std::chrono::steady_clock::now() >= give_up) {
+                break;
+            }
+            asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+            co_await tick.async_wait(asio::use_awaitable);
+        }
+    });
+
+    expect_input_required(parked);
+    EXPECT_TRUE(beside_the_parked.contains("result")) << beside_the_parked;
+    EXPECT_TRUE(both_running);
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+    EXPECT_TRUE(after.contains("result")) << after;
+}
+
+// A handler keeps its own copy of the request while it waits; past the memory parked handlers may
+// take, the one that waited longest is given up.
+TEST_F(MrtrTest, ParkedHandlersAreBoundedByTheMemoryTheyHold) {
+    mcp::MrtrOptions options;
+    options.max_parked_bytes = 3U * 1024U * 1024U;
+    server_->set_mrtr_options(options);
+    const auto padded = [](int id) {
+        return call_tool(id, "ask", {{"padding", std::string(1024U * 1024U, 'p')}});
+    };
+    run([&]() -> mcp::Task<void> {
+        for (int id = 1; id <= 4; ++id) {
+            co_await send(padded(id));
+        }
+    });
+    const auto stats = server_->mrtr_stats();
+    EXPECT_EQ(stats.parked, 2u);
+    EXPECT_EQ(stats.evicted_cap, 2u);
+}
+
+// A handler that goes on after it was given up works for no request, and counts as one.
+TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsInFlight) {
+    mcp::MrtrOptions options;
+    options.ttl = std::chrono::milliseconds(1);
+    server_->set_mrtr_options(options);
+    server_->set_max_in_flight_requests(1);
+    json parked;
+    bool working_on = false;
+    json refused;
+    json after;
+    run([&]() -> mcp::Task<void> {
+        parked = co_await send(call_tool(1, "ask_then_work"));
+        working_on = co_await wait_until([this] { return working_on_.load(); });
+        refused = co_await send(call_tool(2, "at_once"));
+        release_handler_ = true;
+        // A request counts until its handler's frame is gone, which can be a moment after its
+        // handler returned. Room that never comes back fails the test after g_hang_guard.
+        auto executor = co_await asio::this_coro::executor;
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+        for (int id = 3;; ++id) {
+            after = co_await send(call_tool(id, "at_once"));
+            if (after.contains("result") || std::chrono::steady_clock::now() >= give_up) {
+                break;
+            }
+            asio::steady_timer tick(executor, std::chrono::milliseconds(1));
+            co_await tick.async_wait(asio::use_awaitable);
+        }
+    });
+
+    expect_input_required(parked);
+    EXPECT_TRUE(working_on);
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+    EXPECT_TRUE(after.contains("result")) << after;
+}
+
+// On a session too, a handler that goes on after it was given up counts as a request in flight,
+// and the session's end waits for it.
+TEST_F(MrtrTest, HandlerGoingOnAfterItWasGivenUpCountsOnItsSession) {
+    mcp::MrtrOptions options;
+    options.ttl = std::chrono::milliseconds(1);
+    server_->set_mrtr_options(options);
+    server_->set_max_in_flight_requests(1);
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    raw_transport->enqueue_message(call_tool(1, "ask_then_work").dump());
+    // A session end that never comes stops the run after g_hang_guard, failing the test.
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([this](const boost::system::error_code& error) {
+        if (!error) {
+            io_ctx_.stop();
+        }
+    });
+    bool ended = false;
+    bool working_on = false;
+    bool ended_before_release = false;
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &ended, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        ended = true;
+        guard.cancel();
+    });
+    mcp_test::spawn_detached(
+        io_ctx_,
+        [this, raw_transport, &ended, &working_on, &ended_before_release]() -> mcp::Task<void> {
+            working_on = co_await wait_until([this] { return working_on_.load(); });
+            raw_transport->enqueue_message(call_tool(2, "at_once").dump());
+            co_await wait_until([raw_transport] { return raw_transport->written().size() == 2; });
+            raw_transport->close();
+            auto executor = co_await asio::this_coro::executor;
+            asio::steady_timer settle(executor, std::chrono::milliseconds(20));
+            co_await settle.async_wait(asio::use_awaitable);
+            ended_before_release = ended;
+            release_handler_ = true;
+        });
+    io_ctx_.run();
+
+    EXPECT_TRUE(working_on);
+    ASSERT_EQ(raw_transport->written().size(), 2u);
+    const auto refused = json::parse(raw_transport->written()[1]);
+    EXPECT_EQ(refused["id"], 2) << refused;
+    EXPECT_EQ(refused["error"]["message"], "Too many requests in flight") << refused;
+    EXPECT_FALSE(ended_before_release);
+    EXPECT_TRUE(ended);
+}
+
+TEST_F(MrtrTest, AnswerGivenWhileParkedGoesToTheRetry) {
+    const auto [first, second] = retry_after_the_handler_finished("ask_then_return");
+
+    expect_input_required(first);
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["id"], 2);
+    EXPECT_EQ(second["result"]["structuredContent"]["gave_up"], true) << second;
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, FailureWhileParkedGoesToTheRetry) {
+    const auto [first, second] = retry_after_the_handler_finished("ask_then_throw");
+
+    expect_input_required(first);
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["id"], 2);
+    EXPECT_TRUE(second["result"]["isError"].get<bool>()) << second;
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, RetryReusingSameIdIsHandled) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        second = co_await send(retry(request, 1, first["result"]["requestState"],
+                                     answer(only_key(first), accept("same-id"))));
+    });
+
+    EXPECT_EQ(second["id"], 1);
+    EXPECT_EQ(second["result"]["structuredContent"]["name"], "same-id") << second;
+}
+
+TEST_F(MrtrTest, TwoRounds) {
+    json second;
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice");
+        const auto first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("one"))));
+        third = co_await send(retry(request, 3, second["result"]["requestState"],
+                                    answer(only_key(second), accept("two"))));
+    });
+
+    expect_input_required(second);
+    EXPECT_EQ(second["result"]["inputRequests"].begin().value()["params"]["message"], "Second?");
+    EXPECT_EQ(third["result"]["structuredContent"], (json{{"first", "one"}, {"second", "two"}}))
+        << third;
+    EXPECT_EQ(middleware_runs_.load(), 1);
+}
+
+TEST_F(MrtrTest, PromptsGetRoundTrip) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = modern(1, "prompts/get", {{"name", "greet"}});
+        const auto first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("Ada"))));
+    });
+
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["result"]["messages"][0]["content"]["text"], "Hi Ada") << second;
+}
+
+TEST_F(MrtrTest, AlteredStateIsUnknown) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        auto state = first["result"]["requestState"].get<std::string>();
+        state.back() = state.back() == 'a' ? 'b' : 'a';
+        second = co_await send(retry(request, 2, state, answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+    EXPECT_EQ(server_->mrtr_stats().resume_unknown, 1u);
+}
+
+TEST_F(MrtrTest, RetryWithAlteredParamsRejected) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        auto altered = request;
+        altered["params"]["arguments"]["extra"] = true;
+        second = co_await send(
+            retry(altered, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+    EXPECT_EQ(server_->mrtr_stats().resume_params_mismatch, 1u);
+}
+
+TEST_F(MrtrTest, RetryForAnotherMethodRejected) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = modern(1, "prompts/get", {{"name", "greet"}});
+        const auto first = co_await send(request);
+        auto other = modern(2, "resources/read", {{"uri", "test://none"}});
+        second = co_await send(retry(other, 2, first["result"]["requestState"]));
+    });
+
+    expect_unknown_state(second);
+}
+
+TEST_F(MrtrTest, CrossPrincipalResumeByteIdenticalToUnknownToken) {
+    json cross;
+    json unknown;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request, "alice");
+        cross = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))),
+            "bob");
+        unknown = co_await send(retry(request, 2, "not-a-state", answer(only_key(first), accept("x"))),
+                                "bob");
+    });
+
+    expect_unknown_state(cross);
+    EXPECT_EQ(cross.dump(), unknown.dump());
+    EXPECT_EQ(server_->mrtr_stats().resume_principal_mismatch, 1u);
+}
+
+TEST_F(MrtrTest, SamePrincipalResumes) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request, "alice");
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("a"))),
+            "alice");
+    });
+
+    EXPECT_EQ(second["result"]["structuredContent"]["name"], "a") << second;
+}
+
+TEST_F(MrtrTest, ResumeSingleUse) {
+    json replayed;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        const auto state = first["result"]["requestState"];
+        co_await send(retry(request, 2, state, answer(only_key(first), accept("once"))));
+        replayed = co_await send(retry(request, 3, state, answer(only_key(first), accept("twice"))));
+    });
+
+    expect_unknown_state(replayed);
+}
+
+TEST_F(MrtrTest, PartialInputResponsesRerequestMissing) {
+    json second;
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        second = co_await send(retry(request, 2, first["result"]["requestState"]));
+        third = co_await send(retry(request, 3, second["result"]["requestState"],
+                                    answer(only_key(second), accept("late"))));
+    });
+
+    expect_input_required(second);
+    EXPECT_NE(second["result"]["requestState"], json(nullptr));
+    EXPECT_EQ(third["result"]["structuredContent"]["name"], "late") << third;
+}
+
+TEST_F(MrtrTest, ParallelElicitationsShareOneRoundUnderUniqueKeys) {
+    json last;
+    std::size_t first_round = 0;
+    std::set<std::string> keys;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_parallel");
+        auto response = co_await send(request);
+        first_round = response["result"]["inputRequests"].size();
+        int id = 2;
+        while (response.contains("result") && response["result"]["resultType"] == "input_required") {
+            json answers = json::object();
+            for (const auto& [key, input] : response["result"]["inputRequests"].items()) {
+                EXPECT_TRUE(keys.insert(key).second) << key;
+                answers[key] = accept(input["params"]["message"].get<std::string>());
+            }
+            response = co_await send(retry(request, id++, response["result"]["requestState"], answers));
+        }
+        last = response;
+    });
+
+    // Asked in the same turn of the handler's strand, both questions share the first round.
+    EXPECT_EQ(first_round, 2u);
+    EXPECT_EQ(keys.size(), 2u);
+    EXPECT_EQ(last["result"]["structuredContent"], (json{{"a", "A?"}, {"b", "B?"}})) << last;
+}
+
+TEST_F(MrtrTest, HandlerNamesItsQuestion) { check_named_question(); }
+
+TEST_F(MrtrTest, NamedAndGeneratedKeysMixAcrossRounds) { check_mixed_keys(); }
+
+TEST_F(MrtrTest, SamplingAndRootsQuestionsCanBeNamed) { check_named_sampling_and_roots(); }
+
+TEST_F(MrtrTest, EmptyAndGeneratedLookingKeysAreRefused) { check_invalid_keys_are_refused(); }
+
+TEST_F(MrtrTest, KeyOfAnEarlierQuestionIsRefused) { check_repeated_key_is_refused(); }
+
+TEST_F(MrtrTest, UndeclaredCapabilityIs32021WithData) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        response = co_await send(call_tool(1, "ask", json::object(), json::object()));
+    });
+
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY);
+    EXPECT_EQ(response["error"]["data"]["requiredCapabilities"],
+              (json{{"elicitation", {{"form", json::object()}}}}))
+        << response;
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, UrlModeNeedsTheUrlCapabilityAndCarriesNoElicitationId) {
+    json refused;
+    json asked;
+    run([&]() -> mcp::Task<void> {
+        refused = co_await send(call_tool(1, "ask_url"));
+        asked = co_await send(
+            call_tool(2, "ask_url", json::object(), declaring("elicitation", declaring("url"))));
+    });
+
+    EXPECT_EQ(refused["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << refused;
+    EXPECT_EQ(refused["error"]["data"]["requiredCapabilities"],
+              (json{{"elicitation", {{"url", json::object()}}}}));
+    expect_input_required(asked);
+    const auto& params = asked["result"]["inputRequests"].begin().value()["params"];
+    EXPECT_EQ(params["mode"], "url");
+    EXPECT_FALSE(params.contains("elicitationId")) << asked;
+}
+
+TEST_F(MrtrTest, SamplingAndRootsNeedTheirCapabilities) {
+    json sampling_refused;
+    json roots_refused;
+    json sampling_asked;
+    json roots_asked;
+    run([&]() -> mcp::Task<void> {
+        sampling_refused = co_await send(call_tool(1, "sample"));
+        roots_refused = co_await send(call_tool(2, "roots"));
+        sampling_asked = co_await send(call_tool(3, "sample", json::object(), declaring("sampling")));
+        roots_asked = co_await send(call_tool(4, "roots", json::object(), declaring("roots")));
+    });
+
+    EXPECT_EQ(sampling_refused["error"]["data"]["requiredCapabilities"],
+              (json{{"sampling", json::object()}}));
+    EXPECT_EQ(roots_refused["error"]["data"]["requiredCapabilities"],
+              (json{{"roots", json::object()}}));
+    expect_input_required(sampling_asked);
+    EXPECT_EQ(sampling_asked["result"]["inputRequests"].begin().value()["method"],
+              "sampling/createMessage");
+    expect_input_required(roots_asked);
+    EXPECT_EQ(roots_asked["result"]["inputRequests"].begin().value()["method"], "roots/list");
+}
+
+TEST_F(MrtrTest, ToolSamplingNeedsTheSamplingToolsCapability) {
+    const json sampling_only = declaring("sampling");
+    const json sampling_with_tools = declaring("sampling", json{{"tools", json::object()}});
+    json refused;
+    json asked;
+    run([&]() -> mcp::Task<void> {
+        refused = co_await send(call_tool(1, "sample_with_tools", json::object(), sampling_only));
+        asked = co_await send(call_tool(2, "sample_with_tools", json::object(), sampling_with_tools));
+    });
+
+    EXPECT_EQ(refused.value("error", json::object()).value("code", 0),
+              jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+        << refused;
+    EXPECT_EQ(refused["error"]["data"]["requiredCapabilities"],
+              (json{{"sampling", {{"tools", json::object()}}}}));
+    expect_input_required(asked);
+    EXPECT_EQ(asked["result"]["inputRequests"].begin().value()["params"]["tools"][0]["name"], "lookup")
+        << asked;
+}
+
+TEST_F(MrtrTest, ExpiredToken) {
+    mcp::MrtrOptions options;
+    options.ttl = std::chrono::milliseconds(1);
+    server_->set_mrtr_options(options);
+    json second;
+    bool evicted = false;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        evicted = co_await wait_until([this] { return server_->mrtr_stats().evicted_ttl == 1; });
+        second = co_await send(retry(request, 2, first["result"]["requestState"],
+                                     answer(only_key(first), accept("late"))));
+    });
+
+    EXPECT_TRUE(evicted);
+    expect_unknown_state(second);
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, GlobalAndPerPrincipalCaps) {
+    mcp::MrtrOptions options;
+    options.max_parked = 3;
+    options.max_parked_per_principal = 2;
+    std::vector<mcp::MrtrEvictionReason> evictions;
+    options.on_eviction = [&evictions](mcp::MrtrEvictionReason reason) { evictions.push_back(reason); };
+    server_->set_mrtr_options(options);
+    std::vector<json> alice;
+    json alice_oldest_retry;
+    json bob_retry;
+    run([&]() -> mcp::Task<void> {
+        for (int id = 1; id <= 3; ++id) {
+            alice.push_back(co_await send(call_tool(id, "ask"), "alice"));
+        }
+        // Alice's third park evicts her first; Bob's second fills the server past three, evicting
+        // Alice's second. Bob's retry then takes his first, leaving Alice's third and Bob's second.
+        const auto bob_first = co_await send(call_tool(10, "ask"), "bob");
+        co_await send(call_tool(11, "ask"), "bob");
+        alice_oldest_retry =
+            co_await send(retry(call_tool(1, "ask"), 20, alice[0]["result"]["requestState"],
+                                answer(only_key(alice[0]), accept("x"))),
+                          "alice");
+        bob_retry = co_await send(retry(call_tool(10, "ask"), 21, bob_first["result"]["requestState"],
+                                        answer(only_key(bob_first), accept("bob"))),
+                                  "bob");
+    });
+
+    expect_unknown_state(alice_oldest_retry);
+    EXPECT_EQ(bob_retry["result"]["structuredContent"]["name"], "bob") << bob_retry;
+    const auto stats = server_->mrtr_stats();
+    EXPECT_EQ(stats.evicted_cap, 2u);
+    EXPECT_EQ(evictions, (std::vector<mcp::MrtrEvictionReason>{mcp::MrtrEvictionReason::eCapacity,
+                                                               mcp::MrtrEvictionReason::eCapacity}));
+    EXPECT_EQ(stats.parked, 2u);
+}
+
+// One principal's large requests give up that principal's own waiting handlers, not another's.
+TEST_F(MrtrTest, MemoryOfOnePrincipalsParkedHandlersIsBoundedApart) {
+    mcp::MrtrOptions options;
+    options.max_parked_bytes = 3584U * 1024U;
+    options.max_parked_bytes_per_principal = 2560U * 1024U;
+    server_->set_mrtr_options(options);
+    json alice_retry;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request, "alice");
+        for (int id = 10; id < 14; ++id) {
+            // Named: GCC mishandles a temporary in a co_await operand.
+            const json padded = call_tool(id, "ask", {{"padding", std::string(1024U * 1024U, 'p')}});
+            co_await send(padded, "mallory");
+        }
+        alice_retry = co_await send(retry(request, 2, first["result"]["requestState"],
+                                          answer(only_key(first), accept("alice"))),
+                                    "alice");
+    });
+
+    EXPECT_EQ(alice_retry["result"]["structuredContent"]["name"], "alice") << alice_retry;
+    const auto stats = server_->mrtr_stats();
+    EXPECT_EQ(stats.evicted_cap, 2u);
+    EXPECT_EQ(stats.parked, 2u);
+}
+
+TEST_F(MrtrTest, CancelOfRetryCancelsParkedHandler) {
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_then_wait");
+        const auto first = co_await send(request);
+        mcp::RequestContext context;
+        context.cancelled = std::make_shared<std::atomic<bool>>(false);
+        auto flag = context.cancelled;
+        auto executor = co_await asio::this_coro::executor;
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        mcp_test::spawn_then(executor,
+                             send_with(server_.get(),
+                                       retry(request, 2, first["result"]["requestState"],
+                                             answer(only_key(first), accept("x"))),
+                                       std::move(context)),
+                             [done](std::exception_ptr, json) { done->store(true); });
+        flag->store(true);
+        const auto finished = [done] { return done->load(); };
+        co_await wait_until(finished);
+    });
+
+    EXPECT_TRUE(saw_cancel_.load());
+}
+
+TEST_F(MrtrTest, HandlerSeesRetryStreamForProgress) {
+    std::vector<json> notifications;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_then_progress");
+        const auto first = co_await send(request);
+        auto again =
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x")));
+        again["params"]["_meta"]["progressToken"] = "retry-token";
+        mcp::RequestContext context;
+        context.notifications = [&notifications](std::string_view message) -> mcp::Task<void> {
+            notifications.push_back(json::parse(message));
+            co_return;
+        };
+        co_await send_with(server_.get(), std::move(again), std::move(context));
+    });
+
+    ASSERT_EQ(notifications.size(), 1u);
+    EXPECT_EQ(notifications[0]["method"], "notifications/progress");
+    EXPECT_EQ(notifications[0]["params"]["progressToken"], "retry-token");
+}
+
+// The handler's _meta is shared with the request that carried it, and the parked handler keeps it
+// after that request is answered: the retry, which carries other _meta, does not replace it.
+TEST_F(MrtrTest, ParkedHandlerKeepsTheMetaOfItsFirstRequest) {
+    json first;
+    json second;
+    json first_meta;
+    run([&]() -> mcp::Task<void> {
+        auto request = call_tool(1, "meta_across_input");
+        request["params"]["_meta"]["example.com/trace"] = "first";
+        first_meta = request["params"]["_meta"];
+        first = co_await send(request);
+        auto again = retry(std::move(request), 2, first["result"]["requestState"],
+                           answer(only_key(first), accept("x")));
+        again["params"]["_meta"]["example.com/trace"] = "second";
+        second = co_await send(std::move(again));
+    });
+
+    expect_input_required(first);
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["result"]["structuredContent"]["before"], first_meta) << second;
+    EXPECT_EQ(second["result"]["structuredContent"]["after"], first_meta) << second;
+}
+
+// A handler served without parking reports progress under the token of its request's _meta,
+// written as the client wrote it.
+TEST_F(MrtrTest, InlineProgressCarriesTheTokenOfTheSharedMeta) {
+    // Parsed from JSON, so the first token is UTF-8 whatever the compiler's execution charset is.
+    const std::vector<json> tokens = {json::parse(R"("t\u00f6ken-\u2603")"), json(9007199254740993ULL),
+                                      json(-7)};
+    std::vector<std::string> notifications;
+    run([&]() -> mcp::Task<void> {
+        for (std::size_t index = 0; index < tokens.size(); ++index) {
+            auto request = call_tool(static_cast<int>(index) + 1, "quiet_progress", json::object(),
+                                     json::object());
+            request["params"]["_meta"]["progressToken"] = tokens[index];
+            mcp::RequestContext context;
+            context.notifications = [&notifications](std::string_view message) -> mcp::Task<void> {
+                notifications.emplace_back(message);
+                co_return;
+            };
+            const auto response =
+                co_await send_with(server_.get(), std::move(request), std::move(context));
+            EXPECT_EQ(response["result"]["resultType"], "complete") << response;
+        }
+    });
+
+    ASSERT_EQ(notifications.size(), tokens.size());
+    for (std::size_t index = 0; index < tokens.size(); ++index) {
+        const auto notification = json::parse(notifications[index]);
+        EXPECT_EQ(notification["method"], "notifications/progress");
+        EXPECT_EQ(notification["params"]["progressToken"], tokens[index]) << notifications[index];
+        EXPECT_NE(notifications[index].find("\"progressToken\":" + tokens[index].dump()),
+                  std::string::npos)
+            << notifications[index];
+    }
+}
+
+// Middleware and handler see one _meta, the request's own, and only through a const view.
+TEST_F(MrtrTest, MiddlewareAndHandlerShareTheRequestsMeta) {
+    static_assert(std::is_const_v<
+                  std::remove_reference_t<decltype(*std::declval<mcp::RequestMetadata&>().meta)>>);
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"meta", "1.0"}, caps);
+    const nlohmann::json* seen_by_middleware = nullptr;
+    const nlohmann::json* seen_by_handler = nullptr;
+    json handler_copy;
+    server.use(
+        [&](mcp::Context& ctx, const json& params, mcp::TypeErasedHandler next) -> mcp::Task<json> {
+            seen_by_middleware = ctx.request_meta()->meta.get();
+            co_return co_await next(ctx, params);
+        });
+    server.add_tool<json, json>("read", "Reads _meta", json{{"type", "object"}},
+                                [&](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                    seen_by_handler = ctx.request_meta()->meta.get();
+                                    handler_copy = *ctx.request_meta()->meta;
+                                    co_return json{{"ok", true}};
+                                });
+    auto request = call_tool(1, "read", json::object(), json::object());
+    request["params"]["_meta"]["traceparent"] =
+        "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const auto sent_meta = request["params"]["_meta"];
+    json response;
+    run([&]() -> mcp::Task<void> {
+        mcp::RequestContext context;
+        response = co_await send_with(&server, std::move(request), std::move(context));
+    });
+
+    ASSERT_TRUE(response.contains("result")) << response;
+    ASSERT_NE(seen_by_handler, nullptr);
+    EXPECT_EQ(seen_by_middleware, seen_by_handler);
+    EXPECT_EQ(handler_copy, sent_meta);
+}
+
+TEST_F(MrtrTest, HandlerCatchingAbandonmentIsDiscardedAndCounted) {
+    mcp::MrtrOptions options;
+    options.ttl = std::chrono::milliseconds(1);
+    server_->set_mrtr_options(options);
+    bool counted = false;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await send(call_tool(1, "ask_catching"));
+        expect_input_required(first);
+        counted =
+            co_await wait_until([this] { return server_->mrtr_stats().abandoned_completed == 1; });
+    });
+
+    EXPECT_TRUE(counted);
+    EXPECT_EQ(abandoned_caught_.load(), 1);
+}
+
+TEST_F(MrtrTest, MultiInstanceRetryGetsTypedUnknown) {
+    auto other = make_server();
+    json elsewhere;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        mcp::RequestContext context;
+        elsewhere = co_await send_with(
+            other.get(),
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))),
+            std::move(context));
+    });
+
+    expect_unknown_state(elsewhere);
+}
+
+/// Servers that keep the state of a waiting request in the request itself.
+class MrtrSealedTest : public MrtrTest {
+   protected:
+    static std::string key(char fill) { return std::string(32, fill); }
+
+    static mcp::MrtrOptions sealed_options(std::vector<std::string> keys) {
+        mcp::MrtrOptions options;
+        options.state_mode = mcp::MrtrStateMode::eSealed;
+        options.sealing_keys = std::move(keys);
+        return options;
+    }
+
+    void SetUp() override { server_->set_mrtr_options(sealed_options({key('a')})); }
+
+    std::unique_ptr<mcp::Server> instance(mcp::MrtrOptions options) {
+        auto server = make_server();
+        server->set_mrtr_options(std::move(options));
+        return server;
+    }
+
+    mcp::Task<json> send_to(mcp::Server& server, json request, std::string principal = std::string()) {
+        mcp::RequestContext context;
+        context.principal = std::move(principal);
+        co_return co_await send_with(&server, std::move(request), std::move(context));
+    }
+};
+
+TEST_F(MrtrSealedTest, AnotherInstanceWithTheKeyServesTheRetry) {
+    auto other = instance(sealed_options({key('a')}));
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        first = co_await send(request);
+        second = co_await send_to(*other, retry(request, 2, first["result"]["requestState"],
+                                                answer(only_key(first), accept("Ada"))));
+    });
+
+    expect_input_required(first);
+    EXPECT_EQ(second["id"], 2);
+    EXPECT_EQ(second["result"]["structuredContent"]["name"], "Ada") << second;
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+    EXPECT_EQ(other->mrtr_stats().resume_hit, 1u);
+}
+
+TEST_F(MrtrSealedTest, NothingWaitsInTheServerAndTheHandlerFrameIsReleased) {
+    bool released = false;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await send(call_tool(1, "ask"));
+        expect_input_required(first);
+        released = co_await wait_until([this] { return live_probes_->load() == 0; });
+    });
+
+    EXPECT_TRUE(released);
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+    EXPECT_EQ(server_->mrtr_stats().abandoned_completed, 0u);
+}
+
+TEST_F(MrtrSealedTest, TwoRoundsAlternateBetweenInstances) {
+    auto other = instance(sealed_options({key('a')}));
+    json second;
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice");
+        const auto first = co_await send(request);
+        second = co_await send_to(*other, retry(request, 2, first["result"]["requestState"],
+                                                answer(only_key(first), accept("one"))));
+        third = co_await send(retry(request, 3, second["result"]["requestState"],
+                                    answer(only_key(second), accept("two"))));
+    });
+
+    expect_input_required(second);
+    EXPECT_EQ(second["result"]["inputRequests"].begin().value()["params"]["message"], "Second?");
+    EXPECT_EQ(third["result"]["structuredContent"], (json{{"first", "one"}, {"second", "two"}}))
+        << third;
+}
+
+TEST_F(MrtrSealedTest, PromptsGetRoundTrip) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = modern(1, "prompts/get", {{"name", "greet"}});
+        const auto first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("Ada"))));
+    });
+
+    ASSERT_TRUE(second.contains("result")) << second;
+    EXPECT_EQ(second["result"]["messages"][0]["content"]["text"], "Hi Ada") << second;
+}
+
+TEST_F(MrtrSealedTest, ParallelQuestionsShareOneRound) {
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_parallel");
+        first = co_await send(request);
+        json responses = json::object();
+        for (const auto& [key, unused] : first["result"]["inputRequests"].items()) {
+            responses[key] = accept("x-" + key);
+        }
+        second = co_await send(retry(request, 2, first["result"]["requestState"], responses));
+    });
+
+    EXPECT_EQ(first["result"]["inputRequests"].size(), 2u) << first;
+    ASSERT_TRUE(second.contains("result")) << second;
+    const auto a = second["result"]["structuredContent"]["a"].get<std::string>();
+    const auto b = second["result"]["structuredContent"]["b"].get<std::string>();
+    EXPECT_NE(a, b);
+    EXPECT_EQ(a.rfind("x-elicitation-", 0), 0u) << a;
+    EXPECT_EQ(b.rfind("x-elicitation-", 0), 0u) << b;
+}
+
+TEST_F(MrtrSealedTest, HandlerNamesItsQuestion) { check_named_question(); }
+
+TEST_F(MrtrSealedTest, NamedAndGeneratedKeysMixAcrossRounds) { check_mixed_keys(); }
+
+TEST_F(MrtrSealedTest, SamplingAndRootsQuestionsCanBeNamed) { check_named_sampling_and_roots(); }
+
+TEST_F(MrtrSealedTest, EmptyAndGeneratedLookingKeysAreRefused) { check_invalid_keys_are_refused(); }
+
+TEST_F(MrtrSealedTest, KeyOfAnEarlierQuestionIsRefused) { check_repeated_key_is_refused(); }
+
+TEST_F(MrtrSealedTest, NamedAnswersAreServedByAnotherInstance) {
+    auto other = instance(sealed_options({key('a')}));
+    json first;
+    json second;
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_mixed");
+        first = co_await send(request);
+        second = co_await send_to(
+            *other, retry(request, 2, first["result"]["requestState"], answer("city", accept("Oslo"))));
+        third = co_await send(retry(request, 3, second["result"]["requestState"],
+                                    answer("elicitation-1", accept("Main"))));
+    });
+
+    EXPECT_EQ(only_key(first), "city");
+    EXPECT_EQ(only_key(second), "elicitation-1");
+    EXPECT_EQ(only_key(third), "zip");
+}
+
+TEST_F(MrtrSealedTest, ReplayedNamedQuestionGetsItsEarlierAnswer) {
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice_named");
+        first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer("same", accept("one"))));
+    });
+
+    // The retry runs the handler again; its first question is answered from the state.
+    EXPECT_EQ(second["result"]["structuredContent"]["first"], "one") << second;
+}
+
+// A name that answered an elicitation in one round does not answer a sampling question under the
+// same name in the next: the question is new and is sent to the client.
+TEST_F(MrtrSealedTest, ReplayedNameOfAnotherKindIsAskedAgain) {
+    auto runs = std::make_shared<std::atomic<int>>(0);
+    server_->add_tool<json, json>("switch_kind", "Reuses a name for another kind of question",
+                                  json{{"type", "object"}},
+                                  [runs](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                      const mcp::InputOptions options{.key = "q"};
+                                      if (runs->fetch_add(1) == 0) {
+                                          co_await ctx.elicit(form_elicitation("Name?"), options);
+                                      } else {
+                                          mcp::CreateMessageRequestParams params;
+                                          params.maxTokens = 10;
+                                          co_await ctx.sample_llm(params, options);
+                                      }
+                                      co_return json{{"done", true}};
+                                  });
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto caps = json{{"elicitation", json::object()}, {"sampling", json::object()}};
+        const auto request = call_tool(1, "switch_kind", json::object(), caps);
+        first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer("q", accept("Ada"))));
+    });
+
+    EXPECT_EQ(first["result"]["inputRequests"]["q"]["method"], "elicitation/create") << first;
+    expect_input_required(second);
+    EXPECT_EQ(second["result"]["inputRequests"]["q"]["method"], "sampling/createMessage") << second;
+}
+
+TEST_F(MrtrSealedTest, MissingAnswerIsAskedAgainUnderTheSameKey) {
+    json second;
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        second = co_await send(retry(request, 2, first["result"]["requestState"]));
+        third = co_await send(retry(request, 3, second["result"]["requestState"],
+                                    answer(only_key(first), accept("late"))));
+    });
+
+    expect_input_required(second);
+    EXPECT_EQ(third["result"]["structuredContent"]["name"], "late") << third;
+}
+
+TEST_F(MrtrSealedTest, AnswersToQuestionsNotAskedAreIgnored) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice");
+        const auto first = co_await send(request);
+        json responses = answer(only_key(first), accept("one"));
+        responses["elicitation-2"] = accept("early");
+        second = co_await send(retry(request, 2, first["result"]["requestState"], responses));
+    });
+
+    expect_input_required(second);
+    EXPECT_EQ(second["result"]["inputRequests"].begin().value()["params"]["message"], "Second?");
+}
+
+TEST_F(MrtrSealedTest, AlteredStateIsUnknown) {
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        auto state = first["result"]["requestState"].get<std::string>();
+        state[state.size() / 2] = state[state.size() / 2] == 'a' ? 'b' : 'a';
+        second = co_await send(retry(request, 2, state, answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+    EXPECT_EQ(server_->mrtr_stats().resume_unknown, 1u);
+}
+
+TEST_F(MrtrSealedTest, StateOfAnotherKeyIsUnknown) {
+    auto other = instance(sealed_options({key('b')}));
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        second = co_await send_to(*other, retry(request, 2, first["result"]["requestState"],
+                                                answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+}
+
+TEST_F(MrtrSealedTest, StoredInstanceDoesNotAcceptSealedState) {
+    auto stored = make_server();
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        second = co_await send_to(*stored, retry(request, 2, first["result"]["requestState"],
+                                                 answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+}
+
+TEST_F(MrtrSealedTest, SealedInstanceDoesNotAcceptStoredState) {
+    auto stored = make_server();
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send_to(*stored, request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+}
+
+TEST_F(MrtrSealedTest, ExpiredStateIsUnknown) {
+    auto options = sealed_options({key('a')});
+    options.state_ttl = std::chrono::milliseconds(1);
+    server_->set_mrtr_options(std::move(options));
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        auto executor = co_await asio::this_coro::executor;
+        asio::steady_timer wait(executor, std::chrono::milliseconds(20));
+        co_await wait.async_wait(asio::use_awaitable);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+}
+
+TEST_F(MrtrSealedTest, StateBelongsToItsPrincipal) {
+    json other_principal;
+    json same_principal;
+    json unauthenticated;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request, "alice");
+        const auto retried =
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x")));
+        other_principal = co_await send(retried, "bob");
+        unauthenticated = co_await send(retried);
+        same_principal = co_await send(retried, "alice");
+    });
+
+    expect_unknown_state(other_principal);
+    expect_unknown_state(unauthenticated);
+    EXPECT_EQ(server_->mrtr_stats().resume_principal_mismatch, 2u);
+    EXPECT_EQ(same_principal["result"]["structuredContent"]["name"], "x") << same_principal;
+}
+
+TEST_F(MrtrSealedTest, StateBelongsToItsParamsAndMethod) {
+    json other_arguments;
+    json other_method;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask", {{"a", 1}});
+        const auto first = co_await send(request);
+        const auto state = first["result"]["requestState"];
+        const auto altered_arguments =
+            retry(call_tool(1, "ask", {{"a", 2}}), 2, state, answer(only_key(first), accept("x")));
+        const auto altered_method = retry(modern(1, "prompts/get", {{"name", "greet"}}), 2, state,
+                                          answer(only_key(first), accept("x")));
+        other_arguments = co_await send(altered_arguments);
+        other_method = co_await send(altered_method);
+    });
+
+    expect_unknown_state(other_arguments);
+    expect_unknown_state(other_method);
+    EXPECT_EQ(server_->mrtr_stats().resume_params_mismatch, 2u);
+}
+
+TEST_F(MrtrSealedTest, KeyRotationKeepsOldStatesValid) {
+    auto rotated = instance(sealed_options({key('b'), key('a')}));
+    auto retired = instance(sealed_options({key('b')}));
+    json by_rotated;
+    json by_retired;
+    json sealed_by_new;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        const auto retried =
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x")));
+        by_retired = co_await send_to(*retired, retried);
+        by_rotated = co_await send_to(*rotated, retried);
+        const auto fresh = co_await send_to(*rotated, request);
+        sealed_by_new = co_await send_to(*retired, retry(request, 3, fresh["result"]["requestState"],
+                                                         answer(only_key(fresh), accept("y"))));
+    });
+
+    expect_unknown_state(by_retired);
+    EXPECT_EQ(by_rotated["result"]["structuredContent"]["name"], "x") << by_rotated;
+    EXPECT_EQ(sealed_by_new["result"]["structuredContent"]["name"], "y") << sealed_by_new;
+}
+
+TEST_F(MrtrSealedTest, StateLargerThanTheLimitIsAnInternalError) {
+    auto options = sealed_options({key('a')});
+    options.max_state_bytes = 512;
+    server_->set_mrtr_options(std::move(options));
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice");
+        first = co_await send(request);
+        second = co_await send(retry(request, 2, first["result"]["requestState"],
+                                     answer(only_key(first), accept(std::string(1000, 'x')))));
+    });
+
+    expect_input_required(first);
+    ASSERT_TRUE(second.contains("error")) << second;
+    EXPECT_EQ(second["error"]["code"], jsonrpc::g_INTERNAL_ERROR) << second;
+}
+
+TEST_F(MrtrSealedTest, StateLongerThanTheLimitIsUnknown) {
+    auto roomy = instance(sealed_options({key('a')}));
+    auto options = sealed_options({key('a')});
+    options.max_state_bytes = 512;
+    server_->set_mrtr_options(std::move(options));
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice");
+        const auto first = co_await send_to(*roomy, request);
+        const auto second =
+            co_await send_to(*roomy, retry(request, 2, first["result"]["requestState"],
+                                           answer(only_key(first), accept(std::string(1000, 'x')))));
+        third = co_await send(
+            retry(request, 3, second["result"]["requestState"], answer(only_key(second), accept("y"))));
+    });
+
+    expect_unknown_state(third);
+}
+
+TEST_F(MrtrSealedTest, SmallestAcceptedStateLimitHoldsAQuestion) {
+    auto options = sealed_options({key('a')});
+    options.max_state_bytes = 512;
+    server_->set_mrtr_options(std::move(options));
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send_to(*server_, request, "someone");
+        expect_input_required(first);
+        second = co_await send_to(
+            *server_,
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))),
+            "someone");
+    });
+
+    EXPECT_EQ(second["result"]["structuredContent"]["name"], "x") << second;
+}
+
+TEST_F(MrtrSealedTest, LimitsThatFailEveryQuestionAreRejected) {
+    auto options = sealed_options({key('a')});
+    options.max_rounds = 0;
+    EXPECT_THROW(server_->set_mrtr_options(options), std::invalid_argument);
+    options = sealed_options({key('a')});
+    options.max_state_bytes = 0;
+    EXPECT_THROW(server_->set_mrtr_options(options), std::invalid_argument);
+    options = sealed_options({key('a')});
+    options.state_ttl = std::chrono::milliseconds(0);
+    EXPECT_THROW(server_->set_mrtr_options(options), std::invalid_argument);
+    options.state_ttl = std::chrono::milliseconds(-5);
+    EXPECT_THROW(server_->set_mrtr_options(options), std::invalid_argument);
+    options.state_ttl = std::chrono::milliseconds(1);
+    EXPECT_NO_THROW(server_->set_mrtr_options(options));
+    options.max_state_bytes = 511;
+    EXPECT_THROW(server_->set_mrtr_options(options), std::invalid_argument);
+    options.max_state_bytes = 512;
+    EXPECT_NO_THROW(server_->set_mrtr_options(options));
+    mcp::MrtrOptions stored;
+    stored.max_rounds = 0;
+    EXPECT_THROW(server_->set_mrtr_options(stored), std::invalid_argument);
+}
+
+TEST_F(MrtrSealedTest, HandlerThatCatchesEverythingIsNotResumedWhenReleased) {
+    json first;
+    json second;
+    bool released = false;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_catching");
+        first = co_await send(request);
+        expect_input_required(first);
+        released = co_await wait_until([this] { return live_probes_->load() == 0; });
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))));
+    });
+
+    EXPECT_TRUE(released);
+    EXPECT_EQ(abandoned_caught_.load(), 0);
+    EXPECT_EQ(second["result"]["structuredContent"]["finished"], true) << second;
+    EXPECT_EQ(live_probes_->load(), 0);
+}
+
+TEST_F(MrtrSealedTest, ReplayEndsWhenALaterRunAsksSomethingElse) {
+    json second;
+    bool checked = false;
+    run([&]() -> mcp::Task<void> {
+        const auto caps = json{{"elicitation", json::object()}, {"roots", json::object()}};
+        const auto request = call_tool(1, "diverge", json::object(), caps);
+        const auto first = co_await send(request);
+        expect_input_required(first);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))));
+        checked = co_await wait_until([this] { return replay_checked_.load(); });
+    });
+
+    expect_input_required(second);
+    EXPECT_TRUE(checked);
+    EXPECT_TRUE(replay_ended_.load());
+}
+
+TEST_F(MrtrSealedTest, RoundLimitEndsARequestThatKeepsAsking) {
+    auto options = sealed_options({key('a')});
+    options.max_rounds = 1;
+    server_->set_mrtr_options(std::move(options));
+    json first;
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_twice");
+        first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("one"))));
+    });
+
+    expect_input_required(first);
+    ASSERT_TRUE(second.contains("error")) << second;
+    EXPECT_EQ(second["error"]["code"], jsonrpc::g_INTERNAL_ERROR) << second;
+}
+
+TEST_F(MrtrSealedTest, ConsumeHookMakesAStateSingleUse) {
+    std::mutex mutex;
+    std::set<std::string> seen;
+    auto options = sealed_options({key('a')});
+    options.consume = [&](std::string_view id) {
+        std::lock_guard lock(mutex);
+        return seen.emplace(id).second;
+    };
+    server_->set_mrtr_options(std::move(options));
+    json once;
+    json twice;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        const auto retried =
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x")));
+        once = co_await send(retried);
+        twice = co_await send(retried);
+    });
+
+    EXPECT_EQ(once["result"]["structuredContent"]["name"], "x") << once;
+    expect_unknown_state(twice);
+    EXPECT_EQ(seen.size(), 1u);
+}
+
+TEST_F(MrtrSealedTest, ThrowingConsumeHookRefusesTheState) {
+    auto options = sealed_options({key('a')});
+    options.consume = [](std::string_view) -> bool { throw std::runtime_error("store down"); };
+    server_->set_mrtr_options(std::move(options));
+    json second;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask");
+        const auto first = co_await send(request);
+        second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("x"))));
+    });
+
+    expect_unknown_state(second);
+}
+
+TEST_F(MrtrSealedTest, HandlerSeesWhereItReplays) {
+    json third;
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "replay_probe");
+        const auto first = co_await send(request);
+        const auto second = co_await send(
+            retry(request, 2, first["result"]["requestState"], answer(only_key(first), accept("one"))));
+        third = co_await send(retry(request, 3, second["result"]["requestState"],
+                                    answer(only_key(second), accept("two"))));
+    });
+
+    EXPECT_EQ(third["result"]["structuredContent"], (json{{"first", "one"}, {"second", "two"}}))
+        << third;
+    // Run 1 reaches its first question. Run 2 re-executes up to it, then goes on to the second
+    // question. Run 3 re-executes up to the second question and finishes.
+    const std::vector<bool> expected{false, true, false, true, true, false};
+    std::lock_guard lock(replay_mutex_);
+    EXPECT_EQ(replay_log_, expected);
+    EXPECT_EQ(effects_at_start_.load(), 1);
+    EXPECT_EQ(effects_after_first_.load(), 1);
+}
+
+TEST_F(MrtrSealedTest, RetryWithoutAnswersIsNotAReplay) {
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "replay_probe");
+        const auto first = co_await send(request);
+        co_await send(retry(request, 2, first["result"]["requestState"]));
+    });
+
+    // Both runs reach the first question without any earlier answer to replay.
+    const std::vector<bool> expected{false, false};
+    std::lock_guard lock(replay_mutex_);
+    EXPECT_EQ(replay_log_, expected);
+}
+
+TEST_F(MrtrSealedTest, HandlersReleaseWhenTheIoContextIsDestroyedFirst) {
+    auto sealed = instance(sealed_options({key('a')}));
+    auto context = std::make_unique<asio::io_context>();
+    mcp_test::spawn_detached(*context, [&]() -> mcp::Task<void> {
+        co_await send_to(*sealed, call_tool(1, "ask"));
+        co_await send_to(*sealed, call_tool(2, "ask_twice"));
+        context->stop();
+    });
+    context->run();
+    context.reset();
+    EXPECT_EQ(live_probes_->load(), 0);
+    sealed.reset();
+}
+
+TEST_F(MrtrSealedTest, HandlersReleaseWhenTheServerIsDestroyedFirst) {
+    auto sealed = instance(sealed_options({key('a')}));
+    auto context = std::make_unique<asio::io_context>();
+    mcp_test::spawn_detached(*context, [&]() -> mcp::Task<void> {
+        co_await send_to(*sealed, call_tool(1, "ask"));
+        context->stop();
+    });
+    context->run();
+    sealed.reset();
+    context.reset();
+    EXPECT_EQ(live_probes_->load(), 0);
+}
+
+TEST_F(MrtrSealedTest, StoredModeNeverReplays) {
+    auto stored = make_server();
+    run([&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "replay_probe");
+        const auto first = co_await send_to(*stored, request);
+        const auto second = co_await send_to(*stored, retry(request, 2, first["result"]["requestState"],
+                                                            answer(only_key(first), accept("one"))));
+        co_await send_to(*stored, retry(request, 3, second["result"]["requestState"],
+                                        answer(only_key(second), accept("two"))));
+    });
+
+    const std::vector<bool> expected{false, false, false};
+    std::lock_guard lock(replay_mutex_);
+    EXPECT_EQ(replay_log_, expected);
+}
+
+TEST_F(MrtrSealedTest, CallerThatCannotAnswerIsServedWithoutState) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        response = co_await send(call_tool(1, "quiet", json::object(), json::object()));
+    });
+
+    EXPECT_TRUE(response["result"]["structuredContent"]["ok"].get<bool>()) << response;
+}
+
+TEST_F(MrtrSealedTest, SealedModeNeedsAKeyOfEnoughBytes) {
+    mcp::MrtrOptions none;
+    none.state_mode = mcp::MrtrStateMode::eSealed;
+    EXPECT_THROW(server_->set_mrtr_options(none), std::invalid_argument);
+    EXPECT_THROW(server_->set_mrtr_options(sealed_options({std::string(31, 'a')})),
+                 std::invalid_argument);
+    EXPECT_THROW(server_->set_mrtr_options(sealed_options({key('a'), key('a')})),
+                 std::invalid_argument);
+}
+
+constexpr int g_parks = 20;
+
+TEST_F(MrtrTest, EvictionReleasesFrames) {
+    mcp::MrtrOptions options;
+    options.ttl = std::chrono::milliseconds(20);
+    server_->set_mrtr_options(options);
+    bool released = false;
+    run([&]() -> mcp::Task<void> {
+        for (int id = 0; id < g_parks; ++id) {
+            co_await send(call_tool(id, "ask"), "principal-" + std::to_string(id % 5));
+        }
+        released = co_await wait_until([this] {
+            return server_->mrtr_stats().evicted_ttl == g_parks && live_probes_->load() == 0;
+        });
+    });
+
+    EXPECT_TRUE(released);
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+    EXPECT_EQ(live_probes_->load(), 0);
+}
+
+TEST_F(MrtrTest, ChurnNoLeak) {
+    bool clean = true;
+    run([&]() -> mcp::Task<void> {
+        for (int cycle = 0; cycle < 200; ++cycle) {
+            const auto request = call_tool(cycle, "ask");
+            const auto first = co_await send(request);
+            const auto second =
+                co_await send(retry(request, 1000 + cycle, first["result"]["requestState"],
+                                    answer(only_key(first), accept("c"))));
+            clean = clean && second["result"]["structuredContent"]["name"] == "c";
+            if (cycle % 50 == 49) {
+                const bool idle = co_await wait_until([this] { return live_probes_->load() == 0; });
+                clean = clean && idle && server_->mrtr_stats().parked == 0;
+            }
+        }
+    });
+
+    EXPECT_TRUE(clean);
+    EXPECT_EQ(server_->mrtr_stats().resume_hit, 200u);
+}
+
+TEST_F(MrtrTest, ServerDestructionWithParkedEntries) {
+    bool released = false;
+    run([&]() -> mcp::Task<void> {
+        co_await send(call_tool(1, "ask"));
+        co_await send(call_tool(2, "ask"));
+        server_.reset();
+        released = co_await wait_until([this] { return live_probes_->load() == 0; });
+    });
+
+    EXPECT_TRUE(released);
+}
+
+TEST_F(MrtrTest, ParkedRequestDoesNotBlockSecondRequestOnASession) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<json> written;
+    raw_transport->set_on_write([&written, raw_transport](std::string_view message) {
+        written.push_back(json::parse(message));
+        if (written.size() == 2) {
+            raw_transport->close();
+        }
+    });
+    raw_transport->enqueue_message(call_tool(1, "ask").dump());
+    raw_transport->enqueue_message(make_modern_request(2, "tools/list").dump());
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw_transport](const boost::system::error_code& error) {
+        if (!error) {
+            raw_transport->close();
+        }
+    });
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
+    io_ctx_.run();
+
+    ASSERT_EQ(written.size(), 2u);
+    std::set<int> ids;
+    for (const auto& message : written) {
+        ids.insert(message["id"].get<int>());
+    }
+    EXPECT_EQ(ids, (std::set<int>{1, 2}));
+}
+
+TEST_F(MrtrTest, ModernSessionNeverWritesARequest) {
+    json everything = json::object();
+    everything["elicitation"] = {{"form", json::object()}, {"url", json::object()}};
+    everything["sampling"] = json::object();
+    everything["roots"] = json::object();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<json> written;
+    raw_transport->set_on_write([&written, raw_transport](std::string_view message) {
+        written.push_back(json::parse(message));
+        if (written.size() == 4) {
+            raw_transport->close();
+        }
+    });
+    int id = 0;
+    for (const auto* tool : {"ask", "ask_url", "sample", "roots"}) {
+        raw_transport->enqueue_message(call_tool(++id, tool, json::object(), everything).dump());
+    }
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw_transport](const boost::system::error_code& error) {
+        if (!error) {
+            raw_transport->close();
+        }
+    });
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
+    io_ctx_.run();
+
+    // Every question goes out inside an input_required result; nothing is sent as a request.
+    ASSERT_EQ(written.size(), 4u);
+    for (const auto& message : written) {
+        EXPECT_FALSE(message.contains("method")) << message;
+        EXPECT_EQ(message.value("result", json::object()).value("resultType", ""), "input_required")
+            << message;
+    }
+}
+
+TEST_F(MrtrTest, SessionEndGivesUpParkedHandlers) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    raw_transport->set_on_write(
+        [raw_transport](std::string_view /*message*/) { raw_transport->close(); });
+    raw_transport->enqueue_message(call_tool(1, "ask").dump());
+    bool released = false;
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &released]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        released = co_await wait_until([this] { return live_probes_->load() == 0; });
+    });
+    // Without the handler given up, its wait would keep this running until the default timeout.
+    io_ctx_.run();
+
+    EXPECT_TRUE(released);
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, AbandonWaitingHandlersUnwindsThem) {
+    bool released = false;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await send(call_tool(1, "ask"));
+        EXPECT_EQ(first["result"]["resultType"], "input_required") << first;
+        EXPECT_EQ(live_probes_->load(), 1);
+        server_->abandon_waiting_handlers();
+        released = co_await wait_until([this] { return live_probes_->load() == 0; });
+        const auto retried =
+            co_await send(retry(call_tool(1, "ask"), 2, first["result"]["requestState"],
+                                answer(only_key(first), accept("octocat"))));
+        EXPECT_EQ(retried.value("error", json::object()).value("message", ""),
+                  "Unknown or expired requestState")
+            << retried;
+    });
+
+    EXPECT_TRUE(released);
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, StatsAccessorMatchesCounts) {
+    run([&]() -> mcp::Task<void> {
+        co_await send(call_tool(1, "ask"));
+        co_await send(call_tool(2, "ask"));
+        co_await send(retry(call_tool(3, "ask"), 3, "unknown"));
+    });
+
+    const auto stats = server_->mrtr_stats();
+    EXPECT_EQ(stats.parked, 2u);
+    EXPECT_EQ(stats.resume_unknown, 1u);
+    EXPECT_EQ(stats.resume_hit, 0u);
+    EXPECT_EQ(stats.evicted_ttl, 0u);
+    EXPECT_EQ(stats.evicted_cap, 0u);
+}
+
+TEST_F(MrtrTest, LegacyRequestsStillUseServerToClientRequests) {
+    // A request of an earlier revision is not a multi round-trip request: its handler's question
+    // goes to the client as an elicitation/create request on the session.
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<json> written;
+    raw_transport->set_on_write([&written, raw_transport](std::string_view message) {
+        written.push_back(json::parse(message));
+        if (written.size() == 2) {
+            raw_transport->close();
+        }
+    });
+    auto initialize = make_initialize_request("init");
+    initialize["params"]["capabilities"] = {{"elicitation", json::object()}};
+    raw_transport->enqueue_message(initialize.dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    raw_transport->enqueue_message(make_tool_call_request("call", "ask").dump());
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw_transport](const boost::system::error_code& error) {
+        if (!error) {
+            raw_transport->close();
+        }
+    });
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
+    io_ctx_.run();
+
+    ASSERT_GE(written.size(), 2u);
+    EXPECT_EQ(written[1]["method"], "elicitation/create") << written[1];
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrTest, LegacyRequestsIgnoreTheKeyOfAQuestion) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<json> written;
+    raw_transport->set_on_write([&written, raw_transport](std::string_view message) {
+        written.push_back(json::parse(message));
+        if (written.size() == 2) {
+            raw_transport->close();
+        }
+    });
+    auto initialize = make_initialize_request("init");
+    initialize["params"]["capabilities"] = {{"elicitation", json::object()}};
+    raw_transport->enqueue_message(initialize.dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    raw_transport->enqueue_message(make_tool_call_request("call", "ask_named").dump());
+    asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw_transport](const boost::system::error_code& error) {
+        if (!error) {
+            raw_transport->close();
+        }
+    });
+    mcp_test::spawn_detached(io_ctx_, [this, transport, &guard]() -> mcp::Task<void> {
+        co_await server_->run(transport, io_ctx_.get_executor());
+        guard.cancel();
+        io_ctx_.stop();
+    });
+    io_ctx_.run();
+
+    ASSERT_GE(written.size(), 2u);
+    EXPECT_EQ(written[1]["method"], "elicitation/create") << written[1];
+    EXPECT_EQ(written[1].dump().find("user_name"), std::string::npos) << written[1];
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+/// The same requests against a server without middleware, which calls its tools without building
+/// their parameters object, and one with.
+class MrtrWithoutMiddlewareTest : public MrtrTest {
+   protected:
+    MrtrWithoutMiddlewareTest() { server_ = make_server(false); }
+};
+
+TEST_F(MrtrWithoutMiddlewareTest, ClientWithoutInputCapabilitiesIsServedWithoutParking) {
+    json bare;
+    json eliciting;
+    run([&]() -> mcp::Task<void> {
+        const auto req_bare = call_tool(1, "quiet", {{"x", 1}}, json::object());
+        bare = co_await send(req_bare);
+        const auto req_eliciting = call_tool(2, "quiet", {{"x", 1}});
+        eliciting = co_await send(req_eliciting);
+    });
+
+    for (const auto* response : {&bare, &eliciting}) {
+        ASSERT_TRUE(response->contains("result")) << *response;
+        EXPECT_EQ((*response)["result"]["resultType"], "complete") << *response;
+        EXPECT_EQ((*response)["result"]["structuredContent"],
+                  (json{{"ok", true}, {"echo", {{"x", 1}}}}))
+            << *response;
+    }
+    EXPECT_EQ(bare["id"], 1);
+    EXPECT_EQ(eliciting["id"], 2);
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, QuestionOfAClientThatCannotAnswerIsRefused) {
+    json elicitation;
+    json sampling;
+    json roots;
+    json prompt;
+    run([&]() -> mcp::Task<void> {
+        const auto req_elicitation = call_tool(1, "ask", json::object(), json::object());
+        elicitation = co_await send(req_elicitation);
+        const auto req_sampling = call_tool(2, "sample", json::object(), json::object());
+        sampling = co_await send(req_sampling);
+        const auto req_roots = call_tool(3, "roots", json::object(), json::object());
+        roots = co_await send(req_roots);
+        const auto req_prompt = modern(4, "prompts/get", {{"name", "greet"}}, json::object());
+        prompt = co_await send(req_prompt);
+    });
+
+    EXPECT_EQ(elicitation["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+        << elicitation;
+    EXPECT_EQ(elicitation["error"]["data"]["requiredCapabilities"],
+              (json{{"elicitation", {{"form", json::object()}}}}));
+    EXPECT_EQ(sampling["error"]["data"]["requiredCapabilities"], (json{{"sampling", json::object()}}));
+    EXPECT_EQ(roots["error"]["data"]["requiredCapabilities"], (json{{"roots", json::object()}}));
+    EXPECT_EQ(prompt["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << prompt;
+    EXPECT_EQ(server_->mrtr_stats().parked, 0u);
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, RefusalWinsOverAHandlerThatCatchesIt) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto req_response = call_tool(1, "ask_catching", json::object(), json::object());
+        response = co_await send(req_response);
+    });
+
+    EXPECT_EQ(abandoned_caught_.load(), 1);
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["code"], jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY) << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, ParallelQuestionsAreRefusedTogether) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto req_response = call_tool(1, "ask_parallel", json::object(), json::object());
+        response = co_await send(req_response);
+    });
+
+    ASSERT_TRUE(response.contains("error")) << response;
+    EXPECT_EQ(response["error"]["data"]["requiredCapabilities"],
+              (json{{"elicitation", {{"form", json::object()}}}}))
+        << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, ProgressReachesTheRequestStream) {
+    std::vector<json> notifications;
+    json response;
+    run([&]() -> mcp::Task<void> {
+        auto request = call_tool(1, "quiet_progress", json::object(), json::object());
+        request["params"]["_meta"]["progressToken"] = "token-1";
+        mcp::RequestContext context;
+        context.notifications = [&notifications](std::string_view message) -> mcp::Task<void> {
+            notifications.push_back(json::parse(message));
+            co_return;
+        };
+        response = co_await send_with(server_.get(), std::move(request), std::move(context));
+    });
+
+    ASSERT_EQ(notifications.size(), 1u);
+    EXPECT_EQ(notifications[0]["method"], "notifications/progress");
+    EXPECT_EQ(notifications[0]["params"]["progressToken"], "token-1");
+    EXPECT_EQ(response["result"]["structuredContent"], (json{{"done", true}})) << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, AToolThatThrowsFailsInsideItsResult) {
+    json response;
+    run([&]() -> mcp::Task<void> {
+        const auto req_response = call_tool(1, "fails", json::object(), json::object());
+        response = co_await send(req_response);
+    });
+
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["isError"], true) << response;
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, MalformedToolCallsAreAnsweredAsWithMiddleware) {
+    auto with_middleware = make_server(true);
+    auto bad_token = modern(5, "tools/call", {{"name", "quiet"}});
+    bad_token["params"]["_meta"]["progressToken"] = json::array();
+    const std::vector<json> malformed = {
+        modern(1, "tools/call", {{"name", 7}}),
+        modern(2, "tools/call", {{"arguments", json::object()}}),
+        modern(3, "tools/call", {{"name", "quiet"}, {"arguments", json::array({1})}}),
+        modern(4, "tools/call", {{"name", "missing"}}),
+        bad_token,
+    };
+    std::vector<json> plain;
+    std::vector<json> wrapped;
+    run([&]() -> mcp::Task<void> {
+        for (const auto& request : malformed) {
+            const auto answered = co_await send(request);
+            plain.push_back(answered);
+            mcp::RequestContext context;
+            const auto answered_wrapped =
+                co_await send_with(with_middleware.get(), request, std::move(context));
+            wrapped.push_back(answered_wrapped);
+        }
+    });
+
+    ASSERT_EQ(plain.size(), malformed.size());
+    for (std::size_t index = 0; index < malformed.size(); ++index) {
+        ASSERT_TRUE(plain[index].contains("error")) << plain[index];
+        EXPECT_EQ(plain[index]["error"]["code"], jsonrpc::g_INVALID_PARAMS) << plain[index];
+        EXPECT_EQ(plain[index], wrapped[index]) << malformed[index];
+    }
+    for (const std::size_t index : {0u, 1u, 2u, 4u}) {
+        EXPECT_EQ(
+            plain[index]["error"]["message"].get<std::string>().rfind("Invalid tools/call params: ", 0),
+            0u)
+            << plain[index];
+    }
+    EXPECT_EQ(plain[2]["error"]["message"],
+              "Invalid tools/call params: CallToolParams arguments must be a JSON object");
+    EXPECT_EQ(plain[3]["error"]["message"], "Unknown tool: missing");
+}
+
+TEST_F(MrtrWithoutMiddlewareTest, ListedToolsMatchTheOnesBuiltPageByPage) {
+    json listed;
+    std::vector<json> collected;
+    json last_page;
+    run([&]() -> mcp::Task<void> {
+        const auto list_request = modern(1, "tools/list", json::object(), json::object());
+        listed = co_await send(list_request);
+        server_->set_page_size(1);
+        std::string cursor;
+        for (int guard = 0; guard < 64; ++guard) {
+            json params = json::object();
+            if (!cursor.empty()) {
+                params["cursor"] = cursor;
+            }
+            const auto page_request = modern(2, "tools/list", params, json::object());
+            last_page = co_await send(page_request);
+            for (const auto& tool : last_page["result"]["tools"]) {
+                collected.push_back(tool);
+            }
+            if (!last_page["result"].contains("nextCursor")) {
+                break;
+            }
+            cursor = last_page["result"]["nextCursor"].get<std::string>();
+        }
+    });
+
+    ASSERT_TRUE(listed.contains("result")) << listed;
+    EXPECT_EQ(listed["id"], 1);
+    EXPECT_EQ(listed["result"]["resultType"], "complete") << listed;
+    EXPECT_FALSE(listed["result"].contains("nextCursor")) << listed;
+    EXPECT_TRUE(listed["result"]["_meta"].contains("io.modelcontextprotocol/serverInfo")) << listed;
+    EXPECT_TRUE(listed["result"].contains("ttlMs")) << listed;
+    ASSERT_GE(collected.size(), 5u);
+    EXPECT_EQ(listed["result"]["tools"], json(collected));
+    EXPECT_EQ(listed["result"]["tools"][0]["name"], "ask");
+}
+
+}  // namespace
+
+}  // namespace server_mrtr_test

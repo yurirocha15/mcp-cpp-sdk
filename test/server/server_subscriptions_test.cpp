@@ -1,5 +1,6 @@
 #include "../test_utils.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -12,57 +13,14 @@
 #include <string>
 #include <string_view>
 
+namespace server_subscriptions_test {
+
 class ServerSubscriptionsTest : public ::testing::Test {
    protected:
     boost::asio::io_context io_ctx_;
 };
 
-TEST_F(ServerSubscriptionsTest, SubscribeReturnsEmptyResult) {
-    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
-    auto* raw_transport = transport.get();
-
-    mcp::Implementation info;
-    info.name = "test-server";
-    info.version = "1.0";
-
-    mcp::ServerCapabilities caps;
-    mcp::ServerCapabilities::ResourcesCapability res_cap;
-    res_cap.subscribe = true;
-    caps.resources = std::move(res_cap);
-
-    mcp::Server server(std::move(info), std::move(caps));
-
-    std::vector<nlohmann::json> responses;
-    raw_transport->set_on_write([&responses, raw_transport](std::string_view msg) {
-        responses.push_back(nlohmann::json::parse(msg));
-        if (responses.size() == 2) {
-            raw_transport->close();
-        }
-    });
-
-    raw_transport->enqueue_message(make_initialize_request("1").dump());
-    raw_transport->enqueue_message(make_initialized_notification().dump());
-
-    nlohmann::json sub_req;
-    sub_req["jsonrpc"] = "2.0";
-    sub_req["id"] = "2";
-    sub_req["method"] = "resources/subscribe";
-    sub_req["params"] = nlohmann::json{{"uri", "file:///test.txt"}};
-    raw_transport->enqueue_message(sub_req.dump());
-
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
-
-    io_ctx_.run();
-
-    ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["id"], "2");
-    ASSERT_TRUE(responses[1].contains("result"));
-    EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
-}
-
-TEST_F(ServerSubscriptionsTest, UnsubscribeReturnsEmptyResult) {
+TEST_F(ServerSubscriptionsTest, SubscribeAndUnsubscribeReturnEmptyResults) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();
 
@@ -103,14 +61,14 @@ TEST_F(ServerSubscriptionsTest, UnsubscribeReturnsEmptyResult) {
     unsub_req["params"] = nlohmann::json{{"uri", "file:///test.txt"}};
     raw_transport->enqueue_message(unsub_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 3);
     EXPECT_EQ(responses[1]["id"], "2");
+    ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
     EXPECT_EQ(responses[2]["id"], "3");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
@@ -178,9 +136,8 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedSendsToSubscribers) {
         nlohmann::json{{"name", "trigger_update"}, {"arguments", {{"uri", "file:///watched.txt"}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -243,9 +200,8 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedNotSentForUnsubscribedUri) 
                                         {"arguments", {{"uri", "file:///not-subscribed.txt"}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -254,3 +210,5 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedNotSentForUnsubscribedUri) 
     EXPECT_EQ(responses[1]["id"], "2");
     // No notification was sent
 }
+
+}  // namespace server_subscriptions_test

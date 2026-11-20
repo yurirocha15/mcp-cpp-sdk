@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include "../test_utils.hpp"
+
+#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -11,142 +14,16 @@
 #include <chrono>
 #include <string>
 
+namespace e2e_features_test {
+
 class E2EFeaturesTest : public ::testing::Test {
    protected:
     boost::asio::io_context io_ctx_;
 };
 
-// ========== MemoryTransportPair ==========
-TEST_F(E2EFeaturesTest, MemoryTransportPair) {
-    bool test_passed = false;
-
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("test_tool", "A test tool", {{"type", "object"}}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
-    });
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            boost::asio::co_spawn(
-                io_ctx_,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        co_await server.run(server_transport, io_ctx_.get_executor());
-                    } catch (...) {
-                    }
-                },
-                boost::asio::detached);
-
-            mcp::Client client(client_transport, io_ctx_.get_executor());
-            auto init_res = co_await client.connect("test-client", "1.0");
-            EXPECT_EQ(init_res.serverInfo.name, "test-server");
-
-            auto result = co_await client.call_tool("test_tool", nlohmann::json::object());
-            EXPECT_GT(result.content.size(), 0);
-
-            co_await client.send_request("shutdown", std::nullopt);
-            client.close();
-            test_passed = true;
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-    EXPECT_TRUE(test_passed);
-}
-
-// ========== ConnectAndDisconnect ==========
-TEST_F(E2EFeaturesTest, ConnectAndDisconnect) {
-    bool test_passed = false;
-
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("dummy", "Dummy tool", {{"type", "object"}}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
-    });
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            boost::asio::co_spawn(
-                io_ctx_,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        co_await server.run(server_transport, io_ctx_.get_executor());
-                    } catch (...) {
-                    }
-                },
-                boost::asio::detached);
-
-            mcp::Client client(client_transport, io_ctx_.get_executor());
-            auto init_res = co_await client.connect("test-client", "1.0");
-            EXPECT_EQ(init_res.serverInfo.name, "test-server");
-
-            co_await client.send_request("shutdown", std::nullopt);
-            client.close();
-            test_passed = true;
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-    EXPECT_TRUE(test_passed);
-}
-
-// ========== ListTools ==========
-TEST_F(E2EFeaturesTest, ListTools) {
-    bool test_passed = false;
-
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("tool1", "First tool", {{"type", "object"}}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
-    });
-    server.add_tool("tool2", "Second tool", {{"type", "object"}}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
-    });
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            boost::asio::co_spawn(
-                io_ctx_,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        co_await server.run(server_transport, io_ctx_.get_executor());
-                    } catch (...) {
-                    }
-                },
-                boost::asio::detached);
-
-            mcp::Client client(client_transport, io_ctx_.get_executor());
-            co_await client.connect("test-client", "1.0");
-
-            auto result = co_await client.list_tools();
-            EXPECT_GE(result.tools.size(), 2);
-
-            co_await client.send_request("shutdown", std::nullopt);
-            client.close();
-            test_passed = true;
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-    EXPECT_TRUE(test_passed);
-}
-
-// ========== Pagination ==========
-TEST_F(E2EFeaturesTest, Pagination) {
+// One session over a memory transport pair: connect, ping, list a page of tools, call several
+// tools and one tool several times, then shut down.
+TEST_F(E2EFeaturesTest, OneSessionConnectsPingsListsAndCallsTools) {
     bool test_passed = false;
 
     auto [client_transport, server_transport] =
@@ -154,179 +31,55 @@ TEST_F(E2EFeaturesTest, Pagination) {
 
     mcp::Server server({"test-server", "1.0"}, {});
     server.set_page_size(3);
-
-    for (int i = 0; i < 10; ++i) {
-        server.add_tool("tool_" + std::to_string(i), "Tool " + std::to_string(i), {{"type", "object"}},
-                        [](const nlohmann::json&) {
-                            return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                                                  {"type", "text"}, {"text", "ok"}}})}};
-                        });
+    const auto text_tool = [&server](const std::string& name, const std::string& text) {
+        server.add_tool(name, "Answers " + text, {{"type", "object"}}, [text](const nlohmann::json&) {
+            return nlohmann::json{
+                {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", text}}})}};
+        });
+    };
+    text_tool("add", "3");
+    text_tool("multiply", "6");
+    text_tool("echo", "echo");
+    // More tools than fit on one page.
+    for (int i = 0; i < 7; ++i) {
+        text_tool("tool_" + std::to_string(i), "ok");
     }
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            boost::asio::co_spawn(
-                io_ctx_,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        co_await server.run(server_transport, io_ctx_.get_executor());
-                    } catch (...) {
-                    }
-                },
-                boost::asio::detached);
-
-            mcp::Client client(client_transport, io_ctx_.get_executor());
-            co_await client.connect("test-client", "1.0");
-
-            auto result = co_await client.list_tools();
-            EXPECT_LE(result.tools.size(), 3);
-
-            co_await client.send_request("shutdown", std::nullopt);
-            client.close();
-            test_passed = true;
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-    EXPECT_TRUE(test_passed);
-}
-
-// ========== Ping ==========
-TEST_F(E2EFeaturesTest, Ping) {
-    bool test_passed = false;
-
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("test_tool", "A test tool", {{"type", "object"}}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "ok"}}})}};
-    });
-
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            boost::asio::co_spawn(
-                io_ctx_,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        co_await server.run(server_transport, io_ctx_.get_executor());
-                    } catch (...) {
-                    }
-                },
-                boost::asio::detached);
-
-            mcp::Client client(client_transport, io_ctx_.get_executor());
-            co_await client.connect("test-client", "1.0");
-
-            co_await client.ping();
-
-            co_await client.send_request("shutdown", std::nullopt);
-            client.close();
-            test_passed = true;
-        },
-        boost::asio::detached);
-
-    io_ctx_.run();
-    EXPECT_TRUE(test_passed);
-}
-
-// ========== MultipleTools ==========
-TEST_F(E2EFeaturesTest, MultipleTools) {
-    bool test_passed = false;
-
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("add", "Add two numbers", {{"type", "object"}}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "3"}}})}};
-    });
-    server.add_tool(
-        "multiply", "Multiply two numbers", {{"type", "object"}}, [](const nlohmann::json&) {
-            return nlohmann::json{
-                {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "6"}}})}};
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            try {
+                co_await server.run(server_transport, io_ctx_.get_executor());
+            } catch (...) {
+            }
         });
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            boost::asio::co_spawn(
-                io_ctx_,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        co_await server.run(server_transport, io_ctx_.get_executor());
-                    } catch (...) {
-                    }
-                },
-                boost::asio::detached);
+        mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
+        auto init_res = co_await client.connect("test-client", "1.0");
+        EXPECT_EQ(init_res.serverInfo->name, "test-server");
 
-            mcp::Client client(client_transport, io_ctx_.get_executor());
-            co_await client.connect("test-client", "1.0");
+        co_await client.ping();
 
-            auto add_result = co_await client.call_tool("add", nlohmann::json::object());
-            EXPECT_GT(add_result.content.size(), 0);
+        auto page = co_await client.list_tools();
+        EXPECT_GE(page.tools.size(), 2);
+        EXPECT_LE(page.tools.size(), 3);
 
-            auto mul_result = co_await client.call_tool("multiply", nlohmann::json::object());
-            EXPECT_GT(mul_result.content.size(), 0);
+        auto add_result = co_await client.call_tool("add", nlohmann::json::object());
+        EXPECT_GT(add_result.content.size(), 0);
+        auto mul_result = co_await client.call_tool("multiply", nlohmann::json::object());
+        EXPECT_GT(mul_result.content.size(), 0);
 
-            co_await client.send_request("shutdown", std::nullopt);
-            client.close();
-            test_passed = true;
-        },
-        boost::asio::detached);
+        for (int call = 0; call < 3; ++call) {
+            auto echoed = co_await client.call_tool("echo", nlohmann::json::object());
+            EXPECT_GT(echoed.content.size(), 0) << "call " << call;
+        }
 
-    io_ctx_.run();
-    EXPECT_TRUE(test_passed);
-}
-
-// ========== SequentialCalls ==========
-TEST_F(E2EFeaturesTest, SequentialCalls) {
-    bool test_passed = false;
-
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
-
-    mcp::Server server({"test-server", "1.0"}, {});
-    server.add_tool("echo", "Echo tool", {{"type", "object"}}, [](const nlohmann::json&) {
-        return nlohmann::json{
-            {"content", nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", "echo"}}})}};
+        co_await client.send_request("shutdown", std::nullopt);
+        client.close();
+        test_passed = true;
     });
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            boost::asio::co_spawn(
-                io_ctx_,
-                [&]() -> mcp::Task<void> {
-                    try {
-                        co_await server.run(server_transport, io_ctx_.get_executor());
-                    } catch (...) {
-                    }
-                },
-                boost::asio::detached);
-
-            mcp::Client client(client_transport, io_ctx_.get_executor());
-            co_await client.connect("test-client", "1.0");
-
-            auto r1 = co_await client.call_tool("echo", nlohmann::json::object());
-            EXPECT_GT(r1.content.size(), 0);
-
-            auto r2 = co_await client.call_tool("echo", nlohmann::json::object());
-            EXPECT_GT(r2.content.size(), 0);
-
-            auto r3 = co_await client.call_tool("echo", nlohmann::json::object());
-            EXPECT_GT(r3.content.size(), 0);
-
-            co_await client.send_request("shutdown", std::nullopt);
-            client.close();
-            test_passed = true;
-        },
-        boost::asio::detached);
-
     io_ctx_.run();
     EXPECT_TRUE(test_passed);
 }
+
+}  // namespace e2e_features_test

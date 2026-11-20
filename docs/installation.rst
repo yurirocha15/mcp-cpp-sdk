@@ -4,6 +4,11 @@ Installation
 Requirements
 ------------
 
+The SDK serves MCP protocol revision 2026-07-28 and the revisions 2025-11-25,
+2025-06-18, 2025-03-26 and 2024-11-05.  By default a server serves all of
+them and a client detects the revision the server speaks; see
+:doc:`guides/older-protocols` for pinning a revision.
+
 The SDK requires CMake 3.20 or newer, C++20, Boost 1.74 or newer,
 nlohmann_json 3.10.5 or newer, and OpenSSL 3.0 or newer.  The minimum compilers
 are GCC 11, Clang 14, AppleClang 15, and MSVC 2022 with the v143 toolset.  Both
@@ -48,7 +53,7 @@ For an explicit variant:
 
 .. code-block:: cmake
 
-   find_package(mcp-cpp-sdk 0.2.0 EXACT CONFIG REQUIRED)
+   find_package(mcp-cpp-sdk 0.3.0 EXACT CONFIG REQUIRED)
    target_link_libraries(my_application PRIVATE mcp::sdk_shared)
 
 Replace the last target with ``mcp::sdk_static`` for static linkage.  Link these
@@ -96,13 +101,13 @@ Then install the shared development files, with the optional static archive:
    sudo apt install libmcp-cpp-sdk-dev
    sudo apt install libmcp-cpp-sdk-static-dev  # optional static target
 
-The package manager installs the matching ``libmcp-cpp-sdk0.2.0`` shared runtime
+The package manager installs the matching ``libmcp-cpp-sdk0.3.0`` shared runtime
 when needed.  Remove the SDK with:
 
 .. code-block:: bash
 
    sudo apt remove libmcp-cpp-sdk-dev libmcp-cpp-sdk-static-dev \
-     libmcp-cpp-sdk0.2.0
+     libmcp-cpp-sdk0.3.0
 
 RPM
 ---
@@ -163,7 +168,7 @@ Uninstall with:
 .. code-block:: bash
 
    sudo dnf remove mcp-cpp-sdk-static mcp-cpp-sdk-devel \
-     mcp-cpp-sdk0.2.0-libs
+     mcp-cpp-sdk0.3.0-libs
 
 Arch Linux and derivatives
 --------------------------
@@ -178,7 +183,7 @@ immutable GitHub Release, inspect its fingerprint, and compare it with
 .. code-block:: bash
 
    curl --fail --location --remote-name \
-     https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/v0.2.0/release-signing-key.asc
+     https://github.com/yurirocha15/mcp-cpp-sdk/releases/download/v0.3.0/release-signing-key.asc
    gpg --show-keys --with-fingerprint release-signing-key.asc
    gpg --import release-signing-key.asc
 
@@ -216,7 +221,7 @@ published, install the x64 developer SDK from an elevated shell:
 
 .. code-block:: powershell
 
-   choco install mcp-cpp-sdk --version=0.2.0
+   choco install mcp-cpp-sdk --version=0.3.0
 
 The package contains shared and static SDK variants for MSVC 2022.  Remove it
 with ``choco uninstall mcp-cpp-sdk``.  A new shell receives
@@ -253,7 +258,7 @@ For a source checkout with Conan 2 dependencies:
      -c tools.cmake.cmaketoolchain:generator=Ninja
    cmake --preset conan-release -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF
    cmake --build --preset conan-release
-   cmake --install build/Release --prefix /your/install/prefix
+   cmake --install build/build/Release --prefix /your/install/prefix
 
 Use the actual preset/build directory emitted by Conan on your platform.
 

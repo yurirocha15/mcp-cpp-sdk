@@ -6,6 +6,8 @@
 #include <boost/asio/any_io_executor.hpp>
 #include <thread>
 
+namespace runtime_test {
+
 TEST(RuntimeTest, ConstructAndDestroy) {
     EXPECT_NO_THROW({
         mcp::Runtime rt;
@@ -54,3 +56,5 @@ TEST(RuntimeTest, MoveAssign) {
     rt2 = std::move(rt1);
     EXPECT_NO_THROW(rt2.run());
 }
+
+}  // namespace runtime_test

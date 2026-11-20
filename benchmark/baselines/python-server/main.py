@@ -14,11 +14,14 @@ import redis.asyncio as aioredis
 API_SERVICE_URL = os.getenv("API_SERVICE_URL", "http://mcp-api-service:8100")
 REDIS_URL = os.getenv("REDIS_URL", "redis://mcp-redis:6379")
 SERVER_TYPE = os.getenv("SERVER_TYPE", "python")
+# MCP_SESSION_MODE=stateful issues a session per client on older protocol revisions; anything
+# else (the default) serves them without sessions.
+STATELESS = os.getenv("MCP_SESSION_MODE") != "stateful"
 
 # mcp 1.x reported its own package version when none was given; 2.x reports an empty one.
 mcp = MCPServer("BenchmarkPythonServer", version=version("mcp"))
 # mcp 2.x takes the transport options here; session_manager exists only after this call.
-mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True)
+mcp_app = mcp.streamable_http_app(stateless_http=STATELESS, json_response=True)
 
 _http: httpx.AsyncClient | None = None
 _redis: aioredis.Redis | None = None

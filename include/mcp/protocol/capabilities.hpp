@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 
 #include <algorithm>
@@ -14,82 +16,59 @@
 namespace mcp {
 
 /**
- * @brief Protocol version 2024-11-05.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2024_11_05 = "2024-11-05";
-
-/**
- * @brief Protocol version 2025-03-26.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2025_03_26 = "2025-03-26";
-
-/**
- * @brief Protocol version 2025-06-18.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2025_06_18 = "2025-06-18";
-
-/**
- * @brief Protocol version 2025-11-25.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2025_11_25 = "2025-11-25";
-
-/**
- * @brief Protocol version 2026-07-28 (stateless protocol revision).
+ * @brief Check whether a protocol version is listed in
+ * mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS, in either era.
  *
- * @details Deliberately absent from g_SUPPORTED_PROTOCOL_VERSIONS: legacy initialize
- * negotiation must only resolve to versions whose semantics this SDK fully serves. It is
- * listed only in g_DISCOVERABLE_PROTOCOL_VERSIONS.
- */
-constexpr std::string_view g_PROTOCOL_VERSION_2026_07_28 = "2026-07-28";
-
-/**
- * @brief The latest supported protocol version.
- */
-constexpr std::string_view g_LATEST_PROTOCOL_VERSION = g_PROTOCOL_VERSION_2025_11_25;
-
-/**
- * @brief List of all supported protocol versions.
- */
-constexpr std::array<std::string_view, 4> g_SUPPORTED_PROTOCOL_VERSIONS = {
-    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
-    g_PROTOCOL_VERSION_2025_11_25};
-
-/**
- * @brief Protocol versions a server/discover response advertises.
- *
- * @details Deliberately distinct from g_SUPPORTED_PROTOCOL_VERSIONS, which alone governs
- * legacy initialize negotiation. Listing a version here makes no promise to the negotiation
- * path: a legacy peer requesting 2026-07-28 in initialize still negotiates
- * g_LATEST_PROTOCOL_VERSION.
- */
-constexpr std::array<std::string_view, 5> g_DISCOVERABLE_PROTOCOL_VERSIONS = {
-    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
-    g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
-
-/**
- * @brief Check whether a protocol version is supported by this SDK.
+ * @details initialize negotiation does not use it; see is_legacy_protocol_version().
  *
  * @param version The protocol version to check.
- * @return true if the version is present in g_SUPPORTED_PROTOCOL_VERSIONS.
+ * @return true if the version is present in mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.
  */
 [[nodiscard]] constexpr bool is_supported_protocol_version(std::string_view version) {
-    return std::find(g_SUPPORTED_PROTOCOL_VERSIONS.begin(), g_SUPPORTED_PROTOCOL_VERSIONS.end(),
-                     version) != g_SUPPORTED_PROTOCOL_VERSIONS.end();
+    return std::find(mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
+                     mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end(),
+                     version) != mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end();
 }
 
 /**
- * @brief Negotiate the protocol version to use for a session.
+ * @brief Check whether a protocol version starts a session with initialize.
  *
- * @details If the requested version is supported, it is selected. Otherwise,
- * the latest supported version is used as a fallback.
+ * @param version The protocol version to check.
+ * @return true if the version is present in mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_legacy_protocol_version(std::string_view version) {
+    return std::find(mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.begin(),
+                     mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end(),
+                     version) != mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Check whether a protocol version is served per request, without initialize.
+ *
+ * @param version The protocol version to check.
+ * @return true if the version is present in mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.
+ */
+[[nodiscard]] constexpr bool is_modern_protocol_version(std::string_view version) {
+    return std::find(mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.begin(),
+                     mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end(),
+                     version) != mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end();
+}
+
+/**
+ * @brief Negotiate the protocol version of an initialize request.
+ *
+ * @details A requested version that starts a session with initialize is selected. Any other
+ * version, including one served per request such as 2026-07-28, falls back to
+ * mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION.
  *
  * @param requested_version The version requested by the peer.
  * @return The negotiated protocol version.
  */
 [[nodiscard]] constexpr std::string_view negotiate_protocol_version(
     std::string_view requested_version) {
-    return is_supported_protocol_version(requested_version) ? requested_version
-                                                            : g_LATEST_PROTOCOL_VERSION;
+    return is_legacy_protocol_version(requested_version)
+               ? requested_version
+               : mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION;
 }
 
 /**
@@ -108,18 +87,7 @@ struct Icon {
  * @param json_obj The JSON object to populate.
  * @param icon The Icon object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const Icon& icon) {
-    json_obj = nlohmann::json{{"src", icon.source}};
-    if (icon.mimeType) {
-        json_obj["mimeType"] = *icon.mimeType;
-    }
-    if (icon.sizes) {
-        json_obj["sizes"] = *icon.sizes;
-    }
-    if (icon.theme) {
-        json_obj["theme"] = *icon.theme;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Icon& icon);
 
 /**
  * @brief Deserializes Icon from JSON.
@@ -127,18 +95,7 @@ inline void to_json(nlohmann::json& json_obj, const Icon& icon) {
  * @param json_obj The JSON object to read from.
  * @param icon The Icon object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, Icon& icon) {
-    json_obj.at("src").get_to(icon.source);
-    if (detail::has_json_value(json_obj, "mimeType")) {
-        icon.mimeType = json_obj.at("mimeType").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "sizes")) {
-        icon.sizes = json_obj.at("sizes").get<std::vector<std::string>>();
-    }
-    if (detail::has_json_value(json_obj, "theme")) {
-        icon.theme = json_obj.at("theme").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Icon& icon);
 
 /**
  * @brief Optional annotations for the client.
@@ -155,18 +112,7 @@ struct Annotations {
  * @param json_obj The JSON object to populate.
  * @param annotations The Annotations object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const Annotations& annotations) {
-    json_obj = nlohmann::json::object();
-    if (annotations.audience) {
-        json_obj["audience"] = *annotations.audience;
-    }
-    if (annotations.lastModified) {
-        json_obj["lastModified"] = *annotations.lastModified;
-    }
-    if (annotations.priority) {
-        json_obj["priority"] = *annotations.priority;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Annotations& annotations);
 
 /**
  * @brief Deserializes Annotations from JSON.
@@ -174,17 +120,7 @@ inline void to_json(nlohmann::json& json_obj, const Annotations& annotations) {
  * @param json_obj The JSON object to read from.
  * @param annotations The Annotations object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, Annotations& annotations) {
-    if (detail::has_json_value(json_obj, "audience")) {
-        annotations.audience = json_obj.at("audience").get<std::vector<Role>>();
-    }
-    if (detail::has_json_value(json_obj, "lastModified")) {
-        annotations.lastModified = json_obj.at("lastModified").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "priority")) {
-        annotations.priority = json_obj.at("priority").get<double>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Annotations& annotations);
 
 /**
  * @brief Describes the name and version of an MCP implementation.
@@ -204,21 +140,7 @@ struct Implementation {
  * @param json_obj The JSON object to populate.
  * @param impl The Implementation object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const Implementation& impl) {
-    json_obj = nlohmann::json{{"name", impl.name}, {"version", impl.version}};
-    if (impl.title) {
-        json_obj["title"] = *impl.title;
-    }
-    if (impl.description) {
-        json_obj["description"] = *impl.description;
-    }
-    if (impl.websiteUrl) {
-        json_obj["websiteUrl"] = *impl.websiteUrl;
-    }
-    if (impl.icons) {
-        json_obj["icons"] = *impl.icons;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const Implementation& impl);
 
 /**
  * @brief Deserializes Implementation from JSON.
@@ -226,22 +148,7 @@ inline void to_json(nlohmann::json& json_obj, const Implementation& impl) {
  * @param json_obj The JSON object to read from.
  * @param impl The Implementation object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, Implementation& impl) {
-    json_obj.at("name").get_to(impl.name);
-    json_obj.at("version").get_to(impl.version);
-    if (detail::has_json_value(json_obj, "title")) {
-        impl.title = json_obj.at("title").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "description")) {
-        impl.description = json_obj.at("description").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "websiteUrl")) {
-        impl.websiteUrl = json_obj.at("websiteUrl").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "icons")) {
-        impl.icons = json_obj.at("icons").get<std::vector<Icon>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, Implementation& impl);
 
 /**
  * @brief Alias for Implementation, representing client information.
@@ -284,216 +191,29 @@ struct ClientCapabilities {
         std::optional<nlohmann::json> tools;    ///< Whether the client supports tool use.
     };
 
-    /**
-     * @brief Client support for task-augmented reverse-RPC request types.
-     */
-    struct TaskRequestsCapability {
-        /**
-         * @brief Task support for elicitation request creation.
-         */
-        struct ElicitationTaskCapability {
-            std::optional<nlohmann::json> create;  ///< Support for creating elicitation tasks.
-        };
-        /**
-         * @brief Task support for sampling request creation.
-         */
-        struct SamplingTaskCapability {
-            std::optional<nlohmann::json> createMessage;  ///< Support for creating sampling tasks.
-        };
-
-        std::optional<ElicitationTaskCapability>
-            elicitation;                                 ///< Task support for elicitation requests.
-        std::optional<SamplingTaskCapability> sampling;  ///< Task support for sampling requests.
-    };
-
-    /**
-     * @brief Client support for task lifecycle endpoints.
-     */
-    struct TasksCapability {
-        std::optional<nlohmann::json> cancel;            ///< Whether the client supports tasks/cancel.
-        std::optional<nlohmann::json> list;              ///< Whether the client supports tasks/list.
-        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
-    };
-
     std::optional<ElicitationCapability> elicitation;  ///< Support for elicitation requests.
     std::optional<nlohmann::json> experimental;  ///< Implementation-defined experimental capabilities.
     std::optional<RootsCapability> roots;        ///< Support for roots/list requests.
     std::optional<SamplingCapability> sampling;  ///< Support for sampling/createMessage requests.
-    std::optional<TasksCapability> tasks;        ///< Support for task lifecycle endpoints.
     std::optional<std::map<std::string, nlohmann::json>>
         extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
-inline void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.form) {
-        j["form"] = *cap.form;
-    }
-    if (cap.url) {
-        j["url"] = *cap.url;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability& cap);
 
-inline void from_json(const nlohmann::json& j, ClientCapabilities::ElicitationCapability& cap) {
-    if (j.contains("form")) {
-        cap.form = j.at("form");
-    }
-    if (j.contains("url")) {
-        cap.url = j.at("url");
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ClientCapabilities::ElicitationCapability& cap);
 
-inline void to_json(nlohmann::json& j, const ClientCapabilities::RootsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.listChanged) {
-        j["listChanged"] = *cap.listChanged;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ClientCapabilities::RootsCapability& cap);
 
-inline void from_json(const nlohmann::json& j, ClientCapabilities::RootsCapability& cap) {
-    if (detail::has_json_value(j, "listChanged")) {
-        cap.listChanged = j.at("listChanged").get<bool>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ClientCapabilities::RootsCapability& cap);
 
-inline void to_json(nlohmann::json& j, const ClientCapabilities::SamplingCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.context) {
-        j["context"] = *cap.context;
-    }
-    if (cap.tools) {
-        j["tools"] = *cap.tools;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ClientCapabilities::SamplingCapability& cap);
 
-inline void from_json(const nlohmann::json& j, ClientCapabilities::SamplingCapability& cap) {
-    if (j.contains("context")) {
-        cap.context = j.at("context");
-    }
-    if (j.contains("tools")) {
-        cap.tools = j.at("tools");
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ClientCapabilities::SamplingCapability& cap);
 
-inline void to_json(nlohmann::json& j,
-                    const ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.create) {
-        j["create"] = *cap.create;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ClientCapabilities& cap);
 
-inline void from_json(const nlohmann::json& j,
-                      ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability& cap) {
-    if (j.contains("create")) {
-        cap.create = j.at("create");
-    }
-}
-
-inline void to_json(nlohmann::json& j,
-                    const ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.createMessage) {
-        j["createMessage"] = *cap.createMessage;
-    }
-}
-
-inline void from_json(const nlohmann::json& j,
-                      ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability& cap) {
-    if (j.contains("createMessage")) {
-        cap.createMessage = j.at("createMessage");
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ClientCapabilities::TaskRequestsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.elicitation) {
-        j["elicitation"] = *cap.elicitation;
-    }
-    if (cap.sampling) {
-        j["sampling"] = *cap.sampling;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ClientCapabilities::TaskRequestsCapability& cap) {
-    if (j.contains("elicitation")) {
-        cap.elicitation =
-            j.at("elicitation")
-                .get<ClientCapabilities::TaskRequestsCapability::ElicitationTaskCapability>();
-    }
-    if (j.contains("sampling")) {
-        cap.sampling =
-            j.at("sampling").get<ClientCapabilities::TaskRequestsCapability::SamplingTaskCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ClientCapabilities::TasksCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.cancel) {
-        j["cancel"] = *cap.cancel;
-    }
-    if (cap.list) {
-        j["list"] = *cap.list;
-    }
-    if (cap.requests) {
-        j["requests"] = *cap.requests;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ClientCapabilities::TasksCapability& cap) {
-    if (j.contains("cancel")) {
-        cap.cancel = j.at("cancel");
-    }
-    if (j.contains("list")) {
-        cap.list = j.at("list");
-    }
-    if (j.contains("requests")) {
-        cap.requests = j.at("requests").get<ClientCapabilities::TaskRequestsCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
-    j = nlohmann::json::object();
-    if (cap.elicitation) {
-        j["elicitation"] = *cap.elicitation;
-    }
-    if (cap.experimental) {
-        j["experimental"] = *cap.experimental;
-    }
-    if (cap.roots) {
-        j["roots"] = *cap.roots;
-    }
-    if (cap.sampling) {
-        j["sampling"] = *cap.sampling;
-    }
-    if (cap.tasks) {
-        j["tasks"] = *cap.tasks;
-    }
-    if (cap.extensions) {
-        j["extensions"] = *cap.extensions;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
-    if (j.contains("elicitation")) {
-        cap.elicitation = j.at("elicitation").get<ClientCapabilities::ElicitationCapability>();
-    }
-    if (j.contains("experimental")) {
-        cap.experimental = j.at("experimental");
-    }
-    if (j.contains("roots")) {
-        cap.roots = j.at("roots").get<ClientCapabilities::RootsCapability>();
-    }
-    if (j.contains("sampling")) {
-        cap.sampling = j.at("sampling").get<ClientCapabilities::SamplingCapability>();
-    }
-    if (j.contains("tasks")) {
-        cap.tasks = j.at("tasks").get<ClientCapabilities::TasksCapability>();
-    }
-    if (detail::has_json_value(j, "extensions")) {
-        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ClientCapabilities& cap);
 
 /**
  * @brief Capabilities that a server may support.
@@ -521,29 +241,6 @@ struct ServerCapabilities {
     };
 
     /**
-     * @brief Server support for task-augmented request types.
-     */
-    struct TaskRequestsCapability {
-        /**
-         * @brief Task support for tool invocation requests.
-         */
-        struct ToolsTaskCapability {
-            std::optional<nlohmann::json> call;  ///< Support for task-augmented tool calls.
-        };
-
-        std::optional<ToolsTaskCapability> tools;  ///< Task support for tool-related requests.
-    };
-
-    /**
-     * @brief Server support for task lifecycle endpoints.
-     */
-    struct TasksCapability {
-        std::optional<nlohmann::json> cancel;            ///< Whether the server supports tasks/cancel.
-        std::optional<nlohmann::json> list;              ///< Whether the server supports tasks/list.
-        std::optional<TaskRequestsCapability> requests;  ///< Which request types support tasks.
-    };
-
-    /**
      * @brief Server support for tool listing change notifications.
      */
     struct ToolsCapability {
@@ -556,165 +253,26 @@ struct ServerCapabilities {
     std::optional<nlohmann::json> logging;       ///< Support for logging/setLevel.
     std::optional<PromptsCapability> prompts;    ///< Support for prompt endpoints.
     std::optional<ResourcesCapability> resources;  ///< Support for resource endpoints.
-    std::optional<TasksCapability> tasks;          ///< Support for task lifecycle endpoints.
     std::optional<ToolsCapability> tools;          ///< Support for tool endpoints.
     std::optional<std::map<std::string, nlohmann::json>>
         extensions;  ///< Extension capability negotiation, keyed by extension name.
 };
 
-inline void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.listChanged) {
-        j["listChanged"] = *cap.listChanged;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap);
 
-inline void from_json(const nlohmann::json& j, ServerCapabilities::PromptsCapability& cap) {
-    if (detail::has_json_value(j, "listChanged")) {
-        cap.listChanged = j.at("listChanged").get<bool>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ServerCapabilities::PromptsCapability& cap);
 
-inline void to_json(nlohmann::json& j, const ServerCapabilities::ResourcesCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.listChanged) {
-        j["listChanged"] = *cap.listChanged;
-    }
-    if (cap.subscribe) {
-        j["subscribe"] = *cap.subscribe;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ServerCapabilities::ResourcesCapability& cap);
 
-inline void from_json(const nlohmann::json& j, ServerCapabilities::ResourcesCapability& cap) {
-    if (detail::has_json_value(j, "listChanged")) {
-        cap.listChanged = j.at("listChanged").get<bool>();
-    }
-    if (detail::has_json_value(j, "subscribe")) {
-        cap.subscribe = j.at("subscribe").get<bool>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ServerCapabilities::ResourcesCapability& cap);
 
-inline void to_json(nlohmann::json& j,
-                    const ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.call) {
-        j["call"] = *cap.call;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ServerCapabilities::ToolsCapability& cap);
 
-inline void from_json(const nlohmann::json& j,
-                      ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability& cap) {
-    if (j.contains("call")) {
-        cap.call = j.at("call");
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ServerCapabilities::ToolsCapability& cap);
 
-inline void to_json(nlohmann::json& j, const ServerCapabilities::TaskRequestsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.tools) {
-        j["tools"] = *cap.tools;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ServerCapabilities& cap);
 
-inline void from_json(const nlohmann::json& j, ServerCapabilities::TaskRequestsCapability& cap) {
-    if (j.contains("tools")) {
-        cap.tools =
-            j.at("tools").get<ServerCapabilities::TaskRequestsCapability::ToolsTaskCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ServerCapabilities::TasksCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.cancel) {
-        j["cancel"] = *cap.cancel;
-    }
-    if (cap.list) {
-        j["list"] = *cap.list;
-    }
-    if (cap.requests) {
-        j["requests"] = *cap.requests;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ServerCapabilities::TasksCapability& cap) {
-    if (j.contains("cancel")) {
-        cap.cancel = j.at("cancel");
-    }
-    if (j.contains("list")) {
-        cap.list = j.at("list");
-    }
-    if (j.contains("requests")) {
-        cap.requests = j.at("requests").get<ServerCapabilities::TaskRequestsCapability>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ServerCapabilities::ToolsCapability& cap) {
-    j = nlohmann::json::object();
-    if (cap.listChanged) {
-        j["listChanged"] = *cap.listChanged;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ServerCapabilities::ToolsCapability& cap) {
-    if (detail::has_json_value(j, "listChanged")) {
-        cap.listChanged = j.at("listChanged").get<bool>();
-    }
-}
-
-inline void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
-    j = nlohmann::json::object();
-    if (cap.completions) {
-        j["completions"] = *cap.completions;
-    }
-    if (cap.experimental) {
-        j["experimental"] = *cap.experimental;
-    }
-    if (cap.logging) {
-        j["logging"] = *cap.logging;
-    }
-    if (cap.prompts) {
-        j["prompts"] = *cap.prompts;
-    }
-    if (cap.resources) {
-        j["resources"] = *cap.resources;
-    }
-    if (cap.tasks) {
-        j["tasks"] = *cap.tasks;
-    }
-    if (cap.tools) {
-        j["tools"] = *cap.tools;
-    }
-    if (cap.extensions) {
-        j["extensions"] = *cap.extensions;
-    }
-}
-
-inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
-    if (j.contains("completions")) {
-        cap.completions = j.at("completions");
-    }
-    if (j.contains("experimental")) {
-        cap.experimental = j.at("experimental");
-    }
-    if (j.contains("logging")) {
-        cap.logging = j.at("logging");
-    }
-    if (j.contains("prompts")) {
-        cap.prompts = j.at("prompts").get<ServerCapabilities::PromptsCapability>();
-    }
-    if (j.contains("resources")) {
-        cap.resources = j.at("resources").get<ServerCapabilities::ResourcesCapability>();
-    }
-    if (j.contains("tasks")) {
-        cap.tasks = j.at("tasks").get<ServerCapabilities::TasksCapability>();
-    }
-    if (j.contains("tools")) {
-        cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
-    }
-    if (detail::has_json_value(j, "extensions")) {
-        cap.extensions = j.at("extensions").get<std::map<std::string, nlohmann::json>>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ServerCapabilities& cap);
 
 /**
  * @brief A ping request.
@@ -722,7 +280,8 @@ inline void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
 struct PingRequest {
     std::string method = "ping";  ///< The method name.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PingRequest, method)
+MCP_API void to_json(nlohmann::json& json_obj, const PingRequest& value);
+MCP_API void from_json(const nlohmann::json& json_obj, PingRequest& value);
 
 /**
  * @brief Represents an initialization request from the client.
@@ -733,7 +292,8 @@ struct InitializeRequest {
     ClientCapabilities capabilities;  ///< The capabilities supported by the client.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InitializeRequest, protocolVersion, clientInfo, capabilities)
+MCP_API void to_json(nlohmann::json& json_obj, const InitializeRequest& value);
+MCP_API void from_json(const nlohmann::json& json_obj, InitializeRequest& value);
 
 /**
  * @brief Represents the result of an initialization request.
@@ -751,14 +311,7 @@ struct InitializeResult {
  * @param json_obj The JSON object to populate.
  * @param res The InitializeResult object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const InitializeResult& res) {
-    json_obj = nlohmann::json{{"protocolVersion", res.protocolVersion},
-                              {"capabilities", res.capabilities},
-                              {"serverInfo", res.serverInfo}};
-    if (res.instructions) {
-        json_obj["instructions"] = *res.instructions;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const InitializeResult& res);
 
 /**
  * @brief Deserializes InitializeResult from JSON.
@@ -766,14 +319,7 @@ inline void to_json(nlohmann::json& json_obj, const InitializeResult& res) {
  * @param json_obj The JSON object to read from.
  * @param res The InitializeResult object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, InitializeResult& res) {
-    json_obj.at("protocolVersion").get_to(res.protocolVersion);
-    json_obj.at("capabilities").get_to(res.capabilities);
-    json_obj.at("serverInfo").get_to(res.serverInfo);
-    if (json_obj.contains("instructions")) {
-        res.instructions = json_obj.at("instructions").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, InitializeResult& res);
 
 /**
  * @brief Represents a server/discover request from the client.
@@ -788,18 +334,9 @@ struct DiscoverRequest {
     std::optional<nlohmann::json> meta;  ///< Reserved for protocol use; contents not interpreted yet.
 };
 
-inline void to_json(nlohmann::json& json_obj, const DiscoverRequest& req) {
-    json_obj = nlohmann::json::object();
-    if (req.meta) {
-        json_obj["_meta"] = *req.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const DiscoverRequest& req);
 
-inline void from_json(const nlohmann::json& json_obj, DiscoverRequest& req) {
-    if (json_obj.contains("_meta")) {
-        req.meta = json_obj.at("_meta");
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, DiscoverRequest& req);
 
 /**
  * @brief Caching scope hint for a cacheable result, per server/utilities/caching.
@@ -821,7 +358,7 @@ struct DiscoverResult {
     std::string resultType = "complete";         ///< Always "complete" for this result.
     std::vector<std::string> supportedVersions;  ///< Protocol versions the server supports.
     ServerCapabilities capabilities;             ///< The capabilities supported by the server.
-    ServerInfo serverInfo;                    ///< Server identity, carried under `_meta` on the wire.
+    std::optional<ServerInfo> serverInfo;     ///< Server identity, carried under `_meta` on the wire.
     std::optional<std::string> instructions;  ///< Optional instructions for the client.
     std::optional<std::int64_t> ttlMs;        ///< Optional caching TTL hint, in milliseconds.
     std::optional<CacheScope> cacheScope;     ///< Optional caching scope hint.
@@ -833,23 +370,7 @@ struct DiscoverResult {
  * @param json_obj The JSON object to populate.
  * @param res The DiscoverResult object to serialize.
  */
-inline void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
-    json_obj = nlohmann::json{
-        {"resultType", res.resultType},
-        {"supportedVersions", res.supportedVersions},
-        {"capabilities", res.capabilities},
-        {"_meta", {{"io.modelcontextprotocol/serverInfo", res.serverInfo}}},
-    };
-    if (res.instructions) {
-        json_obj["instructions"] = *res.instructions;
-    }
-    if (res.ttlMs) {
-        json_obj["ttlMs"] = *res.ttlMs;
-    }
-    if (res.cacheScope) {
-        json_obj["cacheScope"] = *res.cacheScope;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const DiscoverResult& res);
 
 /**
  * @brief Deserializes DiscoverResult from JSON.
@@ -857,23 +378,6 @@ inline void to_json(nlohmann::json& json_obj, const DiscoverResult& res) {
  * @param json_obj The JSON object to read from.
  * @param res The DiscoverResult object to populate.
  */
-inline void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
-    json_obj.at("resultType").get_to(res.resultType);
-    json_obj.at("supportedVersions").get_to(res.supportedVersions);
-    json_obj.at("capabilities").get_to(res.capabilities);
-    if (json_obj.contains("_meta") &&
-        json_obj.at("_meta").contains("io.modelcontextprotocol/serverInfo")) {
-        json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get_to(res.serverInfo);
-    }
-    if (detail::has_json_value(json_obj, "instructions")) {
-        res.instructions = json_obj.at("instructions").get<std::string>();
-    }
-    if (detail::has_json_value(json_obj, "ttlMs")) {
-        res.ttlMs = json_obj.at("ttlMs").get<std::int64_t>();
-    }
-    if (json_obj.contains("cacheScope")) {
-        res.cacheScope = json_obj.at("cacheScope").get<CacheScope>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, DiscoverResult& res);
 
 }  // namespace mcp

@@ -1,0 +1,42 @@
+name: Release dry run
+
+# A new VERSION on main starts a dry run of the release it names, so every package is built,
+# signed and validated before the release tag is signed. The dry run waits for the release
+# run approval like any other release run.
+on:
+  push:
+    branches: [main]
+    paths:
+      - VERSION
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    name: Start the release dry run for VERSION
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout the pushed VERSION
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Dispatch the dry run on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          # A dry run validates every channel, and a release candidate publishes to none.
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION ${version} is not a stable version; no dry run is started." >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          gh workflow run release.yml --repo "${GITHUB_REPOSITORY}" --ref main \
+            -f tag="v${version}" -f operation=dry-run
+          echo "Started the release dry run for v${version}." >>"${GITHUB_STEP_SUMMARY}"

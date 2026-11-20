@@ -1,3 +1,7 @@
+#include "../support/hang_guard.hpp"
+#include "../test_utils.hpp"
+
+#include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -20,7 +24,10 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <exception>
+#include <future>
+#include <mcp/core/constants.hpp>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
@@ -29,6 +36,10 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+namespace transport_http_session_manager_test {
+
+namespace http_server = mcp::constants::http_server;
 
 namespace {
 
@@ -53,12 +64,14 @@ struct RawResponse {
 
 /// Fire a single HTTP request and return the response.
 /// Must be called inside a coroutine on the same io_context.
-mcp::Task<RawResponse> raw_request(
-    const asio::any_io_executor& executor, unsigned short port, http::verb method,
-    const std::string& target, const std::string& body = {}, const std::string& session_id = {},
-    std::optional<std::string> protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-    std::optional<std::string> origin = std::nullopt,
-    std::optional<std::string> bearer_token = std::nullopt, std::string accept = "application/json") {
+mcp::Task<RawResponse> raw_request(const asio::any_io_executor& executor, unsigned short port,
+                                   http::verb method, const std::string& target,
+                                   const std::string& body = {}, const std::string& session_id = {},
+                                   std::optional<std::string> protocol_version = std::string(
+                                       mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+                                   std::optional<std::string> origin = std::nullopt,
+                                   std::optional<std::string> bearer_token = std::nullopt,
+                                   std::string accept = "application/json") {
     beast::tcp_stream stream(executor);
     auto resolver = asio::ip::tcp::resolver(executor);
     auto endpoints =
@@ -111,6 +124,93 @@ mcp::Task<RawResponse> raw_request(
     stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
 
     co_return result;
+}
+
+/// A GET that resumes the stream after @p last_event_id, and its response.
+mcp::Task<RawResponse> raw_resume(const asio::any_io_executor& executor, unsigned short port,
+                                  const std::string& session_id, const std::string& protocol_version,
+                                  const std::string& last_event_id) {
+    beast::tcp_stream stream(executor);
+    auto resolver = asio::ip::tcp::resolver(executor);
+    auto endpoints =
+        co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+    co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+    http::request<http::empty_body> request{http::verb::get, "/mcp", 11};
+    request.set(http::field::host, "127.0.0.1");
+    request.set(http::field::accept, "text/event-stream");
+    request.set("MCP-Protocol-Version", protocol_version);
+    request.set("Mcp-Session-Id", session_id);
+    request.set("Last-Event-ID", last_event_id);
+    co_await http::async_write(stream, request, asio::use_awaitable);
+    beast::flat_buffer response_buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+    RawResponse result;
+    result.status = response.result_int();
+    result.body = response.body();
+    result.content_type = std::string(response[http::field::content_type]);
+    beast::error_code shutdown_error;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+    co_return result;
+}
+
+/// POST @p body with @p headers, one per pair, and return the response.
+mcp::Task<RawResponse> raw_post(const asio::any_io_executor& executor, unsigned short port,
+                                const std::string& body,
+                                const std::vector<std::pair<std::string, std::string>>& headers) {
+    beast::tcp_stream stream(executor);
+    auto resolver = asio::ip::tcp::resolver(executor);
+    auto endpoints =
+        co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+    co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+    http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+    request.set(http::field::host, "127.0.0.1");
+    request.set(http::field::content_type, "application/json");
+    request.set(http::field::accept, "application/json, text/event-stream");
+    for (const auto& [name, value] : headers) {
+        request.set(name, value);
+    }
+    request.body() = body;
+    request.prepare_payload();
+    co_await http::async_write(stream, request, asio::use_awaitable);
+
+    beast::flat_buffer response_buffer;
+    http::response<http::string_body> response;
+    co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+
+    RawResponse result;
+    result.status = response.result_int();
+    result.body = response.body();
+    result.content_type = std::string(response[http::field::content_type]);
+    result.allow = std::string(response[http::field::allow]);
+    if (auto session_it = response.find("Mcp-Session-Id"); session_it != response.end()) {
+        result.session_id = std::string(session_it->value());
+    }
+    beast::error_code shutdown_error;
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+    co_return result;
+}
+
+/// The headers a 2026-07-28 client sends with @p body: MCP-Protocol-Version from its _meta,
+/// Mcp-Method, and Mcp-Name for the methods that mirror a name.
+std::vector<std::pair<std::string, std::string>> modern_headers(const json& body) {
+    std::vector<std::pair<std::string, std::string>> headers;
+    headers.emplace_back("MCP-Protocol-Version",
+                         body["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]);
+    const auto method = body["method"].get<std::string>();
+    headers.emplace_back("Mcp-Method", method);
+    if (method == "tools/call" || method == "prompts/get") {
+        headers.emplace_back("Mcp-Name", body["params"]["name"].get<std::string>());
+    } else if (method == "resources/read") {
+        headers.emplace_back("Mcp-Name", body["params"]["uri"].get<std::string>());
+    }
+    return headers;
+}
+
+mcp::Task<RawResponse> modern_post(const asio::any_io_executor& executor, unsigned short port,
+                                   const json& body) {
+    co_return co_await raw_post(executor, port, body.dump(), modern_headers(body));
 }
 
 std::vector<std::pair<std::string, json>> parse_sse_events(const std::string& body) {
@@ -174,10 +274,12 @@ mcp::StreamableHttpSessionManager::ServerFactory make_notifying_server_factory()
 }
 
 /// Send an initialize request and return the raw response (contains session ID).
-mcp::Task<RawResponse> do_initialize(
-    const asio::any_io_executor& executor, unsigned short port, int id = 1,
-    std::string protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-    std::optional<std::string> header_protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION)) {
+mcp::Task<RawResponse> do_initialize(const asio::any_io_executor& executor, unsigned short port,
+                                     int id = 1,
+                                     std::string protocol_version = std::string(
+                                         mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+                                     std::optional<std::string> header_protocol_version = std::string(
+                                         mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)) {
     json init_request = {{"jsonrpc", "2.0"},
                          {"method", "initialize"},
                          {"params",
@@ -192,11 +294,77 @@ mcp::Task<RawResponse> do_initialize(
 
 mcp::Task<RawResponse> send_initialized(
     const asio::any_io_executor& executor, unsigned short port, const std::string& session_id,
-    std::optional<std::string> header_protocol_version = std::string(mcp::g_LATEST_PROTOCOL_VERSION)) {
+    std::optional<std::string> header_protocol_version =
+        std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)) {
     json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
 
     co_return co_await raw_request(executor, port, http::verb::post, "/mcp", notification.dump(),
                                    session_id, std::move(header_protocol_version));
+}
+
+/// One TCP connection that stays open across requests, carrying the requests of every session
+/// that is posted to it.
+class KeepAliveClient {
+   public:
+    explicit KeepAliveClient(const asio::any_io_executor& executor)
+        : executor_(executor), stream_(executor) {}
+
+    mcp::Task<void> connect(unsigned short port) {
+        auto resolver = asio::ip::tcp::resolver(executor_);
+        auto endpoints =
+            co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+        co_await stream_.async_connect(*endpoints.begin(), asio::use_awaitable);
+    }
+
+    /// POST @p body to /mcp for @p session_id (none when empty) and read the answer.
+    mcp::Task<RawResponse> post(std::string body, std::string session_id = {}) {
+        http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+        request.set(http::field::host, "127.0.0.1");
+        request.set(http::field::content_type, "application/json");
+        request.set(http::field::accept, "application/json");
+        request.set("MCP-Protocol-Version",
+                    std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
+        if (!session_id.empty()) {
+            request.set("Mcp-Session-Id", session_id);
+        }
+        request.body() = std::move(body);
+        request.prepare_payload();
+        co_await http::async_write(stream_, request, asio::use_awaitable);
+
+        http::response<http::string_body> response;
+        co_await http::async_read(stream_, buffer_, response, asio::use_awaitable);
+
+        RawResponse result;
+        result.status = response.result_int();
+        result.body = response.body();
+        if (auto session_it = response.find("Mcp-Session-Id"); session_it != response.end()) {
+            result.session_id = std::string(session_it->value());
+        }
+        co_return result;
+    }
+
+   private:
+    asio::any_io_executor executor_;
+    beast::tcp_stream stream_;
+    beast::flat_buffer buffer_;
+};
+
+json make_initialize_request(int id) {
+    return {
+        {"jsonrpc", "2.0"},
+        {"method", "initialize"},
+        {"params",
+         {{"protocolVersion", std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+          {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+          {"capabilities", json::object()}}},
+        {"id", id}};
+}
+
+json make_echo_request(int id, const std::string& message) {
+    return {{"jsonrpc", "2.0"},
+            {"method", "tools/call"},
+            {"params", {{"name", "echo"}, {"arguments", {{"message", message}}}}},
+            {"id", id}};
 }
 
 }  // namespace
@@ -215,31 +383,28 @@ TEST_F(SessionManagerTest, SsePostReturnsNotificationsThenFinalResponseInOrder) 
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_notifying_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse tool_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            EXPECT_EQ(init.status, 200);
-            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
-            EXPECT_EQ(initialized.status, 202);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        EXPECT_EQ(init.status, 200);
+        auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+        EXPECT_EQ(initialized.status, 202);
 
-            json request = {{"jsonrpc", "2.0"},
-                            {"method", "tools/call"},
-                            {"params",
-                             {{"name", "notify"},
-                              {"arguments", json::object()},
-                              {"_meta", {{"progressToken", "progress-1"}}}}},
-                            {"id", 2}};
-            tool_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", request.dump(), init.session_id,
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, std::nullopt,
-                "application/json, text/event-stream");
-            manager.close();
-        },
-        asio::detached);
+        json request = {{"jsonrpc", "2.0"},
+                        {"method", "tools/call"},
+                        {"params",
+                         {{"name", "notify"},
+                          {"arguments", json::object()},
+                          {"_meta", {{"progressToken", "progress-1"}}}}},
+                        {"id", 2}};
+        tool_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", request.dump(), init.session_id,
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt,
+            std::nullopt, "application/json, text/event-stream");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -264,31 +429,28 @@ TEST_F(SessionManagerTest, JsonOnlyPostSkipsNotificationsAndReturnsFinalResponse
                                               make_notifying_server_factory());
     manager.set_json_only(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse tool_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            EXPECT_EQ(init.status, 200);
-            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
-            EXPECT_EQ(initialized.status, 202);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        EXPECT_EQ(init.status, 200);
+        auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+        EXPECT_EQ(initialized.status, 202);
 
-            json request = {{"jsonrpc", "2.0"},
-                            {"method", "tools/call"},
-                            {"params",
-                             {{"name", "notify"},
-                              {"arguments", json::object()},
-                              {"_meta", {{"progressToken", "progress-1"}}}}},
-                            {"id", 2}};
-            tool_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", request.dump(), init.session_id,
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, std::nullopt,
-                "application/json, text/event-stream");
-            manager.close();
-        },
-        asio::detached);
+        json request = {{"jsonrpc", "2.0"},
+                        {"method", "tools/call"},
+                        {"params",
+                         {{"name", "notify"},
+                          {"arguments", json::object()},
+                          {"_meta", {{"progressToken", "progress-1"}}}}},
+                        {"id", 2}};
+        tool_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", request.dump(), init.session_id,
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt,
+            std::nullopt, "application/json, text/event-stream");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -305,31 +467,31 @@ TEST_F(SessionManagerTest, OriginHeadersAreDeniedUntilExplicitlyAllowed) {
                                               make_echo_server_factory());
     manager.set_allowed_origins({"https://trusted.example"});
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse denied_response;
     RawResponse allowed_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            const auto init_body =
-                json{{"jsonrpc", "2.0"},
-                     {"method", "initialize"},
-                     {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
-                       {"clientInfo", {{"name", "test"}, {"version", "1"}}},
-                       {"capabilities", json::object()}}},
-                     {"id", 1}}
-                    .dump();
-            denied_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
-            allowed_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://trusted.example");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        const auto init_body =
+            json{{"jsonrpc", "2.0"},
+                 {"method", "initialize"},
+                 {"params",
+                  {{"protocolVersion",
+                    std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+                   {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                   {"capabilities", json::object()}}},
+                 {"id", 1}}
+                .dump();
+        denied_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://untrusted.example");
+        allowed_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://trusted.example");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -342,13 +504,14 @@ namespace {
 /// The initialize body the origin tests below post; none of them gets far enough to care what is
 /// in it, only whether the origin check let it through.
 std::string make_initialize_body() {
-    return json{{"jsonrpc", "2.0"},
-                {"method", "initialize"},
-                {"params",
-                 {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
-                  {"clientInfo", {{"name", "test"}, {"version", "1"}}},
-                  {"capabilities", json::object()}}},
-                {"id", 1}}
+    return json{
+        {"jsonrpc", "2.0"},
+        {"method", "initialize"},
+        {"params",
+         {{"protocolVersion", std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+          {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+          {"capabilities", json::object()}}},
+        {"id", 1}}
         .dump();
 }
 
@@ -364,24 +527,21 @@ TEST_F(SessionManagerTest, AllowedOriginComparisonIsExactRatherThanCanonicalizin
                                               make_echo_server_factory());
     manager.set_allowed_origins({"https://trusted.example"});
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     const std::vector<std::string> spellings = {"https://trusted.example:443",
                                                 "HTTPS://trusted.example", "https://Trusted.example",
                                                 "https://trusted.example/"};
     std::vector<unsigned int> statuses;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            for (const auto& origin : spellings) {
-                const auto response = co_await raw_request(
-                    io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                    std::string(mcp::g_LATEST_PROTOCOL_VERSION), origin);
-                statuses.push_back(response.status);
-            }
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        for (const auto& origin : spellings) {
+            const auto response = co_await raw_request(
+                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+                std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION), origin);
+            statuses.push_back(response.status);
+        }
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -400,18 +560,16 @@ TEST_F(SessionManagerTest, AllowAllOriginsAdmitsAnOriginThatWasNeverListed) {
                                               make_echo_server_factory());
     manager.set_allow_all_origins(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://untrusted.example");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -428,22 +586,21 @@ TEST_F(SessionManagerTest, NamingAllowedOriginsRevokesAnEarlierAllowAll) {
     manager.set_allow_all_origins(true);
     manager.set_allowed_origins({"https://trusted.example"});
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse denied_response;
     RawResponse allowed_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            denied_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
-            allowed_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://trusted.example");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        denied_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://untrusted.example");
+        allowed_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://trusted.example");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -468,27 +625,26 @@ TEST_F(SessionManagerTest, TheOriginCheckPrecedesTheBearerCheckAndTheMetadataRou
     metadata.resource = "https://mcp.example.com/mcp";
     manager.set_protected_resource_metadata(metadata);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse untokened_response;
     RawResponse metadata_response;
     RawResponse exempt_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            untokened_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
-            metadata_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
-                                                     "/.well-known/oauth-protected-resource/mcp", {},
-                                                     {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-                                                     "https://untrusted.example");
-            exempt_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::get, "/health", {}, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), "https://untrusted.example");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        untokened_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", make_initialize_body(), {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://untrusted.example");
+        metadata_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::get, "/.well-known/oauth-protected-resource/mcp",
+            {}, {}, std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://untrusted.example");
+        exempt_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::get, "/health", {}, {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+            "https://untrusted.example");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -508,34 +664,34 @@ TEST_F(SessionManagerTest, BearerTokensAreValidatedAtHttpBoundary) {
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse missing_response;
     RawResponse invalid_response;
     RawResponse valid_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            const auto init_body =
-                json{{"jsonrpc", "2.0"},
-                     {"method", "initialize"},
-                     {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
-                       {"clientInfo", {{"name", "test"}, {"version", "1"}}},
-                       {"capabilities", json::object()}}},
-                     {"id", 1}}
-                    .dump();
-            missing_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body);
-            invalid_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "invalid-token");
-            valid_response = co_await raw_request(
-                io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "valid-token");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        const auto init_body =
+            json{{"jsonrpc", "2.0"},
+                 {"method", "initialize"},
+                 {"params",
+                  {{"protocolVersion",
+                    std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+                   {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                   {"capabilities", json::object()}}},
+                 {"id", 1}}
+                .dump();
+        missing_response =
+            co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body);
+        invalid_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt,
+            "invalid-token");
+        valid_response = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt,
+            "valid-token");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -560,21 +716,17 @@ TEST_F(SessionManagerTest, SecurityChecksRunBeforeCustomHttpHandlers) {
             return response;
         });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse missing_response;
     RawResponse valid_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            missing_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health");
-            valid_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health", {}, {},
-                                     std::nullopt, std::nullopt, "valid-token");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        missing_response =
+            co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health");
+        valid_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health",
+                                              {}, {}, std::nullopt, std::nullopt, "valid-token");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -592,16 +744,13 @@ TEST_F(SessionManagerTest, InitializeCreatesSession) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse init_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            init_response = co_await do_initialize(io_ctx_.get_executor(), port);
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        init_response = co_await do_initialize(io_ctx_.get_executor(), port);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -611,7 +760,8 @@ TEST_F(SessionManagerTest, InitializeCreatesSession) {
 
     auto body = json::parse(init_response.body);
     EXPECT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(body["result"]["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(SessionManagerTest, InitializeNegotiatesOlderSupportedProtocolVersion) {
@@ -619,17 +769,14 @@ TEST_F(SessionManagerTest, InitializeNegotiatesOlderSupportedProtocolVersion) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse init_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            init_response =
-                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        init_response =
+            co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -643,29 +790,25 @@ TEST_F(SessionManagerTest, SubsequentRequestsUseNegotiatedProtocolVersion) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse init_response;
     RawResponse tool_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            init_response =
-                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
-            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port,
-                                                         init_response.session_id, "2025-06-18");
-            EXPECT_EQ(initialized.status, 202);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        init_response =
+            co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
+        auto initialized = co_await send_initialized(io_ctx_.get_executor(), port,
+                                                     init_response.session_id, "2025-06-18");
+        EXPECT_EQ(initialized.status, 202);
 
-            json request = {{"jsonrpc", "2.0"},
-                            {"method", "tools/call"},
-                            {"id", 2},
-                            {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
-            tool_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                     request.dump(), init_response.session_id, "2025-06-18");
-            manager.close();
-        },
-        asio::detached);
+        json request = {{"jsonrpc", "2.0"},
+                        {"method", "tools/call"},
+                        {"id", 2},
+                        {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
+        tool_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             request.dump(), init_response.session_id, "2025-06-18");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -679,60 +822,59 @@ TEST_F(SessionManagerTest, ProtocolVersionStateIsSafeAcrossConnectionStrands) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     std::vector<RawResponse> responses(request_count);
     std::vector<std::exception_ptr> errors(request_count);
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            EXPECT_EQ(init.status, 200);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        EXPECT_EQ(init.status, 200);
 
-            auto remaining = std::make_shared<std::atomic<std::size_t>>(request_count);
-            auto all_done = std::make_shared<asio::steady_timer>(io_ctx_);
-            all_done->expires_at(std::chrono::steady_clock::time_point::max());
+        auto remaining = std::make_shared<std::atomic<std::size_t>>(request_count);
+        auto all_done = std::make_shared<asio::steady_timer>(io_ctx_);
+        all_done->expires_at(std::chrono::steady_clock::time_point::max());
 
-            for (std::size_t index = 0; index < request_count; ++index) {
-                asio::co_spawn(
-                    io_ctx_,
-                    [&, index, session_id = init.session_id]() -> mcp::Task<void> {
-                        if (index % 2 == 0) {
-                            json reinitialize = {
-                                {"jsonrpc", "2.0"},
-                                {"method", "initialize"},
-                                {"params",
-                                 {{"protocolVersion", "2025-06-18"},
-                                  {"clientInfo", {{"name", "race-test"}, {"version", "1"}}},
-                                  {"capabilities", json::object()}}},
-                                {"id", static_cast<int>(100 + index)}};
-                            responses[index] = co_await raw_request(
-                                io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                reinitialize.dump(), session_id, "2025-06-18");
-                        } else {
-                            const auto version = index % 4 == 1
-                                                     ? std::string("2025-06-18")
-                                                     : std::string(mcp::g_LATEST_PROTOCOL_VERSION);
-                            responses[index] =
-                                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
-                                                     "/mcp", {}, session_id, version);
-                        }
-                    },
-                    [&, index, remaining, all_done](std::exception_ptr error) {
-                        errors[index] = std::move(error);
-                        if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                            asio::post(all_done->get_executor(), [all_done]() {
-                                all_done->expires_at(std::chrono::steady_clock::now());
-                            });
-                        }
-                    });
-            }
+        for (std::size_t index = 0; index < request_count; ++index) {
+            mcp_test::spawn_then(
+                io_ctx_,
+                [&, index, session_id = init.session_id]() -> mcp::Task<void> {
+                    if (index % 2 == 0) {
+                        json reinitialize = {
+                            {"jsonrpc", "2.0"},
+                            {"method", "initialize"},
+                            {"params",
+                             {{"protocolVersion", "2025-06-18"},
+                              {"clientInfo", {{"name", "race-test"}, {"version", "1"}}},
+                              {"capabilities", json::object()}}},
+                            {"id", static_cast<int>(100 + index)}};
+                        responses[index] =
+                            co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 reinitialize.dump(), session_id, "2025-06-18");
+                    } else {
+                        const auto version =
+                            index % 4 == 1
+                                ? std::string("2025-06-18")
+                                : std::string(
+                                      mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
+                        // A resume from an event never sent checks the version and ends.
+                        responses[index] = co_await raw_resume(io_ctx_.get_executor(), port, session_id,
+                                                               version, "none");
+                    }
+                },
+                [&, index, remaining, all_done](std::exception_ptr error) {
+                    errors[index] = std::move(error);
+                    if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                        asio::post(all_done->get_executor(), [all_done]() {
+                            all_done->expires_at(std::chrono::steady_clock::now());
+                        });
+                    }
+                });
+        }
 
-            boost::system::error_code wait_error;
-            co_await all_done->async_wait(asio::redirect_error(asio::use_awaitable, wait_error));
-            manager.close();
-        },
-        asio::detached);
+        boost::system::error_code wait_error;
+        co_await all_done->async_wait(asio::redirect_error(asio::use_awaitable, wait_error));
+        manager.close();
+    });
 
     std::vector<std::thread> workers;
     workers.reserve(4);
@@ -745,7 +887,8 @@ TEST_F(SessionManagerTest, ProtocolVersionStateIsSafeAcrossConnectionStrands) {
 
     for (std::size_t index = 0; index < request_count; ++index) {
         EXPECT_EQ(errors[index], nullptr) << "request " << index;
-        EXPECT_TRUE(responses[index].status == 200 || responses[index].status == 400)
+        EXPECT_TRUE(responses[index].status == 200 || responses[index].status == 400 ||
+                    responses[index].status == 410)
             << "request " << index << " returned " << responses[index].status;
     }
 }
@@ -755,32 +898,28 @@ TEST_F(SessionManagerTest, SubsequentRequestsAllowMissingNegotiatedProtocolHeade
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse init_response;
     RawResponse tool_response;
     RawResponse delete_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            init_response =
-                co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
-            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port,
-                                                         init_response.session_id, std::nullopt);
-            EXPECT_EQ(initialized.status, 202);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        init_response =
+            co_await do_initialize(io_ctx_.get_executor(), port, 1, "2025-06-18", std::nullopt);
+        auto initialized = co_await send_initialized(io_ctx_.get_executor(), port,
+                                                     init_response.session_id, std::nullopt);
+        EXPECT_EQ(initialized.status, 202);
 
-            json request = {{"jsonrpc", "2.0"},
-                            {"method", "tools/call"},
-                            {"id", 2},
-                            {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
-            tool_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                     request.dump(), init_response.session_id, std::nullopt);
-            delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
-                                                   "/mcp", {}, init_response.session_id, std::nullopt);
-            manager.close();
-        },
-        asio::detached);
+        json request = {{"jsonrpc", "2.0"},
+                        {"method", "tools/call"},
+                        {"id", 2},
+                        {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
+        tool_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             request.dump(), init_response.session_id, std::nullopt);
+        delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
+                                               "/mcp", {}, init_response.session_id, std::nullopt);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -798,29 +937,26 @@ TEST_F(SessionManagerTest, RouteBySessionId) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse tool_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            EXPECT_EQ(init.status, 200);
-            auto session_id = init.session_id;
-            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, session_id);
-            EXPECT_EQ(initialized.status, 202);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        EXPECT_EQ(init.status, 200);
+        auto session_id = init.session_id;
+        auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, session_id);
+        EXPECT_EQ(initialized.status, 202);
 
-            // Call a tool using the session ID
-            json tool_call = {{"jsonrpc", "2.0"},
-                              {"method", "tools/call"},
-                              {"params", {{"name", "echo"}, {"arguments", {{"message", "hello"}}}}},
-                              {"id", 2}};
+        // Call a tool using the session ID
+        json tool_call = {{"jsonrpc", "2.0"},
+                          {"method", "tools/call"},
+                          {"params", {{"name", "echo"}, {"arguments", {{"message", "hello"}}}}},
+                          {"id", 2}};
 
-            tool_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                                 tool_call.dump(), session_id);
-            manager.close();
-        },
-        asio::detached);
+        tool_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             tool_call.dump(), session_id);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -839,18 +975,15 @@ TEST_F(SessionManagerTest, UnknownSessionReturns404) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json request = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 1}};
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump(), "nonexistent-session-id-1234");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        json request = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 1}};
+        response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                        request.dump(), "nonexistent-session-id-1234");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -869,28 +1002,25 @@ TEST_F(SessionManagerTest, DeleteDestroysSession) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse delete_response;
     RawResponse after_delete_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            auto session_id = init.session_id;
-            EXPECT_EQ(manager.session_count(), 1);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        auto session_id = init.session_id;
+        EXPECT_EQ(manager.session_count(), 1);
 
-            // DELETE the session
-            delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
-                                                   "/mcp", {}, session_id);
+        // DELETE the session
+        delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
+                                               "/mcp", {}, session_id);
 
-            // Try to use the session after deletion
-            json request = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 2}};
-            after_delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                         "/mcp", request.dump(), session_id);
-            manager.close();
-        },
-        asio::detached);
+        // Try to use the session after deletion
+        json request = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 2}};
+        after_delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", request.dump(), session_id);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -907,46 +1037,43 @@ TEST_F(SessionManagerTest, MultipleConcurrentSessionsSameIds) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse resp_a;
     RawResponse resp_b;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // Create session A
-            auto init_a = co_await do_initialize(io_ctx_.get_executor(), port, 1);
-            auto session_a = init_a.session_id;
-            auto initialized_a = co_await send_initialized(io_ctx_.get_executor(), port, session_a);
-            EXPECT_EQ(initialized_a.status, 202);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        // Create session A
+        auto init_a = co_await do_initialize(io_ctx_.get_executor(), port, 1);
+        auto session_a = init_a.session_id;
+        auto initialized_a = co_await send_initialized(io_ctx_.get_executor(), port, session_a);
+        EXPECT_EQ(initialized_a.status, 202);
 
-            // Create session B
-            auto init_b = co_await do_initialize(io_ctx_.get_executor(), port, 1);
-            auto session_b = init_b.session_id;
-            auto initialized_b = co_await send_initialized(io_ctx_.get_executor(), port, session_b);
-            EXPECT_EQ(initialized_b.status, 202);
+        // Create session B
+        auto init_b = co_await do_initialize(io_ctx_.get_executor(), port, 1);
+        auto session_b = init_b.session_id;
+        auto initialized_b = co_await send_initialized(io_ctx_.get_executor(), port, session_b);
+        EXPECT_EQ(initialized_b.status, 202);
 
-            EXPECT_NE(session_a, session_b);
-            EXPECT_EQ(manager.session_count(), 2);
+        EXPECT_NE(session_a, session_b);
+        EXPECT_EQ(manager.session_count(), 2);
 
-            // Both sessions use the SAME JSON-RPC id (2) — must not collide
-            json call_a = {{"jsonrpc", "2.0"},
-                           {"method", "tools/call"},
-                           {"params", {{"name", "echo"}, {"arguments", {{"message", "from-A"}}}}},
-                           {"id", 2}};
-            json call_b = {{"jsonrpc", "2.0"},
-                           {"method", "tools/call"},
-                           {"params", {{"name", "echo"}, {"arguments", {{"message", "from-B"}}}}},
-                           {"id", 2}};
+        // Both sessions use the SAME JSON-RPC id (2) — must not collide
+        json call_a = {{"jsonrpc", "2.0"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "echo"}, {"arguments", {{"message", "from-A"}}}}},
+                       {"id", 2}};
+        json call_b = {{"jsonrpc", "2.0"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "echo"}, {"arguments", {{"message", "from-B"}}}}},
+                       {"id", 2}};
 
-            resp_a = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                          call_a.dump(), session_a);
-            resp_b = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                          call_b.dump(), session_b);
+        resp_a = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                      call_a.dump(), session_a);
+        resp_b = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                      call_b.dump(), session_b);
 
-            manager.close();
-        },
-        asio::detached);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -958,6 +1085,119 @@ TEST_F(SessionManagerTest, MultipleConcurrentSessionsSameIds) {
 
     EXPECT_EQ(body_a["result"]["content"][0]["text"], "from-A");
     EXPECT_EQ(body_b["result"]["content"][0]["text"], "from-B");
+}
+
+// Both sessions are created over the one connection, so their transports share that connection's
+// strand; each request still reaches its own session, in turn.
+TEST_F(SessionManagerTest, TwoSessionsOnOneConnectionAreAnsweredEachByItsOwnServer) {
+    const unsigned short port = 19160;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+
+    std::vector<std::string> session_ids;
+    std::vector<std::string> expected;
+    std::vector<std::string> echoed;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        KeepAliveClient client(io_ctx_.get_executor());
+        co_await client.connect(port);
+
+        for (int index = 0; index < 2; ++index) {
+            auto init = co_await client.post(make_initialize_request(index + 1).dump());
+            EXPECT_EQ(init.status, 200);
+            session_ids.push_back(init.session_id);
+            json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+            auto accepted = co_await client.post(initialized.dump(), init.session_id);
+            EXPECT_EQ(accepted.status, 202);
+        }
+        EXPECT_EQ(manager.session_count(), 2);
+
+        for (int round = 0; round < 3; ++round) {
+            for (int session = 0; session < 2; ++session) {
+                auto message = "session-" + std::to_string(session) + "-round-" + std::to_string(round);
+                expected.push_back(message);
+                auto answer = co_await client.post(make_echo_request(10 + round, message).dump(),
+                                                   session_ids[static_cast<std::size_t>(session)]);
+                EXPECT_EQ(answer.status, 200);
+                echoed.push_back(
+                    json::parse(answer.body)["result"]["content"][0]["text"].get<std::string>());
+            }
+        }
+
+        manager.close();
+    });
+
+    io_ctx_.run();
+
+    ASSERT_EQ(session_ids.size(), 2U);
+    EXPECT_NE(session_ids[0], session_ids[1]);
+    EXPECT_EQ(echoed, expected);
+}
+
+// Sessions are served from keep-alive connections and from fresh ones, on several threads: a
+// request from a connection other than the one that created its session reaches the session's
+// strand from outside it.
+TEST_F(SessionManagerTest, ManySessionsAreAnsweredCorrectlyOnManyThreads) {
+    constexpr int session_count = 8;
+    constexpr int calls_per_session = 20;
+    constexpr int thread_count = 4;
+    const unsigned short port = 19161;
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
+                                              make_echo_server_factory());
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+
+    std::atomic<int> correct{0};
+    std::atomic<int> wrong{0};
+    std::atomic<int> finished{0};
+    for (int worker = 0; worker < session_count; ++worker) {
+        mcp_test::spawn_detached(io_ctx_, [&, worker]() -> mcp::Task<void> {
+            try {
+                KeepAliveClient client(io_ctx_.get_executor());
+                co_await client.connect(port);
+                auto init = co_await client.post(make_initialize_request(1).dump());
+                const auto session_id = init.session_id;
+                json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+                (void)co_await client.post(initialized.dump(), session_id);
+
+                for (int call = 0; call < calls_per_session; ++call) {
+                    const auto message =
+                        "worker-" + std::to_string(worker) + "-call-" + std::to_string(call);
+                    const auto request = make_echo_request(call + 2, message).dump();
+                    RawResponse answer;
+                    if (call % 2 == 0) {
+                        answer = co_await client.post(request, session_id);
+                    } else {
+                        answer = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                      "/mcp", request, session_id);
+                    }
+                    const auto body = json::parse(answer.body, nullptr, false);
+                    if (answer.status == 200 && body.is_object() && body.contains("result") &&
+                        body["result"]["content"][0]["text"] == message) {
+                        correct.fetch_add(1, std::memory_order_relaxed);
+                    } else {
+                        wrong.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            } catch (const std::exception&) {
+                wrong.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (finished.fetch_add(1, std::memory_order_acq_rel) + 1 == session_count) {
+                manager.close();
+            }
+        });
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(thread_count);
+    for (int index = 0; index < thread_count; ++index) {
+        threads.emplace_back([this] { io_ctx_.run(); });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    EXPECT_EQ(wrong.load(), 0);
+    EXPECT_EQ(correct.load(), session_count * calls_per_session);
 }
 
 // ---------------------------------------------------------------------------
@@ -981,37 +1221,34 @@ TEST_F(SessionManagerTest, CustomRequestHandler) {
         return std::nullopt;
     });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse health_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // Hit the /health endpoint — custom handler should intercept
-            beast::tcp_stream stream(io_ctx_.get_executor());
-            auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
-            auto endpoints =
-                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
-            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        // Hit the /health endpoint — custom handler should intercept
+        beast::tcp_stream stream(io_ctx_.get_executor());
+        auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+        auto endpoints =
+            co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
+        co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
 
-            http::request<http::string_body> request{http::verb::get, "/health", 11};
-            request.set(http::field::host, "127.0.0.1");
-            request.prepare_payload();
+        http::request<http::string_body> request{http::verb::get, "/health", 11};
+        request.set(http::field::host, "127.0.0.1");
+        request.prepare_payload();
 
-            co_await http::async_write(stream, request, asio::use_awaitable);
+        co_await http::async_write(stream, request, asio::use_awaitable);
 
-            beast::flat_buffer response_buffer;
-            http::response<http::string_body> response;
-            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+        beast::flat_buffer response_buffer;
+        http::response<http::string_body> response;
+        co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
 
-            health_response.status = response.result_int();
-            health_response.body = response.body();
+        health_response.status = response.result_int();
+        health_response.body = response.body();
 
-            beast::error_code shutdown_error;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
-            manager.close();
-        },
-        asio::detached);
+        beast::error_code shutdown_error;
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1029,23 +1266,20 @@ TEST_F(SessionManagerTest, NotificationReturns202) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse notification_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            auto session_id = init.session_id;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        auto session_id = init.session_id;
 
-            // Send a notification (has method, no id)
-            json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
-            notification_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                         "/mcp", notification.dump(), session_id);
+        // Send a notification (has method, no id)
+        json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+        notification_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", notification.dump(), session_id);
 
-            manager.close();
-        },
-        asio::detached);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1061,21 +1295,18 @@ TEST_F(SessionManagerTest, BadProtocolVersionReturns400) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json request = {{"jsonrpc", "2.0"},
-                            {"method", "initialize"},
-                            {"id", 1},
-                            {"params", {{"protocolVersion", "0000-00-00"}}}};
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump(), {}, "0000-00-00");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        json request = {{"jsonrpc", "2.0"},
+                        {"method", "initialize"},
+                        {"id", 1},
+                        {"params", {{"protocolVersion", "0000-00-00"}}}};
+        response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                        request.dump(), {}, "0000-00-00");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1091,22 +1322,19 @@ TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // Send a tools/call without session header (not initialize)
-            json request = {{"jsonrpc", "2.0"},
-                            {"method", "tools/call"},
-                            {"id", 1},
-                            {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump());  // no session_id
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        // Send a tools/call without session header (not initialize)
+        json request = {{"jsonrpc", "2.0"},
+                        {"method", "tools/call"},
+                        {"id", 1},
+                        {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
+        response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                        request.dump());  // no session_id
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1118,7 +1346,9 @@ TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
 // ---------------------------------------------------------------------------
 // server/discover is reachable with zero prior state in stateful mode: no session is
 // created and no Mcp-Session-Id is issued, unlike every other sessionless non-initialize
-// method (pinned above by NonInitializeWithoutSessionReturns400).
+// method (pinned above by NonInitializeWithoutSessionReturns400). As a 2026-07-28 request it is
+// served with its own MCP-Protocol-Version header, which the legacy check reserved for
+// initialize-negotiated versions would refuse.
 // ---------------------------------------------------------------------------
 
 TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) {
@@ -1126,20 +1356,15 @@ TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) 
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
     std::size_t session_count = 0;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump());  // no session_id
-            session_count = manager.session_count();
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        response = co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(1));
+        session_count = manager.session_count();
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1171,21 +1396,17 @@ TEST_F(SessionManagerTest, SessionlessDiscoversShareOneServer) {
                                                   return echo_factory(executor);
                                               });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     std::vector<int> statuses;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            for (int id = 1; id <= 3; ++id) {
-                json request = {{"jsonrpc", "2.0"}, {"id", id}, {"method", "server/discover"}};
-                auto response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                     "/mcp", request.dump());
-                statuses.push_back(response.status);
-            }
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        for (int id = 1; id <= 3; ++id) {
+            auto response =
+                co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(id));
+            statuses.push_back(response.status);
+        }
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1204,23 +1425,19 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse init_response;
     RawResponse discover_response;
     std::size_t session_count_after = 0;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            init_response = co_await do_initialize(io_ctx_.get_executor(), port);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        init_response = co_await do_initialize(io_ctx_.get_executor(), port);
 
-            json request = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "server/discover"}};
-            discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                     "/mcp", request.dump());  // no session id
-            session_count_after = manager.session_count();
-            manager.close();
-        },
-        asio::detached);
+        discover_response =
+            co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(2));
+        session_count_after = manager.session_count();
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1238,71 +1455,30 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
 }
 
 // ---------------------------------------------------------------------------
-// server/discover is exempted from the MCP-Protocol-Version header check that rejects any
-// version outside g_SUPPORTED_PROTOCOL_VERSIONS, so a modern client probing with its own
-// 2026-07-28 header is not rejected pre-dispatch — unlike every other method (pinned by
-// BadProtocolVersionReturns400 for initialize, and StatelessBadProtocolVersionReturns400 /
-// the discover-vs-tools-list test below for the general case).
+// Stateless mode: server/discover is served as a 2026-07-28 request, while a tools/list that
+// sends the 2026-07-28 header without the rest of that protocol (Mcp-Method, _meta) is refused.
 // ---------------------------------------------------------------------------
 
-TEST_F(SessionManagerTest, SessionlessDiscoverAcceptsUnsupportedProtocolVersionHeader) {
-    const unsigned short port = 19119;
-    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
-                                              make_echo_server_factory());
-
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
-
-    RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump(), {}, "2026-07-28");
-            manager.close();
-        },
-        asio::detached);
-
-    io_ctx_.run();
-
-    EXPECT_EQ(response.status, 200);
-    auto body = json::parse(response.body);
-    ASSERT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["resultType"], "complete");
-}
-
-// ---------------------------------------------------------------------------
-// Stateless mode: server/discover with a 2026-07-28 header is accepted, while tools/list
-// (non-discover) with the same header still gets the legacy 400 — pinning that the header
-// exemption is scoped to server/discover and not widened to other methods.
-// ---------------------------------------------------------------------------
-
-TEST_F(SessionManagerTest,
-       StatelessDiscoverAcceptsUnsupportedProtocolVersionHeaderToolsListStillRejected) {
+TEST_F(SessionManagerTest, StatelessDiscoverServedAndIncompleteModernToolsListRefused) {
     const unsigned short port = 19120;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     manager.set_stateless_json_mode(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse discover_response;
     RawResponse tools_list_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json discover_request = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "server/discover"}};
-            discover_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                     "/mcp", discover_request.dump(), {}, "2026-07-28");
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        discover_response =
+            co_await modern_post(io_ctx_.get_executor(), port, make_discover_request(1));
 
-            json tools_list_request = {
-                {"jsonrpc", "2.0"}, {"method", "tools/list"}, {"params", json::object()}, {"id", 2}};
-            tools_list_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                     tools_list_request.dump(), {}, "2026-07-28");
-            manager.close();
-        },
-        asio::detached);
+        json tools_list_request = {
+            {"jsonrpc", "2.0"}, {"method", "tools/list"}, {"params", json::object()}, {"id", 2}};
+        tools_list_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                   "/mcp", tools_list_request.dump(), {}, "2026-07-28");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1312,6 +1488,8 @@ TEST_F(SessionManagerTest,
     EXPECT_EQ(discover_body["result"]["resultType"], "complete");
 
     EXPECT_EQ(tools_list_response.status, 400);
+    EXPECT_EQ(json::parse(tools_list_response.body)["error"]["code"],
+              mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 }
 
 // ---------------------------------------------------------------------------
@@ -1323,17 +1501,14 @@ TEST_F(SessionManagerTest, DeleteUnknownSessionReturns404) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_, "/mcp",
-                                            {}, "nonexistent-session");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_, "/mcp", {},
+                                        "nonexistent-session");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1349,29 +1524,26 @@ TEST_F(SessionManagerTest, SessionCountTracksCorrectly) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     std::size_t count_after_create = 0;
     std::size_t count_after_second = 0;
     std::size_t count_after_delete = 0;
 
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init_a = co_await do_initialize(io_ctx_.get_executor(), port, 1);
-            count_after_create = manager.session_count();
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init_a = co_await do_initialize(io_ctx_.get_executor(), port, 1);
+        count_after_create = manager.session_count();
 
-            auto init_b = co_await do_initialize(io_ctx_.get_executor(), port, 1);
-            count_after_second = manager.session_count();
+        auto init_b = co_await do_initialize(io_ctx_.get_executor(), port, 1);
+        count_after_second = manager.session_count();
 
-            // Delete the first session
-            co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_, "/mcp", {},
-                                 init_a.session_id);
-            count_after_delete = manager.session_count();
+        // Delete the first session
+        co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_, "/mcp", {},
+                             init_a.session_id);
+        count_after_delete = manager.session_count();
 
-            manager.close();
-        },
-        asio::detached);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1389,17 +1561,14 @@ TEST_F(SessionManagerTest, UnsupportedMethodReturns405) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::put, "/mcp",
-                                            R"({"test":"data"})");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::put, "/mcp",
+                                        R"({"test":"data"})");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1412,16 +1581,13 @@ TEST_F(SessionManagerTest, StatelessInitializeDoesNotCreateSessionHeader) {
                                               make_echo_server_factory());
     manager.set_stateless_json_mode(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse init_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            init_response = co_await do_initialize(io_ctx_.get_executor(), port);
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        init_response = co_await do_initialize(io_ctx_.get_executor(), port);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1431,7 +1597,8 @@ TEST_F(SessionManagerTest, StatelessInitializeDoesNotCreateSessionHeader) {
 
     auto body = json::parse(init_response.body);
     EXPECT_TRUE(body.contains("result"));
-    EXPECT_EQ(body["result"]["protocolVersion"], std::string(mcp::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(body["result"]["protocolVersion"],
+              std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
 }
 
 TEST_F(SessionManagerTest, StatelessToolsCallAndToolsListWorkWithoutSession) {
@@ -1440,27 +1607,24 @@ TEST_F(SessionManagerTest, StatelessToolsCallAndToolsListWorkWithoutSession) {
                                               make_echo_server_factory());
     manager.set_stateless_json_mode(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse tool_response;
     RawResponse list_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json tool_call = {{"jsonrpc", "2.0"},
-                              {"method", "tools/call"},
-                              {"params", {{"name", "echo"}, {"arguments", {{"message", "hello"}}}}},
-                              {"id", 2}};
-            tool_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                                 tool_call.dump());
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        json tool_call = {{"jsonrpc", "2.0"},
+                          {"method", "tools/call"},
+                          {"params", {{"name", "echo"}, {"arguments", {{"message", "hello"}}}}},
+                          {"id", 2}};
+        tool_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             tool_call.dump());
 
-            json list_call = {
-                {"jsonrpc", "2.0"}, {"method", "tools/list"}, {"params", json::object()}, {"id", 3}};
-            list_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                                 list_call.dump());
-            manager.close();
-        },
-        asio::detached);
+        json list_call = {
+            {"jsonrpc", "2.0"}, {"method", "tools/list"}, {"params", json::object()}, {"id", 3}};
+        list_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             list_call.dump());
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1483,18 +1647,15 @@ TEST_F(SessionManagerTest, StatelessNotificationReturns202WithoutSession) {
                                               make_echo_server_factory());
     manager.set_stateless_json_mode(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse notification_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
-            notification_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                         "/mcp", notification.dump());
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+        notification_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
+                                                     "/mcp", notification.dump());
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1508,19 +1669,16 @@ TEST_F(SessionManagerTest, StatelessRejectsGetAndDeleteWithPostOnlyAllowHeader) 
                                               make_echo_server_factory());
     manager.set_stateless_json_mode(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse get_response;
     RawResponse delete_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            get_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
-            delete_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_, "/mcp");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        get_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+        delete_response =
+            co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_, "/mcp");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1536,18 +1694,15 @@ TEST_F(SessionManagerTest, StatelessBadProtocolVersionReturns400) {
                                               make_echo_server_factory());
     manager.set_stateless_json_mode(true);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            json request = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 1}};
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump(), {}, "0000-00-00");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        json request = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 1}};
+        response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                        request.dump(), {}, "0000-00-00");
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -1582,55 +1737,144 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
 
     auto client = std::make_shared<beast::tcp_stream>(io_ctx_.get_executor());
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
-    deadline->expires_after(std::chrono::seconds(2));
+    deadline->expires_after(g_hang_guard);
     bool first_request_completed = false;
     bool connection_cancelled = false;
     bool post_close_response_received = false;
     bool timed_out = false;
     std::exception_ptr client_error;
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
-    asio::co_spawn(
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+    mcp_test::spawn_then(
         io_ctx_,
-        [&manager, client, deadline, port, &first_request_completed, &connection_cancelled,
-         &post_close_response_received]() -> mcp::Task<void> {
-            asio::ip::tcp::resolver resolver(client->get_executor());
-            auto endpoints =
-                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
-            co_await client->async_connect(*endpoints.begin(), asio::use_awaitable);
+        [&manager, client,
+         deadline, port, &first_request_completed, &connection_cancelled, &post_close_response_received]() -> mcp::
+                                                                                                               Task<
+                                                                                                                   void> {
+                                                                                                                   asio::ip::tcp::resolver
+                                                                                                                       resolver(
+                                                                                                                           client
+                                                                                                                               ->get_executor());
+                                                                                                                   auto endpoints =
+                                                                                                                       co_await resolver
+                                                                                                                           .async_resolve(
+                                                                                                                               "127.0.0.1",
+                                                                                                                               std::to_string(
+                                                                                                                                   port),
+                                                                                                                               asio::
+                                                                                                                                   use_awaitable);
+                                                                                                                   co_await client
+                                                                                                                       ->async_connect(
+                                                                                                                           *endpoints
+                                                                                                                                .begin(),
+                                                                                                                           asio::
+                                                                                                                               use_awaitable);
 
-            http::request<http::string_body> health_request{http::verb::get, "/health", 11};
-            health_request.set(http::field::host, "127.0.0.1");
-            health_request.keep_alive(true);
-            co_await http::async_write(*client, health_request, asio::use_awaitable);
+                                                                                                                   http::request<
+                                                                                                                       http::
+                                                                                                                           string_body>
+                                                                                                                       health_request{
+                                                                                                                           http::verb::
+                                                                                                                               get,
+                                                                                                                           "/health",
+                                                                                                                           11};
+                                                                                                                   health_request
+                                                                                                                       .set(
+                                                                                                                           http::field::
+                                                                                                                               host,
+                                                                                                                           "127.0.0.1");
+                                                                                                                   health_request
+                                                                                                                       .keep_alive(
+                                                                                                                           true);
+                                                                                                                   co_await http::async_write(
+                                                                                                                       *client,
+                                                                                                                       health_request,
+                                                                                                                       asio::
+                                                                                                                           use_awaitable);
 
-            beast::flat_buffer response_buffer;
-            http::response<http::string_body> health_response;
-            co_await http::async_read(*client, response_buffer, health_response, asio::use_awaitable);
-            first_request_completed = health_response.result() == http::status::ok;
+                                                                                                                   beast::flat_buffer
+                                                                                                                       response_buffer;
+                                                                                                                   http::response<
+                                                                                                                       http::
+                                                                                                                           string_body>
+                                                                                                                       health_response;
+                                                                                                                   co_await http::async_read(
+                                                                                                                       *client,
+                                                                                                                       response_buffer,
+                                                                                                                       health_response,
+                                                                                                                       asio::
+                                                                                                                           use_awaitable);
+                                                                                                                   first_request_completed =
+                                                                                                                       health_response
+                                                                                                                           .result() ==
+                                                                                                                       http::status::
+                                                                                                                           ok;
 
-            manager.close();
+                                                                                                                   manager
+                                                                                                                       .close();
 
-            http::request<http::string_body> initialize_request{http::verb::post, "/mcp", 11};
-            initialize_request.set(http::field::host, "127.0.0.1");
-            initialize_request.set(http::field::content_type, "application/json");
-            initialize_request.set("MCP-Protocol-Version", std::string(mcp::g_LATEST_PROTOCOL_VERSION));
-            initialize_request.keep_alive(true);
-            initialize_request.body() =
-                R"({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"post-close","version":"1.0"},"capabilities":{}},"id":1})";
-            initialize_request.prepare_payload();
+                                                                                                                   http::request<
+                                                                                                                       http::
+                                                                                                                           string_body>
+                                                                                                                       initialize_request{
+                                                                                                                           http::verb::
+                                                                                                                               post,
+                                                                                                                           "/mcp",
+                                                                                                                           11};
+                                                                                                                   initialize_request
+                                                                                                                       .set(
+                                                                                                                           http::field::
+                                                                                                                               host,
+                                                                                                                           "127.0.0.1");
+                                                                                                                   initialize_request
+                                                                                                                       .set(
+                                                                                                                           http::field::
+                                                                                                                               content_type,
+                                                                                                                           "application/json");
+                                                                                                                   initialize_request
+                                                                                                                       .set(
+                                                                                                                           "MCP-Protocol-Version",
+                                                                                                                           std::string(
+                                                                                                                               mcp::constants::
+                                                                                                                                   protocol::
+                                                                                                                                       g_LATEST_LEGACY_PROTOCOL_VERSION));
+                                                                                                                   initialize_request
+                                                                                                                       .keep_alive(
+                                                                                                                           true);
+                                                                                                                   initialize_request
+                                                                                                                       .body() =
+                                                                                                                       R"({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"post-close","version":"1.0"},"capabilities":{}},"id":1})";
+                                                                                                                   initialize_request
+                                                                                                                       .prepare_payload();
 
-            try {
-                co_await http::async_write(*client, initialize_request, asio::use_awaitable);
-                http::response<http::string_body> initialize_response;
-                co_await http::async_read(*client, response_buffer, initialize_response,
-                                          asio::use_awaitable);
-                post_close_response_received = true;
-            } catch (const boost::system::system_error&) {
-                connection_cancelled = true;
-            }
-            deadline->cancel();
-        },
+                                                                                                                   try {
+                                                                                                                       co_await http::async_write(
+                                                                                                                           *client,
+                                                                                                                           initialize_request,
+                                                                                                                           asio::
+                                                                                                                               use_awaitable);
+                                                                                                                       http::response<
+                                                                                                                           http::
+                                                                                                                               string_body>
+                                                                                                                           initialize_response;
+                                                                                                                       co_await http::async_read(
+                                                                                                                           *client,
+                                                                                                                           response_buffer,
+                                                                                                                           initialize_response,
+                                                                                                                           asio::
+                                                                                                                               use_awaitable);
+                                                                                                                       post_close_response_received =
+                                                                                                                           true;
+                                                                                                                   } catch (
+                                                                                                                       const boost::
+                                                                                                                           system::
+                                                                                                                               system_error&) {
+                                                                                                                       connection_cancelled =
+                                                                                                                           true;
+                                                                                                                   }
+                                                                                                                   deadline
+                                                                                                                       ->cancel();
+                                                                                                               },
         [&client_error, deadline, &manager](std::exception_ptr error) {
             client_error = std::move(error);
             deadline->cancel();
@@ -1678,7 +1922,7 @@ TEST_F(SessionManagerTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     EXPECT_THROW(manager.set_max_request_body_bytes(4096), std::logic_error);
 
     manager.close();
-    asio::co_spawn(io_ctx_, std::move(listener), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, std::move(listener));
     io_ctx_.run();
 }
 
@@ -1711,20 +1955,17 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     manager.set_stateless_json_mode(true);
     manager.set_tool_executor(tool_pool.get_executor());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
     RawResponse response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            const json request = {{"jsonrpc", "2.0"},
-                                  {"method", "tools/call"},
-                                  {"params", {{"name", "executor"}, {"arguments", json::object()}}},
-                                  {"id", 1}};
-            response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            request.dump());
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        const json request = {{"jsonrpc", "2.0"},
+                              {"method", "tools/call"},
+                              {"params", {{"name", "executor"}, {"arguments", json::object()}}},
+                              {"id", 1}};
+        response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                        request.dump());
+        manager.close();
+    });
 
     io_ctx_.run();
     tool_pool.join();
@@ -1733,6 +1974,348 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     EXPECT_TRUE(handler_ran.load(std::memory_order_acquire));
     EXPECT_FALSE(handler_ran_on_http_thread.load(std::memory_order_acquire));
     EXPECT_EQ(json::parse(response.body)["result"]["content"][0]["text"], "tool executor");
+}
+
+// A session keeps its protocol work on the HTTP executor and moves only the tool handler to the
+// tool executor, and what the handler sends through its Context still arrives in order.
+TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) {
+    const unsigned short port = 19118;
+    const auto http_thread = std::this_thread::get_id();
+    std::atomic<bool> sync_handler_on_http_thread{true};
+    std::atomic<bool> coroutine_handler_on_http_thread{true};
+    asio::thread_pool tool_pool(2);
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            capabilities.logging = json::object();
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"executor-session-server", "1.0.0"}, std::move(capabilities));
+            server->add_tool<json, mcp::CallToolResult>(
+                "sync", "Blocks its thread", json{{"type", "object"}},
+                [&](json) -> mcp::CallToolResult {
+                    sync_handler_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    return mcp::make_tool_text_result("sync done");
+                });
+            server->add_tool<json, mcp::CallToolResult>(
+                "notify", "Reports through its context", json{{"type", "object"}},
+                [&](mcp::Context& ctx, json) -> mcp::Task<mcp::CallToolResult> {
+                    coroutine_handler_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    co_await ctx.log_info("tool started");
+                    co_await ctx.report_progress(0.5, 1.0, "halfway");
+                    co_return mcp::make_tool_text_result("coroutine done");
+                });
+            return server;
+        });
+    manager.set_tool_executor(tool_pool.get_executor());
+
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+
+    RawResponse listed;
+    RawResponse sync_response;
+    RawResponse notify_response;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        EXPECT_EQ(init.status, 200);
+        auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+        EXPECT_EQ(initialized.status, 202);
+
+        const std::string version(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
+        const json list_request = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 2}};
+        listed = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                      list_request.dump(), init.session_id, version, std::nullopt,
+                                      std::nullopt, "application/json");
+        const json sync_request = {{"jsonrpc", "2.0"},
+                                   {"method", "tools/call"},
+                                   {"params", {{"name", "sync"}, {"arguments", json::object()}}},
+                                   {"id", 3}};
+        sync_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             sync_request.dump(), init.session_id, version,
+                                             std::nullopt, std::nullopt, "application/json");
+        const json notify_request = {{"jsonrpc", "2.0"},
+                                     {"method", "tools/call"},
+                                     {"params",
+                                      {{"name", "notify"},
+                                       {"arguments", json::object()},
+                                       {"_meta", {{"progressToken", "progress-1"}}}}},
+                                     {"id", 4}};
+        notify_response =
+            co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                 notify_request.dump(), init.session_id, version, std::nullopt,
+                                 std::nullopt, "application/json, text/event-stream");
+        manager.close();
+    });
+
+    io_ctx_.run();
+    tool_pool.join();
+
+    ASSERT_EQ(listed.status, 200);
+    EXPECT_EQ(json::parse(listed.body)["result"]["tools"].size(), 2);
+    ASSERT_EQ(sync_response.status, 200);
+    EXPECT_EQ(json::parse(sync_response.body)["result"]["content"][0]["text"], "sync done");
+    EXPECT_FALSE(sync_handler_on_http_thread.load());
+
+    ASSERT_EQ(notify_response.status, 200);
+    EXPECT_FALSE(coroutine_handler_on_http_thread.load());
+    const auto events = parse_sse_events(notify_response.body);
+    ASSERT_EQ(events.size(), 3);
+    EXPECT_EQ(events[0].second.at("method"), "notifications/message");
+    EXPECT_EQ(events[1].second.at("method"), "notifications/progress");
+    EXPECT_EQ(events[2].second.at("result").at("content").at(0).at("text"), "coroutine done");
+}
+
+// A 2026-07-28 client that declares no capabilities is served without parking the handler, and
+// the progress that a resource or prompt handler reports still reaches it.
+TEST_F(SessionManagerTest, ResourceAndPromptProgressReachesAClientWithoutCapabilities) {
+    const unsigned short port = 19165;
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
+            capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
+            auto server = std::make_unique<mcp::Server>(mcp::Implementation{"progress-server", "1.0.0"},
+                                                        std::move(capabilities));
+            mcp::Resource resource;
+            resource.uri = "res://progress";
+            resource.name = "progress";
+            server->add_resource<json, mcp::ReadResourceResult>(
+                resource, [](mcp::Context& ctx, json) -> mcp::Task<mcp::ReadResourceResult> {
+                    co_await ctx.report_progress(1, 2);
+                    mcp::ReadResourceResult result;
+                    mcp::TextResourceContents contents;
+                    contents.uri = "res://progress";
+                    contents.text = "read";
+                    result.contents.emplace_back(std::move(contents));
+                    co_return result;
+                });
+            mcp::Prompt prompt;
+            prompt.name = "progress";
+            server->add_prompt<json, mcp::GetPromptResult>(
+                prompt, [](mcp::Context& ctx, json) -> mcp::Task<mcp::GetPromptResult> {
+                    co_await ctx.report_progress(1, 2);
+                    mcp::GetPromptResult result;
+                    result.description = "got";
+                    co_return result;
+                });
+            return server;
+        });
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+
+    const auto meta = json{{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+                           {"io.modelcontextprotocol/clientCapabilities", json::object()},
+                           {"progressToken", "token-1"}};
+    RawResponse read_response;
+    RawResponse prompt_response;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        const json read_request = {{"jsonrpc", "2.0"},
+                                   {"method", "resources/read"},
+                                   {"params", {{"uri", "res://progress"}, {"_meta", meta}}},
+                                   {"id", 1}};
+        read_response = co_await modern_post(io_ctx_.get_executor(), port, read_request);
+        const json prompt_request = {{"jsonrpc", "2.0"},
+                                     {"method", "prompts/get"},
+                                     {"params", {{"name", "progress"}, {"_meta", meta}}},
+                                     {"id", 2}};
+        prompt_response = co_await modern_post(io_ctx_.get_executor(), port, prompt_request);
+        manager.close();
+    });
+    io_ctx_.run();
+
+    for (const auto* response : {&read_response, &prompt_response}) {
+        ASSERT_EQ(response->status, 200) << response->body;
+        const auto events = parse_sse_events(response->body);
+        ASSERT_EQ(events.size(), 2U) << response->body;
+        EXPECT_EQ(events[0].second.at("method"), "notifications/progress");
+        EXPECT_EQ(events[0].second.at("params").at("progressToken"), "token-1");
+        EXPECT_TRUE(events[1].second.contains("result"));
+    }
+}
+
+// A resource or prompt handler, like a tool handler, runs on the tool executor and not on the
+// HTTP thread that a blocking one would hold.
+TEST_F(SessionManagerTest, ResourceAndPromptHandlersRunOnTheToolExecutor) {
+    const unsigned short port = 19164;
+    const auto http_thread = std::this_thread::get_id();
+    std::atomic<bool> resource_on_http_thread{true};
+    std::atomic<bool> prompt_on_http_thread{true};
+    asio::thread_pool tool_pool(1);
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
+            capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"executor-resource-server", "1.0.0"}, std::move(capabilities));
+            mcp::Resource resource;
+            resource.uri = "res://where";
+            resource.name = "where";
+            server->add_resource<json, mcp::ReadResourceResult>(
+                resource, [&](json) -> mcp::ReadResourceResult {
+                    resource_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                    mcp::ReadResourceResult result;
+                    mcp::TextResourceContents contents;
+                    contents.uri = "res://where";
+                    contents.text = "read";
+                    result.contents.emplace_back(std::move(contents));
+                    return result;
+                });
+            mcp::Prompt prompt;
+            prompt.name = "where";
+            server->add_prompt<json, mcp::GetPromptResult>(prompt, [&](json) -> mcp::GetPromptResult {
+                prompt_on_http_thread.store(std::this_thread::get_id() == http_thread);
+                mcp::GetPromptResult result;
+                result.description = "got";
+                return result;
+            });
+            return server;
+        });
+    manager.set_stateless_json_mode(true);
+    manager.set_tool_executor(tool_pool.get_executor());
+
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+    RawResponse read_response;
+    RawResponse prompt_response;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        const json read_request = {{"jsonrpc", "2.0"},
+                                   {"method", "resources/read"},
+                                   {"params", {{"uri", "res://where"}}},
+                                   {"id", 1}};
+        read_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             read_request.dump());
+        const json prompt_request = {
+            {"jsonrpc", "2.0"}, {"method", "prompts/get"}, {"params", {{"name", "where"}}}, {"id", 2}};
+        prompt_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                               prompt_request.dump());
+        manager.close();
+    });
+
+    io_ctx_.run();
+    tool_pool.join();
+
+    EXPECT_EQ(read_response.status, 200);
+    EXPECT_EQ(json::parse(read_response.body)["result"]["contents"][0]["text"], "read");
+    EXPECT_FALSE(resource_on_http_thread.load());
+    EXPECT_EQ(prompt_response.status, 200);
+    EXPECT_EQ(json::parse(prompt_response.body)["result"]["description"], "got");
+    EXPECT_FALSE(prompt_on_http_thread.load());
+}
+
+// A handler that runs two branches at once, as `co_await (a && b)` does, is safe only when the
+// branches run one at a time, so a server on several threads, with or without a tool executor,
+// must run the handler on a strand. The branches are started by hand because Boost 1.74 has no
+// awaitable operators.
+struct FanOutProbe {
+    std::atomic<int> inside{0};
+    std::atomic<int> overlaps{0};
+    std::atomic<int> finished{0};
+};
+
+/// Keeps the thread busy for @p duration. A sleep this short can last a whole clock tick on Windows.
+void spin_for(std::chrono::microseconds duration) {
+    const auto until = std::chrono::steady_clock::now() + duration;
+    while (std::chrono::steady_clock::now() < until) {
+    }
+}
+
+mcp::Task<void> fan_out_branch(std::shared_ptr<FanOutProbe> probe, int rounds) {
+    const auto executor = co_await asio::this_coro::executor;
+    for (int round = 0; round < rounds; ++round) {
+        if (probe->inside.fetch_add(1) != 0) {
+            probe->overlaps.fetch_add(1);
+        }
+        spin_for(std::chrono::microseconds(50));
+        probe->inside.fetch_sub(1);
+        co_await asio::post(executor, asio::use_awaitable);
+    }
+}
+
+/// Runs two branches at once and returns when both have finished.
+mcp::Task<void> fan_out(std::shared_ptr<FanOutProbe> probe, int rounds) {
+    const auto executor = co_await asio::this_coro::executor;
+    auto remaining = std::make_shared<std::atomic<int>>(2);
+    for (int branch = 0; branch < 2; ++branch) {
+        mcp_test::spawn_then(executor, fan_out_branch(probe, rounds),
+                             [remaining](std::exception_ptr) { remaining->fetch_sub(1); });
+    }
+    while (remaining->load() != 0) {
+        co_await asio::post(executor, asio::use_awaitable);
+    }
+}
+
+void run_fan_out_case(asio::io_context& io_ctx, unsigned short port, bool with_tool_pool,
+                      FanOutProbe& probe) {
+    constexpr int g_requests = 4;
+    constexpr int g_rounds = 200;
+    asio::thread_pool tool_pool(4);
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx.get_executor(), "127.0.0.1", port,
+        [&probe](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server = std::make_unique<mcp::Server>(mcp::Implementation{"fan-out-server", "1.0.0"},
+                                                        std::move(capabilities));
+            server->add_tool<json, mcp::CallToolResult>(
+                "fan_out", "Runs two branches at once", json{{"type", "object"}},
+                [&probe](mcp::Context&, json) -> mcp::Task<mcp::CallToolResult> {
+                    // Branches of one call must not overlap; two calls may.
+                    auto call = std::make_shared<FanOutProbe>();
+                    co_await fan_out(call, g_rounds);
+                    probe.overlaps.fetch_add(call->overlaps.load());
+                    probe.finished.fetch_add(1);
+                    co_return mcp::make_tool_text_result("done");
+                });
+            return server;
+        });
+    manager.set_stateless_json_mode(true);
+    if (with_tool_pool) {
+        manager.set_tool_executor(tool_pool.get_executor());
+    }
+    mcp_test::spawn_detached(io_ctx, manager.listen());
+
+    auto pending = std::make_shared<std::atomic<int>>(g_requests);
+    for (int index = 0; index < g_requests; ++index) {
+        mcp_test::spawn_detached(
+            io_ctx, [&io_ctx, &manager, port, pending, index]() -> mcp::Task<void> {
+                const json request = {{"jsonrpc", "2.0"},
+                                      {"method", "tools/call"},
+                                      {"params", {{"name", "fan_out"}, {"arguments", json::object()}}},
+                                      {"id", index + 1}};
+                co_await raw_request(io_ctx.get_executor(), port, http::verb::post, "/mcp",
+                                     request.dump());
+                if (pending->fetch_sub(1) == 1) {
+                    manager.close();
+                }
+            });
+    }
+
+    std::vector<std::thread> workers;
+    for (int index = 0; index < 3; ++index) {
+        workers.emplace_back([&io_ctx] { io_ctx.run(); });
+    }
+    io_ctx.run();
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    tool_pool.join();
+}
+
+TEST_F(SessionManagerTest, HandlerBranchesNeverOverlapOnSeveralHttpThreads) {
+    FanOutProbe probe;
+    run_fan_out_case(io_ctx_, 19162, false, probe);
+    EXPECT_EQ(probe.finished.load(), 4);
+    EXPECT_EQ(probe.overlaps.load(), 0);
+}
+
+TEST_F(SessionManagerTest, HandlerBranchesNeverOverlapOnAToolPool) {
+    FanOutProbe probe;
+    run_fan_out_case(io_ctx_, 19163, true, probe);
+    EXPECT_EQ(probe.finished.load(), 4);
+    EXPECT_EQ(probe.overlaps.load(), 0);
 }
 
 // ===========================================================================
@@ -1745,16 +2328,13 @@ TEST_F(SessionManagerTest, UnconfiguredManagerSendsBareBearerChallenge) {
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse denied;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+        manager.close();
+    });
     io_ctx_.run();
 
     EXPECT_EQ(denied.status, 401);
@@ -1774,16 +2354,13 @@ TEST_F(SessionManagerTest, ConfiguredChallengeIsSentOnUnauthorized) {
     challenge.resource_metadata = "http://127.0.0.1:9000/.well-known/oauth-protected-resource/mcp";
     manager.set_bearer_challenge(challenge);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse denied;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+        manager.close();
+    });
     io_ctx_.run();
 
     EXPECT_EQ(denied.status, 401);
@@ -1804,19 +2381,16 @@ TEST_F(SessionManagerTest, ProtectedResourceMetadataIsReadableWithoutAToken) {
     metadata.scopes_supported = {"mcp:read", "mcp:write"};
     manager.set_protected_resource_metadata(metadata);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse document;
     RawResponse denied;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            document = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
-                                            "/.well-known/oauth-protected-resource/mcp");
-            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        document = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
+                                        "/.well-known/oauth-protected-resource/mcp");
+        denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+        manager.close();
+    });
     io_ctx_.run();
 
     ASSERT_EQ(document.status, 200);
@@ -1849,17 +2423,14 @@ TEST_F(SessionManagerTest, MetadataRouteIsServedAheadOfTheCustomRequestHandler) 
     metadata.resource = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
     manager.set_protected_resource_metadata(metadata);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse document;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            document = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
-                                            "/.well-known/oauth-protected-resource/mcp");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        document = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get,
+                                        "/.well-known/oauth-protected-resource/mcp");
+        manager.close();
+    });
     io_ctx_.run();
 
     ASSERT_EQ(document.status, 200);
@@ -1885,21 +2456,18 @@ TEST_F(SessionManagerTest, UnauthenticatedPathsBypassTheBearerCheck) {
             return response;
         });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse exempt;
     RawResponse exempt_with_query;
     RawResponse guarded;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            exempt = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health");
-            exempt_with_query =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health?probe=1");
-            guarded = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/healthy");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        exempt = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health");
+        exempt_with_query =
+            co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/health?probe=1");
+        guarded = co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/healthy");
+        manager.close();
+    });
     io_ctx_.run();
 
     EXPECT_EQ(exempt.status, 200);
@@ -1914,10 +2482,10 @@ TEST_F(SessionManagerTest, RequestBodyBeyondTheLimitIsRejected) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     unsigned int status = 0;
-    asio::co_spawn(
+    mcp_test::spawn_then(
         io_ctx_,
         [&]() -> mcp::Task<void> {
             // Announcing the length is enough: the parser rejects the request before the body is
@@ -1925,7 +2493,7 @@ TEST_F(SessionManagerTest, RequestBodyBeyondTheLimitIsRejected) {
             const std::string header =
                 "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
                 "Content-Length: " +
-                std::to_string(mcp::constants::g_default_max_request_body_bytes + 1) + "\r\n\r\n";
+                std::to_string(http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES + 1) + "\r\n\r\n";
 
             beast::tcp_stream stream(io_ctx_.get_executor());
             asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
@@ -1972,15 +2540,12 @@ TEST_F(SessionManagerTest, TheTwoChallengeSettersAreOrderIndependent) {
             manager.set_protected_resource_metadata(metadata);
         }
 
-        asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+        mcp_test::spawn_detached(io_ctx, manager.listen());
         RawResponse denied;
-        asio::co_spawn(
-            io_ctx,
-            [&]() -> mcp::Task<void> {
-                denied = co_await raw_request(io_ctx.get_executor(), port, http::verb::get, "/mcp");
-                manager.close();
-            },
-            asio::detached);
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            denied = co_await raw_request(io_ctx.get_executor(), port, http::verb::get, "/mcp");
+            manager.close();
+        });
         io_ctx.run();
         return denied.www_authenticate;
     };
@@ -2004,16 +2569,13 @@ TEST_F(SessionManagerTest, ExemptingTheMcpPathRefusesToServeMcpUnauthenticated) 
     manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
     manager.set_unauthenticated_paths({"/mcp"});
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse initialized;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            initialized = co_await do_initialize(io_ctx_.get_executor(), port);
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        initialized = co_await do_initialize(io_ctx_.get_executor(), port);
+        manager.close();
+    });
     io_ctx_.run();
 
     EXPECT_EQ(initialized.status, 404);
@@ -2026,39 +2588,40 @@ TEST_F(SessionManagerTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     std::atomic<int> validator_calls{0};
-    manager.set_async_bearer_token_validator([&validator_calls](std::string token) -> mcp::Task<bool> {
-        validator_calls.fetch_add(1, std::memory_order_relaxed);
-        asio::steady_timer timer(co_await asio::this_coro::executor);
-        timer.expires_after(std::chrono::milliseconds(1));
-        co_await timer.async_wait(asio::use_awaitable);
-        co_return token == "valid-token";
-    });
+    manager.set_async_bearer_token_validator(
+        [&validator_calls](std::string token) -> mcp::Task<mcp::TokenValidation> {
+            validator_calls.fetch_add(1, std::memory_order_relaxed);
+            asio::steady_timer timer(co_await asio::this_coro::executor);
+            timer.expires_after(std::chrono::milliseconds(1));
+            co_await timer.async_wait(asio::use_awaitable);
+            co_return token == "valid-token";
+        });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse denied;
     RawResponse accepted;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            const auto init_body =
-                json{{"jsonrpc", "2.0"},
-                     {"method", "initialize"},
-                     {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
-                       {"clientInfo", {{"name", "test"}, {"version", "1"}}},
-                       {"capabilities", json::object()}}},
-                     {"id", 1}}
-                    .dump();
-            denied = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                          init_body, {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-                                          std::nullopt, "wrong-token");
-            accepted = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                            init_body, {}, std::string(mcp::g_LATEST_PROTOCOL_VERSION),
-                                            std::nullopt, "valid-token");
-            manager.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        const auto init_body =
+            json{{"jsonrpc", "2.0"},
+                 {"method", "initialize"},
+                 {"params",
+                  {{"protocolVersion",
+                    std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+                   {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                   {"capabilities", json::object()}}},
+                 {"id", 1}}
+                .dump();
+        denied = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt,
+            "wrong-token");
+        accepted = co_await raw_request(
+            io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION), std::nullopt,
+            "valid-token");
+        manager.close();
+    });
     io_ctx_.run();
 
     EXPECT_EQ(denied.status, 401);
@@ -2073,7 +2636,7 @@ TEST_F(SessionManagerTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
     const unsigned short sync_port = 19155;
     mcp::StreamableHttpSessionManager async_manager(io_ctx_.get_executor(), "127.0.0.1", async_port,
                                                     make_echo_server_factory());
-    async_manager.set_async_bearer_token_validator([](std::string) -> mcp::Task<bool> {
+    async_manager.set_async_bearer_token_validator([](std::string) -> mcp::Task<mcp::TokenValidation> {
         throw std::runtime_error("introspection endpoint unreachable");
         co_return false;
     });
@@ -2082,38 +2645,37 @@ TEST_F(SessionManagerTest, ThrowingBearerValidatorIsAnsweredWithAServerError) {
     sync_manager.set_bearer_token_validator(
         [](std::string_view) -> bool { throw std::runtime_error("token cache unavailable"); });
 
-    asio::co_spawn(io_ctx_, async_manager.listen(), asio::detached);
-    asio::co_spawn(io_ctx_, sync_manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, async_manager.listen());
+    mcp_test::spawn_detached(io_ctx_, sync_manager.listen());
 
     unsigned int async_status = 0;
     unsigned int sync_status = 0;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            const auto init_body =
-                json{{"jsonrpc", "2.0"},
-                     {"method", "initialize"},
-                     {"params",
-                      {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
-                       {"clientInfo", {{"name", "test"}, {"version", "1"}}},
-                       {"capabilities", json::object()}}},
-                     {"id", 1}}
-                    .dump();
-            for (auto [port, status] :
-                 {std::pair{async_port, &async_status}, std::pair{sync_port, &sync_status}}) {
-                try {
-                    const auto response = co_await raw_request(
-                        io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
-                        std::string(mcp::g_LATEST_PROTOCOL_VERSION), std::nullopt, "token");
-                    *status = response.status;
-                } catch (const std::exception&) {
-                    // The connection was dropped without a response; status stays 0.
-                }
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        const auto init_body =
+            json{{"jsonrpc", "2.0"},
+                 {"method", "initialize"},
+                 {"params",
+                  {{"protocolVersion",
+                    std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+                   {"clientInfo", {{"name", "test"}, {"version", "1"}}},
+                   {"capabilities", json::object()}}},
+                 {"id", 1}}
+                .dump();
+        for (auto [port, status] :
+             {std::pair{async_port, &async_status}, std::pair{sync_port, &sync_status}}) {
+            try {
+                const auto response = co_await raw_request(
+                    io_ctx_.get_executor(), port, http::verb::post, "/mcp", init_body, {},
+                    std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+                    std::nullopt, "token");
+                *status = response.status;
+            } catch (const std::exception&) {
+                // The connection was dropped without a response; status stays 0.
             }
-            async_manager.close();
-            sync_manager.close();
-        },
-        asio::detached);
+        }
+        async_manager.close();
+        sync_manager.close();
+    });
     io_ctx_.run();
 
     EXPECT_EQ(async_status, 500U);
@@ -2128,7 +2690,7 @@ TEST_F(SessionManagerTest, OnlyOneBearerValidatorMayBeInstalled) {
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view) { return true; });
     EXPECT_THROW(manager.set_async_bearer_token_validator(
-                     [](std::string) -> mcp::Task<bool> { co_return true; }),
+                     [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; }),
                  std::logic_error);
     manager.close();
 }
@@ -2140,10 +2702,10 @@ TEST_F(SessionManagerTest, RequestBodyLimitIsConfigurable) {
     manager.set_max_request_body_bytes(4096);
     EXPECT_THROW(manager.set_max_request_body_bytes(0), std::invalid_argument);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     unsigned int status = 0;
-    asio::co_spawn(
+    mcp_test::spawn_then(
         io_ctx_,
         [&]() -> mcp::Task<void> {
             const std::string header =
@@ -2196,49 +2758,45 @@ TEST_F(SessionManagerTest, SdkClientDiscoversAuthorizationFromTheSdkServersOwnCh
     metadata.scopes_supported = {"mcp:read"};
     manager.set_protected_resource_metadata(metadata);
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse challenge_response;
     std::optional<mcp::auth::ProtectedResourceMetadata> discovered;
     std::string discovery_failure;
     std::string advertised_metadata_url;
 
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // 1. An unauthenticated request draws the challenge.
-            challenge_response =
-                co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        // 1. An unauthenticated request draws the challenge.
+        challenge_response =
+            co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
 
-            // 2. The SDK's own parser reads it, exactly as OAuthAuthorizationManager would.
-            const auto challenges =
-                mcp::auth::parse_www_authenticate(challenge_response.www_authenticate);
-            const auto bearer = mcp::auth::select_bearer_challenge(challenges);
-            if (bearer.has_value() && bearer->resource_metadata.has_value()) {
-                advertised_metadata_url = *bearer->resource_metadata;
+        // 2. The SDK's own parser reads it, exactly as OAuthAuthorizationManager would.
+        const auto challenges = mcp::auth::parse_www_authenticate(challenge_response.www_authenticate);
+        const auto bearer = mcp::auth::select_bearer_challenge(challenges);
+        if (bearer.has_value() && bearer->resource_metadata.has_value()) {
+            advertised_metadata_url = *bearer->resource_metadata;
 
-                // 3. The SDK's own discovery client fetches the URL the challenge named.
-                mcp::auth::MetadataFetchPolicy policy;
-                policy.allowed_origins.push_back(origin);
-                policy.allow_plain_http_loopback = true;
+            // 3. The SDK's own discovery client fetches the URL the challenge named.
+            mcp::auth::MetadataFetchPolicy policy;
+            policy.allowed_origins.push_back(origin);
+            policy.allow_plain_http_loopback = true;
 
-                auto http_client =
-                    std::make_shared<mcp::auth::OAuthHttpClient>(co_await asio::this_coro::executor);
-                http_client->set_metadata_policy(policy);
-                http_client->set_host_resolver([](const std::string&, const std::string&) {
-                    return std::vector<std::string>{"127.0.0.1"};
-                });
-                mcp::auth::OAuthDiscoveryClient discovery(http_client);
-                try {
-                    discovered = co_await discovery.discover_protected_resource(
-                        resource, advertised_metadata_url);
-                } catch (const std::exception& error) {
-                    discovery_failure = error.what();
-                }
+            auto http_client =
+                std::make_shared<mcp::auth::OAuthHttpClient>(co_await asio::this_coro::executor);
+            http_client->set_metadata_policy(policy);
+            http_client->set_host_resolver([](const std::string&, const std::string&) {
+                return std::vector<std::string>{"127.0.0.1"};
+            });
+            mcp::auth::OAuthDiscoveryClient discovery(http_client);
+            try {
+                discovered =
+                    co_await discovery.discover_protected_resource(resource, advertised_metadata_url);
+            } catch (const std::exception& error) {
+                discovery_failure = error.what();
             }
-            manager.close();
-        },
-        asio::detached);
+        }
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -2263,12 +2821,12 @@ TEST_F(SessionManagerTest, ClientRequestAfterARefusedOneIsStillSent) {
     std::atomic<bool> accept_tokens{true};
     manager.set_bearer_token_validator(
         [&accept_tokens](std::string_view) { return accept_tokens.load(); });
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     std::string refused_error;
     std::string follow_up_error;
     std::string follow_up_text;
-    asio::co_spawn(
+    mcp_test::spawn_then(
         io_ctx_,
         [&]() -> mcp::Task<void> {
             auto transport = std::make_shared<mcp::HttpClientTransport>(
@@ -2312,32 +2870,29 @@ TEST_F(SessionManagerTest, RefusedRepeatInitializeKeepsTheNegotiatedProtocolVers
     const unsigned short port = 19882;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse repeat_response;
     RawResponse list_response;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            (void)co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        (void)co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
 
-            const json repeat = {{"jsonrpc", "2.0"},
-                                 {"method", "initialize"},
-                                 {"params",
-                                  {{"protocolVersion", "2024-11-05"},
-                                   {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
-                                   {"capabilities", json::object()}}},
-                                 {"id", 2}};
-            repeat_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                   "/mcp", repeat.dump(), init.session_id);
+        const json repeat = {{"jsonrpc", "2.0"},
+                             {"method", "initialize"},
+                             {"params",
+                              {{"protocolVersion", "2024-11-05"},
+                               {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}},
+                               {"capabilities", json::object()}}},
+                             {"id", 2}};
+        repeat_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                               repeat.dump(), init.session_id);
 
-            const json list = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 3}};
-            list_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                                 list.dump(), init.session_id);
-            manager.close();
-        },
-        asio::detached);
+        const json list = {{"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 3}};
+        list_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                             list.dump(), init.session_id);
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -2352,10 +2907,10 @@ TEST_F(SessionManagerTest, RequestWithAnUnusableIdIsAnswered) {
     const unsigned short port = 19883;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     bool timed_out = false;
-    asio::steady_timer watchdog(io_ctx_.get_executor(), std::chrono::seconds(5));
+    asio::steady_timer watchdog(io_ctx_.get_executor(), g_hang_guard);
     watchdog.async_wait([&](const boost::system::error_code& error) {
         if (!error) {
             timed_out = true;
@@ -2364,7 +2919,7 @@ TEST_F(SessionManagerTest, RequestWithAnUnusableIdIsAnswered) {
     });
 
     RawResponse response;
-    asio::co_spawn(
+    mcp_test::spawn_then(
         io_ctx_,
         [&]() -> mcp::Task<void> {
             auto init = co_await do_initialize(io_ctx_.get_executor(), port);
@@ -2409,47 +2964,41 @@ TEST_F(SessionManagerTest, RequestPendingWhenItsSessionIsDeletedIsAnswered) {
             return server;
         });
 
-    asio::co_spawn(io_ctx_, manager.listen(), asio::detached);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
 
     RawResponse call_response;
     RawResponse delete_response;
     std::atomic<bool> call_answered{false};
     bool tool_finished_before_answer = true;
-    asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            auto init = co_await do_initialize(io_ctx_.get_executor(), port);
-            auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
-            EXPECT_EQ(initialized.status, 202);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+        EXPECT_EQ(initialized.status, 202);
 
-            asio::co_spawn(
-                io_ctx_,
-                [&, session_id = init.session_id]() -> mcp::Task<void> {
-                    json request = {{"jsonrpc", "2.0"},
-                                    {"method", "tools/call"},
-                                    {"params", {{"name", "slow"}, {"arguments", json::object()}}},
-                                    {"id", 2}};
-                    call_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
-                                                         "/mcp", request.dump(), session_id);
-                    tool_finished_before_answer = tool_finished.load(std::memory_order_acquire);
-                    call_answered.store(true, std::memory_order_release);
-                },
-                asio::detached);
+        mcp_test::spawn_detached(io_ctx_, [&, session_id = init.session_id]() -> mcp::Task<void> {
+            json request = {{"jsonrpc", "2.0"},
+                            {"method", "tools/call"},
+                            {"params", {{"name", "slow"}, {"arguments", json::object()}}},
+                            {"id", 2}};
+            call_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 request.dump(), session_id);
+            tool_finished_before_answer = tool_finished.load(std::memory_order_acquire);
+            call_answered.store(true, std::memory_order_release);
+        });
 
-            asio::steady_timer poll(io_ctx_.get_executor());
-            while (!tool_started.load(std::memory_order_acquire)) {
-                poll.expires_after(std::chrono::milliseconds(5));
-                co_await poll.async_wait(asio::use_awaitable);
-            }
-            delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
-                                                   "/mcp", {}, init.session_id);
-            while (!call_answered.load(std::memory_order_acquire)) {
-                poll.expires_after(std::chrono::milliseconds(5));
-                co_await poll.async_wait(asio::use_awaitable);
-            }
-            manager.close();
-        },
-        asio::detached);
+        asio::steady_timer poll(io_ctx_.get_executor());
+        while (!tool_started.load(std::memory_order_acquire)) {
+            poll.expires_after(std::chrono::milliseconds(5));
+            co_await poll.async_wait(asio::use_awaitable);
+        }
+        delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
+                                               "/mcp", {}, init.session_id);
+        while (!call_answered.load(std::memory_order_acquire)) {
+            poll.expires_after(std::chrono::milliseconds(5));
+            co_await poll.async_wait(asio::use_awaitable);
+        }
+        manager.close();
+    });
 
     io_ctx_.run();
 
@@ -2458,3 +3007,127 @@ TEST_F(SessionManagerTest, RequestPendingWhenItsSessionIsDeletedIsAnswered) {
     EXPECT_FALSE(tool_finished_before_answer);
     EXPECT_EQ(manager.session_count(), 0);
 }
+
+// Two sessions created over one keep-alive connection, with no tool executor: while a tool of the
+// first session blocks its thread, the second session still answers a ping sent on another
+// connection.
+TEST_F(SessionManagerTest, BlockedHandlerDoesNotStallAnotherSessionOfItsConnection) {
+    const unsigned short port = 19166;
+    constexpr int thread_count = 4;
+    constexpr auto wait_bound = std::chrono::seconds(60);
+
+    struct Gate {
+        std::promise<void> entered;
+        std::once_flag entered_once;
+        std::promise<void> release;
+        std::shared_future<void> released = release.get_future().share();
+        std::once_flag release_once;
+        std::atomic<bool> returned{false};
+
+        void open() {
+            std::call_once(release_once, [this] { release.set_value(); });
+        }
+    };
+    auto gate = std::make_shared<Gate>();
+    auto entered = gate->entered.get_future();
+
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [gate](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities caps;
+            caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+            auto server = std::make_unique<mcp::Server>(
+                mcp::Implementation{"test-blocking-server", "1.0.0"}, std::move(caps));
+            server->add_tool("wait", "Blocks its thread until the test releases it",
+                             json{{"type", "object"}}, [gate](const json&) -> json {
+                                 std::call_once(gate->entered_once,
+                                                [&gate] { gate->entered.set_value(); });
+                                 gate->released.wait();
+                                 gate->returned.store(true);
+                                 return json{{"released", true}};
+                             });
+            return server;
+        });
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+
+    std::string first_id;
+    std::string second_id;
+    std::promise<void> sessions_ready;
+    std::promise<unsigned int> call_answered;
+    std::promise<RawResponse> ping_answered;
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        KeepAliveClient creator(io_ctx_.get_executor());
+        co_await creator.connect(port);
+        const json initialized = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
+        first_id = (co_await creator.post(make_initialize_request(1).dump())).session_id;
+        (void)co_await creator.post(initialized.dump(), first_id);
+        second_id = (co_await creator.post(make_initialize_request(2).dump())).session_id;
+        (void)co_await creator.post(initialized.dump(), second_id);
+        sessions_ready.set_value();
+    });
+
+    std::vector<std::thread> threads;
+    threads.reserve(thread_count);
+    for (int index = 0; index < thread_count; ++index) {
+        threads.emplace_back([this] { io_ctx_.run(); });
+    }
+    const auto finish = [&] {
+        gate->open();
+        asio::post(io_ctx_, [&manager] { manager.close(); });
+        for (auto& thread : threads) {
+            thread.join();
+        }
+    };
+
+    if (sessions_ready.get_future().wait_for(wait_bound) != std::future_status::ready ||
+        first_id.empty() || second_id.empty()) {
+        ADD_FAILURE() << "the two sessions were not initialized";
+        finish();
+        return;
+    }
+
+    const json call = {{"jsonrpc", "2.0"},
+                       {"id", 3},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "wait"}, {"arguments", json::object()}}}};
+    mcp_test::spawn_detached(io_ctx_, [&, body = call.dump()]() -> mcp::Task<void> {
+        const auto answer = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
+                                                 body, first_id);
+        call_answered.set_value(answer.status);
+    });
+    if (entered.wait_for(wait_bound) != std::future_status::ready) {
+        ADD_FAILURE() << "the blocking tool was not called";
+        finish();
+        return;
+    }
+
+    const json ping = {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "ping"}};
+    mcp_test::spawn_detached(io_ctx_, [&, body = ping.dump()]() -> mcp::Task<void> {
+        auto answer = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp", body,
+                                           second_id);
+        ping_answered.set_value(std::move(answer));
+    });
+    auto ping_future = ping_answered.get_future();
+    const bool ping_ready = ping_future.wait_for(wait_bound) == std::future_status::ready;
+    const bool tool_returned = gate->returned.load();
+    gate->open();
+
+    EXPECT_TRUE(ping_ready) << "the ping waited for the other session's blocked tool";
+    EXPECT_FALSE(tool_returned);
+    if (ping_ready) {
+        const auto answer = ping_future.get();
+        EXPECT_EQ(answer.status, 200);
+        const auto body = json::parse(answer.body, nullptr, false);
+        EXPECT_TRUE(body.is_object() && body.contains("result")) << answer.body;
+    }
+    auto call_future = call_answered.get_future();
+    if (call_future.wait_for(wait_bound) == std::future_status::ready) {
+        EXPECT_EQ(call_future.get(), 200U);
+    } else {
+        ADD_FAILURE() << "the released tool call was not answered";
+    }
+    finish();
+}
+
+}  // namespace transport_http_session_manager_test

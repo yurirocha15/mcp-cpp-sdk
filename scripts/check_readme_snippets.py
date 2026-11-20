@@ -109,44 +109,26 @@ def compile_flags(build_dir):
     return compiler, flags
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--build-dir", default=None,
-                        help="Configured build directory holding compile_commands.json "
-                             "(default: build/release, or the first build/* that has one)")
-    parser.add_argument("--readme", default="README.md", help="Markdown file to check")
-    args = parser.parse_args()
+def compile_snippets(snippets, compiler, flags, source_label, noun):
+    """Compile every (line_no, body) snippet that has a main; return an exit code.
 
-    readme_path = Path(args.readme)
-    snippets = extract_snippets(readme_path)
-    if not snippets:
-        print(f"No cpp snippets found in {readme_path}")
-        return 1
-
-    build_dir = find_build_dir(args.build_dir)
-    try:
-        compiler, flags = compile_flags(build_dir)
-    except (FileNotFoundError, RuntimeError) as error:
-        print(f"error: {error}")
-        return 1
-    print(f"Build directory: {build_dir}")
-    print(f"Compiler: {compiler}")
-    print(f"Flags: {' '.join(flags)}\n")
-
+    ``source_label`` prefixes each report line (``file:line``); when it is None the
+    first tuple element is already the full label. ``noun`` names the kind of
+    document in the summary.
+    """
     compiled = 0
     skipped = 0
     failed = 0
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        for line_no, body in snippets:
-            label = f"{readme_path}:{line_no}"
+        for number, (line_no, body) in enumerate(snippets):
+            label = line_no if source_label is None else f"{source_label}:{line_no}"
             if "int main(" not in body:
                 print(f"{label}: SKIP (fragment, no main)")
                 skipped += 1
                 continue
 
-            source = Path(tmp_dir) / f"readme_{line_no}.cpp"
+            source = Path(tmp_dir) / f"snippet_{number}.cpp"
             source.write_text(body, encoding="utf-8")
 
             print(f"{label}: compiling...", end=" ", flush=True)
@@ -174,13 +156,41 @@ def main():
     print(f"Results: {compiled} compiled, {skipped} skipped, {failed} failed")
 
     if failed:
-        print("\nSome README snippets do not compile!")
+        print(f"\nSome {noun} snippets do not compile!")
         return 1
     if compiled == 0:
-        print("\nNo complete README snippet was compiled; the check proved nothing.")
+        print(f"\nNo complete {noun} snippet was compiled; the check proved nothing.")
         return 1
-    print("\nAll README snippets compiled.")
+    print(f"\nAll {noun} snippets compiled.")
     return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--build-dir", default=None,
+                        help="Configured build directory holding compile_commands.json "
+                             "(default: build/release, or the first build/* that has one)")
+    parser.add_argument("--readme", default="README.md", help="Markdown file to check")
+    args = parser.parse_args()
+
+    readme_path = Path(args.readme)
+    snippets = extract_snippets(readme_path)
+    if not snippets:
+        print(f"No cpp snippets found in {readme_path}")
+        return 1
+
+    build_dir = find_build_dir(args.build_dir)
+    try:
+        compiler, flags = compile_flags(build_dir)
+    except (FileNotFoundError, RuntimeError) as error:
+        print(f"error: {error}")
+        return 1
+    print(f"Build directory: {build_dir}")
+    print(f"Compiler: {compiler}")
+    print(f"Flags: {' '.join(flags)}\n")
+
+    return compile_snippets(snippets, compiler, flags, str(readme_path), "README")
 
 
 if __name__ == "__main__":

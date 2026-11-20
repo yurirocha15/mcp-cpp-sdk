@@ -557,6 +557,7 @@ jobs:
       - validate-conan-linux
       - validate-conan-windows
       - validate-aur-packages
+      - validate-chocolatey-package
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -576,6 +577,7 @@ jobs:
           CONAN_LINUX_RESULT: ${{ needs.validate-conan-linux.result }}
           CONAN_WINDOWS_RESULT: ${{ needs.validate-conan-windows.result }}
           AUR_RESULT: ${{ needs.validate-aur-packages.result }}
+          CHOCOLATEY_RESULT: ${{ needs.validate-chocolatey-package.result }}
         run: >-
           python3 -I -S scripts/run_release_tool.py release.workflow_gate packages
           --release-kind "${RELEASE_KIND}" --anchor-exists "${ANCHOR_EXISTS}"
@@ -583,6 +585,52 @@ jobs:
           --conan-linux-result "${CONAN_LINUX_RESULT}"
           --conan-windows-result "${CONAN_WINDOWS_RESULT}"
           --aur-result "${AUR_RESULT}"
+          --chocolatey-result "${CHOCOLATEY_RESULT}"
+
+  validate-chocolatey-package:
+    name: Validate Chocolatey package with its publisher's release check
+    if: ${{ inputs.release_kind == 'stable' && inputs.anchor_exists == 'false' }}
+    needs:
+      - candidate-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected current validation policy
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Checkout the Chocolatey publisher's protected main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.chocolatey_repository }}
+          ref: main
+          path: chocolatey-publisher
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download signed immutable-release candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-candidate-verified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-candidate
+      - name: Run the publisher's release check on the exact package
+        env:
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ inputs.commit }}
+          PRIMARY_FINGERPRINT: ${{ vars.RELEASE_PRIMARY_FINGERPRINT }}
+          ARTIFACT_SUBKEY_FINGERPRINT: ${{ vars.RELEASE_ARTIFACT_SUBKEY_FINGERPRINT }}
+          PUBLISHER_REPOSITORY_ID: ${{ inputs.chocolatey_repository_id }}
+        run: >-
+          python3 -I -S scripts/run_release_tool.py release.chocolatey_validation
+          --candidate release-candidate --publisher chocolatey-publisher
+          --tag "${TAG}" --commit "${COMMIT}"
+          --primary-fingerprint "${PRIMARY_FINGERPRINT}"
+          --artifact-fingerprint "${ARTIFACT_SUBKEY_FINGERPRINT}"
+          --publisher-repository-id "${PUBLISHER_REPOSITORY_ID}"
+          --work-directory "${RUNNER_TEMP}/chocolatey-validation"
 
   validate-aur-packages:
     name: Validate AUR package (x86_64)

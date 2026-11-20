@@ -40,7 +40,7 @@ namespace jsonschema {
               eval_path_(std::move(eval_path)),
               schema_location_(std::move(schema_location)),
               instance_location_(std::move(instance_location)),
-              message_(std::move(message))
+              message_(std::move(message).substr(0, 512))
         {
         }
 
@@ -54,7 +54,7 @@ namespace jsonschema {
               eval_path_(eval_path),
               schema_location_(schema_location),
               instance_location_(instance_location), 
-              message_(message),
+              message_(message.substr(0, 512)),
               details_(details)
         {
         }

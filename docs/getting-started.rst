@@ -31,7 +31,7 @@ In a clone of this repository, Conan can provide the dependencies:
 .. code-block:: bash
 
    # Install dependencies
-   conan install . --build=missing
+   conan install . --build=missing -s compiler.cppstd=20
 
    # Build the project
    cmake --preset conan-release
@@ -48,7 +48,7 @@ Add mcp-cpp-sdk to your CMakeLists.txt:
    FetchContent_Declare(
      mcp-cpp-sdk
      GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-     GIT_TAG v0.2.0
+     GIT_TAG v0.3.0
    )
    # Skip the SDK's own tests, examples and docs.
    set(BUILD_TESTING OFF)
@@ -75,7 +75,7 @@ Then in your CMakeLists.txt:
    add_subdirectory(third_party/mcp-cpp-sdk)
    target_link_libraries(your_target PRIVATE mcp::sdk)
 
-After 0.2.0, ``BUILD_TESTING``, ``BUILD_EXAMPLES`` and ``BUILD_DOCS`` default
+Since 0.3.0, ``BUILD_TESTING``, ``BUILD_EXAMPLES`` and ``BUILD_DOCS`` default
 to ``ON`` only when the SDK is the top-level project, so a project that adds it
 with FetchContent or ``add_subdirectory`` builds only the libraries and does
 not need GTest. With 0.2.0, set the three options to ``OFF`` before adding the
@@ -157,12 +157,13 @@ with other async work — you can wire up the transport manually:
 
        nlohmann::json schema = {
            {"type", "object"},
-           {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}}};
+           {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}},
+           {"required", nlohmann::json::array({"a", "b"})}};
 
        server.add_tool<nlohmann::json, nlohmann::json>(
            "add", "Add two numbers", std::move(schema),
            [](const nlohmann::json& params) -> mcp::Task<nlohmann::json> {
-               double result = params["a"].get<double>() + params["b"].get<double>();
+               double result = params.at("a").get<double>() + params.at("b").get<double>();
                co_return nlohmann::json{{"result", result}};
            });
 
@@ -182,11 +183,16 @@ Quick Start: Minimal Client
 
 .. note::
 
-   A convenience ``client.run_stdio()`` API is planned. For now, clients
-   require manual ``io_context`` setup as shown below.
+   A client runs on an ``io_context`` that the application owns, as below. To
+   launch a stdio server as a child process and talk to it, give the ``Client`` a
+   ``StdioClientTransport``, or use ``StdioClientSession``, which also restarts
+   the server when it exits; see :doc:`concepts/transports` and the
+   ``stdio_launch`` example.
 
 Here's a minimal MCP client that connects to an already running Streamable HTTP
-server and calls a tool:
+server and calls its ``hello`` tool. The quick-start server above serves it over
+HTTP when ``server.run_stdio()`` is replaced by
+``server.run_http("127.0.0.1", 3000)``:
 
 .. code-block:: cpp
 
@@ -209,24 +215,35 @@ server and calls a tool:
        boost::asio::co_spawn(
            io,
            [&]() -> Task<void> {
-               // Connect and initialize
-               Implementation info;
-               info.name = "math-client";
-               info.version = "1.0.0";
-               co_await client.connect(info, {});
+               // Connect. The client detects the protocol revision the server speaks.
+               ConnectResult connected = co_await client.connect("hello-client", "1.0.0");
+               std::cout << "Protocol: " << connected.protocolVersion << std::endl;
 
-               // Call the "add" tool
-               nlohmann::json args = {{"a", 5}, {"b", 7}};
-               auto result = co_await client.call_tool("add", args);
+               // Call the "hello" tool
+               nlohmann::json args = {{"name", "World"}};
+               auto result = co_await client.call_tool("hello", args);
                std::cout << "Result: " << nlohmann::json(result).dump(2) << std::endl;
 
                client.close();
-           }(),
+           },
            boost::asio::detached
        );
 
        io.run();
    }
+
+``co_spawn`` is given the lambda itself, not the result of calling it: it keeps
+the lambda alive until the coroutine finishes. A coroutine started from a
+temporary lambda would read the lambda's captures after the temporary is
+destroyed.
+
+``connect()`` returns a ``ConnectResult`` with the ``era`` of the session
+(``ProtocolEra::eModern`` for protocol revision 2026-07-28 or ``eLegacy`` for
+2025-11-25 and earlier), the negotiated ``protocolVersion`` and what the server
+declared (``capabilities``, ``serverInfo``, ``instructions``). By default the
+client sends ``server/discover`` first and falls back to ``initialize`` for an
+older server. To keep speaking an older revision, or to skip that probe, set
+``ClientOptions::protocol``; see :doc:`guides/older-protocols`.
 
 .. important::
 

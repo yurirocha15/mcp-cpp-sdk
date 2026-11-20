@@ -6,6 +6,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "../support/spawn.hpp"
 
 #include <algorithm>
 #include <boost/asio/co_spawn.hpp>
@@ -22,8 +23,11 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace auth_client_identity_test {
 
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -191,7 +195,7 @@ TEST(AuthClientIdentitySelectionTest, InjectedCredentialsWinOverEveryOtherPath) 
         config, facts_with("https://issuer.example", true, "https://issuer.example/register"),
         credentials("stored-client", "https://issuer.example"));
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::use_pre_registered);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUsePreRegistered);
 }
 
 TEST(AuthClientIdentitySelectionTest, InjectedCredentialsNeverFallBackToRegistration) {
@@ -203,7 +207,7 @@ TEST(AuthClientIdentitySelectionTest, InjectedCredentialsNeverFallBackToRegistra
         config, facts_with("https://issuer.example", true, "https://issuer.example/register"),
         std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::use_pre_registered);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUsePreRegistered);
 }
 
 TEST(AuthClientIdentitySelectionTest, PrefersTheMetadataDocumentWhenTheServerAdvertisesIt) {
@@ -214,7 +218,7 @@ TEST(AuthClientIdentitySelectionTest, PrefersTheMetadataDocumentWhenTheServerAdv
         config, facts_with("https://issuer.example", true, "https://issuer.example/register"),
         std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::use_client_id_metadata_document);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUseClientIdMetadataDocument);
 }
 
 TEST(AuthClientIdentitySelectionTest, IgnoresTheMetadataDocumentWhenTheServerDoesNotAdvertiseIt) {
@@ -225,7 +229,7 @@ TEST(AuthClientIdentitySelectionTest, IgnoresTheMetadataDocumentWhenTheServerDoe
         config, facts_with("https://issuer.example", false, "https://issuer.example/register"),
         std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::register_dynamically);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eRegisterDynamically);
 }
 
 TEST(AuthClientIdentitySelectionTest, ReusesCredentialsRecordedAgainstTheSameIssuer) {
@@ -233,7 +237,7 @@ TEST(AuthClientIdentitySelectionTest, ReusesCredentialsRecordedAgainstTheSameIss
         {}, facts_with("https://issuer.example", false, "https://issuer.example/register"),
         credentials("stored-client", "https://issuer.example"));
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::reuse_stored_registration);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eReuseStoredRegistration);
 }
 
 TEST(AuthClientIdentitySelectionTest, RegistersAfreshWhenTheStoredIssuerIsADifferentServer) {
@@ -241,14 +245,14 @@ TEST(AuthClientIdentitySelectionTest, RegistersAfreshWhenTheStoredIssuerIsADiffe
         {}, facts_with("https://second.example", false, "https://second.example/register"),
         credentials("stored-client", "https://first.example"));
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::register_dynamically);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eRegisterDynamically);
 }
 
 TEST(AuthClientIdentitySelectionTest, ReportsUnavailableWhenNoPathRemains) {
     const auto decision = mcp::auth::select_client_identity(
         {}, facts_with("https://issuer.example", true, std::nullopt), std::nullopt);
 
-    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::unavailable);
+    EXPECT_EQ(decision, mcp::auth::ClientIdentityDecision::eUnavailable);
 }
 
 TEST(AuthClientRegistrationRequestTest, CarriesApplicationTypeAndTheRefreshTokenGrant) {
@@ -328,17 +332,17 @@ TEST(AuthClientInformationTest, SerializesTheIssuerBindingAlongsideTheCredential
 }
 
 TEST(AuthClientIdentitySelectionTest, DescribesEverySourceAndDecision) {
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::pre_registered).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::ePreRegistered).empty());
     EXPECT_FALSE(
-        mcp::auth::describe(mcp::auth::ClientIdentitySource::client_id_metadata_document).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::dynamic_registration).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::use_pre_registered).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::use_client_id_metadata_document)
-                     .empty());
+        mcp::auth::describe(mcp::auth::ClientIdentitySource::eClientIdMetadataDocument).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentitySource::eDynamicRegistration).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::eUsePreRegistered).empty());
     EXPECT_FALSE(
-        mcp::auth::describe(mcp::auth::ClientIdentityDecision::reuse_stored_registration).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::register_dynamically).empty());
-    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::unavailable).empty());
+        mcp::auth::describe(mcp::auth::ClientIdentityDecision::eUseClientIdMetadataDocument).empty());
+    EXPECT_FALSE(
+        mcp::auth::describe(mcp::auth::ClientIdentityDecision::eReuseStoredRegistration).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::eRegisterDynamically).empty());
+    EXPECT_FALSE(mcp::auth::describe(mcp::auth::ClientIdentityDecision::eUnavailable).empty());
 }
 
 TEST(AuthMetadataOriginAllowanceTest, WidensTheAllowListWithoutOverridingTheDenyList) {
@@ -348,27 +352,27 @@ TEST(AuthMetadataOriginAllowanceTest, WidensTheAllowListWithoutOverridingTheDeny
 
     // With no hook, an unlisted origin is refused; the hook admits exactly what it says yes to.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:1234/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 
     policy.origin_allowance = [](const std::string& origin) {
         return origin == "http://127.0.0.1:1234";
     };
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:1234/prm"),
-              mcp::auth::MetadataUrlDecision::allowed);
+              mcp::auth::MetadataUrlDecision::eAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:5678/prm"),
-              mcp::auth::MetadataUrlDecision::origin_not_allowed);
+              mcp::auth::MetadataUrlDecision::eOriginNotAllowed);
 
     // A denied origin stays denied even when the hook would admit it.
     policy.origin_allowance = [](const std::string&) { return true; };
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://127.0.0.1:9/prm"),
-              mcp::auth::MetadataUrlDecision::origin_denied);
+              mcp::auth::MetadataUrlDecision::eOriginDenied);
 
     // Widening the origin list does not relax any other control: the scheme rule still refuses
     // plain HTTP to a non-loopback host, and the address rules still refuse the metadata service.
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://169.254.169.254/prm"),
-              mcp::auth::MetadataUrlDecision::scheme_not_allowed);
+              mcp::auth::MetadataUrlDecision::eSchemeNotAllowed);
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://169.254.169.254/prm"),
-              mcp::auth::MetadataUrlDecision::address_link_local);
+              mcp::auth::MetadataUrlDecision::eAddressLinkLocal);
 }
 
 TEST(AuthClientCredentialStoreTest, KeepsEachIssuersCredentialsSeparate) {
@@ -419,22 +423,19 @@ struct IdentityFixture {
 /// Run one challenge against a single-origin fixture and capture what the manager chose.
 void run_single_challenge(LoopbackServer& server, IdentityFixture& fixture, asio::io_context& io_ctx,
                           const std::string& challenge, int request_budget) {
-    asio::co_spawn(io_ctx, server.serve(request_budget), asio::detached);
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
-                                                         fixture.config,
-                                                         echoing_callback(&fixture.authorization_url));
-            try {
-                (void)co_await manager.try_handle_challenge(challenge);
-                fixture.identity = manager.last_client_identity();
-            } catch (...) {
-                fixture.failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(request_budget));
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config,
+                                                     echoing_callback(&fixture.authorization_url));
+        try {
+            (void)co_await manager.try_handle_challenge(challenge);
+            fixture.identity = manager.last_client_identity();
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 }
 
@@ -472,7 +473,7 @@ TEST(AuthClientIdentityLoopbackTest, UsesTheMetadataDocumentUrlAsTheClientIdAndS
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::client_id_metadata_document);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eClientIdMetadataDocument);
     EXPECT_EQ(fixture.identity->client_id, "https://client.example/metadata.json");
     EXPECT_FALSE(fixture.identity->client_secret.has_value());
 
@@ -526,7 +527,7 @@ TEST(AuthClientIdentityLoopbackTest, PreRegisteredCredentialsAreNeverExchangedFo
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::pre_registered);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::ePreRegistered);
     EXPECT_EQ(fixture.identity->client_id, "application-chosen-client");
 
     EXPECT_EQ(server.count("/register"), 0U);
@@ -577,7 +578,7 @@ TEST(AuthClientIdentityLoopbackTest, FallsBackToDynamicRegistrationAndSendsAppli
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::dynamic_registration);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eDynamicRegistration);
     EXPECT_EQ(fixture.identity->client_id, "registered-client");
 
     ASSERT_EQ(server.count("/register"), 1U);
@@ -630,7 +631,7 @@ TEST(AuthClientIdentityLoopbackTest, KeepsCredentialsBoundToTheIssuerThatGranted
         }
         return not_found();
     });
-    asio::co_spawn(io_ctx, server.serve(8), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(8));
 
     IdentityFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -639,25 +640,22 @@ TEST(AuthClientIdentityLoopbackTest, KeepsCredentialsBoundToTheIssuerThatGranted
     fixture.config.policy = loopback_policy(server.origin());
 
     std::optional<mcp::auth::OAuthClientInformation> first_identity;
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
-                                                         fixture.config, echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-one")");
-                first_identity = manager.last_client_identity();
-                // The protected resource now names a different authorization server.
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-two")");
-                fixture.identity = manager.last_client_identity();
-            } catch (...) {
-                fixture.failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config, echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-one")");
+            first_identity = manager.last_client_identity();
+            // The protected resource now names a different authorization server.
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-two")");
+            fixture.identity = manager.last_client_identity();
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 
     ASSERT_EQ(fixture.failure, nullptr);
@@ -687,6 +685,77 @@ TEST(AuthClientIdentityLoopbackTest, KeepsCredentialsBoundToTheIssuerThatGranted
     ASSERT_TRUE(second.has_value());
     EXPECT_EQ(first->client_id, "client-for-as-1");
     EXPECT_EQ(second->client_id, "client-for-as-2");
+}
+
+// The metadata URL stays the same while the authorization server it names changes. A second
+// challenge reads the document again, so the client registers with the new server instead of
+// authorizing again at the old one from the cached copy.
+TEST(AuthClientIdentityLoopbackTest, RegistersWithTheNewServerWhenTheSameMetadataUrlNamesAnother) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+
+    std::string current_server = "/as1";
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({base + current_server})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server/as1") {
+            return json_response(server_metadata(base, "/as1", false, true));
+        }
+        if (target == "/.well-known/oauth-authorization-server/as2") {
+            return json_response(server_metadata(base, "/as2", false, true));
+        }
+        if (target == "/as1/register") {
+            return json_response({{"client_id", "client-for-as-1"}, {"client_secret", "secret-one"}},
+                                 http::status::created);
+        }
+        if (target == "/as2/register") {
+            return json_response({{"client_id", "client-for-as-2"}, {"client_secret", "secret-two"}},
+                                 http::status::created);
+        }
+        if (target == "/as1/token" || target == "/as2/token") {
+            return json_response(token_document());
+        }
+        return not_found();
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(12));
+
+    IdentityFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.credential_store = fixture.credentials;
+    fixture.config.policy = loopback_policy(server.origin());
+
+    const auto challenge = R"(Bearer resource_metadata=")" + base + R"(/prm")";
+    std::string second_authorization_url;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config, echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(challenge);
+            current_server = "/as2";
+            (void)co_await manager.try_handle_challenge(challenge);
+            fixture.identity = manager.last_client_identity();
+            second_authorization_url = manager.last_authorization_request()->authorization_url;
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
+    io_ctx.run();
+
+    ASSERT_EQ(fixture.failure, nullptr);
+    ASSERT_TRUE(fixture.identity.has_value());
+    EXPECT_EQ(fixture.identity->client_id, "client-for-as-2");
+    EXPECT_EQ(fixture.identity->issuer, base + "/as2");
+    EXPECT_EQ(server.count("/as1/register"), 1U);
+    EXPECT_EQ(server.count("/as2/register"), 1U);
+    EXPECT_EQ(server.count("/prm"), 2U);
+    EXPECT_EQ(second_authorization_url.rfind(base + "/as2/authorize", 0), 0U);
+    EXPECT_NE(second_authorization_url.find("client_id=client-for-as-2"), std::string::npos);
 }
 
 TEST(AuthTokenEndpointAuthLoopbackTest, PutsTheSecretInHttpBasicWhenTheServerAsksForIt) {
@@ -798,7 +867,7 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
         }
         return not_found();
     });
-    asio::co_spawn(io_ctx, server.serve(7), asio::detached);
+    mcp_test::spawn_detached(io_ctx, server.serve(7));
 
     IdentityFixture fixture;
     fixture.config.server_url = base + "/mcp";
@@ -806,28 +875,84 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
     fixture.config.credential_store = fixture.credentials;
     fixture.config.policy = loopback_policy(server.origin());
 
-    asio::co_spawn(
-        io_ctx,
-        [&]() -> mcp::Task<void> {
-            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
-                                                         fixture.config, echoing_callback(nullptr));
-            try {
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-one")");
-                (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
-                                                            R"(/prm-two")");
-                fixture.identity = manager.last_client_identity();
-            } catch (...) {
-                fixture.failure = std::current_exception();
-            }
-            server.close();
-        },
-        asio::detached);
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), fixture.tokens,
+                                                     fixture.config, echoing_callback(nullptr));
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-one")");
+            (void)co_await manager.try_handle_challenge(R"(Bearer resource_metadata=")" + base +
+                                                        R"(/prm-two")");
+            fixture.identity = manager.last_client_identity();
+        } catch (...) {
+            fixture.failure = std::current_exception();
+        }
+        server.close();
+    });
     io_ctx.run();
 
     ASSERT_EQ(fixture.failure, nullptr);
     ASSERT_TRUE(fixture.identity.has_value());
-    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::dynamic_registration);
+    EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eDynamicRegistration);
     EXPECT_EQ(fixture.identity->client_id, "registered-client");
     EXPECT_EQ(server.count("/register"), 1U);
 }
+
+namespace {
+
+void construct_with_metadata_url(const std::string& url) {
+    asio::io_context io_ctx;
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = "https://mcp.example/mcp";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.client_identity.client_metadata_url = url;
+    mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(),
+                                                 std::make_shared<mcp::auth::InMemoryTokenStore>(),
+                                                 config, echoing_callback(nullptr));
+}
+
+}  // namespace
+
+TEST(AuthClientIdentityConfigTest, RejectsHttpClientMetadataUrl) {
+    EXPECT_THROW(construct_with_metadata_url("http://client.example/metadata.json"),
+                 std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithoutPath) {
+    EXPECT_THROW(construct_with_metadata_url("https://client.example"), std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example?x=1"), std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithFragment) {
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/metadata.json#frag"),
+                 std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithUserInfo) {
+    EXPECT_THROW(construct_with_metadata_url("https://user:pw@client.example/metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://user@client.example/metadata.json"),
+                 std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, RejectsMetadataUrlWithDotSegments) {
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/../metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/./metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/a/../metadata.json"),
+                 std::invalid_argument);
+    EXPECT_THROW(construct_with_metadata_url("https://client.example/a/.."), std::invalid_argument);
+}
+
+TEST(AuthClientIdentityConfigTest, AcceptsMetadataUrlDotsInsideSegmentsAndAnyCaseScheme) {
+    EXPECT_NO_THROW(construct_with_metadata_url("https://client.example/a.b/..c/metadata.json"));
+    EXPECT_NO_THROW(construct_with_metadata_url("HTTPS://client.example/metadata.json"));
+    EXPECT_NO_THROW(construct_with_metadata_url("Https://client.example/metadata.json?v=1"));
+}
+
+TEST(AuthClientIdentityConfigTest, AcceptsHttpsUrlWithPath) {
+    EXPECT_NO_THROW(construct_with_metadata_url("https://client.example/metadata.json"));
+}
+
+}  // namespace auth_client_identity_test

@@ -8,7 +8,7 @@ directory.
 Overview
 --------
 
-The SDK builds nine core examples plus 12 specialized feature examples:
+The SDK builds nine core examples plus 16 specialized feature examples:
 
 1. **server_stdio** - Full-featured MCP server over stdio
 2. **server_simple** - Minimal MCP server over stdio
@@ -23,7 +23,7 @@ The SDK builds nine core examples plus 12 specialized feature examples:
 Feature Examples
 ----------------
 
-The ``examples/features/`` directory contains 12 specialized examples. They use
+The ``examples/features/`` directory contains 16 specialized examples. They use
 small, self-contained setups to demonstrate individual capabilities; some use
 in-memory loopback and others exercise local network transports.
 
@@ -39,6 +39,13 @@ in-memory loopback and others exercise local network transports.
 10. **graceful_shutdown** - Clean exit patterns and signal handling
 11. **http_server_convenience** - Simplified HTTP server setup via ``Server::run_http()``
 12. **oauth_flow** - Loopback OAuth building blocks (discovery, PKCE, exchange, refresh)
+13. **schema_validation** - Tool schema checks on the server and the client
+14. **modern_client** - Protocol revision 2026-07-28: era detection, ``ConnectResult``,
+    per-request log levels and cache hints
+15. **legacy_protocols** - The older protocol revisions: pinning a version, ``ServerProtocolPolicy``,
+    ``ping()`` and ``resources/subscribe``
+16. **stdio_launch** - ``StdioClientTransport`` and ``StdioClientSession``: launching a server process,
+    capturing its standard error, shutting it down and restarting it
 
 These examples are non-interactive and designed to be run as part of a
 test suite or to understand specific API patterns.
@@ -102,13 +109,13 @@ client_stdio
 
 A stdio MCP client demonstrating:
 
-* **Connection**: Initialize handshake with server capabilities
+* **Launching the server**: ``StdioClientTransport`` starts ``example-server-stdio``
+  as a child process and shuts it down at the end
+* **Connection**: ``server/discover``, falling back to ``initialize`` for an older server
 * **Tools**: List available tools, call tools with typed arguments
 * **Resources**: List resources, read resource contents
 * **Resource Templates**: List template metadata
 * **Prompts**: List prompts, get prompt with arguments
-* **Completion**: Request completion suggestions
-* **Notifications**: Send notifications to server
 
 **Key patterns demonstrated**:
 
@@ -191,7 +198,7 @@ In-process loopback demonstration using **Streamable HTTP transport**:
 
 * **HttpServerTransport + HttpClientTransport**: Full HTTP stack for MCP communication
 * **Anti-hang co_spawn pattern**: Safe concurrent server/client execution
-* **MCP-Protocol-Version header**: Support for versioned HTTP headers (e.g., ``2025-11-25``)
+* **MCP-Protocol-Version header**: Sent with every request (``2026-07-28`` here)
 
 This example shows how to use the HTTP transport layer for network-based
 MCP communication with standard headers.
@@ -225,9 +232,11 @@ server with stdio and HTTP deployment options.
 
 **Key patterns demonstrated**:
 
-* Asynchronous HTTP client requests within tool handlers
+* Tool handlers that ``co_await`` an external HTTP API without blocking the server
+* Typed ``mcp::CallToolResult`` results, and thrown exceptions turned into
+  ``isError`` results by the SDK
 * Exposing external service capabilities (LLM) as MCP tools and resources
-* Flexible transport configuration and CLI parameter management
+* ``Server::run_stdio()`` and ``Server::run_http()`` selected at runtime
 
 **Build and run**:
 
@@ -255,7 +264,10 @@ integration with system-level debugging tools.
 
 **Key patterns demonstrated**:
 
-* Managing external library state within an MCP server
+* Running blocking library calls on a dedicated thread with
+  ``Server::set_handler_executor()``, so the server keeps answering requests
+  while a handler waits
+* Moving a resource handler to the same thread with ``co_spawn``
 * Using resource templates for dynamic metadata discovery
 * Implementing complex interactive workflows (debugging) via tools
 
@@ -263,10 +275,11 @@ integration with system-level debugging tools.
 
 .. code-block:: bash
 
-   cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
+   python scripts/build.py --examples
    ./build/release/example-debugger-server
 
-Note: Requires ``-DBUILD_LLDB_EXAMPLE=ON`` and LLDB development libraries installed.
+The example is built with the other examples. It links LLDB when CMake finds
+the LLDB development files, and is built against stubs otherwise.
 
 Building All Examples
 ---------------------
@@ -275,16 +288,9 @@ To build all examples at once:
 
 .. code-block:: bash
 
-   # Using build script (recommended)
    python scripts/build.py --examples
 
-   # Or using CMake directly
-   cmake -DBUILD_EXAMPLES=ON -B build && cmake --build build
-
-   # Note: The debugger example is OFF by default:
-   # cmake -DBUILD_LLDB_EXAMPLE=ON -B build && cmake --build build
-
-All example binaries will be located in ``build/``.
+All example binaries are placed in ``build/release/``.
 
 Using Examples as Templates
 ---------------------------

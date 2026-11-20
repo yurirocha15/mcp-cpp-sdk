@@ -452,6 +452,7 @@ namespace jsonschema {
             if (content_encoding_ == "base64")
             {
                 auto s = instance.template as<mcp_detail_jsoncons::string_view>();
+                evaluation_limits::charge(1 + s.size() / 4);
                 std::string content;
                 auto retval = mcp_detail_jsoncons::base64_to_bytes(s.begin(), s.end(), content);
                 if (retval.ec != mcp_detail_jsoncons::conv_errc::success)
@@ -519,6 +520,7 @@ namespace jsonschema {
                 return walk_state::advance;
             }
             
+            evaluation_limits::charge(1 + instance.as_string_view().size() / 4);
             std::string str = instance.as_string();
             if (content_encoding_ == "base64")
             {
@@ -593,6 +595,7 @@ namespace jsonschema {
             {
                 eval_context<Json> this_context(context, this->keyword());
                 auto sv = instance.as_string_view();
+                evaluation_limits::charge(1 + sv.size() / 16);
 
                 walk_state result = validate_(*this, this_context.eval_path(), instance_location, sv, reporter, patch);
                 if (result == walk_state::abort)
@@ -647,9 +650,9 @@ namespace jsonschema {
             if (!evaluation_limits::search(regex_, instance.as_string_view()))
             {
                 std::string message("String '");
-                message.append(instance.as_cstring());
+                message.append(evaluation_limits::excerpt(instance.as_string_view()));
                 message.append("' does not match pattern '");
-                message.append(pattern_string_);
+                message.append(evaluation_limits::excerpt(pattern_string_));
                 message.append("'.");
                 walk_state result = reporter.error(this->make_validation_message(
                     this_context.eval_path(),
@@ -732,7 +735,8 @@ namespace jsonschema {
             eval_context<Json> this_context(context, this->keyword());
 
             auto sv = instance.as_string_view();
-            std::size_t length = unicode_traits::count_codepoints(sv.data(), sv.size());
+            evaluation_limits::charge(1 + sv.size() / 16);
+            std::size_t length = ::mcp::detail::code_point_count(std::string_view(sv.data(), sv.size()));
             if (length > max_length_)
             {
                 walk_state result = reporter.error(this->make_validation_message(
@@ -785,7 +789,8 @@ namespace jsonschema {
             eval_context<Json> this_context(context, this->keyword());
 
             auto sv = instance.as_string_view();
-            std::size_t length = unicode_traits::count_codepoints(sv.data(), sv.size());
+            evaluation_limits::charge(1 + sv.size() / 16);
+            std::size_t length = ::mcp::detail::code_point_count(std::string_view(sv.data(), sv.size()));
             if (length < min_length_) 
             {
                 walk_state result = reporter.error(this->make_validation_message(
@@ -1128,21 +1133,30 @@ namespace jsonschema {
 
         static bool array_has_unique_items(const Json& a)
         {
-            std::vector<std::pair<std::size_t, const Json*>> hashed;
+            struct hashed_element
+            {
+                std::size_t hash;
+                std::size_t cost;
+                const Json* value;
+            };
+            std::vector<hashed_element> hashed;
             hashed.reserve(a.size());
             for (const auto& element : a.array_range())
             {
-                hashed.emplace_back(unique_items_hash(element), std::addressof(element));
+                hashed.push_back({unique_items_hash(element), evaluation_limits::comparison_cost(element),
+                                  std::addressof(element)});
             }
-            std::sort(hashed.begin(), hashed.end(), [](const std::pair<std::size_t, const Json*>& lhs,
-                                                       const std::pair<std::size_t, const Json*>& rhs) {
-                return lhs.first < rhs.first;
+            std::sort(hashed.begin(), hashed.end(), [](const hashed_element& lhs, const hashed_element& rhs) {
+                return lhs.hash < rhs.hash;
             });
             for (std::size_t i = 0; i < hashed.size(); ++i)
             {
-                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j)
+                for (std::size_t j = i + 1; j < hashed.size() && hashed[j].hash == hashed[i].hash; ++j)
                 {
-                    if (*hashed[i].second == *hashed[j].second)
+                    // Hashes an attacker chose can all collide, and each comparison may read the
+                    // smaller of the two values whole.
+                    evaluation_limits::charge(8 + (std::min)(hashed[i].cost, hashed[j].cost));
+                    if (*hashed[i].value == *hashed[j].value)
                     {
                         return false; // contains duplicates
                     }
@@ -1268,13 +1282,13 @@ namespace jsonschema {
                 mcp_detail_jsoncons::optional<Json> local_patch2{mcp_detail_jsoncons::in_place, json_array_arg};
                 eval_context<Json> item_context(this_context, i);
 
-                std::size_t errors = local_reporter.errors.size();
+                std::size_t errors = local_reporter.error_count();
                 walk_state result = validators_[i]->validate(item_context, instance, instance_location, local_results2, local_reporter, local_patch2);
                 if (result == walk_state::abort)
                 {
                     return result;
                 }
-                if (errors == local_reporter.errors.size())
+                if (errors == local_reporter.error_count())
                 {
                     local_results1.merge(local_results2);
                     if (local_patch1 && local_patch2)
@@ -1379,13 +1393,13 @@ namespace jsonschema {
                 auto local_patch2 = patch ? mcp_detail_jsoncons::optional<Json>{mcp_detail_jsoncons::in_place, json_array_arg} : mcp_detail_jsoncons::optional<Json>{};
                 eval_context<Json> item_context(this_context, i);
 
-                std::size_t errors = local_reporter.errors.size();
+                std::size_t errors = local_reporter.error_count();
                 walk_state result = validators_[i]->validate(item_context, instance, instance_location, local_results2, local_reporter, local_patch2);
                 if (result == walk_state::abort)
                 {
                     return result;
                 }
-                if (errors == local_reporter.errors.size())
+                if (errors == local_reporter.error_count())
                 {
                     local_results1.merge(local_results2);
                     indices.push_back(i);
@@ -1506,7 +1520,7 @@ namespace jsonschema {
                 evaluation_results local_results2;
                 eval_context<Json> item_context(this_context, i);
 
-                std::size_t errors = local_reporter.errors.size();
+                std::size_t errors = local_reporter.error_count();
                 walk_state result = validators_[i]->validate(item_context, instance, instance_location, local_results2, local_reporter, patch);
                 if (result == walk_state::abort)
                 {
@@ -1517,7 +1531,7 @@ namespace jsonschema {
                 //{
                 //    std::cout << "    " << s << "\n";
                 //}
-                if (errors == local_reporter.errors.size())
+                if (errors == local_reporter.error_count())
                 {
                     local_results1.merge(local_results2);
                     ++count;
@@ -1648,7 +1662,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() > value_.template as<double>())
+                if (instance.compare(value_) > 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
@@ -1743,7 +1757,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() >= value_.template as<double>())
+                if (instance.compare(value_) >= 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
@@ -1838,7 +1852,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() < value_.template as<double>())
+                if (instance.compare(value_) < 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
@@ -1933,7 +1947,7 @@ namespace jsonschema {
             }
             else if (instance.is_number())
             {
-                if (instance.template as<double>() <= value_.template as<double>())
+                if (instance.compare(value_) <= 0)
                 {
                     walk_state result = reporter.error(this->make_validation_message(
                         this_context.eval_path(),
@@ -2332,8 +2346,10 @@ namespace jsonschema {
             eval_context<Json> this_context(context, this->keyword());
 
             bool in_range = false;
+            const std::size_t instance_cost = evaluation_limits::comparison_cost(instance);
             for (const auto& item : value_.array_range())
             {
+                evaluation_limits::charge(8 + evaluation_limits::comparison_cost(item, instance_cost));
                 if (item == instance) 
                 {
                     in_range = true;
@@ -2346,7 +2362,7 @@ namespace jsonschema {
                 walk_state result = reporter.error(this->make_validation_message(
                     this_context.eval_path(),
                     instance_location, 
-                    "'" + instance.template as<std::string>() + "' is not a valid enum value."), patch);
+                    evaluation_limits::describe(instance) + " is not a valid enum value."), patch);
                 if (result == walk_state::abort)
                 {
                     return result;
@@ -2385,6 +2401,8 @@ namespace jsonschema {
             error_reporter<Json>& reporter,
             mcp_detail_jsoncons::optional<Json>& patch) const final
         {
+            evaluation_limits::charge(
+                8 + evaluation_limits::comparison_cost(value_, evaluation_limits::comparison_cost(instance)));
             if (value_ != instance)
             {
                 eval_context<Json> this_context(context, this->keyword());
@@ -2632,7 +2650,7 @@ namespace jsonschema {
             evaluation_results& results, 
             error_reporter<Json>& reporter, 
             mcp_detail_jsoncons::optional<Json>& patch,
-            std::unordered_set<std::string>& allowed_properties) const 
+            std::set<std::string>& allowed_properties) const 
         {
             //std::cout << "properties_validator begin[" << context.eval_path().string() << "," << this->schema_location().string() << "]\n";
             if (!instance.is_object())
@@ -2651,13 +2669,14 @@ namespace jsonschema {
 
             for (const auto& prop : instance.object_range()) 
             {
-                auto prop_it = properties_.find(prop.key().c_str());
+                evaluation_limits::charge(1);
+                auto prop_it = properties_.find(prop.key());
 
                 // check if it is in "properties"
                 if (prop_it != properties_.end()) 
                 {
                     eval_context<Json> prop_context{this_context, prop.name(), evaluation_flags{}};
-                    jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                    jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
 
                     std::size_t errors = reporter.error_count();
                     walk_state result = (*prop_it).second->validate(prop_context, prop.value(), prop_location, results, reporter, patch);
@@ -2680,6 +2699,7 @@ namespace jsonschema {
             // reverse search
             for (auto const& prop : properties_) 
             {
+                evaluation_limits::charge(1);
                 //std::cout << "   prop:" << prop.first << "\n";
                 const auto finding = instance.find(prop.first);
                 if (finding == instance.object_range().end()) 
@@ -2689,7 +2709,7 @@ namespace jsonschema {
                     if (default_value) 
                     { 
                         // If default value is available, update patch
-                        jsonpointer::json_pointer prop_location = instance_location / prop.first;
+                        jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.first);
 
                         update_patch(patch, prop_location, *default_value);
                     }
@@ -2708,7 +2728,7 @@ namespace jsonschema {
         walk_state walk(const eval_context<Json>& context, const Json& instance, 
             const jsonpointer::json_pointer& instance_location, walk_reporter<Json>& reporter,
             mcp_detail_jsoncons::optional<Json>& patch,
-            std::unordered_set<std::string>& allowed_properties) const
+            std::set<std::string>& allowed_properties) const
         {
             if (!instance.is_object())
             {
@@ -2723,11 +2743,12 @@ namespace jsonschema {
 
             for (const auto& prop : instance.object_range()) 
             {
-                auto prop_it = properties_.find(prop.key().c_str());
+                evaluation_limits::charge(1);
+                auto prop_it = properties_.find(prop.key());
 
                 if (prop_it != properties_.end()) 
                 {
-                    jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                    jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
                     result = (*prop_it).second->walk(context, prop.value(), prop_location, reporter, patch);
                     allowed_properties.insert(std::string(prop.name()));
                     if (result == walk_state::abort)
@@ -2747,14 +2768,14 @@ namespace jsonschema {
             error_reporter<Json>& reporter, 
             mcp_detail_jsoncons::optional<Json>& patch) const final
         {
-            std::unordered_set<std::string> allowed_properties;
+            std::set<std::string> allowed_properties;
             return validate(context, instance, instance_location, results, reporter, patch, allowed_properties);
         }
 
         walk_state do_walk(const eval_context<Json>& context, const Json& instance, 
             const jsonpointer::json_pointer& instance_location, walk_reporter<Json>& reporter, mcp_detail_jsoncons::optional<Json>& patch) const final 
         {
-            std::unordered_set<std::string> allowed_properties;
+            std::set<std::string> allowed_properties;
             return walk(context, instance, instance_location, reporter, patch, allowed_properties);
         }
 
@@ -2792,7 +2813,7 @@ namespace jsonschema {
             evaluation_results& results, 
             error_reporter<Json>& reporter, 
             mcp_detail_jsoncons::optional<Json>& patch,
-            std::unordered_set<std::string>& allowed_properties) const 
+            std::set<std::string>& allowed_properties) const 
         {
             (void)context;
             (void)instance;
@@ -2810,7 +2831,7 @@ namespace jsonschema {
             for (const auto& prop : instance.object_range()) 
             {
                 eval_context<Json> prop_context{this_context, prop.name(), evaluation_flags{}};
-                jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
 
                 // check all matching "patternProperties"
                 for (auto& schema_pp : pattern_properties_)
@@ -2841,7 +2862,7 @@ namespace jsonschema {
         walk_state walk(const eval_context<Json>& context, const Json& instance,
             const jsonpointer::json_pointer& instance_location, 
             walk_reporter<Json>& reporter, mcp_detail_jsoncons::optional<Json>& patch,
-            std::unordered_set<std::string>& allowed_properties) const
+            std::set<std::string>& allowed_properties) const
         {
             if (!instance.is_object())
             {
@@ -2858,7 +2879,7 @@ namespace jsonschema {
             for (const auto& prop : instance.object_range()) 
             {
                 eval_context<Json> prop_context{this_context, prop.name(), evaluation_flags{}};
-                jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
 
                 // check all matching "patternProperties"
                 for (auto& schema_pp : pattern_properties_)
@@ -2886,14 +2907,14 @@ namespace jsonschema {
             error_reporter<Json>& reporter, 
             mcp_detail_jsoncons::optional<Json>& patch) const final
         {
-            std::unordered_set<std::string> allowed_properties;
+            std::set<std::string> allowed_properties;
             return validate(context, instance, instance_location, results, reporter, patch, allowed_properties);
         }
 
         walk_state do_walk(const eval_context<Json>& context, const Json& instance,
             const jsonpointer::json_pointer& instance_location, walk_reporter<Json>& reporter, mcp_detail_jsoncons::optional<Json>& patch) const final
         {
-            std::unordered_set<std::string> allowed_properties;
+            std::set<std::string> allowed_properties;
             return walk(context,instance, instance_location, reporter, patch, allowed_properties);
         }
     };
@@ -2937,7 +2958,7 @@ namespace jsonschema {
                 return walk_state::advance;
             }
 
-            std::unordered_set<std::string> allowed_properties;
+            std::set<std::string> allowed_properties;
 
             if (properties_)
             {
@@ -2965,13 +2986,13 @@ namespace jsonschema {
                     for (const auto& prop : instance.object_range()) 
                     {
                         eval_context<Json> prop_context{this_context, prop.name(), evaluation_flags{}};
-                        jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                        jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
                         // check if it is in "allowed properties"
-                        auto prop_it = allowed_properties.find(prop.key().c_str());
+                        auto prop_it = allowed_properties.find(prop.key());
                         if (prop_it == allowed_properties.end()) 
                         {
                             std::string message{"Additional property '"};
-                            message.append(prop.key().c_str());
+                            message.append(evaluation_limits::excerpt(prop.key()));
                             message.append("' not allowed by schema.");
                             walk_state result = reporter.error(this->make_validation_message(
                                 prop_context.eval_path(),
@@ -2999,11 +3020,11 @@ namespace jsonschema {
                     for (const auto& prop : instance.object_range()) 
                     {
                         // check if it is in "allowed properties"
-                        auto prop_it = allowed_properties.find(prop.key().c_str());
+                        auto prop_it = allowed_properties.find(prop.key());
                         if (prop_it == allowed_properties.end()) 
                         {
                             eval_context<Json> prop_context{this_context, prop.name(), evaluation_flags{}};
-                            jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                            jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
 
                             // finally, check "additionalProperties" 
                             //std::cout << "additional_properties_validator a_prop_or_pattern_matched " << a_prop_or_pattern_matched << ", " << bool(additional_properties_);
@@ -3056,7 +3077,7 @@ namespace jsonschema {
                 return result;
             }
 
-            std::unordered_set<std::string> allowed_properties;
+            std::set<std::string> allowed_properties;
             if (properties_)
             {
                 result = properties_->walk(context, instance, instance_location, 
@@ -3082,11 +3103,11 @@ namespace jsonschema {
                 for (const auto& prop : instance.object_range()) 
                 {
                     // check if it is in "allowed properties"
-                    auto prop_it = allowed_properties.find(prop.key().c_str());
+                    auto prop_it = allowed_properties.find(prop.key());
                     if (prop_it == allowed_properties.end()) 
                     {
                         eval_context<Json> prop_context{this_context, prop.name(), evaluation_flags{}};
-                        jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                        jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
 
                         result = additional_properties_->walk(prop_context, prop.value() , prop_location, reporter, patch);
                         if (result == walk_state::abort)
@@ -3136,11 +3157,12 @@ namespace jsonschema {
 
             for (const auto& dep : dependent_required_) 
             {
+                evaluation_limits::charge(1);
                 auto prop = instance.find(dep.first);
                 if (prop != instance.object_range().end()) 
                 {
                     // if dependency-prop is present in instance
-                    jsonpointer::json_pointer prop_location = instance_location / dep.first;
+                    jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(dep.first);
                     walk_state result = dep.second->validate(this_context, instance, prop_location, results, reporter, patch); // validate
                     if (result == walk_state::abort)
                     {
@@ -3169,11 +3191,12 @@ namespace jsonschema {
 
             for (const auto& dep : dependent_required_) 
             {
+                evaluation_limits::charge(1);
                 auto prop = instance.find(dep.first);
                 if (prop != instance.object_range().end()) 
                 {
                     // if dependency-prop is present in instance
-                    result = dep.second->walk(this_context, instance, instance_location / dep.first, reporter, patch); 
+                    result = dep.second->walk(this_context, instance, instance_location / evaluation_limits::location_token(dep.first), reporter, patch); 
                     if (result == walk_state::abort)
                     {
                         return result;
@@ -3224,7 +3247,7 @@ namespace jsonschema {
                 if (prop != instance.object_range().end()) 
                 {
                     // if dependency-prop is present in instance
-                    jsonpointer::json_pointer prop_location = instance_location / dep.first;
+                    jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(dep.first);
                     walk_state result = dep.second->validate(this_context, instance, prop_location, results, reporter, patch); // validate
                     if (result == walk_state::abort)
                     {
@@ -3256,7 +3279,7 @@ namespace jsonschema {
                 if (prop != instance.object_range().end()) 
                 {
                     // if dependency-prop is present in instance
-                    result = dep.second->walk(this_context, instance, instance_location / dep.first, reporter, patch);
+                    result = dep.second->walk(this_context, instance, instance_location / evaluation_limits::location_token(dep.first), reporter, patch);
                     if (result == walk_state::abort)
                     {
                         return result;
@@ -3316,7 +3339,7 @@ namespace jsonschema {
                 {
                     for (const auto& prop : instance.object_range()) 
                     {
-                        jsonpointer::json_pointer prop_location = instance_location / prop.key();
+                        jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.key());
 
                         walk_state result = schema_val_->validate(this_context, prop.key() , instance_location, results, reporter, patch);
                         if (result == walk_state::abort)
@@ -3348,7 +3371,7 @@ namespace jsonschema {
             {
                 for (const auto& prop : instance.object_range()) 
                 {
-                    result = schema_val_->walk(this_context, prop.key(), instance_location / prop.key(), reporter, patch);
+                    result = schema_val_->walk(this_context, prop.key(), instance_location / evaluation_limits::location_token(prop.key()), reporter, patch);
                     if (result == walk_state::abort)
                     {
                         return result;
@@ -3398,11 +3421,12 @@ namespace jsonschema {
 
             for (const auto& dep : dependent_required_) 
             {
+                evaluation_limits::charge(1);
                 auto prop = instance.find(dep.first);
                 if (prop != instance.object_range().end()) 
                 {
                     // if dependency-prop is present in instance
-                    jsonpointer::json_pointer prop_location = instance_location / dep.first;
+                    jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(dep.first);
                     walk_state result = dep.second->validate(this_context, instance, prop_location, results, reporter, patch); // validate
                     if (result == walk_state::abort)
                     {
@@ -3417,7 +3441,7 @@ namespace jsonschema {
                 if (prop != instance.object_range().end()) 
                 {
                     // if dependency-prop is present in instance
-                    jsonpointer::json_pointer prop_location = instance_location / dep.first;
+                    jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(dep.first);
                     walk_state result = dep.second->validate(this_context, instance, prop_location, results, reporter, patch); // validate
                     if (result == walk_state::abort)
                     {
@@ -3575,13 +3599,13 @@ namespace jsonschema {
             std::size_t end = 0;
             for (const auto& item : instance.array_range()) 
             {
-                std::size_t errors = local_reporter.errors.size();
+                std::size_t errors = local_reporter.error_count();
                 walk_state result = schema_validator_->validate(this_context, item, instance_location / index, results, local_reporter, patch);
                 if (result == walk_state::abort)
                 {
                     return result;
                 }
-                if (errors == local_reporter.errors.size())
+                if (errors == local_reporter.error_count())
                 {
                     if (context.require_evaluated_items())
                     {
@@ -3987,14 +4011,14 @@ namespace jsonschema {
                     for (const auto& prop : instance.object_range()) 
                     {
                         // check if it is in "evaluated_properties"
-                        auto prop_it = results.evaluated_properties.find(prop.key().c_str());
+                        auto prop_it = results.evaluated_properties.find(prop.key());
                         if (prop_it == results.evaluated_properties.end()) 
                         {
                             eval_context<Json> prop_context{this_context, prop.name(), evaluation_flags{}};
-                            jsonpointer::json_pointer prop_location = instance_location / prop.name();
+                            jsonpointer::json_pointer prop_location = instance_location / evaluation_limits::location_token(prop.name());
 
                             std::string message{"Unevaluated property '"};
-                            message.append(prop.key().c_str());
+                            message.append(evaluation_limits::excerpt(prop.key()));
                             message.append("' but the schema does not allow unevaluated properties.");
                             walk_state result = reporter.error(this->make_validation_message(
                                 prop_context.eval_path(), 
@@ -4023,7 +4047,7 @@ namespace jsonschema {
                     for (const auto& prop : instance.object_range()) 
                     {
                         // check if it is in "evaluated_properties"
-                        auto prop_it = results.evaluated_properties.find(prop.key().c_str());
+                        auto prop_it = results.evaluated_properties.find(prop.key());
                         if (prop_it == results.evaluated_properties.end()) 
                         {
                             //std::cout << "Not in evaluated properties: " << prop.key() << "\n";

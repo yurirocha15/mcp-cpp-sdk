@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <nlohmann/json.hpp>
 
@@ -33,19 +34,9 @@ struct SetLevelRequestParams {
     std::optional<nlohmann::json> meta;  ///< Reserved for protocol use.
 };
 
-inline void to_json(nlohmann::json& json_obj, const SetLevelRequestParams& params) {
-    json_obj = nlohmann::json{{"level", params.level}};
-    if (params.meta) {
-        json_obj["_meta"] = *params.meta;
-    }
-}
+MCP_API void to_json(nlohmann::json& json_obj, const SetLevelRequestParams& params);
 
-inline void from_json(const nlohmann::json& json_obj, SetLevelRequestParams& params) {
-    json_obj.at("level").get_to(params.level);
-    if (detail::has_json_value(json_obj, "_meta")) {
-        params.meta = json_obj.at("_meta").get<nlohmann::json>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& json_obj, SetLevelRequestParams& params);
 
 /**
  * @brief Request payload for the `logging/setLevel` method.
@@ -55,7 +46,8 @@ struct SetLevelRequest {
     SetLevelRequestParams params;             ///< The request parameters.
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SetLevelRequest, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const SetLevelRequest& value);
+MCP_API void from_json(const nlohmann::json& json_obj, SetLevelRequest& value);
 
 /**
  * @brief An initialized notification.
@@ -63,7 +55,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(SetLevelRequest, method, params)
 struct InitializedNotification {
     std::string method = "notifications/initialized";  ///< The method name.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(InitializedNotification, method)
+MCP_API void to_json(nlohmann::json& json_obj, const InitializedNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, InitializedNotification& value);
 
 /**
  * @brief Parameters for a cancelled notification.
@@ -74,19 +67,9 @@ struct CancelledNotificationParams {
         reason;  ///< An optional string describing the reason for the cancellation.
 };
 
-inline void to_json(nlohmann::json& j, const CancelledNotificationParams& params) {
-    j = nlohmann::json{{"requestId", params.requestId}};
-    if (params.reason) {
-        j["reason"] = *params.reason;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const CancelledNotificationParams& params);
 
-inline void from_json(const nlohmann::json& j, CancelledNotificationParams& params) {
-    j.at("requestId").get_to(params.requestId);
-    if (detail::has_json_value(j, "reason")) {
-        params.reason = j.at("reason").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, CancelledNotificationParams& params);
 
 /**
  * @brief A cancelled notification.
@@ -95,7 +78,8 @@ struct CancelledNotification {
     std::string method = "notifications/cancelled";  ///< The method name.
     CancelledNotificationParams params;              ///< The notification parameters.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(CancelledNotification, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const CancelledNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, CancelledNotification& value);
 
 /**
  * @brief Parameters for a progress notification.
@@ -107,26 +91,9 @@ struct ProgressNotificationParams {
     std::optional<std::string> message;  ///< An optional message.
 };
 
-inline void to_json(nlohmann::json& j, const ProgressNotificationParams& params) {
-    j = nlohmann::json{{"progressToken", params.progressToken}, {"progress", params.progress}};
-    if (params.total) {
-        j["total"] = *params.total;
-    }
-    if (params.message) {
-        j["message"] = *params.message;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const ProgressNotificationParams& params);
 
-inline void from_json(const nlohmann::json& j, ProgressNotificationParams& params) {
-    j.at("progressToken").get_to(params.progressToken);
-    j.at("progress").get_to(params.progress);
-    if (detail::has_json_value(j, "total")) {
-        params.total = j.at("total").get<double>();
-    }
-    if (detail::has_json_value(j, "message")) {
-        params.message = j.at("message").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, ProgressNotificationParams& params);
 
 /**
  * @brief A progress notification.
@@ -135,7 +102,8 @@ struct ProgressNotification {
     std::string method = "notifications/progress";  ///< The method name.
     ProgressNotificationParams params;              ///< The notification parameters.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ProgressNotification, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const ProgressNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ProgressNotification& value);
 
 /**
  * @brief Parameters for a logging message notification.
@@ -146,20 +114,9 @@ struct LoggingMessageNotificationParams {
     nlohmann::json data;  ///< The data to be logged, such as a string message or an object.
 };
 
-inline void to_json(nlohmann::json& j, const LoggingMessageNotificationParams& params) {
-    j = nlohmann::json{{"level", params.level}, {"data", params.data}};
-    if (params.logger) {
-        j["logger"] = *params.logger;
-    }
-}
+MCP_API void to_json(nlohmann::json& j, const LoggingMessageNotificationParams& params);
 
-inline void from_json(const nlohmann::json& j, LoggingMessageNotificationParams& params) {
-    j.at("level").get_to(params.level);
-    j.at("data").get_to(params.data);
-    if (detail::has_json_value(j, "logger")) {
-        params.logger = j.at("logger").get<std::string>();
-    }
-}
+MCP_API void from_json(const nlohmann::json& j, LoggingMessageNotificationParams& params);
 
 /**
  * @brief A logging message notification.
@@ -168,7 +125,8 @@ struct LoggingMessageNotification {
     std::string method = "notifications/message";  ///< The method name.
     LoggingMessageNotificationParams params;       ///< The notification parameters.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LoggingMessageNotification, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const LoggingMessageNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, LoggingMessageNotification& value);
 
 /**
  * @brief A notification that the prompt list has changed.
@@ -176,7 +134,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(LoggingMessageNotification, method, params)
 struct PromptListChangedNotification {
     std::string method = "notifications/prompts/list_changed";  ///< The method name.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PromptListChangedNotification, method)
+MCP_API void to_json(nlohmann::json& json_obj, const PromptListChangedNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, PromptListChangedNotification& value);
 
 /**
  * @brief A notification that the resource list has changed.
@@ -184,7 +143,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(PromptListChangedNotification, method)
 struct ResourceListChangedNotification {
     std::string method = "notifications/resources/list_changed";  ///< The method name.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ResourceListChangedNotification, method)
+MCP_API void to_json(nlohmann::json& json_obj, const ResourceListChangedNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ResourceListChangedNotification& value);
 
 /**
  * @brief A notification that the tool list has changed.
@@ -192,7 +152,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ResourceListChangedNotification, method)
 struct ToolListChangedNotification {
     std::string method = "notifications/tools/list_changed";  ///< The method name.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ToolListChangedNotification, method)
+MCP_API void to_json(nlohmann::json& json_obj, const ToolListChangedNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ToolListChangedNotification& value);
 
 /**
  * @brief A notification that the roots list has changed.
@@ -200,7 +161,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ToolListChangedNotification, method)
 struct RootsListChangedNotification {
     std::string method = "notifications/roots/list_changed";  ///< The method name.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RootsListChangedNotification, method)
+MCP_API void to_json(nlohmann::json& json_obj, const RootsListChangedNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, RootsListChangedNotification& value);
 
 /**
  * @brief Parameters for a resource updated notification.
@@ -208,7 +170,8 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(RootsListChangedNotification, method)
 struct ResourceUpdatedNotificationParams {
     std::string uri;  ///< The URI of the resource that has been updated.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ResourceUpdatedNotificationParams, uri)
+MCP_API void to_json(nlohmann::json& json_obj, const ResourceUpdatedNotificationParams& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ResourceUpdatedNotificationParams& value);
 
 /**
  * @brief A notification that a resource has been updated.
@@ -217,58 +180,18 @@ struct ResourceUpdatedNotification {
     std::string method = "notifications/resources/updated";  ///< The method name.
     ResourceUpdatedNotificationParams params;                ///< The notification parameters.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ResourceUpdatedNotification, method, params)
-
-/**
- * @brief Parameters for task status notifications.
- */
-struct TaskStatusNotificationParams {
-    std::string id;                        ///< Task identifier whose status changed.
-    TaskStatus status;                     ///< Updated task status.
-    std::optional<TaskMetadata> metadata;  ///< Optional task metadata snapshot.
-    std::optional<std::string> message;    ///< Optional human-readable status message.
-};
-inline void to_json(nlohmann::json& j, const TaskStatusNotificationParams& p) {
-    j = nlohmann::json{{"id", p.id}, {"status", p.status}};
-    if (p.metadata) {
-        j["metadata"] = *p.metadata;
-    }
-    if (p.message) {
-        j["message"] = *p.message;
-    }
-}
-inline void from_json(const nlohmann::json& j, TaskStatusNotificationParams& p) {
-    j.at("id").get_to(p.id);
-    j.at("status").get_to(p.status);
-    if (detail::has_json_value(j, "metadata")) {
-        p.metadata = j.at("metadata").get<TaskMetadata>();
-    }
-    if (detail::has_json_value(j, "message")) {
-        p.message = j.at("message").get<std::string>();
-    }
-}
-
-/**
- * @brief A notification about a task's status change.
- */
-struct TaskStatusNotification {
-    std::string method = "notifications/tasks/status";  ///< The method name.
-    TaskStatusNotificationParams params;                ///< The notification parameters.
-};
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(TaskStatusNotification, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const ResourceUpdatedNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ResourceUpdatedNotification& value);
 
 /**
  * @brief Parameters for elicitation completion notifications.
  */
 struct ElicitationCompleteNotificationParams {
-    RequestId requestId;  ///< Request identifier for the completed elicitation.
+    /// The `elicitationId` of the URL-mode `elicitation/create` request that completed.
+    std::string elicitationId;
 };
-inline void to_json(nlohmann::json& j, const ElicitationCompleteNotificationParams& p) {
-    j = nlohmann::json{{"requestId", p.requestId}};
-}
-inline void from_json(const nlohmann::json& j, ElicitationCompleteNotificationParams& p) {
-    j.at("requestId").get_to(p.requestId);
-}
+MCP_API void to_json(nlohmann::json& j, const ElicitationCompleteNotificationParams& p);
+MCP_API void from_json(const nlohmann::json& j, ElicitationCompleteNotificationParams& p);
 
 /**
  * @brief A notification that an elicitation process has completed.
@@ -277,6 +200,7 @@ struct ElicitationCompleteNotification {
     std::string method = "notifications/elicitation/complete";  ///< The method name.
     ElicitationCompleteNotificationParams params;               ///< The notification parameters.
 };
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(ElicitationCompleteNotification, method, params)
+MCP_API void to_json(nlohmann::json& json_obj, const ElicitationCompleteNotification& value);
+MCP_API void from_json(const nlohmann::json& json_obj, ElicitationCompleteNotification& value);
 
 }  // namespace mcp

@@ -11,17 +11,15 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "../detail/constants.hpp"
 
 namespace mcp::auth {
 
 namespace {
 
-constexpr std::string_view g_token_specials = "!#$%&'*+-.^_`|~";
-constexpr int g_hex_base = 16;
-
 bool is_token_char(unsigned char character) {
-    return std::isalnum(character) != 0 ||
-           g_token_specials.find(static_cast<char>(character)) != std::string_view::npos;
+    return std::isalnum(character) != 0 || mcp::detail::constants::challenge::g_TOKEN_SPECIALS.find(
+                                               static_cast<char>(character)) != std::string_view::npos;
 }
 
 std::string to_lower_ascii(std::string value) {
@@ -111,15 +109,16 @@ std::string form_decode(std::string_view value) {
         if (character == '+') {
             result.push_back(' ');
         } else if (character == '%' && index + 2 < value.size()) {
-            const auto high = mcp::constants::g_hex_digits_upper.find(
+            const auto high = mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER.find(
                 static_cast<char>(std::toupper(static_cast<unsigned char>(value[index + 1]))));
-            const auto low = mcp::constants::g_hex_digits_upper.find(
+            const auto low = mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER.find(
                 static_cast<char>(std::toupper(static_cast<unsigned char>(value[index + 2]))));
             if (high == std::string_view::npos || low == std::string_view::npos) {
                 result.push_back(character);
                 continue;
             }
-            result.push_back(static_cast<char>((high * g_hex_base) + low));
+            result.push_back(
+                static_cast<char>((high * mcp::detail::constants::challenge::g_HEX_BASE) + low));
             index += 2;
         } else {
             result.push_back(character);
@@ -275,11 +274,11 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
                                                                 const AuthorizationResponse& response) {
     if (!request.state.empty()) {
         if (!response.state) {
-            return {AuthorizationResponseStatus::state_missing,
+            return {AuthorizationResponseStatus::eStateMissing,
                     "authorization response omitted the state parameter"};
         }
         if (*response.state != request.state) {
-            return {AuthorizationResponseStatus::state_mismatch,
+            return {AuthorizationResponseStatus::eStateMismatch,
                     "authorization response state did not match the recorded value"};
         }
     }
@@ -288,11 +287,11 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
     // default-port elision, no trailing-slash or percent-encoding normalization.
     if (response.iss) {
         if (*response.iss != request.issuer) {
-            return {AuthorizationResponseStatus::issuer_mismatch,
+            return {AuthorizationResponseStatus::eIssuerMismatch,
                     "authorization response iss did not match the recorded issuer"};
         }
     } else if (request.issuer_parameter_supported) {
-        return {AuthorizationResponseStatus::issuer_missing,
+        return {AuthorizationResponseStatus::eIssuerMissing,
                 "authorization server advertises iss support but omitted the parameter"};
     }
 
@@ -303,14 +302,14 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
         // us through a redirect the authorization server controls, and being issuer-authentic makes
         // it trustworthy as to origin, not as to content.
         return {
-            AuthorizationResponseStatus::server_error,
+            AuthorizationResponseStatus::eServerError,
             "authorization server returned error " + detail::sanitize_for_diagnostics(*response.error)};
     }
     if (!response.code || response.code->empty()) {
-        return {AuthorizationResponseStatus::code_missing,
+        return {AuthorizationResponseStatus::eCodeMissing,
                 "authorization response carried no authorization code"};
     }
-    return {AuthorizationResponseStatus::accepted, {}};
+    return {AuthorizationResponseStatus::eAccepted, {}};
 }
 
 }  // namespace mcp::auth

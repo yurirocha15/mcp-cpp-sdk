@@ -9,8 +9,6 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -24,6 +22,7 @@ int main() {
         using namespace mcp;
 
         asio::io_context io_ctx;
+        bool client_ok = false;
 
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
@@ -47,9 +46,11 @@ int main() {
                          {"type", "text"}, {"text", input_args.at("text").get<std::string>()}}})}};
             });
 
-        constexpr unsigned short http_port = 18099;
+        // Port 0 lets the system pick a free port. The transport binds it when it is constructed,
+        // so a client can connect at once, before listen() starts accepting.
         auto http_server_transport =
-            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", http_port);
+            std::make_shared<HttpServerTransport>(io_ctx.get_executor(), "127.0.0.1", 0);
+        const unsigned short http_port = http_server_transport->port();
 
         std::cout << "Starting HTTP server on port " << http_port << '\n';
 
@@ -66,14 +67,10 @@ int main() {
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    std::cout << "Client: waiting for server to start" << '\n';
-                    asio::steady_timer delay_timer(io_ctx.get_executor());
-                    delay_timer.expires_after(std::chrono::milliseconds(100 /* NOLINT */));
-                    co_await delay_timer.async_wait(asio::use_awaitable);
-
                     std::cout << "Client: creating transport" << '\n';
                     auto http_client_transport = std::make_shared<HttpClientTransport>(
-                        io_ctx.get_executor(), "http://127.0.0.1:18099/mcp");
+                        io_ctx.get_executor(),
+                        "http://127.0.0.1:" + std::to_string(http_port) + "/mcp");
 
                     std::cout << "Client: creating client object" << '\n';
                     Client client(http_client_transport, io_ctx.get_executor());
@@ -83,8 +80,17 @@ int main() {
                     client_info.version = "1.0.0";
 
                     std::cout << "Client: connecting" << '\n';
-                    auto init_result = co_await client.connect(client_info, ClientCapabilities{});
-                    std::cout << "Connected to: " << init_result.serverInfo.name << '\n';
+                    {
+                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // serverInfo is optional: a server may leave it out.
+                        if (init_result.serverInfo) {
+                            std::cout << "Connected to: " << init_result.serverInfo->name << '\n';
+                        }
+                        // Over HTTP the default automatic() sends one POST that names 2026-07-28; a
+                        // legacy server answers it with an error status and the client falls back to
+                        // initialize.
+                        std::cout << "Protocol version: " << init_result.protocolVersion << '\n';
+                    }
 
                     auto tools = co_await client.list_tools();
                     std::cout << "Tools: " << tools.tools.size() << '\n';
@@ -99,6 +105,7 @@ int main() {
 
                     std::cout << "HTTP example complete" << '\n';
                     client.close();
+                    client_ok = true;
 
                     http_transport_ptr->close();
                 } catch (const std::exception& error) {
@@ -109,6 +116,10 @@ int main() {
             asio::detached);
 
         io_ctx.run();
+        if (!client_ok) {
+            std::cerr << "Example failed\n";
+            return EXIT_FAILURE;
+        }
         return EXIT_SUCCESS;
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << "\n";

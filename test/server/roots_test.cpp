@@ -1,6 +1,7 @@
 #include "../test_utils.hpp"
 #include "mcp/client/client.hpp"
 
+#include "../support/spawn.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -10,9 +11,14 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <string>
 #include <string_view>
+
+namespace roots_test {
+
+namespace protocol = mcp::constants::protocol;
 
 namespace {
 
@@ -109,9 +115,8 @@ TEST_F(RootsTest, ServerRequestsRootsFromClient) {
     raw_transport->enqueue_message(make_initialized_notification().dump());
     raw_transport->enqueue_message(tool_call_request.dump());
 
-    boost::asio::co_spawn(
-        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); },
-        boost::asio::detached);
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
 
     io_ctx_.run();
 
@@ -145,17 +150,14 @@ TEST_F(RootsTest, RequestRootsWithoutSenderThrows) {
     mcp::Context ctx(*raw_transport);
 
     bool threw = false;
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            try {
-                co_await ctx.request_roots();
-            } catch (const std::runtime_error&) {
-                threw = true;
-            }
-            raw_transport->close();
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            co_await ctx.request_roots();
+        } catch (const std::runtime_error&) {
+            threw = true;
+        }
+        raw_transport->close();
+    });
 
     io_ctx_.run();
     EXPECT_TRUE(threw);
@@ -165,7 +167,7 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
     auto client_transport_ptr = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* client_transport = client_transport_ptr.get();
 
-    mcp::Client client(client_transport_ptr, io_ctx_.get_executor());
+    mcp::Client client(client_transport_ptr, io_ctx_.get_executor(), legacy_client_options());
 
     mcp::Root root1;
     root1.uri = "file:///workspace/src";
@@ -191,7 +193,7 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
             EXPECT_FALSE(json_msg["params"]["capabilities"]["roots"].contains("listChanged"));
 
             mcp::InitializeResult init_result;
-            init_result.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+            init_result.protocolVersion = std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
             init_result.serverInfo.name = "test-server";
             init_result.serverInfo.version = "1.0";
 
@@ -219,12 +221,9 @@ TEST_F(RootsTest, ClientSetRootsServesRootsList) {
     client_info.name = "test-client";
     client_info.version = "1.0";
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            co_await client.connect(std::move(client_info), mcp::ClientCapabilities{});
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect(std::move(client_info), mcp::ClientCapabilities{});
+    });
 
     io_ctx_.run();
 
@@ -248,7 +247,7 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
     auto client_transport_ptr = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* client_transport = client_transport_ptr.get();
 
-    mcp::Client client(client_transport_ptr, io_ctx_.get_executor());
+    mcp::Client client(client_transport_ptr, io_ctx_.get_executor(), legacy_client_options());
 
     int write_count = 0;
     std::vector<std::string> written_messages;
@@ -262,7 +261,7 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
                 auto request_id = json_msg["id"].get<std::string>();
 
                 mcp::InitializeResult init_result;
-                init_result.protocolVersion = std::string(mcp::g_LATEST_PROTOCOL_VERSION);
+                init_result.protocolVersion = std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
                 init_result.serverInfo.name = "test-server";
                 init_result.serverInfo.version = "1.0";
 
@@ -283,20 +282,17 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
     client_info.name = "test-client";
     client_info.version = "1.0";
 
-    boost::asio::co_spawn(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            mcp::ClientCapabilities capabilities;
-            mcp::ClientCapabilities::RootsCapability roots_capability;
-            roots_capability.listChanged = true;
-            capabilities.roots = std::move(roots_capability);
-            co_await client.connect(std::move(client_info), capabilities);
-            mcp::Root root;
-            root.uri = "file:///updated/path";
-            root.name = "updated";
-            client.set_roots({root}, true);
-        },
-        boost::asio::detached);
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::ClientCapabilities capabilities;
+        mcp::ClientCapabilities::RootsCapability roots_capability;
+        roots_capability.listChanged = true;
+        capabilities.roots = std::move(roots_capability);
+        co_await client.connect(std::move(client_info), capabilities);
+        mcp::Root root;
+        root.uri = "file:///updated/path";
+        root.name = "updated";
+        client.set_roots({root}, true);
+    });
 
     io_ctx_.run();
 
@@ -311,3 +307,5 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
     }
     EXPECT_TRUE(found_notification);
 }
+
+}  // namespace roots_test

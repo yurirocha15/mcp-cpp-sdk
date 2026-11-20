@@ -1,7 +1,9 @@
 #pragma once
 
+#include "mcp/client/client.hpp"
 #include "mcp/server/server.hpp"
 
+#include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -14,11 +16,21 @@
 
 #include <chrono>
 #include <functional>
+#include <mcp/core/constants.hpp>
 #include <memory>
 #include <queue>
 #include <string>
 #include <string_view>
 #include <vector>
+
+/// Options for a client that speaks only the protocol revisions that start with initialize, for
+/// tests that script such a peer or use what only those revisions have (ping, shutdown, roots in
+/// initialize), whatever the default protocol is.
+inline mcp::ClientOptions legacy_client_options() {
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    return options;
+}
 
 // ---------------------------------------------------------------------------
 // ScriptedTransport — mock ITransport that queues scripted messages and
@@ -54,8 +66,14 @@ class ScriptedTransport final : public mcp::ITransport {
     }
 
     mcp::Task<void> write_message(std::string_view message) override {
+        // Copied first: the caller's view need not outlive a held write.
+        std::string text(message);
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
-        written_.emplace_back(message);
+        while (hold_writes_.load() && !closed_) {
+            boost::asio::steady_timer pause(strand_, std::chrono::milliseconds(1));
+            co_await pause.async_wait(boost::asio::use_awaitable);
+        }
+        written_.push_back(std::move(text));
         if (on_write_) {
             on_write_(written_.back());
         }
@@ -77,6 +95,12 @@ class ScriptedTransport final : public mcp::ITransport {
         on_write_ = std::move(callback);
     }
 
+    /// While set, writes wait, as they do for a peer that stopped reading.
+    void hold_writes(bool hold) { hold_writes_.store(hold); }
+
+    /// Messages enqueued and not yet read. For a single-threaded io_context.
+    [[nodiscard]] std::size_t unread() const { return incoming_.size(); }
+
     [[nodiscard]] const std::vector<std::string>& written() const { return written_; }
     [[nodiscard]] bool is_closed() const { return closed_; }
     [[nodiscard]] const boost::asio::strand<boost::asio::any_io_executor>& strand() const {
@@ -90,19 +114,40 @@ class ScriptedTransport final : public mcp::ITransport {
     std::vector<std::string> written_;
     std::function<void(std::string_view)> on_write_;
     bool closed_ = false;
+    std::atomic<bool> hold_writes_{false};
 };
 
 // ---------------------------------------------------------------------------
 // JSON-RPC message helpers
 // ---------------------------------------------------------------------------
 inline nlohmann::json make_initialize_request(std::string_view id) {
-    return {{"jsonrpc", "2.0"},
-            {"id", id},
-            {"method", "initialize"},
-            {"params",
-             {{"protocolVersion", std::string(mcp::g_LATEST_PROTOCOL_VERSION)},
-              {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
-              {"capabilities", nlohmann::json::object()}}}};
+    return {
+        {"jsonrpc", "2.0"},
+        {"id", id},
+        {"method", "initialize"},
+        {"params",
+         {{"protocolVersion", std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)},
+          {"clientInfo", {{"name", "test-client"}, {"version", "0.1"}}},
+          {"capabilities", nlohmann::json::object()}}}};
+}
+
+/// The per-request `_meta` fields a 2026-07-28 request carries.
+inline nlohmann::json make_modern_meta(std::string_view protocol_version = "2026-07-28") {
+    return {{"io.modelcontextprotocol/protocolVersion", protocol_version},
+            {"io.modelcontextprotocol/clientCapabilities", nlohmann::json::object()},
+            {"io.modelcontextprotocol/clientInfo", {{"name", "test-client"}, {"version", "0.1"}}}};
+}
+
+/// A 2026-07-28 request: @p params with the per-request `_meta` fields added.
+inline nlohmann::json make_modern_request(const nlohmann::json& id, std::string_view method,
+                                          nlohmann::json params = nlohmann::json::object()) {
+    params["_meta"] = make_modern_meta();
+    return {{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", std::move(params)}};
+}
+
+/// A server/discover request, which carries the per-request `_meta` fields it requires.
+inline nlohmann::json make_discover_request(const nlohmann::json& id) {
+    return make_modern_request(id, "server/discover");
 }
 
 inline nlohmann::json make_shutdown_request(std::string_view id) {

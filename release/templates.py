@@ -48,6 +48,8 @@ def _validate_known_value(name: str, value: str) -> None:
         raise ValidationError("RPM_VERSION is not canonical")
     if name == "RPM_RELEASE" and re.fullmatch(r"[1-9][0-9]*", value) is None:
         raise ValidationError("RPM_RELEASE is not canonical")
+    if name == "VCREDIST_MIN_VERSION" and re.fullmatch(r"14\.[0-9]{2}", value) is None:
+        raise ValidationError("VCREDIST_MIN_VERSION must be a Visual C++ 14.x runtime version")
     if name == "PKGREL" and re.fullmatch(r"[1-9][0-9]*", value) is None:
         raise ValidationError("PKGREL is not canonical")
     if name.endswith("SHA256") and _SHA256_RE.fullmatch(value) is None:

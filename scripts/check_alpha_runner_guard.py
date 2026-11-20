@@ -1,43 +1,52 @@
 #!/usr/bin/env python3
 """Guard checks that keep the alpha conformance runner out of CI gating.
 
-Keeps the alpha conformance runner side-channel (
-``@modelcontextprotocol/conformance@0.2.0-alpha.11``, spec ``2026-07-28``)
-permanently non-default and non-CI-gating:
+Keeps the alpha conformance runner side-channel (``conformance/run_alpha.sh``,
+spec ``2026-07-28``) permanently non-gating:
 
-  (i)   ``conformance/run.sh`` must stay pinned to the locked ``0.1.16``
-        runner used for tier evidence.
-  (ii)  no file under ``.github/workflows/`` or ``scripts/`` (this guard
-        excluded) may reference the alpha results directory
-        (``conformance-results-alpha``) as a tier-evidence path.
-  (iii) no file under ``.github/workflows/`` or ``scripts/`` (this guard
-        excluded) may reference the alpha runner entrypoint
-        (``run_alpha.sh``) as something it executes and gates on.
+  (i)   ``conformance/runner/package.json`` must pin an exact, non-prerelease
+        runner version, and ``conformance/run.sh`` must read that pin instead
+        of naming a version of its own.
+  (ii)  no file under ``scripts/`` (this guard excluded) may reference the
+        alpha results directory (``conformance-results-alpha``) or the alpha
+        entrypoint (``run_alpha.sh``).
+  (iii) a workflow may reference them only in the job ``ALPHA_JOB`` of
+        ``.github/workflows/conformance.yml``. That job must carry
+        ``continue-on-error: true`` so its result cannot fail the workflow,
+        and no other job may mention it (``needs:`` would make it a
+        prerequisite of the gate).
 
-This intentionally does not require ``conformance/run_alpha.sh`` to exist:
-it only asserts that CI-facing workflows and phase-exit scripts do not
-*consume* the alpha runner as a pass/fail condition. Pattern-based, not
-presence-based.
+This intentionally does not require ``conformance/run_alpha.sh`` or the job to
+exist: it only asserts that nothing *consumes* the alpha runner as a pass/fail
+condition. Pattern-based, not presence-based.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUN_SH = REPO_ROOT / "conformance" / "run.sh"
-PINNED_VERSION = "0.1.16"
+PACKAGE_JSON = REPO_ROOT / "conformance" / "runner" / "package.json"
+RUNNER_PACKAGE = "@modelcontextprotocol/conformance"
+EXACT_RELEASE = re.compile(r"\d+\.\d+\.\d+")
 
-SCAN_DIRS = (
-    REPO_ROOT / ".github" / "workflows",
-    REPO_ROOT / "scripts",
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+
+# The one workflow job that may run the alpha runner.
+ALPHA_WORKFLOW = "conformance.yml"
+ALPHA_JOB = "conformance-2026-07-28-alpha"
+
+# This guard and its tests name the forbidden patterns, so the scan skips both files rather than
+# tripping over their docstrings and fixtures.
+SELF_PATHS = (
+    Path(__file__).resolve(),
+    Path(__file__).resolve().with_name("test_check_alpha_runner_guard.py"),
 )
-
-# This guard must itself name the forbidden patterns, so it excludes its own
-# file from the scan rather than tripping over its own docstring/regex.
-SELF_PATH = Path(__file__).resolve()
 
 FORBIDDEN_PATTERN = re.compile(r"conformance-results-alpha|run_alpha\.sh")
 
@@ -46,63 +55,131 @@ class GuardError(RuntimeError):
     """Raised when an alpha-runner non-gating invariant is violated."""
 
 
-def check_pin() -> None:
-    if not RUN_SH.is_file():
-        raise GuardError(f"{RUN_SH} does not exist; cannot verify the {PINNED_VERSION} pin")
-    text = RUN_SH.read_text(encoding="utf-8")
-    if PINNED_VERSION not in text:
+def read_pin(package_json: Path = PACKAGE_JSON) -> str:
+    if not package_json.is_file():
+        raise GuardError(f"{package_json} does not exist; cannot read the runner pin")
+    try:
+        pin = json.loads(package_json.read_text(encoding="utf-8"))["dependencies"][RUNNER_PACKAGE]
+    except (KeyError, TypeError, ValueError) as error:
+        raise GuardError(f"{package_json} does not pin {RUNNER_PACKAGE}: {error!r}") from error
+    if not isinstance(pin, str) or not EXACT_RELEASE.fullmatch(pin):
         raise GuardError(
-            f"{RUN_SH.relative_to(REPO_ROOT)} no longer contains the pinned runner version "
-            f"'{PINNED_VERSION}' (run.sh stays pinned while the alpha "
-            "harness is a separate, non-default, non-CI-gating side channel)"
+            f"{package_json.relative_to(REPO_ROOT) if package_json.is_relative_to(REPO_ROOT) else package_json} "
+            f"pins {RUNNER_PACKAGE} to {pin!r}; the gate needs an exact release version "
+            "(no range and no -alpha, -beta or -rc suffix)"
         )
+    return pin
 
 
-def iter_scanned_files() -> list[Path]:
-    files: list[Path] = []
-    for scan_dir in SCAN_DIRS:
-        if not scan_dir.is_dir():
+def check_pin(run_sh: Path = RUN_SH, package_json: Path = PACKAGE_JSON) -> str:
+    pin = read_pin(package_json)
+    if not run_sh.is_file():
+        raise GuardError(f"{run_sh} does not exist; cannot verify it reads the runner pin")
+    text = run_sh.read_text(encoding="utf-8")
+    if "runner/package.json" not in text:
+        raise GuardError(
+            "conformance/run.sh does not read conformance/runner/package.json, so it "
+            "would not check the installed runner against the single pin"
+        )
+    if re.search(r"(?<![\d.])\d+\.\d+\.\d+(?![\d.])", text):
+        raise GuardError(
+            "conformance/run.sh names a runner version of its own; it must take the "
+            "version from conformance/runner/package.json"
+        )
+    return pin
+
+
+def iter_files(directory: Path) -> list[Path]:
+    if not directory.is_dir():
+        return []
+    return [
+        path
+        for path in sorted(directory.rglob("*"))
+        if path.is_file() and path.resolve() not in SELF_PATHS
+    ]
+
+
+def job_blocks(workflow: str) -> dict[str, tuple[int, int]]:
+    """Maps each job id of a workflow to its 1-based first and last line."""
+    lines = workflow.splitlines()
+    starts: list[tuple[str, int]] = []
+    in_jobs = False
+    for number, line in enumerate(lines, start=1):
+        if re.match(r"^\s*(#.*)?$", line):
             continue
-        for path in sorted(scan_dir.rglob("*")):
-            if not path.is_file():
-                continue
-            if path.resolve() == SELF_PATH:
-                continue
-            files.append(path)
-    return files
+        if re.match(r"^\S", line):
+            in_jobs = line.startswith("jobs:")
+            continue
+        match = re.match(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$", line)
+        if in_jobs and match:
+            starts.append((match.group(1), number))
+    blocks: dict[str, tuple[int, int]] = {}
+    for index, (name, first) in enumerate(starts):
+        last = starts[index + 1][1] - 1 if index + 1 < len(starts) else len(lines)
+        blocks[name] = (first, last)
+    return blocks
 
 
-def check_no_gating_reference() -> None:
+def check_workflow(path: Path, label: str) -> list[str]:
+    """Returns the violations of one workflow file."""
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    allowed = None
+    if path.name == ALPHA_WORKFLOW:
+        allowed = job_blocks(text).get(ALPHA_JOB)
     violations: list[str] = []
-    for path in iter_scanned_files():
+    for number, line in enumerate(lines, start=1):
+        in_alpha_job = allowed is not None and allowed[0] <= number <= allowed[1]
+        if FORBIDDEN_PATTERN.search(line) and not in_alpha_job:
+            violations.append(f"{label}:{number}: {line.strip()!r}")
+        if allowed is not None and not in_alpha_job and re.search(rf"\b{re.escape(ALPHA_JOB)}\b", line):
+            violations.append(f"{label}:{number}: mentions the {ALPHA_JOB} job outside it: {line.strip()!r}")
+    if allowed is not None:
+        block = lines[allowed[0] : allowed[1]]
+        if not any(re.fullmatch(r"    continue-on-error:\s*true\s*(#.*)?", line) for line in block):
+            violations.append(
+                f"{label}:{allowed[0]}: job {ALPHA_JOB} must set continue-on-error: true at the job level"
+            )
+    return violations
+
+
+def check_no_gating_reference(
+    workflows_dir: Path = WORKFLOWS_DIR, scripts_dir: Path = SCRIPTS_DIR
+) -> None:
+    violations: list[str] = []
+    for path in iter_files(workflows_dir):
+        try:
+            violations.extend(check_workflow(path, f"{workflows_dir.name}/{path.name}"))
+        except (UnicodeDecodeError, OSError):
+            continue
+    for path in iter_files(scripts_dir):
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for lineno, line in enumerate(text.splitlines(), start=1):
+        for number, line in enumerate(text.splitlines(), start=1):
             if FORBIDDEN_PATTERN.search(line):
-                violations.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()!r}")
+                violations.append(f"{scripts_dir.name}/{path.name}:{number}: {line.strip()!r}")
 
     if violations:
         joined = "\n  ".join(violations)
         raise GuardError(
-            "the alpha runner/results directory is referenced by a CI workflow or "
-            "scripts/ guard, which would let it gate CI:\n  "
+            "the alpha runner or its results directory is referenced where it could gate CI:\n  "
             f"{joined}\n"
-            "The alpha runner must remain non-default and non-CI-gating. "
-            "Remove the reference from any file "
-            "under .github/workflows/ or scripts/; the alpha harness itself "
-            "(conformance/run_alpha.sh) legitimately owns these strings and is not scanned."
+            f"Only the {ALPHA_JOB} job of .github/workflows/{ALPHA_WORKFLOW} may run it, with "
+            "continue-on-error: true, and no other job may depend on that job. Scripts under "
+            "scripts/ must not reference it; the alpha harness itself (conformance/run_alpha.sh) "
+            "legitimately owns these strings and is not scanned."
         )
 
 
 def main() -> int:
-    check_pin()
+    pin = check_pin()
     check_no_gating_reference()
     print(
-        f"alpha-runner guard passed: {RUN_SH.relative_to(REPO_ROOT)} pinned to "
-        f"{PINNED_VERSION}; no CI workflow or scripts/ guard references the alpha "
-        "runner/results as a gating condition"
+        f"alpha-runner guard passed: {RUN_SH.relative_to(REPO_ROOT)} reads the "
+        f"{pin} pin from {PACKAGE_JSON.relative_to(REPO_ROOT)}; the alpha runner/results are "
+        "referenced only by the non-gating job"
     )
     return 0
 
