@@ -38,13 +38,14 @@ json load(const char* name) {
 #endif
 #endif
 
-/// Whether this build runs at full speed. Sanitized and unoptimized builds check every twentieth
-/// mutant: all of them would make those builds' test runs much longer for little extra coverage.
-constexpr bool full_speed() {
+/// Every how many generated schemas and mutants this build checks. Sanitized and unoptimized
+/// builds check every fiftieth: all of them take sanitized builds longer than a test may run.
+/// Optimized builds check all of them.
+constexpr std::size_t stride() {
 #if defined(MCP_SCHEMA_GOLDENS_SANITIZED) || !defined(NDEBUG)
-    return false;
+    return 50;
 #else
-    return true;
+    return 1;
 #endif
 }
 
@@ -126,13 +127,15 @@ TEST(SchemaGoldens, GeneratedVerdicts) {
         const auto& recorded = goldens.at("generated").at(dialect.directory);
         const auto cases = schema_corpus::generated_cases(dialect, count);
         ASSERT_EQ(recorded.size(), cases.size()) << dialect.directory;
-        for (std::size_t index = 0; index < cases.size(); ++index) {
+        for (std::size_t index = 0; index < cases.size(); index += stride()) {
             differences.check({"generated", dialect.directory, "", index},
                               recorded[index].get<std::string>(),
                               schema_corpus::case_verdicts(cases[index]));
         }
     }
-    differences.expect_all_reached("generated");
+    if (stride() == 1) {
+        differences.expect_all_reached("generated");
+    }
 }
 
 // Every mutant compiles or is refused with a SchemaError, as jsoncons decided: never another
@@ -140,7 +143,6 @@ TEST(SchemaGoldens, GeneratedVerdicts) {
 TEST(SchemaGoldens, MutantVerdicts) {
     const auto goldens = load("schema-goldens.json");
     Differences differences;
-    const std::size_t stride = full_speed() ? 1 : 20;
     for (const auto& dialect : schema_corpus::dialects()) {
         const auto& recorded = goldens.at("mutants").at(dialect.directory);
         for (const auto& file : schema_corpus::suite_files(dialect)) {
@@ -153,7 +155,7 @@ TEST(SchemaGoldens, MutantVerdicts) {
             std::size_t index = 0;
             for (const auto& group : file.groups) {
                 schema_corpus::for_each_mutant(group.schema, [&](const json& mutant) {
-                    if (index % stride == 0) {
+                    if (index % stride() == 0) {
                         const char verdict = schema_corpus::compile_verdict(mutant);
                         EXPECT_NE(verdict, 'x') << dialect.directory << " " << file.name << " #"
                                                 << index << ": " << mutant.dump();
@@ -165,7 +167,7 @@ TEST(SchemaGoldens, MutantVerdicts) {
             }
         }
     }
-    if (stride == 1) {
+    if (stride() == 1) {
         differences.expect_all_reached("mutants");
     }
 }
