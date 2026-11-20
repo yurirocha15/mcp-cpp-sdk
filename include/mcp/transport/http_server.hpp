@@ -45,11 +45,12 @@ struct HttpServerBinding {
     /// serves them, when the transport hands them to whoever reads it. The server it belongs to is
     /// held weakly: once that server is gone it answers with an error.
     std::function<Task<std::string>(nlohmann::json, RequestContext)> modern_dispatch;
-    /// Where modern_dispatch runs.
+    /// Where modern_dispatch runs; required when modern_dispatch is set.
     Executor dispatch_executor;
 };
 
 /// Installed by Server::run().
+/// @throws std::invalid_argument When the binding has a modern_dispatch but no dispatch_executor.
 void bind_server(HttpServerTransport& transport, HttpServerBinding binding);
 }  // namespace detail
 

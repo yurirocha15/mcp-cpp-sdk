@@ -1987,6 +1987,9 @@ std::uint64_t terminated_session_count(const HttpServerTransport& transport) noe
 }
 
 void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
+    if (binding.modern_dispatch && !binding.dispatch_executor) {
+        throw std::invalid_argument("bind_server() needs a dispatch_executor for modern_dispatch");
+    }
     std::lock_guard lock(transport.impl_->configuration_mutex);
     transport.impl_->param_header_check = std::move(binding.param_header_check);
     transport.impl_->served_versions = std::move(binding.served_versions);
