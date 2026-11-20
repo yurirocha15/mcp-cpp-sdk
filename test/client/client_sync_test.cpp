@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #ifndef MCP_TEST_STDIO_SERVER
@@ -363,6 +364,28 @@ TEST(ClientSyncTest, AMadeProgressTokenDiffersFromAWrittenOne) {
     EXPECT_EQ(unrouted,
               (std::vector<std::string>{mcp::ProgressToken{std::int64_t{1}}.correlation_key(),
                                         mcp::ProgressToken{std::int64_t{2}}.correlation_key()}));
+}
+
+// `{}` makes null arguments, which are sent as an empty object, by call_tool() and start_tool().
+TEST(ClientSyncTest, NullToolArgumentsAreSentAsAnEmptyObject) {
+    mcp::Client client(test_server());
+    client.sync().connect("sync-test", "1.0");
+    EXPECT_TRUE(mentions(client.sync().call_tool("args", {}), "marker"));
+    const auto started = client.sync().start_tool("args", {});
+    ASSERT_TRUE(std::holds_alternative<mcp::CallToolResult>(started));
+    EXPECT_TRUE(mentions(std::get<mcp::CallToolResult>(started), "marker"));
+
+    // The coroutine start_tool() takes JSON arguments as call_tool() does.
+    std::optional<mcp::CallToolResult> from_coroutine;
+    client.run([&]() -> mcp::Task<void> {
+        const json arguments = json::object();
+        auto result = co_await client.start_tool("args", arguments);
+        if (auto* answered = std::get_if<mcp::CallToolResult>(&result)) {
+            from_coroutine = std::move(*answered);
+        }
+    });
+    ASSERT_TRUE(from_coroutine.has_value());
+    EXPECT_TRUE(mentions(*from_coroutine, "marker"));
 }
 
 TEST(ClientSyncTest, EveryRequestOptionsOverloadSendsItsRequest) {

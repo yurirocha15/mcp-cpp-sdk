@@ -851,9 +851,12 @@ class MCP_API Client {
     }
 
     /**
-     * @brief Call a tool with JSON arguments, such as `call_tool("add", {{"a", 1}, {"b", 2}})`.
+     * @brief Call a tool with JSON arguments.
      *
-     * @details As call_tool() above.
+     * @details As call_tool() above. Null arguments, which `{}` makes, are sent as an empty object.
+     * Build other arguments in a variable before the co_await, such as
+     * `nlohmann::json arguments{{"a", 1}, {"b", 2}}; co_await client.call_tool("add", arguments);`:
+     * GCC 12 and 13 crash on a braced list inside a co_await (see the README's compiler notes).
      */
     Task<CallToolResult> call_tool(const std::string& name, const nlohmann::json& arguments);
 
@@ -894,6 +897,7 @@ class MCP_API Client {
      * @throws StructuredContentError as call_tool() does for a result.
      */
     template <JsonSerializable Args, typename Self = Client>
+        requires(!std::same_as<Args, nlohmann::json>)
     auto start_tool(const std::string& name, const Args& arguments) {
         // [gcc11-sso: not-a-coroutine]
         CallToolParams call_params;
@@ -908,6 +912,7 @@ class MCP_API Client {
      * @details As start_tool() above.
      */
     template <JsonSerializable Args, typename Self = Client>
+        requires(!std::same_as<Args, nlohmann::json>)
     auto start_tool(const std::string& name, const Args& arguments,
                     const RequestOptions& request_options) {
         // [gcc11-sso: not-a-coroutine]
@@ -916,6 +921,19 @@ class MCP_API Client {
         call_params.arguments = nlohmann::json(arguments);
         return static_cast<Self*>(this)->start_tool_with(std::move(call_params), request_options);
     }
+
+    /**
+     * @brief Start a tool call with JSON arguments.
+     *
+     * @details As start_tool() above, with the arguments as call_tool() takes JSON ones.
+     */
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool(const std::string& name,
+                                                              const nlohmann::json& arguments);
+
+    /// As start_tool() above, with per-request options.
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool(const std::string& name,
+                                                              const nlohmann::json& arguments,
+                                                              const RequestOptions& request_options);
 
     /**
      * @brief A handle to a task by its id, for a task started earlier.
@@ -992,8 +1010,9 @@ class MCP_API Client {
      * @brief Get a specific prompt from the server.
      *
      * @param name The name of the prompt.
-     * @param arguments The arguments that fill in the prompt, by name, such as
-     *        `{{"name", "Ada"}}`; the request carries none when the map is empty.
+     * @param arguments The arguments that fill in the prompt, by name; the request carries none
+     *        when the map is empty. As for call_tool(), build them in a variable before the
+     *        co_await.
      * @return A task that resolves to the server's GetPromptResult.
      */
     Task<GetPromptResult> get_prompt(const std::string& name,

@@ -2898,21 +2898,40 @@ void Client::start(std::shared_ptr<ITransport> transport, const Executor& execut
 
 Executor Client::executor() const { return impl_->executor; }
 
-Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments) {
-    // [gcc11-sso: not-a-coroutine]
+namespace {
+
+/// The params of a tools/call with JSON arguments; `{}` makes null ones, which are sent as an empty
+/// object.
+CallToolParams json_call_params(const std::string& name, const nlohmann::json& arguments) {
     CallToolParams call_params;
     call_params.name = name;
-    call_params.arguments = arguments;
-    return call_tool_with(std::move(call_params));
+    call_params.arguments = arguments.is_null() ? nlohmann::json::object() : arguments;
+    return call_params;
+}
+
+}  // namespace
+
+Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments) {
+    // [gcc11-sso: not-a-coroutine]
+    return call_tool_with(json_call_params(name, arguments));
 }
 
 Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments,
                                        const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
-    CallToolParams call_params;
-    call_params.name = name;
-    call_params.arguments = arguments;
-    return call_tool_with(std::move(call_params), request_options);
+    return call_tool_with(json_call_params(name, arguments), request_options);
+}
+
+Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool(const std::string& name,
+                                                                  const nlohmann::json& arguments) {
+    // [gcc11-sso: not-a-coroutine]
+    return start_tool_with(json_call_params(name, arguments));
+}
+
+Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool(
+    const std::string& name, const nlohmann::json& arguments, const RequestOptions& request_options) {
+    // [gcc11-sso: not-a-coroutine]
+    return start_tool_with(json_call_params(name, arguments), request_options);
 }
 
 Client::~Client() {
