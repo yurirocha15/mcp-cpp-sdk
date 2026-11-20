@@ -460,6 +460,7 @@ jobs:
       run: |
         python3 scripts/vendor_jsoncons.py --check
         python3 scripts/vendor_json_schema_test_suite.py --check
+        python3 scripts/vendor_json_schema_metaschemas.py --check
 
     - name: Compile release Python without executing it
       run: >-
