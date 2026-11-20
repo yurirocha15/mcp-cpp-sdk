@@ -8,9 +8,17 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <cstdio>
+#include <functional>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
+
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
 
 namespace json_schema_engines_test {
 
@@ -106,6 +114,99 @@ TEST(SchemaEngines, ReportTheSameDeepLocations) {
     ASSERT_EQ(jsoncons_result.violations.size(), 1U);
     EXPECT_EQ(native_result.violations[0].instance_path, expected);
     EXPECT_EQ(jsoncons_result.violations[0].instance_path, expected);
+}
+
+/// Runs @p work on a thread whose stack is @p stack_bytes. Windows threads here get the default
+/// stack, which is larger.
+void run_on_small_stack(std::size_t stack_bytes, const std::function<void()>& work) {
+#if defined(_WIN32)
+    (void)stack_bytes;
+    std::thread thread(work);
+    thread.join();
+#else
+    pthread_attr_t attributes;
+    ASSERT_EQ(pthread_attr_init(&attributes), 0);
+    ASSERT_EQ(pthread_attr_setstacksize(&attributes, stack_bytes), 0);
+    pthread_t thread{};
+    auto* task = new std::function<void()>(work);
+    const auto start = [](void* argument) -> void* {
+        auto* job = static_cast<std::function<void()>*>(argument);
+        (*job)();
+        delete job;
+        return nullptr;
+    };
+    ASSERT_EQ(pthread_create(&thread, &attributes, start, task), 0);
+    pthread_attr_destroy(&attributes);
+    ASSERT_EQ(pthread_join(thread, nullptr), 0);
+#endif
+}
+
+/// A way of nesting schemas: the schema and a value that reaches its innermost level.
+struct Nesting {
+    const char* name;
+    std::function<json(const json&)> wrap_schema;
+    std::function<json(const json&)> wrap_value;
+    bool flips;  ///< Each level inverts the verdict.
+};
+
+json nested(const std::function<json(const json&)>& wrap, json inner, std::size_t levels) {
+    for (std::size_t level = 0; level < levels; ++level) {
+        inner = wrap(inner);
+    }
+    return inner;
+}
+
+// The deepest schema of each nesting that compiles is evaluated natively on a 512 KiB stack, the
+// smallest a secondary thread gets, with a value that reaches its innermost level.
+TEST(SchemaEngines, DeepestNativeSchemasRunOnASmallStack) {
+    constexpr std::size_t g_small_stack = 512 * 1024;
+    constexpr std::size_t g_most_levels = 192;
+    const auto same = [](const json& inner) { return inner; };
+    const std::vector<Nesting> nestings = {
+        {"properties", [](const json& inner) { return json{{"properties", {{"n", inner}}}}; },
+         [](const json& inner) { return json{{"n", inner}}; }, false},
+        {"items", [](const json& inner) { return json{{"items", inner}}; },
+         [](const json& inner) { return json::array({inner}); }, false},
+        {"allOf", [](const json& inner) { return json{{"allOf", json::array({inner})}}; }, same, false},
+        {"anyOf", [](const json& inner) { return json{{"anyOf", json::array({inner})}}; }, same, false},
+        {"not", [](const json& inner) { return json{{"not", inner}}; }, same, true},
+    };
+    const json leaf = {{"type", "integer"}};
+    for (const auto& nesting : nestings) {
+        const auto compiles = [&](std::size_t levels) {
+            return try_compile(nested(nesting.wrap_schema, leaf, levels), SchemaEngine::eNative)
+                .has_value();
+        };
+        // The deepest nesting that compiles: compiling fails from some depth on.
+        std::size_t deepest = 0;
+        std::size_t refused = g_most_levels + 1;
+        while (refused - deepest > 1) {
+            const auto middle = deepest + (refused - deepest) / 2;
+            (compiles(middle) ? deepest : refused) = middle;
+        }
+        std::printf("%s: %zu levels compile natively\n", nesting.name, deepest);
+        EXPECT_GE(deepest, 8U) << nesting.name;
+        const auto schema =
+            try_compile(nested(nesting.wrap_schema, leaf, deepest), SchemaEngine::eNative);
+        ASSERT_TRUE(schema.has_value()) << nesting.name;
+        const auto good = nested(nesting.wrap_value, 1, deepest);
+        const auto bad = nested(nesting.wrap_value, "x", deepest);
+        const bool good_passes = !nesting.flips || deepest % 2 == 0;
+        run_on_small_stack(g_small_stack, [&] {
+            const auto good_result = schema->validate(good);
+            const auto bad_result = schema->validate(bad);
+            EXPECT_EQ(good_result.valid, good_passes) << nesting.name;
+            EXPECT_EQ(bad_result.valid, !good_passes) << nesting.name;
+            for (const auto& violation : good_result.violations) {
+                EXPECT_EQ(violation.message.find("validation stopped"), std::string::npos)
+                    << nesting.name;
+            }
+            for (const auto& violation : bad_result.violations) {
+                EXPECT_EQ(violation.message.find("validation stopped"), std::string::npos)
+                    << nesting.name;
+            }
+        });
+    }
 }
 
 // Every case of the JSON-Schema-Test-Suite data of the five dialects, the excluded groups too,
