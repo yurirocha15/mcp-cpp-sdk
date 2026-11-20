@@ -251,6 +251,27 @@ def scalar(block: list[str], key: str) -> str | None:
     return values[0] if values else None
 
 
+def environment(block: list[str]) -> str | None:
+    """Return the job's environment, written as ``environment: name`` or as a mapping."""
+
+    indexes = [index for index, line in enumerate(block) if re.match(r"    environment:( |$)", line)]
+    if not indexes:
+        return None
+    if len(indexes) > 1:
+        raise PolicyError("job contains multiple 'environment' values")
+    if block[indexes[0]] != "    environment:":
+        return block[indexes[0]][len("    environment: ") :]
+    names = []
+    for line in block[indexes[0] + 1 :]:
+        if not line.startswith("      "):
+            break
+        if line.startswith("      name: "):
+            names.append(line[len("      name: ") :])
+    if len(names) != 1:
+        raise PolicyError("job environment mapping does not name one environment")
+    return names[0]
+
+
 def expression(block: list[str], key: str) -> str | None:
     """Return a scalar or folded job-level expression with normalized whitespace."""
 
@@ -393,7 +414,7 @@ def check_job_security(
         if mapping(block, "permissions") != expected_permissions[job]:
             raise PolicyError(f"job {job!r} permissions differ from reviewed policy")
         expected_environment = expected_environments.get(job)
-        if scalar(block, "environment") != expected_environment:
+        if environment(block) != expected_environment:
             raise PolicyError(f"job {job!r} has the wrong protected environment")
         forwarded, forwarding_lines = forwarded_secrets(block)
         if forwarded != expected_forwarded.get(job, frozenset()):
@@ -451,7 +472,7 @@ def check_job_graph(
             raise PolicyError(f"job {job!r} can start before the run is approved")
     for job, block in blocks.items():
         privileged = (
-            scalar(block, "environment") is not None
+            environment(block) is not None
             or any("secrets." in line or line.startswith("    uses: ") for line in block)
         )
         if privileged and job != "run-approval" and "run-approval" not in dependencies(blocks, job):

@@ -119,6 +119,30 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         blocks["policy"].append("        TOKEN: ${{ secrets.RELEASE_GPG_PASSPHRASE }}")
         self.assert_policy_error(lambda: policy.check_job_security(blocks))
 
+    def test_reads_an_environment_written_as_a_mapping(self) -> None:
+        def with_environment(job: str, *lines: str, keep: bool = False) -> dict[str, list[str]]:
+            blocks = self.copied(self.blocks)
+            blocks[job] = [
+                *(line for line in blocks[job] if keep or not line.startswith("    environment:")),
+                *lines,
+            ]
+            return blocks
+
+        url = "      url: https://github.com/yurirocha15/mcp-cpp-sdk/releases"
+        policy.check_job_security(
+            with_environment("attestation", "    environment:", "      name: release-github", url)
+        )
+        for blocks in (
+            with_environment("existing-anchor-policy", "    environment:", "      name: release-github"),
+            with_environment("attestation", "    environment:", "      name: release-aur"),
+            with_environment("attestation", "    environment:", url),
+            with_environment(
+                "attestation", "    environment:", "      name: release-github", keep=True
+            ),
+        ):
+            with self.subTest(blocks=blocks):
+                self.assert_policy_error(lambda: policy.check_job_security(blocks))
+
     def test_forwarded_secrets_match_the_reviewed_calls(self) -> None:
         policy.check_job_security(self.blocks)
         policy.check_job_security(
@@ -438,14 +462,15 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
             line for line in blocks["immutability-gate"] if line != "      - run-approval"
         ]
         self.graph_error(blocks)
-        for job, line in (
-            ("existing-anchor-policy", "    environment: release-github"),
-            ("existing-anchor-policy", "        run: echo ${{ secrets.CLOUDSMITH_API_KEY }}"),
-            ("repository-readiness", "    uses: ./.github/workflows/release-candidate.yml"),
+        for job, lines in (
+            ("existing-anchor-policy", ["    environment: release-github"]),
+            ("existing-anchor-policy", ["    environment:", "      name: release-github"]),
+            ("existing-anchor-policy", ["        run: echo ${{ secrets.CLOUDSMITH_API_KEY }}"]),
+            ("repository-readiness", ["    uses: ./.github/workflows/release-candidate.yml"]),
         ):
-            with self.subTest(job=job, line=line):
+            with self.subTest(job=job, lines=lines):
                 blocks = self.copied(self.blocks)
-                blocks[job] = [*blocks[job], line]
+                blocks[job] = [*blocks[job], *lines]
                 self.graph_error(blocks)
 
     def test_publishing_jobs_wait_for_the_publication_approval(self) -> None:
