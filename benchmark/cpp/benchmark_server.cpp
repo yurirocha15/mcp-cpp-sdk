@@ -9,6 +9,7 @@
 
 #include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
+#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 
 #include <boost/asio.hpp>
@@ -807,7 +808,8 @@ int main() {
 
     StreamableHttpSessionManager manager(io_ctx.get_executor(), "0.0.0.0", mcp_port,
                                          create_server_with_tools);
-    manager.set_custom_request_handler(
+    mcp::set_custom_request_handler(
+        manager,
         [](const boost::beast::http::request<boost::beast::http::string_body>& req)
             -> std::optional<boost::beast::http::response<boost::beast::http::string_body>> {
             if (req.target() == "/health") {
