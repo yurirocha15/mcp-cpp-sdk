@@ -242,13 +242,19 @@ TEST(RuntimeTest, AStopBeforeStartStartsNoThread) {
 TEST(RuntimeTest, ARuntimeMayBeDestroyedByATaskOnItsOwnThread) {
     auto* pool = new mcp::Runtime;
     pool->start(2);
+    std::promise<void> spawned;
     std::promise<void> destroyed;
     auto done = destroyed.get_future();
-    pool->spawn([](mcp::Runtime* self, std::promise<void>& finished) -> mcp::Task<void> {
+    // The task waits until spawn() has returned: no call may be made on the Runtime while it is
+    // destroyed.
+    pool->spawn([](mcp::Runtime* self, std::shared_future<void> returned,
+                   std::promise<void>& finished) -> mcp::Task<void> {
+        returned.wait();
         delete self;  // NOLINT(cppcoreguidelines-owning-memory)
         finished.set_value();
         co_return;
-    }(pool, destroyed));
+    }(pool, spawned.get_future().share(), destroyed));
+    spawned.set_value();
     done.get();
     // The thread that destroyed it returns from the loop it still runs, which outlives the
     // Runtime until then.
