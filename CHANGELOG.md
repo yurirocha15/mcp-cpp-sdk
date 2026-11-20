@@ -37,6 +37,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `set_custom_request_handler()` is a free function in `<mcp/transport/http_beast.hpp>`, where `StringRequest` and `StringResponse` moved from `http_types.hpp`.
 - `ITransport` and `auth::Authenticator` are exported from the library.
 - `Client::get_prompt()` and its blocking twin take the arguments as a `std::map`, empty for none, so `{{"name", "Ada"}}` is accepted.
+- A `Client` call whose transport fails to reach the server throws `McpError` (`g_CONNECTION_CLOSED`), with an HTTP status in `data()` and the transport's exception nested.
 - `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
 
 ### Removed
@@ -54,6 +55,10 @@ Code written for 0.3.0 needs these changes to compile with this release:
 - `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
 - Construct transports with `Runtime::executor()` instead of `TransportFactory`.
 - Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
+
+These changes in behavior need no change to compile:
+
+- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows those.
 
 ### Fixed
 

@@ -48,8 +48,8 @@ Connect over HTTP
 ``mcp::Endpoint::http(url)`` connects to a Streamable HTTP server, such as the
 one of :doc:`growing-a-server` that serves over HTTP, instead of launching a
 process. Only the endpoint changes; the calls stay as they are. A server that
-cannot be reached makes ``connect()`` throw, as "Handle Errors" below describes.
-See :doc:`/concepts/transports`.
+cannot be reached makes ``connect()`` throw ``mcp::McpError``, as "Handle
+Errors" below describes. See :doc:`/concepts/transports`.
 
 .. literalinclude:: /_generated/progression/client_add_http.diff
    :language: diff
@@ -162,15 +162,13 @@ A tool that fails says so in its result: ``isError`` is set and the content
 says why, as for these arguments, which lack the name the tool's schema
 requires. A request the server refuses throws ``mcp::McpError``, whose
 ``code()`` is the JSON-RPC error code, here invalid params for a resource that
-does not exist. A request that times out throws ``McpError`` too, and so does a
-closed connection to a stdio server. Over HTTP, a failure of the connection
-itself throws the transport's exception instead: ``mcp::HttpStatusError``
-(``<mcp/transport/http_client.hpp>``), whose ``status()`` is the HTTP status,
-when the server answers with an error status, such as 401 for a missing or wrong
-bearer token, and ``boost::system::system_error`` when the connection is refused
-or ends. Both derive from ``std::runtime_error``, so a ``catch (const
-std::exception&)`` after the ``McpError`` handler covers them without Boost
-headers. See :doc:`error-handling`.
+does not exist. A request that times out throws ``McpError`` too, with code
+``-32001``, and so does a connection that fails, with code ``-31000``
+(``mcp::constants::jsonrpc::g_CONNECTION_CLOSED``): a stdio server that exits,
+an HTTP server that cannot be reached or drops the connection, or one that
+answers with an HTTP error status, such as 401 for a missing or wrong bearer
+token, which ``data()`` holds as ``httpStatus``. The transport's own exception
+is nested in it, for ``std::rethrow_if_nested()``. See :doc:`error-handling`.
 
 .. literalinclude:: /_generated/progression/client_add_errors.diff
    :language: diff

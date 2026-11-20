@@ -1,19 +1,28 @@
 #include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/core/constants.hpp"
+#include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
+#include "mcp/transport/http_session_manager.hpp"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/use_future.hpp>
+#include <boost/system/system_error.hpp>
 #include <chrono>
+#include <cstdint>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -251,6 +260,68 @@ TEST(ClientEndpointTest, DestructionEndsACallInFlight) {
         }
     }
     EXPECT_THROW(static_cast<void>(held.get()), std::exception);
+}
+
+/// A port that nothing listens on: the system chose it for an acceptor that is closed again.
+std::uint16_t closed_port() {
+    boost::asio::io_context io;
+    boost::asio::ip::tcp::acceptor acceptor(io, {boost::asio::ip::make_address("127.0.0.1"), 0});
+    return acceptor.local_endpoint().port();
+}
+
+std::string url_of(std::uint16_t port) { return "http://127.0.0.1:" + std::to_string(port) + "/mcp"; }
+
+TEST(ClientEndpointTest, AnHttpConnectionThatFailsThrowsMcpError) {
+    mcp::Client client(mcp::Endpoint::http(url_of(closed_port())));
+    try {
+        client.sync().connect("endpoint-test", "1.0");
+        FAIL() << "connect() reached a port that nothing listens on";
+    } catch (const mcp::McpError& error) {
+        EXPECT_EQ(error.code(), mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+        EXPECT_FALSE(error.data().has_value());
+        EXPECT_THROW(std::rethrow_if_nested(error), boost::system::system_error);
+    }
+}
+
+TEST(ClientEndpointTest, AnHttpErrorStatusThrowsMcpErrorWithTheStatus) {
+    mcp::Server server("bearer-test", "1.0");
+    std::thread server_thread([&server] {
+        server.run_http("127.0.0.1", 0, [](mcp::StreamableHttpSessionManager& http) {
+            http.set_bearer_token_validator([](std::string_view token) { return token == "right"; });
+        });
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (server.bound_port() == 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto port = server.bound_port();
+    std::optional<unsigned int> nested_status;
+    std::optional<int> code;
+    std::optional<json> data;
+    if (port != 0) {
+        mcp::Client client(mcp::Endpoint::http(url_of(port)));
+        try {
+            client.sync().connect("endpoint-test", "1.0");
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+            data = error.data();
+            try {
+                std::rethrow_if_nested(error);
+            } catch (const mcp::HttpStatusError& http) {
+                nested_status = http.status();
+            } catch (...) {
+                // Another nested type leaves nested_status empty, which the check below reports.
+            }
+        }
+    }
+    server.stop();
+    server_thread.join();
+
+    ASSERT_NE(port, 0U);
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    ASSERT_TRUE(data.has_value());
+    EXPECT_EQ(data->value("httpStatus", 0U), 401U);
+    EXPECT_EQ(nested_status, 401U);
 }
 
 }  // namespace client_endpoint_test

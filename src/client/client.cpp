@@ -8,6 +8,7 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
+#include <mcp/transport/http_client.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -62,6 +63,25 @@ std::optional<nlohmann::json> make_paginated_params(const std::optional<std::str
     PaginatedRequestParams params;
     params.cursor = cursor;
     return nlohmann::json(std::move(params));
+}
+
+/// Throws @p failure, a transport's failure to send a message to the server. An HTTP error status
+/// and a failed connection become McpError with g_CONNECTION_CLOSED, as a closed stdio connection
+/// does, with the transport's exception nested in it for std::rethrow_if_nested(); an HTTP status
+/// is also in its data() as `httpStatus`. Any other exception is thrown as it is.
+[[noreturn]] void throw_transport_failure(const std::exception_ptr& failure) {
+    try {
+        std::rethrow_exception(failure);
+    } catch (const HttpStatusError& error) {
+        std::throw_with_nested(
+            McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                     "The server answered with HTTP status " + std::to_string(error.status()),
+                     nlohmann::json{{"httpStatus", error.status()}}));
+    } catch (const boost::system::system_error& error) {
+        std::throw_with_nested(
+            McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                     "The connection to the server failed: " + error.code().message()));
+    }
 }
 
 }  // namespace
@@ -1336,7 +1356,7 @@ struct Client::Impl {
                     throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                                    "Client transport is closed");
                 }
-                std::rethrow_exception(*write_failure);
+                throw_transport_failure(*write_failure);
             }
             if (stream->ack_wait() != detail::SubscriptionState::AckWait::ePending ||
                 std::chrono::steady_clock::now() >= deadline) {
@@ -1671,8 +1691,11 @@ struct Client::Impl {
             result_json = co_await std::move(pending);
             answered = true;
         } catch (const McpError& error) {
+            // A transport failure, which throw_transport_failure() nests, is no answer from the
+            // server, and goes to the caller whole.
             if (state->closed.load(std::memory_order_acquire) ||
-                error.code() == mcp::constants::jsonrpc::g_REQUEST_TIMEOUT) {
+                error.code() == mcp::constants::jsonrpc::g_REQUEST_TIMEOUT ||
+                dynamic_cast<const std::nested_exception*>(&error) != nullptr) {
                 throw;
             }
             attempt->error = error.error();
@@ -2038,7 +2061,11 @@ struct Client::Impl {
             throw McpError(std::move(*error));
         }
         if (write_error) {
-            std::rethrow_exception(write_error);
+            // The era probe tells a refused write from an answer, so it gets the failure as it is.
+            if (probe) {
+                std::rethrow_exception(write_error);
+            }
+            throw_transport_failure(write_error);
         }
         co_return result;
     }
@@ -2126,7 +2153,7 @@ struct Client::Impl {
                 throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                                "Client transport is closed");
             }
-            throw;
+            throw_transport_failure(std::current_exception());
         }
     }
 

@@ -1722,8 +1722,21 @@ TEST(HttpClientLegacy, InitializeRefusedWithoutAJsonRpcErrorReportsTheStatus) {
     EXPECT_NE(error.find("status 400"), std::string::npos) << error;
 }
 
-// Inside a session an error status keeps its HTTP meaning: a 404 there says the session is gone.
-TEST(HttpClientLegacy, ErrorStatusInsideASessionStaysAnHttpStatusError) {
+/// The HTTP status of the HttpStatusError nested in @p error, the McpError a client call threw.
+std::optional<unsigned int> nested_http_status(const mcp::McpError& error) {
+    try {
+        std::rethrow_if_nested(error);
+    } catch (const mcp::HttpStatusError& failure) {
+        return failure.status();
+    } catch (...) {
+        // Another nested type has no status.
+    }
+    return std::nullopt;
+}
+
+// Inside a session an error status keeps its HTTP meaning, a 404 there saying the session is gone:
+// the call throws McpError with the status in its data and the HttpStatusError nested in it.
+TEST(HttpClientLegacy, ErrorStatusInsideASessionKeepsItsHttpStatus) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
         const auto message = request.parsed();
@@ -1743,20 +1756,26 @@ TEST(HttpClientLegacy, ErrorStatusInsideASessionStaysAnHttpStatusError) {
     mcp::ClientOptions options;
     options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
+    std::optional<int> code;
     std::optional<unsigned int> status;
+    unsigned int data_status = 0;
     std::string other;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         try {
             co_await client.connect("legacy", "1.0");
             co_await client.list_tools();
-        } catch (const mcp::HttpStatusError& failure) {
-            status = failure.status();
+        } catch (const mcp::McpError& failure) {
+            code = failure.code();
+            status = nested_http_status(failure);
+            data_status = failure.data() ? failure.data()->value("httpStatus", 0u) : 0u;
         } catch (const std::exception& failure) {
             other = failure.what();
         }
         client.close();
     });
-    EXPECT_EQ(status, 404u) << other;
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED) << other;
+    EXPECT_EQ(status, 404u);
+    EXPECT_EQ(data_status, 404u);
 }
 
 // A new session started in place of a forgotten one that answers with another version and other
@@ -1886,8 +1905,8 @@ TEST(HttpClientLegacy, ForgottenSessionIsNotReplacedWhenTurnedOff) {
         co_await client.ping();
         try {
             co_await client.ping();
-        } catch (const mcp::HttpStatusError& failure) {
-            status = failure.status();
+        } catch (const mcp::McpError& failure) {
+            status = nested_http_status(failure);
         } catch (const std::exception& failure) {
             other = failure.what();
         }
