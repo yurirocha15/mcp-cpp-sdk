@@ -1471,6 +1471,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                        const std::shared_ptr<const std::string>& related_request);
     Task<void> send_notification(const std::string& method,
                                  const std::optional<nlohmann::json>& params);
+    /// send_notification() as part of a notification to every session sharing the registry: a
+    /// session that cannot take it, such as one closing meanwhile, misses it without stopping the
+    /// notification of the others.
+    Task<void> send_broadcast(const std::string& method);
+    /// notify_resource_updated() in the same way.
+    Task<void> broadcast_resource_updated(const std::string& uri);
     /// Sends the notification for @p topic on every open subscriptions/listen stream that opted in
     /// to it; @p uri names the resource of a resources/updated.
     Task<void> notify_listeners(ListenTopic topic, std::shared_ptr<const std::string> uri);
@@ -5154,6 +5160,22 @@ Task<void> Server::Impl::send_notification(const std::string& method,
     co_await session->writer->write_message(wire);
 }
 
+Task<void> Server::Impl::send_broadcast(const std::string& method) {
+    try {
+        co_await send_notification(method, std::nullopt);
+    } catch (const std::exception&) {
+        // A session whose transport cannot take the message ends through that transport.
+    }
+}
+
+Task<void> Server::Impl::broadcast_resource_updated(const std::string& uri) {
+    try {
+        co_await notify_resource_updated(uri);
+    } catch (const std::exception&) {
+        // As in send_broadcast().
+    }
+}
+
 // These three await rather than returning the task, and that is load-bearing. The argument is a
 // temporary bound to a reference parameter of a lazy coroutine: under co_await it lives to the end
 // of the full expression, which includes the await, but a plain `return` destroys it before the
@@ -5164,7 +5186,7 @@ Task<void> Server::notify_tools_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
         if (member->legacy_broadcast_wanted()) {
-            co_await member->send_notification("notifications/tools/list_changed", std::nullopt);
+            co_await member->send_broadcast("notifications/tools/list_changed");
         }
     }
 }
@@ -5173,7 +5195,7 @@ Task<void> Server::notify_resources_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::eResourcesListChanged, nullptr);
         if (member->legacy_broadcast_wanted()) {
-            co_await member->send_notification("notifications/resources/list_changed", std::nullopt);
+            co_await member->send_broadcast("notifications/resources/list_changed");
         }
     }
 }
@@ -5182,7 +5204,7 @@ Task<void> Server::notify_prompts_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::ePromptsListChanged, nullptr);
         if (member->legacy_broadcast_wanted()) {
-            co_await member->send_notification("notifications/prompts/list_changed", std::nullopt);
+            co_await member->send_broadcast("notifications/prompts/list_changed");
         }
     }
 }
@@ -5191,7 +5213,7 @@ Task<void> Server::notify_resource_updated(const std::string& uri) {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::eResourceUpdated,
                                           std::make_shared<const std::string>(uri));
-        co_await member->notify_resource_updated(uri);
+        co_await member->broadcast_resource_updated(uri);
     }
 }
 

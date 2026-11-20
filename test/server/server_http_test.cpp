@@ -23,6 +23,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <exception>
@@ -197,6 +198,48 @@ std::string connect_and_greet(const std::string& url, mcp::ClientProtocol client
         return "failed";
     }
 }
+
+/// A transport that delivers initialize and notifications/initialized, then waits until closed,
+/// and whose writes throw once fail_writes is set.
+class FailingWritesTransport final : public mcp::ITransport {
+   public:
+    explicit FailingWritesTransport(const asio::any_io_executor& executor) : wake_(executor) {
+        incoming_.push_back(make_initialize_request("1").dump());
+        incoming_.push_back(make_initialized_notification().dump());
+    }
+
+    mcp::Task<std::string> read_message() override {
+        if (!incoming_.empty()) {
+            auto message = std::move(incoming_.front());
+            incoming_.erase(incoming_.begin());
+            co_return message;
+        }
+        wake_.expires_at(asio::steady_timer::time_point::max());
+        boost::system::error_code ignored;
+        co_await wake_.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+        throw std::runtime_error("transport closed");
+    }
+
+    // [gcc11-sso: string_view]
+    mcp::Task<void> write_message(std::string_view /*message*/) override {
+        if (fail_writes.load()) {
+            throw std::runtime_error("transport closed");
+        }
+        written.fetch_add(1);
+        co_return;
+    }
+
+    void close() override {
+        asio::post(wake_.get_executor(), [this] { wake_.cancel(); });
+    }
+
+    std::atomic<bool> fail_writes{false};
+    std::atomic<int> written{0};
+
+   private:
+    std::vector<std::string> incoming_;
+    asio::steady_timer wake_;
+};
 
 }  // namespace
 
@@ -664,6 +707,67 @@ TEST_F(ServerHttpTest, AServerServedByAManagerIsStoppedAndRefusesBlockingCalls) 
     EXPECT_TRUE(listened.load());
     // The run has ended, so the call returns, as for a server that is not running.
     EXPECT_NO_THROW(server_->sync().notify_tools_list_changed());
+}
+
+// A notification goes to every session sharing the server's registrations: one whose transport
+// cannot take it is skipped, and the sessions after it still get it.
+TEST_F(ServerHttpTest, ANotificationReachesTheSessionsAfterOneThatCannotTakeIt) {
+    asio::io_context io_ctx;
+    // The server's own session comes before the manager's legacy sessions.
+    auto failing = std::make_shared<FailingWritesTransport>(io_ctx.get_executor());
+    asio::co_spawn(io_ctx, server_->run(failing, io_ctx.get_executor()), asio::detached);
+    mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", 0, *server_);
+    asio::co_spawn(io_ctx, manager.listen(), asio::detached);
+    std::thread loop([&io_ctx] { io_ctx.run(); });
+    while (failing->written.load() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    std::mutex received_mutex;
+    std::condition_variable received_changed;
+    int received = 0;
+    {
+        mcp::ClientOptions options;
+        options.protocol = mcp::ClientProtocol::legacy();
+        mcp::Client client(
+            mcp::Endpoint::http("http://127.0.0.1:" + std::to_string(manager.port()) + "/mcp"),
+            options);
+        client.on_notification("notifications/tools/list_changed", [&](const nlohmann::json&) {
+            {
+                const std::lock_guard lock(received_mutex);
+                ++received;
+            }
+            received_changed.notify_all();
+        });
+        static_cast<void>(client.sync().connect("notify-test", "1.0"));
+        const auto wait_for = [&](int count) {
+            std::unique_lock lock(received_mutex);
+            return received_changed.wait_for(lock, std::chrono::seconds(10),
+                                             [&] { return received >= count; });
+        };
+        // The first one shows that the client's stream is open.
+        bool delivered = false;
+        for (int attempt = 0; attempt < 100 && !delivered; ++attempt) {
+            asio::co_spawn(io_ctx, server_->notify_tools_list_changed(), asio::use_future).get();
+            std::unique_lock lock(received_mutex);
+            delivered = received_changed.wait_for(lock, std::chrono::milliseconds(100),
+                                                  [&] { return received >= 1; });
+        }
+        ASSERT_TRUE(delivered);
+        int before = 0;
+        {
+            const std::lock_guard lock(received_mutex);
+            before = received;
+        }
+
+        failing->fail_writes = true;
+        EXPECT_NO_THROW(
+            asio::co_spawn(io_ctx, server_->notify_tools_list_changed(), asio::use_future).get());
+        EXPECT_TRUE(wait_for(before + 1));
+    }
+    failing->close();
+    manager.close();
+    loop.join();
 }
 
 }  // namespace server_http_test
