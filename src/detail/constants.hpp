@@ -444,4 +444,13 @@ inline constexpr int g_OCTET3_SHIFT = 8;
 
 }  // namespace ipv4
 
+/// Requests a Client sends.
+namespace client_requests {
+
+/// Starts each progress token the client makes for RequestOptions::on_progress. A string, so that
+/// no integer token an application writes into another request can equal it.
+inline constexpr std::string_view g_PROGRESS_TOKEN_PREFIX = "mcp-cpp-sdk-progress-";
+
+}  // namespace client_requests
+
 }  // namespace mcp::detail::constants

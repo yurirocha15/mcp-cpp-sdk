@@ -411,8 +411,9 @@ struct RequestOptions {
     /**
      * @brief Receives the progress the server reports for this request.
      *
-     * @details When set, the request carries a `progressToken` in its `_meta`, a new one unless
-     * the params already name one, and each `notifications/progress` with that token goes to this
+     * @details When set, the request carries a `progressToken` in its `_meta`: the one the params
+     * name, or else a new string token, which differs from the integer tokens an application
+     * writes into other requests. Each `notifications/progress` with that token goes to this
      * callback instead of Client::on_progress until the answer arrives. A tool call the client
      * follows as a task (ClientTaskMode::eAuto) keeps the token until the task's result arrives;
      * after start_tool() returns a TaskHandle, the task's progress goes to Client::on_progress.

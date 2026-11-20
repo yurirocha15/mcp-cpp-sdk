@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <boost/asio/io_context.hpp>
+#include <cstdint>
 #include <fstream>
 #include <future>
 #include <memory>
@@ -310,6 +311,58 @@ TEST(ClientSyncTest, AProgressTokenInUseIsRefused) {
     second.on_progress = [&](const mcp::ProgressNotificationParams&) { ++reports; };
     static_cast<void>(client.sync().send_request("tools/call", short_call, second));
     EXPECT_EQ(reports, 1);
+}
+
+// A token the client makes differs from one an application writes into another request, so the
+// progress of each request reaches its own receiver.
+TEST(ClientSyncTest, AMadeProgressTokenDiffersFromAWrittenOne) {
+    mcp::Client client(test_server());
+    client.sync().connect("sync-test", "1.0");
+    std::mutex seen_mutex;
+    std::vector<std::string> routed;
+    std::vector<std::string> unrouted;
+    client.on_progress([&](const mcp::ProgressNotificationParams& progress) {
+        std::lock_guard lock(seen_mutex);
+        unrouted.push_back(progress.progressToken.correlation_key());
+    });
+
+    std::promise<void> reported;
+    auto first_report = reported.get_future();
+    std::once_flag once;
+    mcp::CancellationToken cancel;
+    mcp::RequestOptions made;
+    made.cancellation = cancel;
+    made.on_progress = [&](const mcp::ProgressNotificationParams& progress) {
+        {
+            std::lock_guard lock(seen_mutex);
+            routed.push_back(progress.progressToken.correlation_key());
+        }
+        std::call_once(once, [&] { reported.set_value(); });
+    };
+    std::thread caller([&] {
+        try {
+            static_cast<void>(
+                client.sync().call_tool("progress", json{{"steps", 1}, {"wait_ms", 600000}}, made));
+        } catch (const mcp::McpError&) {
+        }
+    });
+    first_report.wait();
+
+    for (const std::int64_t written : {1, 2}) {
+        const std::optional<json> call{json{{"name", "progress"},
+                                            {"arguments", {{"steps", 1}}},
+                                            {"_meta", {{"progressToken", written}}}}};
+        static_cast<void>(client.sync().send_request("tools/call", call));
+    }
+    cancel.cancel();
+    caller.join();
+
+    std::lock_guard lock(seen_mutex);
+    ASSERT_EQ(routed.size(), 1U);
+    EXPECT_EQ(routed.front().rfind("s:", 0), 0U) << routed.front();
+    EXPECT_EQ(unrouted,
+              (std::vector<std::string>{mcp::ProgressToken{std::int64_t{1}}.correlation_key(),
+                                        mcp::ProgressToken{std::int64_t{2}}.correlation_key()}));
 }
 
 TEST(ClientSyncTest, EveryRequestOptionsOverloadSendsItsRequest) {

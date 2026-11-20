@@ -864,7 +864,9 @@ struct Client::Impl {
                                "Request _meta.progressToken must be a string or an integer");
             }
         } else {
-            token = ProgressToken{state->next_progress_token.fetch_add(1, std::memory_order_relaxed)};
+            token = ProgressToken{
+                std::string(detail::constants::client_requests::g_PROGRESS_TOKEN_PREFIX) +
+                std::to_string(state->next_progress_token.fetch_add(1, std::memory_order_relaxed))};
             meta["progressToken"] = token;
         }
         auto key = std::make_shared<const std::string>(token.correlation_key());
