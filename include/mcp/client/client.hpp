@@ -991,16 +991,16 @@ class MCP_API Client {
      * @brief Get a specific prompt from the server.
      *
      * @param name The name of the prompt.
-     * @param arguments Optional arguments to template the prompt.
+     * @param arguments The arguments that fill in the prompt, by name, such as
+     *        `{{"name", "Ada"}}`; the request carries none when the map is empty.
      * @return A task that resolves to the server's GetPromptResult.
      */
-    Task<GetPromptResult> get_prompt(
-        const std::string& name,
-        const std::optional<std::map<std::string, std::string>>& arguments = std::nullopt);
+    Task<GetPromptResult> get_prompt(const std::string& name,
+                                     const std::map<std::string, std::string>& arguments = {});
 
     /// @brief As get_prompt() above, with per-request options.
     Task<GetPromptResult> get_prompt(const std::string& name,
-                                     const std::optional<std::map<std::string, std::string>>& arguments,
+                                     const std::map<std::string, std::string>& arguments,
                                      const RequestOptions& request_options);
 
     /**
@@ -1266,12 +1266,11 @@ class MCP_API SyncClient {
     ListPromptsResult list_prompts(const std::optional<std::string>& cursor,
                                    const RequestOptions& request_options);
     /// As Client::get_prompt().
-    GetPromptResult get_prompt(
-        const std::string& name,
-        const std::optional<std::map<std::string, std::string>>& arguments = std::nullopt);
+    GetPromptResult get_prompt(const std::string& name,
+                               const std::map<std::string, std::string>& arguments = {});
     /// As Client::get_prompt().
     GetPromptResult get_prompt(const std::string& name,
-                               const std::optional<std::map<std::string, std::string>>& arguments,
+                               const std::map<std::string, std::string>& arguments,
                                const RequestOptions& request_options);
     /// As Client::complete().
     CompleteResult complete(const CompleteParams& params);

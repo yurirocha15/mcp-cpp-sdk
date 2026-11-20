@@ -36,6 +36,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::add_raw_tool()` takes any coroutine JSON handler, with or without the request's `Context`.
 - `set_custom_request_handler()` is a free function in `<mcp/transport/http_beast.hpp>`, where `StringRequest` and `StringResponse` moved from `http_types.hpp`.
 - `ITransport` and `auth::Authenticator` are exported from the library.
+- `Client::get_prompt()` and its blocking twin take the arguments as a `std::map`, empty for none, so `{{"name", "Ada"}}` is accepted.
 - `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
 
 ### Removed
@@ -52,6 +53,7 @@ Code written for 0.3.0 needs these changes to compile with this release:
 - A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
 - `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
 - Construct transports with `Runtime::executor()` instead of `TransportFactory`.
+- Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
 
 ### Fixed
 

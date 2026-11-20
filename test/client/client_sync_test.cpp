@@ -298,8 +298,7 @@ TEST(ClientSyncTest, EveryRequestOptionsOverloadSendsItsRequest) {
     EXPECT_TRUE(sync.list_resource_templates(std::nullopt, request).resourceTemplates.empty());
     EXPECT_EQ(sync.list_prompts(std::nullopt, request).prompts.size(), 1U);
     EXPECT_EQ(sync.read_resource("test://greeting", request).contents.size(), 1U);
-    const auto prompt =
-        sync.get_prompt("greet", std::map<std::string, std::string>{{"name", "Ada"}}, request);
+    const auto prompt = sync.get_prompt("greet", {{"name", "Ada"}}, request);
     ASSERT_EQ(prompt.messages.size(), 1U);
     ASSERT_TRUE(std::holds_alternative<mcp::TextContent>(prompt.messages.front().content));
     EXPECT_EQ(std::get<mcp::TextContent>(prompt.messages.front().content).text, "Hello, Ada");

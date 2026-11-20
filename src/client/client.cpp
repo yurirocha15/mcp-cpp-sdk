@@ -3084,17 +3084,19 @@ Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& c
         send_request("prompts/list", make_paginated_params(cursor), request_options));
 }
 
-Task<GetPromptResult> Client::get_prompt(
-    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments) {
+Task<GetPromptResult> Client::get_prompt(const std::string& name,
+                                         const std::map<std::string, std::string>& arguments) {
     return get_prompt(name, arguments, RequestOptions{});
 }
 
-Task<GetPromptResult> Client::get_prompt(
-    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments,
-    const RequestOptions& request_options) {
+Task<GetPromptResult> Client::get_prompt(const std::string& name,
+                                         const std::map<std::string, std::string>& arguments,
+                                         const RequestOptions& request_options) {
     GetPromptRequestParams params;
     params.name = name;
-    params.arguments = arguments;
+    if (!arguments.empty()) {
+        params.arguments = arguments;
+    }
     return parse_result<GetPromptResult>(
         send_request("prompts/get", nlohmann::json(std::move(params)), request_options));
 }
@@ -3448,15 +3450,15 @@ ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cur
         client_->impl_->blocking_loop, [&] { return client_->list_prompts(cursor, request_options); });
 }
 
-GetPromptResult SyncClient::get_prompt(
-    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments) {
+GetPromptResult SyncClient::get_prompt(const std::string& name,
+                                       const std::map<std::string, std::string>& arguments) {
     return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop,
                                                  [&] { return client_->get_prompt(name, arguments); });
 }
 
-GetPromptResult SyncClient::get_prompt(
-    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments,
-    const RequestOptions& request_options) {
+GetPromptResult SyncClient::get_prompt(const std::string& name,
+                                       const std::map<std::string, std::string>& arguments,
+                                       const RequestOptions& request_options) {
     return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop, [&] {
         return client_->get_prompt(name, arguments, request_options);
     });
