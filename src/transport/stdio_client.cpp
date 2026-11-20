@@ -4,12 +4,15 @@
 #include "../detail/constants.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/execution/outstanding_work.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/prefer.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
@@ -802,9 +805,12 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
     /// Runs on the strand once the process has ended.
     void handle_exit() {
         ProcessExit exit;
+        boost::asio::any_io_executor work;
         {
             std::lock_guard lock(proc->mutex);
             exit = proc->exit;
+            work = std::move(exit_work);
+            exit_work = boost::asio::any_io_executor();
         }
         exit_handled = true;
         if (closed.load() && stdout_pipe.is_open()) {
@@ -853,6 +859,10 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
             running = proc->started && !proc->exited;
             // A process whose output has already ended is on its way out by itself.
             proc->close_requested = proc->started && !output_ended.load();
+            if (running && can_post) {
+                exit_work = boost::asio::prefer(strand.get_inner_executor(),
+                                                boost::asio::execution::outstanding_work_t::tracked);
+            }
         }
         if (!can_post) {
             close_now(false);
@@ -902,6 +912,10 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
         }
         if (reaper.joinable()) {
             reaper.join();
+        }
+        {
+            std::lock_guard lock(proc->mutex);
+            exit_work = boost::asio::any_io_executor();
         }
         release_process(*proc);
     }
@@ -1088,6 +1102,9 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
     bool writing = false;
     bool draining = false;
     bool exit_handled = false;
+    /// From a requested shutdown of a running process until handle_exit(), keeps the loop from
+    /// running out of work, so that it is still there to call on_exit. Guarded by proc->mutex.
+    boost::asio::any_io_executor exit_work;
     std::vector<std::shared_ptr<boost::asio::steady_timer>> waiters;
     std::thread reaper;
     std::mutex thread_mutex;

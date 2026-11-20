@@ -670,12 +670,17 @@ class MCP_API Client {
      * @details The client starts a thread that runs an event loop for it, makes the endpoint's
      * transport on that loop, and needs no executor from the application: use it through sync()
      * or run(), or await its coroutines from run(). The destructor closes the connection, waits
-     * up to mcp::constants::client::g_CLOSE_WAIT_MS for the loop to finish (a launched server
-     * exits), and joins the thread. A Client constructed this way must not be destroyed on its
-     * own loop's thread, such as from a notification callback.
+     * for the loop to finish (a launched server exits and its StdioProcessOptions::on_exit runs)
+     * up to mcp::constants::client::g_CLOSE_WAIT_MS, or as long as a launched server's
+     * stdin_close_wait and terminate_wait when they add up to more, and joins the thread. A Client
+     * constructed this way must not be destroyed on its own loop's thread, such as from a
+     * notification callback.
      *
      * @param endpoint The server: Endpoint::stdio(), Endpoint::http() or Endpoint::custom().
      * @param options  Default timeout and protocol-validation behavior.
+     * @throws std::runtime_error When the server of Endpoint::stdio() cannot be launched.
+     * @throws std::invalid_argument When @p options holds a limit that is not positive, or the
+     *         transport factory of Endpoint::custom() returns null.
      */
     explicit Client(const Endpoint& endpoint, ClientOptions options = {});
 

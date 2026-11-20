@@ -150,6 +150,10 @@ namespace stdio_client {
 
 inline constexpr std::size_t g_CHUNK_BYTES = 64U * 1024U;
 
+/// How long a killed process may take to be seen as ended, which the destructor of a Client that
+/// launched it waits on top of the process's stdin_close_wait and terminate_wait.
+inline constexpr std::chrono::milliseconds g_KILL_WAIT{1000};
+
 /// Whether the process can be asked to exit before it is killed: SIGTERM on POSIX, nothing on Windows.
 inline constexpr bool g_HAS_TERMINATE_STEP =
 #if defined(_WIN32)

@@ -51,9 +51,12 @@ Endpoint Endpoint::stdio(StdioProcessOptions process, StdioRestartPolicy restart
     if (restart.max_restarts == 0) {
         return stdio(std::move(process));
     }
-    return Endpoint([process = std::move(process), restart](const Executor& executor) {
+    const auto close_wait = process.stdin_close_wait + process.terminate_wait;
+    Endpoint endpoint([process = std::move(process), restart](const Executor& executor) {
         return std::make_shared<detail::RestartingStdioTransport>(executor, process, restart);
     });
+    endpoint.close_wait_ = close_wait;
+    return endpoint;
 }
 
 Endpoint Endpoint::stdio(std::initializer_list<std::string> command) {
@@ -64,9 +67,12 @@ Endpoint Endpoint::stdio(StdioProcessOptions process) {
     if (process.command.empty()) {
         throw std::invalid_argument("Endpoint::stdio needs a command");
     }
-    return Endpoint([process = std::move(process)](const Executor& executor) {
+    const auto close_wait = process.stdin_close_wait + process.terminate_wait;
+    Endpoint endpoint([process = std::move(process)](const Executor& executor) {
         return std::make_shared<StdioClientTransport>(executor, process);
     });
+    endpoint.close_wait_ = close_wait;
+    return endpoint;
 }
 
 Endpoint Endpoint::http(std::string url, HttpEndpointOptions options) {

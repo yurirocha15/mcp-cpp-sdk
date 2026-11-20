@@ -2816,7 +2816,15 @@ struct Client::Impl {
 };
 
 struct Client::OwnedLoop {
-    boost::asio::io_context io;
+    /// An io_context whose pending handlers can be destroyed before it is.
+    class Context final : public boost::asio::io_context {
+       public:
+        using boost::asio::execution_context::shutdown;
+    };
+
+    Context io;
+    /// How long the destructor waits for the loop to finish.
+    std::chrono::milliseconds close_wait{mcp::constants::client::g_CLOSE_WAIT_MS};
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work{io.get_executor()};
     std::promise<void> finished;
     std::future<void> finished_future = finished.get_future();
@@ -2849,6 +2857,10 @@ Client::Client(std::shared_ptr<ITransport> transport, const Executor& executor, 
 }
 
 Client::Client(const Endpoint& endpoint, ClientOptions options) : loop_(std::make_shared<OwnedLoop>()) {
+    if (endpoint.close_wait_ > std::chrono::milliseconds::zero()) {
+        loop_->close_wait = std::max(
+            loop_->close_wait, endpoint.close_wait_ + detail::constants::stdio_client::g_KILL_WAIT);
+    }
     try {
         const Executor executor = loop_->io.get_executor();
         start(endpoint.make_transport(executor), executor, std::move(options));
@@ -2948,14 +2960,16 @@ Client::~Client() {
         std::terminate();
     }
     loop_->work.reset();
-    if (loop_->finished_future.wait_for(std::chrono::milliseconds(
-            mcp::constants::client::g_CLOSE_WAIT_MS)) != std::future_status::ready) {
+    if (loop_->finished_future.wait_for(loop_->close_wait) != std::future_status::ready) {
         loop_->io.stop();
     }
     loop_->thread.join();
     if (impl_->blocking_loop) {
         impl_->blocking_loop->mark_ended();
     }
+    // The handlers a stopped loop did not run hold the client's state, which holds the loop:
+    // destroying them frees both.
+    loop_->io.shutdown();
     impl_.reset();
 }
 

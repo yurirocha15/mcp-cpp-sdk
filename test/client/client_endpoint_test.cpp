@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -287,6 +288,56 @@ TEST(ClientEndpointTest, HttpEndpointConfiguresTheTransportAndMakesTheAuthentica
     mcp::Client client(mcp::Endpoint::http("http://127.0.0.1:9/mcp", std::move(options)));
     EXPECT_TRUE(configured);
     EXPECT_TRUE(executor_given);
+}
+
+// The destructor waits for a launched server that outlives the closing of its standard input until
+// it has been ended, also past g_CLOSE_WAIT_MS when its waits add up to more, and on_exit runs.
+TEST(ClientEndpointTest, DestructionWaitsForTheServerToEndAndReportsItsExit) {
+    std::atomic<bool> exited{false};
+    auto process = test_server({"ignore-stdin-close"});
+    process.stdin_close_wait = std::chrono::milliseconds(mcp::constants::client::g_CLOSE_WAIT_MS + 200);
+    process.on_exit = [&exited](const mcp::ProcessExit&) { exited = true; };
+    {
+        mcp::Client client(mcp::Endpoint::stdio(process));
+        client.sync().connect("endpoint-test", "1.0");
+    }
+    EXPECT_TRUE(exited.load());
+}
+
+/// A transport whose reads never end, not even after close().
+class StuckTransport final : public mcp::ITransport {
+   public:
+    explicit StuckTransport(const mcp::Executor& executor) : executor_(executor.get()) {}
+
+    mcp::Task<std::string> read_message() override {
+        boost::asio::steady_timer timer(executor_, std::chrono::hours(1));
+        co_await timer.async_wait(boost::asio::use_awaitable);
+        co_return std::string();
+    }
+    mcp::Task<void> write_message(std::string_view) override { co_return; }
+    void close() override {}
+
+   private:
+    boost::asio::any_io_executor executor_;
+};
+
+// When the destructor has to stop the loop, the work the loop did not finish is destroyed, and
+// with it what that work held of the client.
+TEST(ClientEndpointTest, DestructionFreesWhatAStoppedLoopHeld) {
+    std::weak_ptr<StuckTransport> transport;
+    {
+        mcp::ClientOptions options;
+        options.request_timeout = std::chrono::milliseconds(100);
+        mcp::Client client(mcp::Endpoint::custom([&transport](const mcp::Executor& executor) {
+                               auto made = std::make_shared<StuckTransport>(executor);
+                               transport = made;
+                               return made;
+                           }),
+                           options);
+        EXPECT_ANY_THROW(client.sync().connect("endpoint-test", "1.0"));
+        EXPECT_FALSE(transport.expired());
+    }
+    EXPECT_TRUE(transport.expired());
 }
 
 TEST(ClientEndpointTest, DestructionEndsACallInFlight) {

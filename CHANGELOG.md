@@ -42,6 +42,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - A `Client` call whose transport fails to reach the server throws `McpError` (`g_CONNECTION_CLOSED`), with an HTTP status in `data()` and the transport's exception nested.
 - `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
 - `Runtime::run()` runs the loop again after an earlier run ended; a `stop()` made while nothing runs the loop ends the next run instead.
+- A closing `StdioClientTransport` keeps its event loop from running out of work until the process has ended and `on_exit` has run.
 
 ### Removed
 

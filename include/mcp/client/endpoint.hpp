@@ -4,6 +4,7 @@
 #include <mcp/core/export.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
+#include <chrono>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -96,9 +97,14 @@ class MCP_API Endpoint {
     [[nodiscard]] std::shared_ptr<ITransport> make_transport(const Executor& executor) const;
 
    private:
+    friend class Client;
+
     explicit Endpoint(TransportFactory factory);
 
     TransportFactory factory_;
+    /// How long a launched server may take to end once its standard input closes: the waits of
+    /// its StdioProcessOptions. Zero for the other endpoints.
+    std::chrono::milliseconds close_wait_{0};
 };
 
 }  // namespace mcp
