@@ -678,7 +678,7 @@ class MCP_API Server {
     void add_resource(const Resource& resource, Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
                       "Handler must be sync or async with supported signature; a coroutine handler "
-                      "needs <mcp/core/async.hpp>");
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
         if constexpr (detail::SyncHandler<Fn, In, Out>) {
             register_sync_resource(resource, detail::wrap_sync_handler<In, Out>(std::move(handler)));
         } else {
@@ -711,7 +711,7 @@ class MCP_API Server {
     void add_resource_template(const ResourceTemplate& tmpl, Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
                       "Handler must be sync or async with supported signature; a coroutine handler "
-                      "needs <mcp/core/async.hpp>");
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
         if constexpr (detail::SyncHandler<Fn, In, Out>) {
             register_sync_resource_template(tmpl,
                                             detail::wrap_sync_handler<In, Out>(std::move(handler)));
@@ -733,7 +733,7 @@ class MCP_API Server {
     void add_prompt(const Prompt& prompt, Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
                       "Handler must be sync or async with supported signature; a coroutine handler "
-                      "needs <mcp/core/async.hpp>");
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
         if constexpr (detail::SyncHandler<Fn, In, Out>) {
             register_sync_prompt(prompt, detail::wrap_sync_handler<In, Out>(std::move(handler)));
         } else {
@@ -1434,7 +1434,7 @@ class MCP_API Server {
                         Fn handler) {
         static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
                       "Handler must be sync or async with supported signature; a coroutine handler "
-                      "needs <mcp/core/async.hpp>");
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
         Tool tool;
         tool.name = name;
         tool.description = description;

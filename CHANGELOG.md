@@ -51,7 +51,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 Code written for 0.3.0 needs these changes to compile with this release:
 
-- A callable handed to `co_spawn` returns `boost::asio::awaitable<T>`, not `mcp::Task<T>`.
+- Write `mcp::Task<T>` for `boost::asio::awaitable<T>` in `ITransport` and `auth::Authenticator` overrides and in coroutine handlers given to the `add_*()` registrations.
 - Include `<mcp/core/async.hpp>` where a coroutine is defined or awaited; `<mcp/core/core.hpp>` is gone.
 - A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
 - `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
