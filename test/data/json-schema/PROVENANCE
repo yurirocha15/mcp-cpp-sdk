@@ -1,4 +1,4 @@
 JSON-Schema-Test-Suite 245a45abc90190c0bff04d97e6d2b541b4bb9f12
 source: https://github.com/json-schema-org/JSON-Schema-Test-Suite/archive/245a45abc90190c0bff04d97e6d2b541b4bb9f12.tar.gz
 sha256: b60bdf58fd414e9b86c8be70b03e3b2d596b8bc3bc822a2083d86041cea4b20e
-files: tests/{draft2020-12,draft7}/*.json (required cases only), LICENSE; copied unchanged
+files: tests/{draft2020-12,draft2019-09,draft7,draft6,draft4}/*.json (required cases only), remotes/**/*.json except remotes/{draft3,v1}/, LICENSE; copied unchanged
