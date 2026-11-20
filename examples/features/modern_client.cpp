@@ -104,7 +104,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 try {
                     co_await server.run(server_transport, io_ctx.get_executor());
                 } catch (const std::exception& e) {
@@ -116,7 +116,7 @@ int main() {
         // ========== CLIENT ==========
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 try {
                     // The default is ClientProtocol::automatic(); it is spelled out for the reader.
                     ClientOptions options;

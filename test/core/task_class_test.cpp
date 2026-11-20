@@ -10,8 +10,10 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <chrono>
+#include <exception>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -95,16 +97,56 @@ TEST(TaskClassTest, TakesOverAnAwaitable) {
     EXPECT_EQ(run_to_completion(converted_from_awaitable()), 5);
 }
 
-TEST(TaskClassTest, CallableForCoSpawnReturnsPlainAwaitable) {
-    // co_spawn accepts a callable only when it returns boost::asio::awaitable; a callable that
-    // returns Task is spawned through the Task value it returns instead.
+TEST(TaskClassTest, CoSpawnTakesACallableThatReturnsATask) {
     boost::asio::io_context io_ctx;
     int observed = 0;
     boost::asio::co_spawn(
-        io_ctx, [&observed]() -> boost::asio::awaitable<void> { observed = co_await forty_two(); },
+        io_ctx, [&observed]() -> mcp::Task<void> { observed = co_await forty_two(); },
         boost::asio::detached);
+    auto doubled = boost::asio::co_spawn(
+        io_ctx.get_executor(), []() -> mcp::Task<int> { co_return co_await forty_two() * 2; },
+        boost::asio::use_future);
     io_ctx.run();
     EXPECT_EQ(observed, 42);
+    EXPECT_EQ(doubled.get(), 84);
+}
+
+TEST(TaskClassTest, CoSpawnKeepsTheCallableAliveWhileItsTaskWaits) {
+    boost::asio::io_context io_ctx;
+    auto kept = boost::asio::co_spawn(
+        io_ctx,
+        // Longer than the small-string buffer, which GCC 11 mishandles in a coroutine frame.
+        [text = std::string("kept alive by co_spawn")]() -> mcp::Task<std::string> {
+            const auto executor = co_await boost::asio::this_coro::executor;
+            boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
+            co_await timer.async_wait(boost::asio::use_awaitable);
+            co_return text;
+        },
+        boost::asio::use_future);
+    io_ctx.run();
+    EXPECT_EQ(kept.get(), "kept alive by co_spawn");
+}
+
+TEST(TaskClassTest, CoSpawnHandsTheExceptionOfACallablesTaskToTheHandler) {
+    boost::asio::io_context io_ctx;
+    std::exception_ptr failure;
+    boost::asio::co_spawn(
+        io_ctx, []() -> mcp::Task<void> { co_await throws_runtime_error(); },
+        [&failure](std::exception_ptr error) { failure = std::move(error); });
+    io_ctx.run();
+    ASSERT_NE(failure, nullptr);
+    EXPECT_THROW(std::rethrow_exception(failure), std::runtime_error);
+}
+
+mcp::Task<int> awaited_callable_spawn() {
+    auto executor = co_await boost::asio::this_coro::executor;
+    co_return co_await boost::asio::co_spawn(
+        executor, []() -> mcp::Task<int> { co_return co_await forty_two() + 2; },
+        boost::asio::use_awaitable);
+}
+
+TEST(TaskClassTest, CoSpawnOfACallableCanBeAwaited) {
+    EXPECT_EQ(run_to_completion(awaited_callable_spawn()), 44);
 }
 
 #ifdef MCP_TEST_HAS_AWAITABLE_OPERATORS

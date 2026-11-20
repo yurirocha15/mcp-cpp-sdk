@@ -143,7 +143,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 try {
                     co_await server.run(server_transport, io_ctx.get_executor());
                 } catch (const std::exception& e) {
@@ -154,7 +154,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 try {
                     std::cout << "Client: Creating client\n";
                     mcp::Client client(client_transport, io_ctx.get_executor());
@@ -245,7 +245,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 asio::steady_timer exit_timer(io_ctx.get_executor());
                 exit_timer.expires_after(std::chrono::seconds(5));
                 co_await exit_timer.async_wait(asio::use_awaitable);

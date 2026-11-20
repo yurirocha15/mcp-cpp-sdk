@@ -58,7 +58,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
         boost::asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 try {
                     Implementation client_info;
                     client_info.name = "example-client";

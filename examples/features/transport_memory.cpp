@@ -40,7 +40,7 @@ void demo_memory_transport() {
         bool success = false;
         asio::co_spawn(
             io_ctx,
-            [transport_a, transport_b, &io_ctx, &success]() -> boost::asio::awaitable<void> {
+            [transport_a, transport_b, &io_ctx, &success]() -> Task<void> {
                 try {
                     co_await transport_a->write_message("hello from transport A");
                     std::string received_on_b = co_await transport_b->read_message();

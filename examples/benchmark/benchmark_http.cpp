@@ -76,7 +76,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&, transport = http_server_transport]() mutable -> boost::asio::awaitable<void> {
+            [&, transport = http_server_transport]() mutable -> Task<void> {
                 try {
                     // The transport bound its port when it was constructed, so a client can
                     // connect before listen() starts accepting.
@@ -92,7 +92,7 @@ int main() {
         // ========== CLIENT COROUTINE ==========
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 try {
                     Implementation client_info;
                     client_info.name = "http-benchmark-client";
@@ -174,7 +174,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 co_await exit_timer.async_wait(asio::use_awaitable);
                 io_ctx.stop();
             },

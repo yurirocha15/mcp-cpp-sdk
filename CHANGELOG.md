@@ -28,7 +28,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 ### Changed
 
 - `<mcp/mcp.hpp>` and the server, client and transport headers include no Boost header; code that defines or awaits a coroutine includes `<mcp/core/async.hpp>`.
-- `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>`, declared without Boost in `<mcp/core/async_fwd.hpp>`.
+- `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>`, declared without Boost in `<mcp/core/async_fwd.hpp>`; `co_spawn` takes a callable that returns one.
 - Public APIs take `mcp::Executor`, which needs no Boost, instead of `boost::asio::any_io_executor`; an Asio executor converts to it.
 - `Server::run_http()` serves any number of clients of 2025-11-25 and earlier, each in its own session, where it served one at a time.
 - A server advertises the capability each registration implies, and `Server::capabilities()` returns a reference for the rest.

@@ -65,7 +65,7 @@ TEST(ClientEndpointTest, LaunchesTheServerAndCallsATool) {
     mcp::Client client(mcp::Endpoint::stdio(test_server({"serve", "first-argument"})));
     const auto result = boost::asio::co_spawn(
                             client.executor().get(),
-                            [&client]() -> boost::asio::awaitable<mcp::CallToolResult> {
+                            [&client]() -> mcp::Task<mcp::CallToolResult> {
                                 co_await client.connect("endpoint-test", "1.0");
                                 co_return co_await client.call_tool("args", json::object());
                             },
@@ -82,7 +82,7 @@ TEST(ClientEndpointTest, CommandVectorNamesTheProgramAndItsArguments) {
         mcp::Endpoint::stdio(std::vector<std::string>{MCP_TEST_STDIO_SERVER, "serve", "second"}));
     const auto result = boost::asio::co_spawn(
                             client.executor().get(),
-                            [&client]() -> boost::asio::awaitable<mcp::CallToolResult> {
+                            [&client]() -> mcp::Task<mcp::CallToolResult> {
                                 co_await client.connect("endpoint-test", "1.0");
                                 co_return co_await client.call_tool("args", json::object());
                             },
@@ -244,14 +244,12 @@ TEST(ClientEndpointTest, DestructionEndsACallInFlight) {
         mcp::Client client(mcp::Endpoint::stdio(test_server()));
         boost::asio::co_spawn(
             client.executor().get(),
-            [&client]() -> boost::asio::awaitable<void> {
-                co_await client.connect("endpoint-test", "1.0");
-            },
+            [&client]() -> mcp::Task<void> { co_await client.connect("endpoint-test", "1.0"); },
             boost::asio::use_future)
             .get();
         held = boost::asio::co_spawn(
             client.executor().get(),
-            [&client]() -> boost::asio::awaitable<mcp::CallToolResult> {
+            [&client]() -> mcp::Task<mcp::CallToolResult> {
                 co_return co_await client.call_tool("hold", json::object());
             },
             boost::asio::use_future);

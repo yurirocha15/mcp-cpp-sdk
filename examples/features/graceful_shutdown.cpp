@@ -131,7 +131,7 @@ int main() {
         std::shared_ptr<asio::steady_timer> watchdog;
         asio::co_spawn(
             io_ctx,
-            [&, transport]() -> boost::asio::awaitable<void> {
+            [&, transport]() -> Task<void> {
                 asio::steady_timer trigger(io_ctx.get_executor());
                 trigger.expires_after(std::chrono::seconds(1));
                 co_await trigger.async_wait(asio::use_awaitable);
@@ -146,7 +146,7 @@ int main() {
         // ========== SERVER COROUTINE ==========
         asio::co_spawn(
             io_ctx,
-            [&, transport]() -> boost::asio::awaitable<void> {
+            [&, transport]() -> Task<void> {
                 std::cerr << "[Server] Starting\n";
                 try {
                     co_await server.run(transport, io_ctx.get_executor());

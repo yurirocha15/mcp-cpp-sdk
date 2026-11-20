@@ -5,7 +5,9 @@
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
 #include <coroutine>
+#include <exception>
 #include <mcp/core/async_fwd.hpp>
 #include <memory>
 #include <stdexcept>
@@ -16,9 +18,8 @@ namespace mcp {
  * @brief An asynchronous task: a coroutine that produces a T when awaited.
  *
  * @details A Task is a boost::asio::awaitable<T>. It can be awaited from any awaitable coroutine,
- * passed to boost::asio::co_spawn, and combined with Asio's awaitable operators. A function that
- * hands co_spawn a callable instead of a Task value declares that callable's return type as
- * boost::asio::awaitable<T>, because co_spawn recognizes only that type as a callable's result.
+ * combined with Asio's awaitable operators, and passed to boost::asio::co_spawn, either as a value
+ * or as a callable that returns one, such as `[&]() -> mcp::Task<void> { ... }`.
  *
  * @tparam T The type the task produces.
  */
@@ -58,3 +59,19 @@ struct ExecutorAccess {
 }  // namespace detail
 
 }  // namespace mcp
+
+namespace boost::asio::detail {
+
+// co_spawn reads the completion signature of a callable's result from awaitable_signature, which
+// Asio defines for awaitable alone. These let it take a callable that returns a Task.
+template <typename T>
+struct awaitable_signature<mcp::Task<T>> {
+    using type = void(std::exception_ptr, T);
+};
+
+template <>
+struct awaitable_signature<mcp::Task<void>> {
+    using type = void(std::exception_ptr);
+};
+
+}  // namespace boost::asio::detail

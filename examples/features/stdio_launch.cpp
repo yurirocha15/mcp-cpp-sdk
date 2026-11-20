@@ -74,7 +74,7 @@ int main(int argc, char** argv) {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 try {
                     // One launch and one Client, shut down by hand.
                     {

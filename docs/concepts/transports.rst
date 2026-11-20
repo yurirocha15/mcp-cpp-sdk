@@ -78,7 +78,7 @@ ends the process when the client is done.
    server.stderr_mode = mcp::StderrMode::eCapture;
    server.on_stderr_line = [](std::string_view line) { /* log it */ };
 
-   boost::asio::co_spawn(executor, [&]() -> boost::asio::awaitable<void> {
+   boost::asio::co_spawn(executor, [&]() -> mcp::Task<void> {
        auto transport = std::make_shared<mcp::StdioClientTransport>(executor, server);
        mcp::Client client(transport, executor);
 

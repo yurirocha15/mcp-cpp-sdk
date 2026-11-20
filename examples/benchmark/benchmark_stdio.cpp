@@ -76,7 +76,7 @@ int main() {
         // ========== BENCHMARK COROUTINE ==========
         asio::co_spawn(
             io_ctx,
-            [&, transport = client_transport]() -> boost::asio::awaitable<void> {
+            [&, transport = client_transport]() -> Task<void> {
                 try {
                     Client client(transport, io_ctx.get_executor());
 
@@ -136,7 +136,7 @@ int main() {
         // ========== SERVER COROUTINE ==========
         asio::co_spawn(
             io_ctx,
-            [&, transport = server_transport]() mutable -> boost::asio::awaitable<void> {
+            [&, transport = server_transport]() mutable -> Task<void> {
                 co_await server.run(transport, io_ctx.get_executor());
             },
             asio::detached);
@@ -147,7 +147,7 @@ int main() {
 
         asio::co_spawn(
             io_ctx,
-            [&]() -> boost::asio::awaitable<void> {
+            [&]() -> Task<void> {
                 co_await exit_timer.async_wait(asio::use_awaitable);
                 io_ctx.stop();
             },

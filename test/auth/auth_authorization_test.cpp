@@ -3395,7 +3395,7 @@ CancelledCallerOutcome cancel_a_caller_mid_request(asio::cancellation_type type)
     auto first_released = release_first.get_future();
     asio::co_spawn(
         io_ctx,
-        [&]() -> boost::asio::awaitable<void> {
+        [&]() -> mcp::Task<void> {
             co_await asio::this_coro::reset_cancellation_state(asio::enable_total_cancellation());
             try {
                 (void)co_await client->get_json(base + "/first");
