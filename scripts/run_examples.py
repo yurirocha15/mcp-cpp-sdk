@@ -73,7 +73,8 @@ SYNC_STDIO_CLIENTS = [
 ]
 
 # (HTTP server, its client, lines the client prints, whether the client succeeds). The last pair
-# checks that the server with a bearer token validator refuses a client without the token.
+# checks that the server with a bearer token validator refuses a client without the token; for a
+# client that fails, the lines are text its error output contains.
 SYNC_HTTP_PAIRS = [
     ("server-add-http", "client-add-http", ["Hello, Ada!"], True),
     ("server-add-auth", "client-add-auth", ["Hello, Ada!"], True),
@@ -82,7 +83,7 @@ SYNC_HTTP_PAIRS = [
       "Write a short welcome message for Ada.", "Hello, Dr. Ada!",
       "Greetings, friend!", "The client has 1 root(s)", "Hello, Grace!",
       "updated: notifications/resources/updated", "request error -32602", "tool: greet"], True),
-    ("server-add-auth", "client-add-http", [], False),
+    ("server-add-auth", "client-add-http", ["HTTP status 401"], False),
 ]
 
 # The async-mode HTTP pair, as SYNC_HTTP_PAIRS.
@@ -225,10 +226,11 @@ def check_client(label, command, expected_lines, should_succeed):
         print_timeout_output(error)
         return False
     if not should_succeed:
-        if result.returncode != 0:
+        missing = [text for text in expected_lines if text not in result.stderr]
+        if result.returncode != 0 and not missing:
             print("PASS (refused)")
             return True
-        print("FAIL (the client was served)")
+        print(f"FAIL (exit code {result.returncode}, missing error output {missing})")
         print_process_output(result)
         return False
     lines = result.stdout.splitlines()
