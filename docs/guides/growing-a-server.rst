@@ -249,36 +249,8 @@ passes ``io.get_executor()`` where this one passes ``runtime.executor()``.
 .. literalinclude:: /_generated/progression/server_add_own_loop.diff
    :language: diff
 
-In a program that already runs a Boost.Asio ``io_context``, the server is one
-more coroutine on it:
-
-.. code-block:: cpp
-
-   #include <mcp/core/async.hpp>
-   #include <mcp/mcp.hpp>
-   #include <mcp/transport/stdio.hpp>
-
-   #include <boost/asio/co_spawn.hpp>
-   #include <boost/asio/detached.hpp>
-   #include <boost/asio/io_context.hpp>
-
-   #include <memory>
-   #include <string>
-
-   int main() {
-       mcp::Server server("greeter", "1.0.0");
-
-       server.add_tool("greet", "Greets someone by name",
-                       mcp::tool_params({{"name", "string", "Who to greet"}}),
-                       [](const nlohmann::json& args) -> nlohmann::json {
-                           return "Hello, " + args.at("name").get<std::string>() + "!";
-                       });
-
-       boost::asio::io_context io;
-       auto transport = std::make_shared<mcp::StdioTransport>(io.get_executor());
-       boost::asio::co_spawn(io, server.run(transport, io.get_executor()), boost::asio::detached);
-       io.run();
-   }
+:doc:`async-mode` shows a server on an ``io_context`` of its own that serves
+HTTP, with coroutine handlers.
 
 Every Step Together
 -------------------

@@ -14,6 +14,8 @@ Examples that ARE run:
   - example-sync-*: The sync-mode programs, in pairs: each stdio server is
     launched by a client, and each HTTP server is started on a free port and
     then called by its client
+  - example-async-server and example-async-client: The async-mode programs, an
+    HTTP pair run as the sync-mode ones are
 
 Examples NOT run:
   - example-interactive-client: Needs the path of a server to launch
@@ -83,6 +85,16 @@ SYNC_HTTP_PAIRS = [
     ("server-add-auth", "client-add-http", [], False),
 ]
 
+# The async-mode HTTP pair, as SYNC_HTTP_PAIRS.
+ASYNC_HTTP_PAIRS = [
+    ("server", "client",
+     ['log: "Composing a greeting"', "progress: 1", "Hello, Ada!", "Be kind to each other.",
+      "Write a short welcome message for Ada.", "completion: Ada", "Hello, Dr. Ada!",
+      "Greetings, friend!", "The client has 1 root(s)", "Hello, Grace!",
+      "updated: notifications/resources/updated", "request error -32602", "tool: greet",
+      "tool: greeting_card", "together: Hello, Ada!", "together: Hello, Grace!"], True),
+]
+
 def is_example_executable(path):
     if not path.is_file():
         return False
@@ -149,7 +161,7 @@ def run_examples():
             print(f"ERROR: {e}")
             failed += 1
 
-    print("\nRunning the sync-mode programs\n")
+    print("\nRunning the sync-mode and async-mode programs\n")
     sync_passed, sync_failed = run_sync_examples(build_dir)
     passed += sync_passed
     failed += sync_failed
@@ -164,8 +176,8 @@ def run_examples():
         print("\nAll examples passed!")
         return 0
 
-def sync_executable(build_dir, name):
-    for candidate in (build_dir / f"example-sync-{name}", build_dir / f"example-sync-{name}.exe"):
+def example_executable(build_dir, name, mode="sync"):
+    for candidate in (build_dir / f"example-{mode}-{name}", build_dir / f"example-{mode}-{name}.exe"):
         if is_example_executable(candidate):
             return candidate
     return None
@@ -204,7 +216,7 @@ def stop_server(process):
 
 
 def check_client(label, command, expected_lines, should_succeed):
-    """Run one sync-mode client; return True when it ends and prints as expected."""
+    """Run one client; return True when it ends and prints as expected."""
     print(f"Running {label}...", end=" ", flush=True)
     try:
         result = subprocess.run(command, capture_output=True, timeout=30, text=True)
@@ -230,7 +242,7 @@ def check_client(label, command, expected_lines, should_succeed):
 
 
 def run_sync_examples(build_dir):
-    """Run the sync-mode programs in pairs; return (passed, failed)."""
+    """Run the sync-mode and async-mode programs in pairs; return (passed, failed)."""
     passed = 0
     failed = 0
 
@@ -241,12 +253,12 @@ def run_sync_examples(build_dir):
         else:
             failed += 1
 
-    client_base = sync_executable(build_dir, "client-base")
+    client_base = example_executable(build_dir, "client-base")
     if client_base is None:
         print("example-sync-client-base not found")
         return 0, 1
     for server in SYNC_STDIO_SERVERS:
-        server_path = sync_executable(build_dir, server)
+        server_path = example_executable(build_dir, server)
         if server_path is None:
             print(f"example-sync-{server} not found")
             record(False)
@@ -255,8 +267,8 @@ def run_sync_examples(build_dir):
                             [str(client_base), str(server_path)], ["Hello, Ada!"], True))
 
     for client, server, expected in SYNC_STDIO_CLIENTS:
-        client_path = sync_executable(build_dir, client)
-        server_path = sync_executable(build_dir, server)
+        client_path = example_executable(build_dir, client)
+        server_path = example_executable(build_dir, server)
         if client_path is None or server_path is None:
             print(f"example-sync-{client} or example-sync-{server} not found")
             record(False)
@@ -264,15 +276,17 @@ def run_sync_examples(build_dir):
         record(check_client(f"example-sync-{client} with {server}",
                             [str(client_path), str(server_path)], expected, True))
 
-    for server, client, expected, should_succeed in SYNC_HTTP_PAIRS:
+    http_pairs = [("sync", pair) for pair in SYNC_HTTP_PAIRS]
+    http_pairs += [("async", pair) for pair in ASYNC_HTTP_PAIRS]
+    for mode, (server, client, expected, should_succeed) in http_pairs:
         if not should_succeed and sys.platform == "win32":
             # The refused client ends with an uncaught exception, which Windows may report in a
             # dialog instead of an exit status.
             continue
-        server_path = sync_executable(build_dir, server)
-        client_path = sync_executable(build_dir, client)
+        server_path = example_executable(build_dir, server, mode)
+        client_path = example_executable(build_dir, client, mode)
         if client_path is None or server_path is None:
-            print(f"example-sync-{client} or example-sync-{server} not found")
+            print(f"example-{mode}-{client} or example-{mode}-{server} not found")
             record(False)
             continue
         port = free_port()
@@ -280,11 +294,11 @@ def run_sync_examples(build_dir):
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if not wait_for_listener(process, port):
             stdout, stderr = stop_server(process)
-            print(f"example-sync-{server} did not listen on port {port}")
+            print(f"example-{mode}-{server} did not listen on port {port}")
             print_process_output(subprocess.CompletedProcess([], process.returncode, stdout, stderr))
             record(False)
             continue
-        ok = check_client(f"example-sync-{client} with {server}",
+        ok = check_client(f"example-{mode}-{client} with {server}",
                           [str(client_path), f"http://127.0.0.1:{port}/mcp"], expected,
                           should_succeed)
         stdout, stderr = stop_server(process)

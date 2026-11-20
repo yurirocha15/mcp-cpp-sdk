@@ -21,8 +21,9 @@ The SDK is used in two modes, with the same ``mcp::Server`` and
   itself, beside its other work, with the executors and transports it chooses.
 
 A program moves to async mode one handler or call at a time, without a rewrite;
-:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how. The
-programs on this page are in sync mode.
+:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how, and
+:doc:`guides/async-mode` walks through a complete server and client in async
+mode. The programs on this page are in sync mode.
 
 Prerequisites
 -------------

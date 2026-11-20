@@ -123,7 +123,9 @@ pools, and async mode's coroutines and event loop of your own are each added to
 these programs without rewriting them. [Growing a server](https://www.yurirocha.com/mcp-cpp-sdk/guides/growing-a-server.html)
 and [growing a client](https://www.yurirocha.com/mcp-cpp-sdk/guides/growing-a-client.html)
 show every step as a diff, and each step is a compiled program in
-[examples/sync](examples/sync).
+[examples/sync](examples/sync). [Async mode](https://www.yurirocha.com/mcp-cpp-sdk/guides/async-mode.html)
+walks through a server and a client with every feature in async mode, in
+[examples/async](examples/async).
 
 ## Usage Highlights
 

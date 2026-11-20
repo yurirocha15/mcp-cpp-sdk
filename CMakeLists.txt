@@ -857,6 +857,12 @@ if(BUILD_EXAMPLES)
     target_link_libraries(${example_target} PRIVATE mcp-cpp-sdk)
   endforeach()
 
+  # The async-mode server and client, with every feature.
+  foreach(example IN ITEMS server client)
+    add_executable(example-async-${example} examples/async/${example}.cpp)
+    target_link_libraries(example-async-${example} PRIVATE mcp-cpp-sdk)
+  endforeach()
+
   add_executable(example-server-stdio examples/servers/stdio/server_stdio.cpp)
   target_link_libraries(example-server-stdio PRIVATE mcp-cpp-sdk)
 

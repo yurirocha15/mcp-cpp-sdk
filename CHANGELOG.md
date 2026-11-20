@@ -25,6 +25,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `SyncTypeErasedHandler`, the synchronous form of `TypeErasedHandler`, and `Client::executor()`.
 - `examples/sync/` grows a base server and client one feature per program, and the guides "Growing a Server" and "Growing a Client" show each step as a diff.
 - `StreamableHttpSessionManager` takes a `Server` in place of a factory and serves it as `run_http()` does, on the application's event loop.
+- `examples/async/` holds a server and a client with every feature in async mode, which the guide "Async Mode" walks through.
 
 ### Changed
 

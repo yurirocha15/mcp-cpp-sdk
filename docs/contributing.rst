@@ -420,6 +420,8 @@ Example bug report:
    **Stack Trace**
    (gdb output if available)
 
+.. _known-issues:
+
 Known Issues
 ------------
 

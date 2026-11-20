@@ -37,6 +37,20 @@ client the server's URL:
    ./build/release/example-sync-server-add-http 8080 &
    ./build/release/example-sync-client-add-http http://127.0.0.1:8080/mcp
 
+Async-Mode Examples
+-------------------
+
+``examples/async/`` holds the programs of :doc:`guides/async-mode`: a server and
+a client with every feature of ``server_all.cpp`` and ``client_all.cpp``, whose
+handlers and calls are coroutines on an event loop the program runs. They build
+as ``example-async-server``, which takes its port, and ``example-async-client``,
+which takes the server's URL:
+
+.. code-block:: bash
+
+   ./build/release/example-async-server 8080 &
+   ./build/release/example-async-client http://127.0.0.1:8080/mcp
+
 Feature Examples
 ----------------
 
