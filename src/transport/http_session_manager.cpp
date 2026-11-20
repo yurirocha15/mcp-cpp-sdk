@@ -10,6 +10,7 @@
 #include "../detail/principal.hpp"
 #include "../detail/scope_challenge.hpp"
 #include "../detail/strand_executor.hpp"
+#include "../server/run_control.hpp"
 #include "modern_exchange.hpp"
 
 #include <mcp/core/async.hpp>
@@ -333,6 +334,13 @@ struct StreamableHttpSessionManager::Impl {
     std::mutex modern_server_mutex_;
     std::shared_ptr<Server> modern_server_;
     std::optional<ServerProtocolPolicy> protocol_policy_;
+    // Set by the constructor that takes a Server. The session servers then share that server's
+    // registrations and settings, so the protocol policy and the tool executor are set on it once
+    // instead of on each server the manager builds.
+    Server* served_server_{nullptr};
+    // The served server's runs, which listen() joins so that Server::stop() closes this manager and
+    // Server::sync() knows the server is served through coroutines.
+    std::shared_ptr<detail::RunControl> served_run_control_;
     std::atomic<std::uint64_t> header_mismatch_rejections_{0};
     StreamOptions stream_options_;
     std::shared_ptr<detail::StreamCounters> stream_counters_ =
@@ -455,6 +463,10 @@ struct StreamableHttpSessionManager::Impl {
     /// A Server from the factory, with the protocol policy applied when one is set.
     std::unique_ptr<Server> build_server(const boost::asio::any_io_executor& server_executor) const {
         auto server = factory(server_executor);
+        if (served_server_ != nullptr) {
+            // Shares the served server's settings, which the setters changed already.
+            return server;
+        }
         if (server && protocol_policy_) {
             server->set_protocol_policy(*protocol_policy_);
         }
@@ -1832,6 +1844,8 @@ StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& execu
     // nothing, and the pointer still has a control block, so copies and weak pointers of it behave
     // as those of any other server.
     set_modern_server(std::shared_ptr<Server>(&server, [](Server*) {}));
+    impl_->served_server_ = &server;
+    impl_->served_run_control_ = server.run_control();
 }
 
 StreamableHttpSessionManager::~StreamableHttpSessionManager() {
@@ -1992,6 +2006,10 @@ void StreamableHttpSessionManager::set_stateless_json_mode(bool enabled) {
 void StreamableHttpSessionManager::set_tool_executor(const Executor& exec) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
+    if (impl_->served_server_ != nullptr) {
+        impl_->served_server_->set_handler_executor(exec);
+        return;
+    }
     impl_->tool_executor_ = exec.get();
 }
 
@@ -1999,6 +2017,9 @@ void StreamableHttpSessionManager::set_protocol_policy(ServerProtocolPolicy poli
     policy.validate();
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
+    if (impl_->served_server_ != nullptr) {
+        impl_->served_server_->set_protocol_policy(policy);
+    }
     impl_->protocol_policy_ = std::move(policy);
 }
 
@@ -2029,8 +2050,9 @@ StreamStats StreamableHttpSessionManager::stream_stats() const {
     return impl_->stream_counters_->snapshot();
 }
 
-void StreamableHttpSessionManager::close() {
-    auto impl = impl_;
+void StreamableHttpSessionManager::close() { close_impl(impl_); }
+
+void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl) {
     {
         std::lock_guard lock(impl->configuration_mutex_);
         if (impl->closed.exchange(true, std::memory_order_acq_rel)) {
@@ -2092,7 +2114,24 @@ Task<void> StreamableHttpSessionManager::listen() {
     (void)impl->begin_listening();
     boost::asio::co_spawn(impl->listener_strand, Impl::expire_idle_sessions(impl),
                           boost::asio::detached);
-    return boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
+    auto listening =
+        boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
+    if (!impl->served_run_control_) {
+        return listening;
+    }
+    return listen_as_run(std::move(impl), std::move(listening));
+}
+
+Task<void> StreamableHttpSessionManager::listen_as_run(std::shared_ptr<Impl> impl,
+                                                       Task<void> listening) {
+    // A run of the served server while it listens: Server::stop() closes the manager, on its own
+    // executor and without waiting, as RunControl asks.
+    const auto registration = impl->served_run_control_->add([weak = std::weak_ptr<Impl>(impl)] {
+        if (auto alive = weak.lock()) {
+            boost::asio::post(alive->executor, [alive] { close_impl(alive); });
+        }
+    });
+    co_await std::move(listening);
 }
 
 Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl) {

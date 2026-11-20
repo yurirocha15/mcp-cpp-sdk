@@ -107,7 +107,9 @@ class MCP_API StreamableHttpSessionManager {
      *
      * @details @p server answers the 2026-07-28 requests, and each session of an older revision
      * is served by a server that shares its tools, resources, prompts, handlers and settings.
-     * @p server must outlive the manager and the task listen() returns.
+     * set_protocol_policy() and set_tool_executor() therefore set them on @p server itself. While
+     * listen() runs, Server::stop() closes the manager. @p server must outlive the manager and the
+     * task listen() returns.
      *
      * @param executor Executor for async operations.
      * @param host Local bind address.
@@ -343,6 +345,7 @@ class MCP_API StreamableHttpSessionManager {
      * When set, tool handlers will run on this executor instead of the HTTP I/O executor.
      * This allows parallel tool execution independent of HTTP request handling.
      * If not set, tool handlers fall back to the HTTP executor (backward compatible).
+     * A manager constructed with a Server calls that server's Server::set_handler_executor().
      *
      * @param exec The executor to use for tool execution.
      * @throws std::logic_error If listen() has already been called or the manager is closed.
@@ -353,13 +356,15 @@ class MCP_API StreamableHttpSessionManager {
      * @brief Choose which protocol revisions the endpoint serves.
      *
      * @details Applied to every Server the manager builds from its factory: each session's, the
-     * stateless one and the shared modern server (unless set_modern_server() supplied it). When
+     * stateless one and the shared modern server (unless set_modern_server() supplied it). A
+     * manager constructed with a Server calls that server's Server::set_protocol_policy(). When
      * legacy clients are not served, no session is created: initialize is answered `404` with
      * `mcp::constants::jsonrpc::g_METHOD_NOT_FOUND` naming the versions served, and GET and DELETE
      * `405`.
      *
      * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
-     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     * @throws std::logic_error If listen() has already been called or the manager is closed, or
+     *         when Server::set_protocol_policy() refuses it.
      */
     void set_protocol_policy(ServerProtocolPolicy policy);
 
@@ -422,6 +427,8 @@ class MCP_API StreamableHttpSessionManager {
 
     struct Impl;
     static Task<void> listen_impl(std::shared_ptr<Impl> impl);
+    static Task<void> listen_as_run(std::shared_ptr<Impl> impl, Task<void> listening);
+    static void close_impl(const std::shared_ptr<Impl>& impl);
     std::shared_ptr<Impl> impl_;
 };
 

@@ -1,5 +1,6 @@
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/core/runtime.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
@@ -25,8 +26,10 @@
 #include <csignal>
 #include <cstdint>
 #include <exception>
+#include <future>
 #include <mcp/core/constants.hpp>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -179,6 +182,21 @@ class StopGuard {
     std::thread& thread_;
     const std::atomic<bool>& finished_;
 };
+
+/// Connects a client of @p client_protocol to @p url and calls greet: the protocol version the
+/// session uses, or "failed" when the client cannot connect or call.
+std::string connect_and_greet(const std::string& url, mcp::ClientProtocol client_protocol) {
+    mcp::ClientOptions options;
+    options.protocol = std::move(client_protocol);
+    try {
+        mcp::Client client(mcp::Endpoint::http(url), options);
+        const auto connected = client.sync().connect("policy-test", "1.0");
+        static_cast<void>(client.sync().call_tool("greet", nlohmann::json{{"name", "Ada"}}));
+        return connected.protocolVersion;
+    } catch (const std::exception&) {
+        return "failed";
+    }
+}
 
 }  // namespace
 
@@ -532,6 +550,120 @@ TEST_F(ServerHttpTest, ManagerServesTheServerItIsGiven) {
     ASSERT_EQ(greetings.size(), 2U);
     EXPECT_EQ(greetings[0].value("greeting", ""), "Hello, Ada");
     EXPECT_EQ(greetings[1].value("greeting", ""), "Hello, Ada");
+}
+
+// The manager's setters configure the server it serves, which its session servers share, so a
+// policy given to run_http() holds for every session and every run.
+TEST_F(ServerHttpTest, APolicyFromConfigureHoldsForEverySessionAndRun) {
+    mcp::ServerProtocolPolicy policy;
+    policy.legacy_versions = std::vector<std::string>{"2025-06-18"};
+    for (int run = 0; run < 2; ++run) {
+        std::atomic<bool> finished{false};
+        std::thread server_thread([&] {
+            server_->run_http("127.0.0.1", 0, [&policy](mcp::StreamableHttpSessionManager& http) {
+                http.set_protocol_policy(policy);
+            });
+            finished = true;
+        });
+        const StopGuard guard(*server_, server_thread, finished);
+        const auto url = "http://127.0.0.1:" + std::to_string(wait_for_port(*server_)) + "/mcp";
+        for (int session = 0; session < 3; ++session) {
+            EXPECT_EQ(connect_and_greet(url, mcp::ClientProtocol::legacy()), "2025-06-18")
+                << "run " << run << ", session " << session;
+        }
+        server_->stop();
+        server_thread.join();
+    }
+}
+
+TEST_F(ServerHttpTest, APolicyFromConfigureHoldsBeforeAnyLegacySession) {
+    mcp::ServerProtocolPolicy policy;
+    policy.serve_modern = false;
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0, [&policy](mcp::StreamableHttpSessionManager& http) {
+            http.set_protocol_policy(policy);
+        });
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto url = "http://127.0.0.1:" + std::to_string(wait_for_port(*server_)) + "/mcp";
+    const auto modern = mcp::ClientProtocol::pinned(std::string(protocol::g_LATEST_PROTOCOL_VERSION));
+    EXPECT_EQ(connect_and_greet(url, modern), "failed");
+    EXPECT_EQ(connect_and_greet(url, mcp::ClientProtocol::legacy()),
+              protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);
+    EXPECT_EQ(connect_and_greet(url, modern), "failed");
+}
+
+TEST_F(ServerHttpTest, AToolExecutorFromConfigureRunsTheToolsOfEveryClient) {
+    mcp::Runtime pool;
+    pool.start(1);
+    std::promise<std::thread::id> pool_thread;
+    asio::post(pool.executor().get(),
+               [&pool_thread] { pool_thread.set_value(std::this_thread::get_id()); });
+    const auto pool_thread_id = pool_thread.get_future().get();
+
+    std::mutex threads_mutex;
+    std::vector<std::thread::id> handler_threads;
+    server_->add_tool("where", "Reports its thread", nlohmann::json{{"type", "object"}},
+                      [&](const nlohmann::json&) -> nlohmann::json {
+                          const std::lock_guard lock(threads_mutex);
+                          handler_threads.push_back(std::this_thread::get_id());
+                          return "here";
+                      });
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0, [&pool](mcp::StreamableHttpSessionManager& http) {
+            http.set_tool_executor(pool.executor());
+        });
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto url = "http://127.0.0.1:" + std::to_string(wait_for_port(*server_)) + "/mcp";
+    for (const auto& client_protocol :
+         {mcp::ClientProtocol::pinned(std::string(protocol::g_LATEST_PROTOCOL_VERSION)),
+          mcp::ClientProtocol::legacy(),
+          mcp::ClientProtocol::pinned(std::string(protocol::g_LATEST_PROTOCOL_VERSION))}) {
+        mcp::ClientOptions options;
+        options.protocol = client_protocol;
+        mcp::Client client(mcp::Endpoint::http(url), options);
+        static_cast<void>(client.sync().connect("executor-test", "1.0"));
+        EXPECT_EQ(mcp::result_text(client.sync().call_tool("where", nlohmann::json::object())), "here");
+    }
+    server_->stop();
+    server_thread.join();
+
+    const std::lock_guard lock(threads_mutex);
+    EXPECT_EQ(handler_threads, std::vector<std::thread::id>(3, pool_thread_id));
+}
+
+// A server served through a manager on the application's loop is used through its coroutines:
+// a blocking notification is refused, as for run(), and stop() closes the manager.
+TEST_F(ServerHttpTest, AServerServedByAManagerIsStoppedAndRefusesBlockingCalls) {
+    asio::io_context io_ctx;
+    mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", 0, *server_);
+    std::atomic<bool> listened{false};
+    asio::co_spawn(io_ctx, manager.listen(),
+                   [&listened](const std::exception_ptr&) { listened = true; });
+    std::thread loop([&io_ctx] { io_ctx.run(); });
+
+    // listen() joins the server's runs once its coroutine starts on the loop.
+    bool refused = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!refused && std::chrono::steady_clock::now() < deadline) {
+        try {
+            server_->sync().notify_tools_list_changed();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        } catch (const std::logic_error&) {
+            refused = true;
+        }
+    }
+    EXPECT_TRUE(refused);
+    server_->stop();
+    loop.join();
+    EXPECT_TRUE(listened.load());
+    // The run has ended, so the call returns, as for a server that is not running.
+    EXPECT_NO_THROW(server_->sync().notify_tools_list_changed());
 }
 
 }  // namespace server_http_test

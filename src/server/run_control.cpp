@@ -61,7 +61,7 @@ void RunControl::run_blocking(const std::function<Task<void>()>& start) {
             }
             throw std::logic_error(
                 "mcp::Server: blocking calls need run_stdio() or run_http(); a server run with "
-                "run() is used through its coroutines");
+                "run() or served by a StreamableHttpSessionManager is used through its coroutines");
         }
         if (owned->thread == std::this_thread::get_id()) {
             throw std::logic_error(

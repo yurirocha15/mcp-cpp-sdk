@@ -2066,6 +2066,9 @@ std::vector<std::string> served_protocol_versions(const ServerProtocolPolicy& po
 void Server::set_protocol_policy(ServerProtocolPolicy policy) {
     policy.validate();
     if (impl_->serving.load(std::memory_order_acquire)) {
+        if (policy == impl_->protocol_policy) {
+            return;
+        }
         throw std::logic_error("The protocol policy cannot change once the server serves requests");
     }
     impl_->protocol_policy = std::move(policy);

@@ -275,6 +275,8 @@ struct ServerProtocolPolicy {
     /// asking for another version negotiates the newest one listed.
     std::optional<std::vector<std::string>> legacy_versions;
 
+    bool operator==(const ServerProtocolPolicy&) const = default;
+
     /**
      * @brief Check that the policy can be applied.
      *
@@ -992,11 +994,13 @@ class MCP_API Server {
      * @brief Choose which protocol revisions this server serves.
      *
      * @details Takes effect for every transport. Must be called before the server serves its
-     * first request.
+     * first request; afterwards only the policy in effect may be set again, as run_http() does
+     * when its configure sets the same policy on every run.
      *
      * @param policy The revisions to serve.
      * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
-     * @throws std::logic_error If the server has already served a request or run() has started.
+     * @throws std::logic_error If the server has already served a request or run() has started,
+     *         and @p policy differs from the policy in effect.
      */
     void set_protocol_policy(ServerProtocolPolicy policy);
 
@@ -1231,8 +1235,8 @@ class MCP_API Server {
 
     /**
      * @brief Ends the runs of this server in progress: run_stdio() and run_http() return as they
-     *        do on SIGINT, and run() closes its transport and completes as it does when the
-     *        transport closes.
+     *        do on SIGINT, run() closes its transport and completes as it does when the transport
+     *        closes, and a StreamableHttpSessionManager constructed with this server closes.
      *
      * @details May be called from any thread, including from a handler. As on SIGINT, the transport
      * closes at once, so a request still being served is not answered, and run_stdio() and
@@ -1491,7 +1495,7 @@ class MCP_API Server {
  * @throws std::logic_error From each member when called on that event loop's thread, where
  *         synchronous handlers run (tool handlers excepted when set_handler_executor() moves
  *         them) and waiting would never end; and when the server runs only through
- *         Server::run(), whose coroutines are awaited instead.
+ *         Server::run() or a StreamableHttpSessionManager, whose coroutines are awaited instead.
  */
 class MCP_API SyncServer {
    public:

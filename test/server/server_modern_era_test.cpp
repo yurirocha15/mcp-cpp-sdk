@@ -673,7 +673,11 @@ TEST_F(ServerModernEraTest, PolicyIsValidatedWhenSet) {
 TEST_F(ServerModernEraTest, PolicyCannotChangeOnceServing) {
     auto server = make_server();
     dispatch(*server, make_discover_request(1));
-    EXPECT_THROW(server->set_protocol_policy(mcp::ServerProtocolPolicy{}), std::logic_error);
+    mcp::ServerProtocolPolicy legacy_only;
+    legacy_only.serve_modern = false;
+    EXPECT_THROW(server->set_protocol_policy(legacy_only), std::logic_error);
+    // The policy in effect may be set again, as run_http() does on each run.
+    EXPECT_NO_THROW(server->set_protocol_policy(mcp::ServerProtocolPolicy{}));
 }
 
 TEST_F(ServerModernEraTest, LegacyTrafficIsNeverCountedAsARejection) {
