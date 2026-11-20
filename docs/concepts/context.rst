@@ -3,8 +3,8 @@ Server Context
 
 The ``mcp::Context`` object is a fundamental construct in the MCP C++ SDK. It is passed as a reference to every asynchronous handler for tools, resources, and prompts. Think of the ``Context`` as the per-request interface between your server's logic and the connected client.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 A synchronous handler of the server of :doc:`/getting-started` takes the ``Context`` and
 becomes a coroutine to log and report progress, and its ``add_tool()`` call

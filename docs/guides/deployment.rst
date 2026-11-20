@@ -30,7 +30,7 @@ Convenience API (run_http)
 
 For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up a :cpp:class:`mcp::StreamableHttpSessionManager` that serves each older-protocol client in a session of its own with the same server, and handles signal mapping automatically.
 
-.. literalinclude:: ../../examples/simple/server_add_auth.cpp
+.. literalinclude:: ../../examples/sync/server_add_auth.cpp
    :language: cpp
    :start-at: #include
 

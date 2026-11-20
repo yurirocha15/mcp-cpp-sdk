@@ -23,8 +23,8 @@ Key use cases include:
 - Suggesting valid resource template URI components (e.g., file paths, identifiers).
 - Providing valid options for a configuration prompt.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 The server of :doc:`/getting-started`, with the prompt of :doc:`/guides/growing-a-server`,
 completes the prompt's argument with a provider. The provider is a coroutine, so

@@ -186,15 +186,15 @@ jobs:
         PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_doc_snippets
         python scripts/check_doc_snippets.py
 
-    # <mcp/mcp.hpp> and the headers beside it are the simple-mode API, which an application
+    # <mcp/mcp.hpp> and the headers beside it are the sync-mode API, which an application
     # uses without writing or including Boost. Same compiler and flags as the README check.
     - name: Check Boost-free headers
       if: runner.os != 'Windows'
       run: python scripts/check_boost_free_headers.py
 
-    # Each simple-mode add-on in examples/simple is its base program plus one feature, which the
+    # Each sync-mode add-on in examples/sync is its base program plus one feature, which the
     # docs show as a diff. The check fails when an add-on changes a base line it does not declare.
-    - name: Check simple-mode example progression
+    - name: Check sync-mode example progression
       if: runner.os != 'Windows'
       run: |
         PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_example_progression

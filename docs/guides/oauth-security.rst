@@ -3,8 +3,8 @@ OAuth Security and Deployment
 
 Deploying OAuth with the mcp-cpp-sdk requires careful attention to token management, network security, and issuer binding. This guide covers the operational controls and design rationale that developers and operators must understand to deploy OAuth safely.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 The server of :doc:`/getting-started`, served over HTTP, accepts only requests with the
 right bearer token, and only browser pages of the origins it allows. See

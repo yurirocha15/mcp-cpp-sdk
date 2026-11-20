@@ -12,8 +12,8 @@ The MCP C++ SDK leverages a combination of JSON-RPC error codes, C++ exceptions,
 2. **Isolation**: Prevent a single failure from crashing the entire server or client session.
 3. **Graceful Degradation**: Allow clients to handle errors and continue functioning where possible.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 The client of :doc:`/getting-started` tells the two kinds of failure apart: a tool that
 reports an error in its result, and a request the server refuses, which throws

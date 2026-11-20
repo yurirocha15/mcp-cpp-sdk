@@ -19,8 +19,8 @@ implements the transport binding. The types follow the beta specification in
 ``ext-skills``, and the extension requires protocol revision 2026-07-28: the
 methods are served to its clients only.
 
-Adding this to a simple-mode program
-------------------------------------
+Adding this to a sync-mode program
+----------------------------------
 
 The server of :doc:`/getting-started` serves a skill through a ``SkillsExtension`` made
 for it.

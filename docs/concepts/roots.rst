@@ -11,8 +11,8 @@ In the Model Context Protocol, roots represent the "home" or "workspace" directo
 - The absolute URIs (typically ``file:///``) that the server is allowed to interact with.
 - The names of these workspaces to provide context to the LLM.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 A tool of the server of :doc:`/getting-started` asks for the client's roots with
 ``ctx.request_roots()``, and the client answers with the handler it registers

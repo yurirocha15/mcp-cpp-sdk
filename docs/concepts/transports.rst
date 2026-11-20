@@ -39,7 +39,7 @@ The simplest way to start a stdio-based server is the ``run_stdio()`` method,
 which blocks until the connection is closed, as the server of
 :doc:`/getting-started` does:
 
-.. literalinclude:: ../../examples/simple/server_base.cpp
+.. literalinclude:: ../../examples/sync/server_base.cpp
    :language: cpp
    :start-at: #include
 
@@ -270,7 +270,7 @@ other manager settings are set. Without one, the manager keeps its default
 settings: use it that way only on a suitable trusted boundary, such as
 loopback. This server sets a bearer token validator and an allowed origin:
 
-.. literalinclude:: ../../examples/simple/server_add_auth.cpp
+.. literalinclude:: ../../examples/sync/server_add_auth.cpp
    :language: cpp
    :start-at: #include
 

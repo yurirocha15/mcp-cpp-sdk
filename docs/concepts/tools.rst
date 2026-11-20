@@ -14,8 +14,8 @@ class. Each tool requires:
   declare ``"type": "object"``, since tool arguments are always an object.
 - **Handler**: A C++ function or lambda that executes the tool logic.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 The server of :doc:`/getting-started` registers its tool with ``add_tool()``: a name, a
 description, an input schema that ``tool_params()`` makes from the arguments'
@@ -25,7 +25,7 @@ as here, becomes its text. :doc:`/guides/growing-a-server` adds a handler that
 takes the ``Context``, and :doc:`/guides/growing-a-client` handles a tool's
 errors.
 
-.. literalinclude:: ../../examples/simple/server_base.cpp
+.. literalinclude:: ../../examples/sync/server_base.cpp
    :language: cpp
    :start-at: #include
 

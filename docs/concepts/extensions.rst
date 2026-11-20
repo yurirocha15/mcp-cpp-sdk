@@ -40,8 +40,8 @@ falls back to the core protocol: a server offering MCP Apps still returns
 ordinary tool results, and a server that requires an authorization extension
 refuses the request.
 
-Adding this to a simple-mode program
-------------------------------------
+Adding this to a sync-mode program
+----------------------------------
 
 The extensions the SDK implements are added to the server of
 :doc:`/getting-started` as its other features are: :doc:`/guides/growing-a-server` shows an MCP

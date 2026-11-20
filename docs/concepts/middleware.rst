@@ -14,8 +14,8 @@ Middleware functions sit between the server's request dispatcher and the final h
 - Catch exceptions thrown by inner middleware and by resource and prompt handlers.
 - Inject additional context or metadata.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 The server of :doc:`/getting-started` gets middleware with one ``use()`` call; its
 handlers stay as they are.

@@ -11,7 +11,7 @@ Examples that ARE run:
   - example-benchmark-*: Throughput measurement examples
   - example-client-stdio: Launches example-server-stdio as a child process
 
-  - example-simple-*: The simple-mode programs, in pairs: each stdio server is
+  - example-sync-*: The sync-mode programs, in pairs: each stdio server is
     launched by a client, and each HTTP server is started on a free port and
     then called by its client
 
@@ -30,8 +30,8 @@ import sys
 import time
 from pathlib import Path
 
-# The simple-mode stdio servers, each launched by example-simple-client-base.
-SIMPLE_STDIO_SERVERS = [
+# The sync-mode stdio servers, each launched by example-sync-client-base.
+SYNC_STDIO_SERVERS = [
     "server-base",
     "server-add-resource",
     "server-add-prompt",
@@ -51,7 +51,7 @@ SIMPLE_STDIO_SERVERS = [
 ]
 
 # (client, the stdio server it launches, lines the client prints).
-SIMPLE_STDIO_CLIENTS = [
+SYNC_STDIO_CLIENTS = [
     ("client-add-progress", "server-add-context", ["progress: 1", "Hello, Ada!"]),
     ("client-add-logging", "server-add-context", ['log: "Composing a greeting"', "Hello, Ada!"]),
     ("client-add-coroutine", "server-base", ["Hello, Ada!", "tool: greet"]),
@@ -69,7 +69,7 @@ SIMPLE_STDIO_CLIENTS = [
 
 # (HTTP server, its client, lines the client prints, whether the client succeeds). The last pair
 # checks that the server with a bearer token validator refuses a client without the token.
-SIMPLE_HTTP_PAIRS = [
+SYNC_HTTP_PAIRS = [
     ("server-add-http", "client-add-http", ["Hello, Ada!"], True),
     ("server-add-auth", "client-add-auth", ["Hello, Ada!"], True),
     ("server-all", "client-all",
@@ -145,10 +145,10 @@ def run_examples():
             print(f"ERROR: {e}")
             failed += 1
 
-    print("\nRunning the simple-mode programs\n")
-    simple_passed, simple_failed = run_simple_examples(build_dir)
-    passed += simple_passed
-    failed += simple_failed
+    print("\nRunning the sync-mode programs\n")
+    sync_passed, sync_failed = run_sync_examples(build_dir)
+    passed += sync_passed
+    failed += sync_failed
 
     print(f"\n{'='*50}")
     print(f"Results: {passed} passed, {failed} failed")
@@ -160,8 +160,8 @@ def run_examples():
         print("\nAll examples passed!")
         return 0
 
-def simple_executable(build_dir, name):
-    for candidate in (build_dir / f"example-simple-{name}", build_dir / f"example-simple-{name}.exe"):
+def sync_executable(build_dir, name):
+    for candidate in (build_dir / f"example-sync-{name}", build_dir / f"example-sync-{name}.exe"):
         if is_example_executable(candidate):
             return candidate
     return None
@@ -200,7 +200,7 @@ def stop_server(process):
 
 
 def check_client(label, command, expected_lines, should_succeed):
-    """Run one simple-mode client; return True when it ends and prints as expected."""
+    """Run one sync-mode client; return True when it ends and prints as expected."""
     print(f"Running {label}...", end=" ", flush=True)
     try:
         result = subprocess.run(command, capture_output=True, timeout=30, text=True)
@@ -225,8 +225,8 @@ def check_client(label, command, expected_lines, should_succeed):
     return False
 
 
-def run_simple_examples(build_dir):
-    """Run the simple-mode programs in pairs; return (passed, failed)."""
+def run_sync_examples(build_dir):
+    """Run the sync-mode programs in pairs; return (passed, failed)."""
     passed = 0
     failed = 0
 
@@ -237,38 +237,38 @@ def run_simple_examples(build_dir):
         else:
             failed += 1
 
-    client_base = simple_executable(build_dir, "client-base")
+    client_base = sync_executable(build_dir, "client-base")
     if client_base is None:
-        print("example-simple-client-base not found")
+        print("example-sync-client-base not found")
         return 0, 1
-    for server in SIMPLE_STDIO_SERVERS:
-        server_path = simple_executable(build_dir, server)
+    for server in SYNC_STDIO_SERVERS:
+        server_path = sync_executable(build_dir, server)
         if server_path is None:
-            print(f"example-simple-{server} not found")
+            print(f"example-sync-{server} not found")
             record(False)
             continue
-        record(check_client(f"example-simple-client-base with {server}",
+        record(check_client(f"example-sync-client-base with {server}",
                             [str(client_base), str(server_path)], ["Hello, Ada!"], True))
 
-    for client, server, expected in SIMPLE_STDIO_CLIENTS:
-        client_path = simple_executable(build_dir, client)
-        server_path = simple_executable(build_dir, server)
+    for client, server, expected in SYNC_STDIO_CLIENTS:
+        client_path = sync_executable(build_dir, client)
+        server_path = sync_executable(build_dir, server)
         if client_path is None or server_path is None:
-            print(f"example-simple-{client} or example-simple-{server} not found")
+            print(f"example-sync-{client} or example-sync-{server} not found")
             record(False)
             continue
-        record(check_client(f"example-simple-{client} with {server}",
+        record(check_client(f"example-sync-{client} with {server}",
                             [str(client_path), str(server_path)], expected, True))
 
-    for server, client, expected, should_succeed in SIMPLE_HTTP_PAIRS:
+    for server, client, expected, should_succeed in SYNC_HTTP_PAIRS:
         if not should_succeed and sys.platform == "win32":
             # The refused client ends with an uncaught exception, which Windows may report in a
             # dialog instead of an exit status.
             continue
-        server_path = simple_executable(build_dir, server)
-        client_path = simple_executable(build_dir, client)
+        server_path = sync_executable(build_dir, server)
+        client_path = sync_executable(build_dir, client)
         if client_path is None or server_path is None:
-            print(f"example-simple-{client} or example-simple-{server} not found")
+            print(f"example-sync-{client} or example-sync-{server} not found")
             record(False)
             continue
         port = free_port()
@@ -276,11 +276,11 @@ def run_simple_examples(build_dir):
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if not wait_for_listener(process, port):
             stdout, stderr = stop_server(process)
-            print(f"example-simple-{server} did not listen on port {port}")
+            print(f"example-sync-{server} did not listen on port {port}")
             print_process_output(subprocess.CompletedProcess([], process.returncode, stdout, stderr))
             record(False)
             continue
-        ok = check_client(f"example-simple-{client} with {server}",
+        ok = check_client(f"example-sync-{client} with {server}",
                           [str(client_path), f"http://127.0.0.1:{port}/mcp"], expected,
                           should_succeed)
         stdout, stderr = stop_server(process)

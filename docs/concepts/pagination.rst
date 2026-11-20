@@ -5,8 +5,8 @@ Pagination allows servers to return large lists of items (tools, resources, or p
 
 The `mcp-cpp-sdk` implements cursor-based pagination as defined in the Model Context Protocol.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 The server of :doc:`/getting-started` pages its lists with one call.
 

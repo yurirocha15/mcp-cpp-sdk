@@ -1,16 +1,20 @@
 Growing a Client
 ================
 
-The client of :doc:`/getting-started`, ``examples/simple/client_base.cpp``, grows
+The client of :doc:`/getting-started`, ``examples/sync/client_base.cpp``, grows
 one feature at a time, as the server does in :doc:`growing-a-server`. Each
-section below is a compiled program in ``examples/simple`` that is the base
+section below is a compiled program in ``examples/sync`` that is the base
 program plus one feature, shown as a diff against the base. CI checks that each
 step changes only the lines it names (``scripts/check_example_progression.py``)
 and runs each program against a server from the same directory.
 
+The base program is in sync mode (see :doc:`/getting-started`). The step "Await
+Calls in a Coroutine" uses async mode inside it, and "Run the Event Loop
+Yourself" runs the client on the program's own event loop, in async mode only.
+
 The base program, without its opening comment:
 
-.. literalinclude:: ../../examples/simple/client_base.cpp
+.. literalinclude:: ../../examples/sync/client_base.cpp
    :language: cpp
    :start-at: #include
 
@@ -143,8 +147,8 @@ Await Calls in a Coroutine
 --------------------------
 
 ``client.run()`` runs a coroutine on the client's own event loop and blocks
-until it ends, rethrowing what it throws. Inside it the client's coroutines are
-awaited with ``co_await``, for calls that depend on each other or run together;
+until it ends, rethrowing what it throws. Inside it the client is used in async
+mode: its coroutines are awaited with ``co_await``, for calls that depend on each other or run together;
 the program includes ``<mcp/core/async.hpp>``, which defines ``mcp::Task``. The
 blocking calls before it stay as they are.
 
@@ -182,8 +186,8 @@ Run the Event Loop Yourself
 ---------------------------
 
 A client constructed with a transport and an executor runs on the program's
-own event loop, here an ``mcp::Runtime``. Such a client is used through its
-coroutines: ``sync()`` and ``run()`` throw ``std::logic_error`` there, so the
+own event loop, here an ``mcp::Runtime``. Such a client is used in async mode,
+through its coroutines: ``sync()`` and ``run()`` throw ``std::logic_error`` there, so the
 calls move into a coroutine. This is the one step that changes the calls
 themselves; any other transport can be used with the event loop the client owns
 through ``Endpoint::custom()``, which keeps ``sync()`` working.

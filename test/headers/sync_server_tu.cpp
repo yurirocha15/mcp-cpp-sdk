@@ -7,7 +7,7 @@
 #include <optional>
 #include <string>
 
-namespace simple_server_tu {
+namespace sync_server_tu {
 
 struct Greeting {
     std::string name;
@@ -121,4 +121,4 @@ void run_with_handler_pool(mcp::Server& server) {
     server.run_stdio();
 }
 
-}  // namespace simple_server_tu
+}  // namespace sync_server_tu

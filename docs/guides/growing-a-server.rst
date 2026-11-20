@@ -1,17 +1,22 @@
 Growing a Server
 ================
 
-The server of :doc:`/getting-started`, ``examples/simple/server_base.cpp``, grows
+The server of :doc:`/getting-started`, ``examples/sync/server_base.cpp``, grows
 one feature at a time. Each section below is one step: a compiled program in
-``examples/simple`` that is the base program plus that feature, shown as a diff
+``examples/sync`` that is the base program plus that feature, shown as a diff
 against the base. A step adds lines and changes only the lines it names, so the
 steps combine: ``server_all.cpp`` holds every one of them that does not replace
 the same line in another way. CI checks this for every step
 (``scripts/check_example_progression.py``) and runs each program.
 
+The base program is in sync mode (see :doc:`/getting-started`). A step that
+needs a coroutine moves only that handler to async mode, and the other handlers
+stay synchronous; "Run the Event Loop Yourself" moves the event loop into the
+program.
+
 The base program, without its opening comment:
 
-.. literalinclude:: ../../examples/simple/server_base.cpp
+.. literalinclude:: ../../examples/sync/server_base.cpp
    :language: cpp
    :start-at: #include
 
@@ -234,7 +239,7 @@ Run the Event Loop Yourself
 ---------------------------
 
 A program that runs other work beside the server, or serves other transports,
-runs the event loop itself: ``Server::run()`` is a coroutine that serves one
+runs the event loop itself, as async mode allows: ``Server::run()`` is a coroutine that serves one
 transport, started on an ``mcp::Runtime`` with ``spawn()``. Only the run line
 changes. ``run_stdio()`` also handled SIGINT and SIGTERM, which such a program
 now handles itself. A program that already has a Boost.Asio ``io_context``

@@ -12,8 +12,8 @@ The server decides, call by call, whether a call becomes a task. A client only
 declares that it understands the extension, and the server never returns a task
 to a client that did not declare it.
 
-Adding this to a simple-mode program
-------------------------------------
+Adding this to a sync-mode program
+----------------------------------
 
 The tool of the server of :doc:`/getting-started` may run as a task once tasks are
 enabled, with its handler on a handler pool, and the client starts it with

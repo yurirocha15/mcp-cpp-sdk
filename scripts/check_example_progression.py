@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Check that each simple-mode add-on grows its base program without rewriting it.
+"""Check that each sync-mode add-on grows its base program without rewriting it.
 
-examples/simple/progression.json names the base programs and, for each, the add-ons that add one
+examples/sync/progression.json names the base programs and, for each, the add-ons that add one
 feature to it. An add-on keeps every line of its base, in order, except the lines the manifest
 lists as the ones it replaces, and the manifest lists only lines it does replace. A combined
 program ("all") holds every line its add-ons add and every base line none of them replaces.
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-EXAMPLES = REPO / "examples" / "simple"
+EXAMPLES = REPO / "examples" / "sync"
 MANIFEST = EXAMPLES / "progression.json"
 README = REPO / "README.md"
 README_PROGRAMS = ("server_base.cpp", "client_base.cpp")
@@ -118,7 +118,7 @@ def unlisted_problems(manifest, program_names):
 
 
 def program_names():
-    """The file names of the programs in examples/simple."""
+    """The file names of the programs in examples/sync."""
     return [path.name for path in EXAMPLES.glob("*.cpp")]
 
 
@@ -148,8 +148,8 @@ def write_diffs(manifest, out_dir):
             names.append(family["all"]["file"])
         for name in names:
             add_on = without_opening_comment((EXAMPLES / name).read_text(encoding="utf-8"))
-            diff = difflib.unified_diff(base, add_on, fromfile=f"examples/simple/{base_name}",
-                                        tofile=f"examples/simple/{name}")
+            diff = difflib.unified_diff(base, add_on, fromfile=f"examples/sync/{base_name}",
+                                        tofile=f"examples/sync/{name}")
             (out_dir / f"{Path(name).stem}.diff").write_text("".join(diff), encoding="utf-8")
 
 
@@ -162,7 +162,7 @@ def write_checked_diffs(out_dir):
     problems = check(manifest, lambda name: (EXAMPLES / name).read_text(encoding="utf-8"))
     problems += unlisted_problems(manifest, program_names())
     if problems:
-        raise RuntimeError("The simple-mode examples do not grow from their bases:\n" +
+        raise RuntimeError("The sync-mode examples do not grow from their bases:\n" +
                            "\n".join(problems))
     write_diffs(manifest, Path(out_dir))
 
@@ -188,7 +188,7 @@ def main():
         write_diffs(manifest, args.write_diffs)
     count = sum(len(family["add_ons"]) + (1 if family.get("all") else 0)
                 for family in manifest.values())
-    print(f"Checked {count} simple-mode programs against their bases")
+    print(f"Checked {count} sync-mode programs against their bases")
     return 0
 
 

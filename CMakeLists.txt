@@ -505,11 +505,11 @@ if(BUILD_TESTING)
   add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   # Compiled apart from the test program, whose unity build would make Task
-  # complete: the simple-mode headers must take synchronous handlers while Task
-  # is only declared.
-  add_library(mcp-simple-mode-headers OBJECT test/headers/simple_server_tu.cpp)
-  target_link_libraries(mcp-simple-mode-headers PRIVATE mcp-cpp-sdk)
-  add_dependencies(mcp-sdk-tests mcp-simple-mode-headers)
+  # complete: the sync-mode headers must take synchronous handlers while Task is
+  # only declared.
+  add_library(mcp-sync-mode-headers OBJECT test/headers/sync_server_tu.cpp)
+  target_link_libraries(mcp-sync-mode-headers PRIVATE mcp-cpp-sdk)
+  add_dependencies(mcp-sdk-tests mcp-sync-mode-headers)
   # The server the stdio client tests launch as a child process.
   add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
   target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)
@@ -811,9 +811,9 @@ endif()
 # Examples
 option(BUILD_EXAMPLES "Build example programs" ${MCP_CPP_SDK_IS_TOP_LEVEL})
 if(BUILD_EXAMPLES)
-  # The simple-mode programs: server_base and client_base, and the add-ons that
-  # each grow one of them by one feature (examples/simple/progression.json).
-  set(MCP_SIMPLE_EXAMPLES
+  # The sync-mode programs: server_base and client_base, and the add-ons that
+  # each grow one of them by one feature (examples/sync/progression.json).
+  set(MCP_SYNC_EXAMPLES
       server_base
       server_add_resource
       server_add_prompt
@@ -849,9 +849,9 @@ if(BUILD_EXAMPLES)
       client_add_errors
       client_add_legacy
       client_all)
-  foreach(example IN LISTS MCP_SIMPLE_EXAMPLES)
-    string(REPLACE "_" "-" example_target "example-simple-${example}")
-    add_executable(${example_target} examples/simple/${example}.cpp)
+  foreach(example IN LISTS MCP_SYNC_EXAMPLES)
+    string(REPLACE "_" "-" example_target "example-sync-${example}")
+    add_executable(${example_target} examples/sync/${example}.cpp)
     target_link_libraries(${example_target} PRIVATE mcp-cpp-sdk)
   endforeach()
 

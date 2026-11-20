@@ -11,8 +11,8 @@ In `mcp-cpp-sdk`, prompts are registered with a name, description, and an option
 set of arguments. Clients can discover these prompts and request them with
 specific arguments to get a list of messages to include in the conversation.
 
-Adding This to a Simple-Mode Program
-------------------------------------
+Adding This to a Sync-Mode Program
+----------------------------------
 
 The server of :doc:`/getting-started` gets a prompt with ``add_text_prompt()``, whose
 function makes the text of the prompt's one user message from the

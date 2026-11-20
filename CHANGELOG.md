@@ -8,7 +8,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
-- Simple mode: `Server` and `Client` run their own event loop, take synchronous handlers and make blocking calls, with no Boost in the program; async mode uses the same objects.
+- Sync mode: `Server` and `Client` run their own event loop, take synchronous handlers and make blocking calls, with no Boost in the program; async mode uses the same objects.
 - `mcp::Endpoint` names the server a `Client(const Endpoint&)` connects to: a command to launch (`stdio()`), a Streamable HTTP URL (`http()`) or the application's transport (`custom()`).
 - `Client::sync()`, `TaskHandle::sync()` and `Subscription::sync()` make blocking calls, and `Client::run()` runs a coroutine on the client's loop until it ends.
 - `Endpoint::stdio()` takes a `StdioRestartPolicy`, under which the same `Client` starts the server again when its process ends and goes on with it.
@@ -23,7 +23,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::sync()` sends the `notify_*` notifications of `run_stdio()` and `run_http()` from threads other than the server's loop.
 - `Runtime::executor()`, `spawn()`, `run(threads)` and `start(threads)`, so that a `Runtime` runs a program's loop or a pool for `set_handler_executor()`.
 - `SyncTypeErasedHandler`, the synchronous form of `TypeErasedHandler`, and `Client::executor()`.
-- `examples/simple/` grows a base server and client one feature per program, and the guides "Growing a Server" and "Growing a Client" show each step as a diff.
+- `examples/sync/` grows a base server and client one feature per program, and the guides "Growing a Server" and "Growing a Client" show each step as a diff.
 
 ### Changed
 

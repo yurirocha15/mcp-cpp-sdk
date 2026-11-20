@@ -20,22 +20,22 @@ The SDK builds nine core examples plus 16 specialized feature examples:
 8. **llama_server** - llama.cpp MCP adapter
 9. **debugger_server** - LLDB debugger MCP server (uses stubs when LLDB is unavailable)
 
-Simple-Mode Examples
---------------------
+Sync-Mode Examples
+------------------
 
-``examples/simple/`` holds the programs of :doc:`getting-started`,
+``examples/sync/`` holds the programs of :doc:`getting-started`,
 :doc:`guides/growing-a-server` and :doc:`guides/growing-a-client`: a base server
 and a base client, one program per feature added to them, and
 ``server_all.cpp`` and ``client_all.cpp``, which combine the features. Each
-builds as ``example-simple-<name>``, with dashes for the underscores. A stdio
+builds as ``example-sync-<name>``, with dashes for the underscores. A stdio
 client takes the server's command, and an HTTP server its port and an HTTP
 client the server's URL:
 
 .. code-block:: bash
 
-   ./build/release/example-simple-client-base ./build/release/example-simple-server-base
-   ./build/release/example-simple-server-add-http 8080 &
-   ./build/release/example-simple-client-add-http http://127.0.0.1:8080/mcp
+   ./build/release/example-sync-client-base ./build/release/example-sync-server-base
+   ./build/release/example-sync-server-add-http 8080 &
+   ./build/release/example-sync-client-add-http http://127.0.0.1:8080/mcp
 
 Feature Examples
 ----------------

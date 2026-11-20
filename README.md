@@ -12,7 +12,7 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 
 ## Why mcp-cpp-sdk?
 
-- **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`.
+- **Sync and async modes**: Start in sync mode, with synchronous handlers, blocking calls and no Boost in your code. Move to async mode, C++20 coroutines on Boost.Asio, for maximum performance and customizability, one handler or call at a time.
 - **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
 - **Three transports**: Stdio, WebSocket and Streamable HTTP.
 - **Protocol revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
@@ -57,6 +57,8 @@ target_link_libraries(your_target PRIVATE mcp::sdk)
 ```
 
 ### 2. A Minimal Server
+
+The programs of this quick start are in sync mode.
 
 ```cpp
 #include <mcp/mcp.hpp>
@@ -117,11 +119,11 @@ To skip detection, set `ClientOptions::protocol` to
 ### 4. Grow Them One Feature at a Time
 
 Resources, prompts, HTTP and its authentication, logging and progress, handler
-pools and an event loop of your own are each added to these programs without
-rewriting them. [Growing a server](https://www.yurirocha.com/mcp-cpp-sdk/guides/growing-a-server.html)
+pools, and async mode's coroutines and event loop of your own are each added to
+these programs without rewriting them. [Growing a server](https://www.yurirocha.com/mcp-cpp-sdk/guides/growing-a-server.html)
 and [growing a client](https://www.yurirocha.com/mcp-cpp-sdk/guides/growing-a-client.html)
 show every step as a diff, and each step is a compiled program in
-[examples/simple](examples/simple).
+[examples/sync](examples/sync).
 
 ## Usage Highlights
 

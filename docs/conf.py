@@ -26,9 +26,9 @@ if _version_match is None:
 version = f'{_version_match.group(1)}.{_version_match.group(2)}'
 release = _version_text
 
-# -- Simple-mode examples ----------------------------------------------------
+# -- Sync-mode examples ------------------------------------------------------
 
-# The simple-mode pages include the diff of each examples/simple add-on against its base program.
+# The sync-mode pages include the diff of each examples/sync add-on against its base program.
 # They are written on every build, so the pages show the examples as they are.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import check_example_progression  # noqa: E402

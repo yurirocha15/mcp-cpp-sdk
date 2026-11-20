@@ -13,8 +13,8 @@ transport-level bearer authentication — but they are **components of the
 manager, not an alternative to it**. See
 :ref:`oauth-low-level-building-blocks` for what using them directly costs you.
 
-Adding this to a simple-mode program
-------------------------------------
+Adding this to a sync-mode program
+----------------------------------
 
 The server of :doc:`/getting-started`, served over HTTP, checks a bearer token in the
 function to which ``run_http()`` passes its ``StreamableHttpSessionManager``,

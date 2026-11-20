@@ -1,4 +1,4 @@
-// A simple-mode MCP server: one tool, served over stdio.
+// A sync-mode MCP server: one tool, served over stdio.
 //
 // Each server_add_*.cpp file next to this one is this program plus one feature. Build it and
 // let an MCP client launch it, or run it through ./client_base.

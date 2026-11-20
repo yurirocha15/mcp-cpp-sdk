@@ -101,14 +101,32 @@ To build the SDK and examples from source:
    # Run tests
    python scripts/build.py --test
 
+Sync Mode and Async Mode
+------------------------
+
+The SDK is used in two modes, with the same ``mcp::Server`` and
+``mcp::Client``:
+
+* **Sync mode** is an easy way to start. Handlers are ordinary functions,
+  client calls block until they are answered, and the server or client runs its
+  own event loop, so a program takes a few lines and has no event loop,
+  executor or Boost in it.
+* **Async mode** is for maximum performance and customizability. Handlers and
+  client calls are C++20 coroutines on Boost.Asio: a handler that waits lets the
+  server answer other requests on the same thread, a client can have several
+  requests in flight from one thread, and the program can run the event loop
+  itself, beside its other work, with the executors and transports it chooses.
+
+A program moves to async mode one handler or call at a time, without a rewrite;
+:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how. The
+programs on this page are in sync mode.
+
 Your First Server
 -----------------
 
-The SDK has a simple mode: a server or client in a few lines, with no event
-loop, executor or Boost in the program. This server offers one tool, ``greet``,
-over stdio:
+This server offers one tool, ``greet``, over stdio:
 
-.. literalinclude:: ../examples/simple/server_base.cpp
+.. literalinclude:: ../examples/sync/server_base.cpp
    :language: cpp
    :start-at: #include
 
@@ -145,7 +163,7 @@ Your First Client
 
 This client launches the server, calls its tool and prints the answer:
 
-.. literalinclude:: ../examples/simple/client_base.cpp
+.. literalinclude:: ../examples/sync/client_base.cpp
    :language: cpp
    :start-at: #include
 
@@ -177,10 +195,10 @@ Growing the Program
 
 Each feature is added to these programs without rewriting them: a resource or
 a prompt is one more call on the same ``Server``, HTTP is a different run line,
-and a handler that logs or reports progress becomes a coroutine while the other
-handlers stay as they are. :doc:`guides/growing-a-server` and
+and a handler that logs or reports progress becomes a coroutine, in async mode,
+while the other handlers stay as they are. :doc:`guides/growing-a-server` and
 :doc:`guides/growing-a-client` show each step as a diff against the programs
-above, and every step is a compiled example in ``examples/simple``.
+above, and every step is a compiled example in ``examples/sync``.
 
 Next Steps
 ----------
