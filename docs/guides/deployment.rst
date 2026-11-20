@@ -203,6 +203,8 @@ Graceful Shutdown
 
 In production, servers are frequently restarted or moved. Graceful shutdown ensures that the server finishes processing active requests before exiting, preventing data loss or client-side errors.
 
+.. _signal-handling:
+
 Signal Handling
 ~~~~~~~~~~~~~~~
 

@@ -1,7 +1,7 @@
-// client_base.cpp with every add-on that combines with the others: HTTP with a bearer token, log
-// messages and progress for a call, handlers for the server's questions, model requests and roots,
-// a tool run as a task, a resource subscription, error handling, and a coroutine on the client's
-// loop. It talks to server_all.cpp.
+// client_base.cpp with every add-on that combines with the others: a resource and a prompt, HTTP
+// with a bearer token, log messages and progress for a call, handlers for the server's questions,
+// model requests and roots, a tool run as a task, a resource subscription, error handling, and a
+// coroutine on the client's loop. It talks to server_all.cpp.
 
 #include <mcp/core/async.hpp>
 #include <mcp/mcp.hpp>
@@ -47,6 +47,10 @@ int main(int argc, char** argv) {
     options.log_level = mcp::LoggingLevel::eInfo;
     const auto result = client.sync().call_tool("greet", {{"name", "Ada"}}, options);
     std::cout << mcp::result_text(result) << "\n";
+    const auto motd = client.sync().read_resource("greeter://motd");
+    std::cout << std::get<mcp::TextResourceContents>(motd.contents.at(0)).text << "\n";
+    const auto welcome = client.sync().get_prompt("welcome", {{"name", "Ada"}});
+    std::cout << std::get<mcp::TextContent>(welcome.messages.at(0).content).text << "\n";
     std::cout << mcp::result_text(client.sync().call_tool("greet_formally", {{"name", "Ada"}})) << "\n";
     std::cout << mcp::result_text(client.sync().call_tool("write_greeting", {{"name", "Ada"}})) << "\n";
     std::cout << mcp::result_text(client.sync().call_tool("count_roots", nlohmann::json::object()))

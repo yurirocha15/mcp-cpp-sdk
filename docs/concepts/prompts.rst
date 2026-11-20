@@ -133,9 +133,11 @@ dynamic content from your server's resources in the prompt response.
 
 .. code-block:: cpp
 
+   TextResourceContents contents;
+   contents.uri = "mcp://system/config";
+   contents.text = "System configuration data...";
    EmbeddedResource resource;
-   resource.resource.uri = "mcp://system/config";
-   resource.resource.text = "System configuration data...";
+   resource.resource = std::move(contents);
    msg.content = std::move(resource);
 
 Advanced Registration
@@ -196,9 +198,10 @@ prompting them to call `prompts/list` again if they need the updated list.
 Prompt Capabilities
 -------------------
 
-To enable prompts, include them in your server capabilities during initialization.
-If the client does not see prompt capabilities, it may not attempt to list or
-get prompts.
+A server that has a prompt advertises the prompts capability on its own. What
+registration cannot imply, such as list-changed notifications, is set in the
+capabilities the server is constructed with, or on ``server.capabilities()``
+before it serves:
 
 .. code-block:: cpp
 

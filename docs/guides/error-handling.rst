@@ -193,25 +193,19 @@ Raise it for the whole client by passing ``ClientOptions`` to the constructor:
    options.request_timeout = std::chrono::minutes(5);
    mcp::Client client(transport, io.get_executor(), options);
 
-A single request can be given its own deadline through ``RequestOptions``, but
-only on the untyped ``send_request`` overload. The typed helpers —
-``call_tool``, ``read_resource``, ``list_tools`` and the rest — take no
-per-request options and always use the client-wide default, so a client that
-makes one slow call among many fast ones either raises the default for all of
-them or drops to ``send_request`` for that one:
+A single request can be given its own deadline through ``RequestOptions``,
+which ``call_tool()``, ``send_request()``, ``read_resource()``, ``get_prompt()``,
+``complete()``, ``start_tool()`` and the ``list_*()`` members take as their last
+argument, as do their blocking twins on ``client.sync()``. A client that makes
+one slow call among many fast ones gives that call a longer deadline:
 
 .. code-block:: cpp
-
-   mcp::CallToolParams call_params;
-   call_params.name = "render";
-   call_params.arguments = args;
 
    mcp::RequestOptions slow;
    slow.timeout = std::chrono::minutes(30);
 
-   auto raw = co_await client.send_request(
-       "tools/call", nlohmann::json(call_params), slow);
-   auto result = raw.get<mcp::CallToolResult>();
+   auto result = co_await client.call_tool("render", args, slow);
+   // In sync mode: client.sync().call_tool("render", args, slow)
 
 When the deadline expires the awaiting coroutine throws
 :cpp:class:`mcp::McpError` with code ``-32001``
@@ -291,14 +285,17 @@ The SDK provides a built-in logging system that is essential for debugging and m
 
    server.add_tool<nlohmann::json, nlohmann::json>("example", "...", schema,
        [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+           std::string error;
            try {
-               // ... work ...
+               co_return do_work(args);
            } catch (const std::exception& e) {
-               co_await ctx.log(mcp::LoggingLevel::eError,
-                                "Tool failed: " + std::string(e.what()));
-               throw;
-            }
-        });
+               error = e.what();
+           }
+           // A catch block cannot contain co_await, so the error is logged after it.
+           std::string message = "Tool failed: " + error;
+           co_await ctx.log(mcp::LoggingLevel::eError, message);
+           throw std::runtime_error(message);
+       });
 
 By logging at the server level, you can aggregate errors across multiple clients and identify systemic issues. For more details on logging, see the :doc:`../concepts/context` guide.
 

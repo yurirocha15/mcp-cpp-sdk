@@ -124,7 +124,7 @@ polling loop or opening a file watch) when a client expresses interest.
    :linenos:
    :caption: Handling resource subscriptions and unsubscriptions.
 
-For more details on how notifications work across the protocol, see :doc:`/index`.
+For more details on subscriptions and the notifications they deliver, see :doc:`subscriptions`.
 
 Resource Change Notifications
 -----------------------------
@@ -156,9 +156,10 @@ again; delivery and refresh timing still depend on the connection and client.
 Resource Capabilities
 ---------------------
 
-To allow clients to discover your resources, ensure you enable the resources
-capability in your server configuration. You can also specify if the server
-supports sending notifications for resource changes.
+A server that has a resource or resource template advertises the resources
+capability on its own. What registration cannot imply, such as subscriptions or
+list-changed notifications, is set in the capabilities the server is constructed
+with, or on ``server.capabilities()`` before it serves:
 
 .. code-block:: cpp
 

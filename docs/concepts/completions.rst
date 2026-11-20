@@ -59,7 +59,7 @@ The ``CompleteParams`` structure provides the context for the completion request
 CompleteResult
 --------------
 
-The server returns a ``CompleteResult`` containing:
+The server returns a ``CompleteResult`` whose ``completion`` member contains:
 
 - ``values``: A list of string suggestions.
 - ``total``: (Optional) The total number of completions available if the list is truncated.

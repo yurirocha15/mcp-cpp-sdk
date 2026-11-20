@@ -71,7 +71,9 @@ A typical loopback test follows these steps:
 Here is a simplified example of this pattern. A default ``Client`` and a default
 ``Server`` speak protocol revision 2026-07-28 with each other, so the test
 needs no handshake of its own: ``connect()`` sends one ``server/discover``
-request.
+request. The test includes ``<mcp/core/async.hpp>``, ``<mcp/mcp.hpp>``,
+``<mcp/transport/memory.hpp>`` for ``create_memory_transport_pair()``, and the
+Boost.Asio headers of ``io_context``, ``co_spawn`` and ``detached``.
 
 .. code-block:: cpp
 
@@ -198,7 +200,7 @@ For tool handlers, you can pass mock dependencies into your lambda captures or f
 CI Integration
 --------------
 
-MCP tests can be integrated into any standard C++ CI pipeline. Since the SDK relies on Boost.Asio and C++20, ensure your CI environment has a compatible compiler (GCC 11+, Clang 13+, or MSVC 2022+) and the necessary libraries installed.
+MCP tests can be integrated into any standard C++ CI pipeline. Since the SDK relies on Boost.Asio and C++20, ensure your CI environment has a compatible compiler (GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022) and the necessary libraries installed.
 
 We recommend running tests under sanitizers (ASan, UBSan) to catch memory leaks or undefined behavior in your asynchronous code.
 

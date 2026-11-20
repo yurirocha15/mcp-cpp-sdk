@@ -4,6 +4,26 @@ Getting Started
 This guide will help you get started with the mcp-cpp-sdk, from installation
 to building your first MCP server and client.
 
+Sync Mode and Async Mode
+------------------------
+
+The SDK is used in two modes, with the same ``mcp::Server`` and
+``mcp::Client``:
+
+* **Sync mode** is an easy way to start. Handlers are ordinary functions,
+  client calls block until they are answered, and the server or client runs its
+  own event loop, so a program takes a few lines and has no event loop,
+  executor or Boost in it.
+* **Async mode** is for maximum performance and customizability. Handlers and
+  client calls are C++20 coroutines on Boost.Asio: a handler that waits lets the
+  server answer other requests on the same thread, a client can have several
+  requests in flight from one thread, and the program can run the event loop
+  itself, beside its other work, with the executors and transports it chooses.
+
+A program moves to async mode one handler or call at a time, without a rewrite;
+:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how. The
+programs on this page are in sync mode.
+
 Prerequisites
 -------------
 
@@ -31,7 +51,9 @@ In a clone of this repository, Conan can provide the dependencies:
 .. code-block:: bash
 
    # Install dependencies
-   conan install . --build=missing -s compiler.cppstd=20
+   conan install . --output-folder=build --build=missing \
+     -s compiler.cppstd=20 \
+     -c tools.cmake.cmaketoolchain:generator=Ninja
 
    # Build the project
    cmake --preset conan-release
@@ -101,26 +123,6 @@ To build the SDK and examples from source:
    # Run tests
    python scripts/build.py --test
 
-Sync Mode and Async Mode
-------------------------
-
-The SDK is used in two modes, with the same ``mcp::Server`` and
-``mcp::Client``:
-
-* **Sync mode** is an easy way to start. Handlers are ordinary functions,
-  client calls block until they are answered, and the server or client runs its
-  own event loop, so a program takes a few lines and has no event loop,
-  executor or Boost in it.
-* **Async mode** is for maximum performance and customizability. Handlers and
-  client calls are C++20 coroutines on Boost.Asio: a handler that waits lets the
-  server answer other requests on the same thread, a client can have several
-  requests in flight from one thread, and the program can run the event loop
-  itself, beside its other work, with the executors and transports it chooses.
-
-A program moves to async mode one handler or call at a time, without a rewrite;
-:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how. The
-programs on this page are in sync mode.
-
 Your First Server
 -----------------
 
@@ -178,6 +180,10 @@ This client launches the server, calls its tool and prints the answer:
   instead.
 * ``mcp::result_text()`` joins the text blocks of a tool result.
 * Destroying the client closes the connection, which ends the server process.
+
+It builds like the server, with ``add_executable(greeter-client client_base.cpp)``
+and the same ``target_compile_features`` and ``target_link_libraries`` lines.
+``./greeter-client ./greeter`` then prints ``Hello, Ada!``.
 
 .. important::
 

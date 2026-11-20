@@ -53,6 +53,8 @@
     },
     "client_base.cpp": {
         "add_ons": {
+            "client_add_resource.cpp": [],
+            "client_add_prompt.cpp": [],
             "client_add_http.cpp": [
                 "const std::string command = argc > 1 ? argv[1] : \"./greeter\";",
                 "mcp::Client client(mcp::Endpoint::stdio({command}));"
@@ -90,6 +92,8 @@
         "all": {
             "file": "client_all.cpp",
             "combines": [
+                "client_add_resource.cpp",
+                "client_add_prompt.cpp",
                 "client_add_auth.cpp",
                 "client_add_progress.cpp",
                 "client_add_logging.cpp",

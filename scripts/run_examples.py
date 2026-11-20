@@ -52,6 +52,9 @@ SYNC_STDIO_SERVERS = [
 
 # (client, the stdio server it launches, lines the client prints).
 SYNC_STDIO_CLIENTS = [
+    ("client-add-resource", "server-add-resource", ["Hello, Ada!", "Be kind to each other."]),
+    ("client-add-prompt", "server-add-prompt",
+     ["Hello, Ada!", "Write a short welcome message for Ada."]),
     ("client-add-progress", "server-add-context", ["progress: 1", "Hello, Ada!"]),
     ("client-add-logging", "server-add-context", ['log: "Composing a greeting"', "Hello, Ada!"]),
     ("client-add-coroutine", "server-base", ["Hello, Ada!", "tool: greet"]),
@@ -73,7 +76,8 @@ SYNC_HTTP_PAIRS = [
     ("server-add-http", "client-add-http", ["Hello, Ada!"], True),
     ("server-add-auth", "client-add-auth", ["Hello, Ada!"], True),
     ("server-all", "client-all",
-     ['log: "Composing a greeting"', "progress: 1", "Hello, Ada!", "Hello, Dr. Ada!",
+     ['log: "Composing a greeting"', "progress: 1", "Hello, Ada!", "Be kind to each other.",
+      "Write a short welcome message for Ada.", "Hello, Dr. Ada!",
       "Greetings, friend!", "The client has 1 root(s)", "Hello, Grace!",
       "updated: notifications/resources/updated", "request error -32602", "tool: greet"], True),
     ("server-add-auth", "client-add-http", [], False),

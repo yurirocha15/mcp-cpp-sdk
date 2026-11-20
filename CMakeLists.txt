@@ -834,6 +834,8 @@ if(BUILD_EXAMPLES)
       server_add_skills
       server_all
       client_base
+      client_add_resource
+      client_add_prompt
       client_add_http
       client_add_auth
       client_add_progress

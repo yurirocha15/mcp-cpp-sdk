@@ -18,13 +18,38 @@ The base program, without its opening comment:
    :language: cpp
    :start-at: #include
 
+Read a Resource
+---------------
+
+``read_resource(uri)`` reads a resource, such as the message of the day that the
+server of :doc:`growing-a-server` adds in "Add a Resource". Its ``contents``
+hold one ``TextResourceContents`` or ``BlobResourceContents`` per part; this one
+is text. ``list_resources()`` lists the resources a server offers. See
+:doc:`/concepts/resources`.
+
+.. literalinclude:: /_generated/progression/client_add_resource.diff
+   :language: diff
+
+Get a Prompt
+------------
+
+``get_prompt(name, arguments)`` fills in a prompt with arguments given by name,
+such as the welcome prompt that the server adds in "Add a Prompt". Its
+``messages`` are the conversation to hand to a model; this one is one text
+message. ``list_prompts()`` lists a server's prompts and the arguments each
+takes. See :doc:`/concepts/prompts`.
+
+.. literalinclude:: /_generated/progression/client_add_prompt.diff
+   :language: diff
+
 Connect over HTTP
 -----------------
 
 ``mcp::Endpoint::http(url)`` connects to a Streamable HTTP server, such as the
 one of :doc:`growing-a-server` that serves over HTTP, instead of launching a
-process. Only the endpoint changes; the calls stay as they are. See
-:doc:`/concepts/transports`.
+process. Only the endpoint changes; the calls stay as they are. A server that
+cannot be reached makes ``connect()`` throw, as "Handle Errors" below describes.
+See :doc:`/concepts/transports`.
 
 .. literalinclude:: /_generated/progression/client_add_http.diff
    :language: diff
@@ -137,8 +162,15 @@ A tool that fails says so in its result: ``isError`` is set and the content
 says why, as for these arguments, which lack the name the tool's schema
 requires. A request the server refuses throws ``mcp::McpError``, whose
 ``code()`` is the JSON-RPC error code, here invalid params for a resource that
-does not exist. A closed connection and a request that times out throw
-``McpError`` as well. See :doc:`error-handling`.
+does not exist. A request that times out throws ``McpError`` too, and so does a
+closed connection to a stdio server. Over HTTP, a failure of the connection
+itself throws the transport's exception instead: ``mcp::HttpStatusError``
+(``<mcp/transport/http_client.hpp>``), whose ``status()`` is the HTTP status,
+when the server answers with an error status, such as 401 for a missing or wrong
+bearer token, and ``boost::system::system_error`` when the connection is refused
+or ends. Both derive from ``std::runtime_error``, so a ``catch (const
+std::exception&)`` after the ``McpError`` handler covers them without Boost
+headers. See :doc:`error-handling`.
 
 .. literalinclude:: /_generated/progression/client_add_errors.diff
    :language: diff

@@ -43,7 +43,6 @@ whose only member is an empty ``content`` array is treated as data and wrapped.
 
 .. code-block:: cpp
 
-   #include <mcp/core/async.hpp>
    #include <mcp/mcp.hpp>
 
    nlohmann::json schema = {

@@ -162,7 +162,7 @@ Run Handlers on a Thread Pool
 -----------------------------
 
 A synchronous handler runs on the server's event loop, so a slow one holds up
-the others. ``mcp::Runtime::start(4)`` starts four threads that wait for work,
+the others. ``start(4)`` on an ``mcp::Runtime`` starts four threads that wait for work,
 and ``set_handler_executor()`` runs the tool handlers on them, while the server
 reads and answers messages on its own loop. Tool handlers that share state then
 synchronize it themselves.
@@ -242,7 +242,8 @@ A program that runs other work beside the server, or serves other transports,
 runs the event loop itself, as async mode allows: ``Server::run()`` is a coroutine that serves one
 transport, started on an ``mcp::Runtime`` with ``spawn()``. Only the run line
 changes. ``run_stdio()`` also handled SIGINT and SIGTERM, which such a program
-now handles itself. A program that already has a Boost.Asio ``io_context``
+now handles itself, for instance with ``mcp::graceful_shutdown()`` as
+:ref:`the deployment guide <signal-handling>` shows. A program that already has a Boost.Asio ``io_context``
 passes ``io.get_executor()`` where this one passes ``runtime.executor()``.
 
 .. literalinclude:: /_generated/progression/server_add_own_loop.diff
@@ -298,7 +299,9 @@ Stopping, Ports and Notifications
 A few calls on the same ``Server`` control it while it runs, from any thread:
 
 * ``server.stop()`` ends ``run_stdio()`` and ``run_http()`` as SIGINT does, and
-  the task of ``run()`` by closing its transport. A handler may call it.
+  the task of ``run()`` by closing its transport. A handler may call it, but the
+  requests still running when the server stops, that handler's own among them,
+  may end without an answer.
 * ``server.bound_port()`` returns the port ``run_http()`` listens on, which is
   the one the system chose when it was given port 0.
 * ``server.sync()`` returns a view whose ``notify_tools_list_changed()``,
