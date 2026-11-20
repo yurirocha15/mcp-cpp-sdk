@@ -22,6 +22,9 @@ prepare() {
   local gnupg_home="${srcdir}/gnupg"
   install -dm700 "${gnupg_home}"
   GNUPGHOME="${gnupg_home}" gpg --batch --no-auto-key-retrieve --no-auto-check-trustdb --import "${key_file}"
+  # Trust the pinned key in this keyring, or gpg warns that it is not certified; the status
+  # check below still requires a signature by the pinned keys.
+  printf '%s:6:\n' '@PRIMARY_FINGERPRINT@' | GNUPGHOME="${gnupg_home}" gpg --batch --quiet --import-ownertrust
   GNUPGHOME="${gnupg_home}" gpg --batch --no-auto-key-retrieve --status-fd 1 \
     --verify "${srcdir}/mcp-cpp-sdk-${pkgver}.tar.gz.asc" "${srcdir}/mcp-cpp-sdk-${pkgver}.tar.gz" >"${status_file}"
   python -I -S "${source_dir}/release/verify_gnupg_status.py" \

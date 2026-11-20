@@ -6,6 +6,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Fixed
+
+- The friend declaration of `decode_elicitation_content()` is exported like its
+  first declaration, so MSVC no longer reports warning C4273 for it.
+- The AUR package's build no longer prints a gpg warning that the release key
+  is not certified when it checks the source signature.
+
 ## [0.3.0] - 2026-11-17
 
 ### Migrating from 0.2.0

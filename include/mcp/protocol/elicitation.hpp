@@ -235,8 +235,8 @@ class ElicitedContent {
     }
 
    private:
-    friend ElicitedContent decode_elicitation_content(const ElicitationSchema& schema,
-                                                      const nlohmann::json& content);
+    friend MCP_API ElicitedContent decode_elicitation_content(const ElicitationSchema& schema,
+                                                              const nlohmann::json& content);
     std::map<std::string, ElicitedValue> values_;
 };
 
