@@ -8,52 +8,6 @@ environments and are never stored here. Native package builds run in the
 locked builder images from `native-builders/`; only the Conan builder container
 is started with network access.
 
-## Making a release
-
-1. Add a `### Highlights` part to the changelog's Unreleased entries: the few
-   lines a reader of the release page needs. On a branch from `main`, run
-   `python3 -m release.version_bump prepare X.Y.Z`. It writes `VERSION`, turns
-   the Unreleased entries into the dated `X.Y.Z` section, and updates the
-   documentation that names the latest release. Add migration notes for
-   breaking changes to the new section under a heading such as
-   `### Migrating from 0.3.0`, then open the release pull request. Its CI
-   builds every package, because `VERSION` changed.
-2. Merge it. The `Release dry run` workflow starts a dry run of `vX.Y.Z` on
-   `main`. Approve the run when it asks; nothing is published.
-3. When the dry run passes, run `python3 -m release.tag_release` with the
-   release keyring (`--gnupghome` or `MCP_RELEASE_GNUPGHOME`). It signs
-   `vX.Y.Z` on the head of `main`, checks the signature and the repository
-   with the workflow's readiness check, and asks before it pushes the tag and
-   before it starts the release. The release publishes to the channels the
-   `RELEASE_CHANNELS` repository variable names, separated by spaces, from
-   `conan2 apt rpm aur homebrew chocolatey`; the script stops before the push
-   when the variable is missing or names another channel.
-4. Approve the release run, then the publication once the candidate is
-   verified.
-
-The release workflow writes the GitHub Release notes from the section: its
-highlights, a link to its migration notes when it has them, and links to the
-full section and the installation guide at the tag. A section without
-highlights fails the candidate, so the dry run reports it before the tag is
-signed.
-
-CI runs `python3 -m release.version_bump check`, through the release tests,
-so the documentation always names the version in `VERSION`. A release
-candidate (`X.Y.Z-rc.N`) changes only `VERSION` and the changelog, has no dry
-run, and publishes only the GitHub Release.
-
-Each release run asks for two reviews: the `release-approval` environment
-before any job reads a release secret or signs, and the
-`release-publication-approval` environment before the GitHub Release and the
-channels. Those two environments require a maintainer's review. The
-environments that hold the release secrets (`release-signing`,
-`release-github`, `release-cloudsmith`, `release-aur`, `release-homebrew`,
-`release-chocolatey`, `release-control-dispatch`) need no review of their own,
-because every job that uses them waits for one of the two approvals. Every
-release environment allows only protected branches.
-
-## Tests
-
 Run its tests with:
 
 ```sh

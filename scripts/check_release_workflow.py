@@ -167,9 +167,7 @@ PUBLICATION_CONDITION = (
 
 # The environments of these two jobs are the release's reviews: one before any job reads a
 # release secret or signs, and one before anything is published. They hold no secrets.
-RUN_APPROVAL_NEEDS = frozenset(
-    {"contract", "repository-readiness", "immutability-gate", "existing-anchor-policy"}
-)
+RUN_APPROVAL_NEEDS = frozenset({"contract", "repository-readiness", "existing-anchor-policy"})
 RUN_APPROVED_JOBS = (*PREFLIGHT_CONDITIONS, "candidate")
 PUBLICATION_APPROVAL_CONDITION = (
     "${{ !cancelled() && needs.contract.outputs.mode == 'publish' && "
@@ -287,6 +285,19 @@ def sequence(block: list[str], key: str) -> tuple[str, ...]:
             break
         values.append(match.group(1))
     return tuple(values)
+
+
+def dependencies(blocks: dict[str, list[str]], job: str) -> set[str]:
+    """Return the jobs that ``job`` waits for, directly or through other jobs."""
+
+    found: set[str] = set()
+    pending = list(sequence(blocks[job], "needs"))
+    while pending:
+        need = pending.pop()
+        if need not in found:
+            found.add(need)
+            pending.extend(sequence(blocks.get(need, []), "needs"))
+    return found
 
 
 def require_fragments(text: str, fragments: tuple[str, ...], label: str) -> None:
@@ -438,6 +449,16 @@ def check_job_graph(
     for job in RUN_APPROVED_JOBS:
         if "run-approval" not in sequence(blocks[job], "needs"):
             raise PolicyError(f"job {job!r} can start before the run is approved")
+    for job, block in blocks.items():
+        privileged = (
+            scalar(block, "environment") is not None
+            or any("secrets." in line or line.startswith("    uses: ") for line in block)
+        )
+        if privileged and job != "run-approval" and "run-approval" not in dependencies(blocks, job):
+            raise PolicyError(
+                f"job {job!r} uses a protected environment, a secret or a workflow "
+                "before the run is approved"
+            )
     if expression(blocks["publication-approval"], "if") != PUBLICATION_APPROVAL_CONDITION or (
         "candidate" not in sequence(blocks["publication-approval"], "needs")
     ):

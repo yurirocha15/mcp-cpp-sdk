@@ -429,6 +429,25 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
         ]
         self.graph_error(blocks)
 
+    def test_no_job_reads_a_secret_before_the_run_approval(self) -> None:
+        policy.check_job_graph(
+            self.blocks, self.combined_text, self.candidate_blocks, self.publication_blocks
+        )
+        blocks = self.copied(self.blocks)
+        blocks["immutability-gate"] = [
+            line for line in blocks["immutability-gate"] if line != "      - run-approval"
+        ]
+        self.graph_error(blocks)
+        for job, line in (
+            ("existing-anchor-policy", "    environment: release-github"),
+            ("existing-anchor-policy", "        run: echo ${{ secrets.CLOUDSMITH_API_KEY }}"),
+            ("repository-readiness", "    uses: ./.github/workflows/release-candidate.yml"),
+        ):
+            with self.subTest(job=job, line=line):
+                blocks = self.copied(self.blocks)
+                blocks[job] = [*blocks[job], line]
+                self.graph_error(blocks)
+
     def test_publishing_jobs_wait_for_the_publication_approval(self) -> None:
         for job in ("attestation", "github-release", "publication"):
             with self.subTest(job=job):

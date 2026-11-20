@@ -196,9 +196,11 @@ jobs:
           --github-output "${GITHUB_OUTPUT}"
   immutability-gate:
     name: Verify immutable Releases and protected annotated tags
+    # It reads the repository-administration App key, so it waits for the run approval.
     needs:
       - contract
       - repository-readiness
+      - run-approval
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release-admin-read
@@ -244,7 +246,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - immutability-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -300,7 +301,6 @@ jobs:
     needs:
       - contract
       - repository-readiness
-      - immutability-gate
       - existing-anchor-policy
     runs-on: ubuntu-24.04
     timeout-minutes: 5
