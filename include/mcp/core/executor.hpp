@@ -21,6 +21,16 @@ struct ExecutorWrap;
 template <typename Unused>
 struct ExecutorAccess;
 
+/// A function with no work, to ask whether a type runs functions.
+struct NoWork {
+    void operator()() const noexcept {}
+};
+
+/// An Asio executor, told apart without Boost by the execute() member every one has.
+template <typename Candidate>
+concept AsioExecutorLike =
+    std::is_class_v<Candidate> && requires(const Candidate& executor) { executor.execute(NoWork{}); };
+
 }  // namespace detail
 
 /**
@@ -39,7 +49,7 @@ class Executor {
     /// Wrap an Asio executor (for example io.get_executor() or a strand).
     template <typename AsioExecutor>
         requires(!std::same_as<std::remove_cvref_t<AsioExecutor>, Executor> &&
-                 std::is_class_v<std::remove_cvref_t<AsioExecutor>>)
+                 detail::AsioExecutorLike<std::remove_cvref_t<AsioExecutor>>)
     Executor(const AsioExecutor& executor)  // NOLINT(google-explicit-constructor)
         : target_(detail::ExecutorWrap<AsioExecutor>::wrap(executor)) {}
 

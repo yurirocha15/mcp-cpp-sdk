@@ -7,9 +7,27 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <vector>
 
 namespace executor_test {
+
+namespace {
+struct NotAnExecutor {};
+}  // namespace
+
+// Asio executors convert to an Executor; other class types do not, so an overload that takes an
+// Executor is not chosen for them.
+static_assert(std::is_convertible_v<boost::asio::io_context::executor_type, mcp::Executor>);
+static_assert(std::is_convertible_v<boost::asio::any_io_executor, mcp::Executor>);
+static_assert(std::is_convertible_v<boost::asio::strand<boost::asio::any_io_executor>, mcp::Executor>);
+static_assert(std::is_convertible_v<boost::asio::thread_pool::executor_type, mcp::Executor>);
+static_assert(!std::is_convertible_v<std::string, mcp::Executor>);
+static_assert(!std::is_convertible_v<std::vector<int>, mcp::Executor>);
+static_assert(!std::is_convertible_v<NotAnExecutor, mcp::Executor>);
 
 TEST(ExecutorTest, RunsWorkOnTheWrappedContext) {
     boost::asio::io_context io_ctx;
