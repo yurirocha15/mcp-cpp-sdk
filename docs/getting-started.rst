@@ -10,15 +10,15 @@ Sync Mode and Async Mode
 The SDK is used in two modes, with the same ``mcp::Server`` and
 ``mcp::Client``:
 
-* **Sync mode** is an easy way to start. Handlers are ordinary functions,
-  client calls block until they are answered, and the server or client runs its
-  own event loop, so a program takes a few lines and has no event loop,
-  executor or Boost in it.
-* **Async mode** is for maximum performance and customizability. Handlers and
-  client calls are C++20 coroutines on Boost.Asio: a handler that waits lets the
-  server answer other requests on the same thread, a client can have several
-  requests in flight from one thread, and the program can run the event loop
-  itself, beside its other work, with the executors and transports it chooses.
+* **Sync mode**, for fast development: handlers are ordinary functions, client
+  calls block until they are answered, and the server or client runs its own
+  event loop, so a program takes a few lines and has no event loop, executor
+  or Boost in it.
+* **Async mode**, for performance and full control: handlers and client calls
+  are C++20 coroutines on Boost.Asio. A handler that waits lets the server
+  answer other requests on the same thread, a client can have several requests
+  in flight from one thread, and the program can run the event loop itself,
+  beside its other work, with the executors and transports it chooses.
 
 A program moves to async mode one handler or call at a time, without a rewrite;
 :doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how, and
