@@ -24,9 +24,9 @@
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
-#include <boost/asio/use_future.hpp>
 #include <boost/system/system_error.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
@@ -41,6 +41,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -279,8 +280,24 @@ struct BlockingLoop {
     std::shared_ptr<void> owner;
     boost::asio::any_io_executor executor;
     std::thread::id thread;
-    /// Set once the Client has stopped the loop for good: nothing runs a blocking call after that.
-    mutable std::atomic<bool> ended{false};
+
+    /// Whether the Client has stopped the loop for good, after which nothing runs a blocking call,
+    /// and the calls that wait. Held apart from the loop, which a waiting call must not keep.
+    struct End {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool ended = false;  // guarded by mutex
+    };
+    std::shared_ptr<End> end = std::make_shared<End>();
+
+    /// Ends the waits of the blocking calls, including those whose coroutine the loop never ran.
+    void mark_ended() const {
+        {
+            std::lock_guard lock(end->mutex);
+            end->ended = true;
+        }
+        end->changed.notify_all();
+    }
 };
 
 /// Runs the coroutine @p start makes on @p loop and waits for it; see Client::sync().
@@ -296,18 +313,64 @@ T run_blocking(const std::shared_ptr<const BlockingLoop>& loop, std::function<Ta
             "mcp::Client: a blocking call on the client's own event loop thread would wait for "
             "itself; await the coroutine instead");
     }
-    if (loop->ended.load(std::memory_order_acquire)) {
-        throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
-                       "The client has been destroyed, and its connection with it");
+    struct Call {
+        std::conditional_t<std::is_void_v<T>, bool, std::optional<T>> value{};
+        std::exception_ptr error;
+        bool done = false;
+    };
+    auto call = std::make_shared<Call>();
+    const auto end = loop->end;
+    const auto closed = [] {
+        return McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                        "The client has been destroyed, and its connection with it");
+    };
+    // Spawned with the mutex held, so the end comes either before the check or after the spawn and
+    // then ends the wait below. The coroutine is made on the loop as well, so that no part of the
+    // call runs on this thread.
+    {
+        std::lock_guard lock(end->mutex);
+        if (end->ended) {
+            throw closed();
+        }
+        auto body = [start = std::move(start)]() -> boost::asio::awaitable<T> {
+            co_return co_await start();
+        };
+        if constexpr (std::is_void_v<T>) {
+            boost::asio::co_spawn(loop->executor, std::move(body),
+                                  [call, end](std::exception_ptr error) {
+                                      {
+                                          std::lock_guard done_lock(end->mutex);
+                                          call->error = std::move(error);
+                                          call->done = true;
+                                      }
+                                      end->changed.notify_all();
+                                  });
+        } else {
+            boost::asio::co_spawn(loop->executor, std::move(body),
+                                  [call, end](std::exception_ptr error, T value) {
+                                      {
+                                          std::lock_guard done_lock(end->mutex);
+                                          call->error = std::move(error);
+                                          if (!call->error) {
+                                              call->value.emplace(std::move(value));
+                                          }
+                                          call->done = true;
+                                      }
+                                      end->changed.notify_all();
+                                  });
+        }
     }
-    // The coroutine is made on the loop as well, so that no part of the call runs on this thread.
-    return boost::asio::co_spawn(
-               loop->executor,
-               [start = std::move(start)]() -> boost::asio::awaitable<T> {
-                   co_return co_await start();
-               },
-               boost::asio::use_future)
-        .get();
+    std::unique_lock lock(end->mutex);
+    end->changed.wait(lock, [&] { return call->done || end->ended; });
+    if (!call->done) {
+        throw closed();
+    }
+    if (call->error) {
+        std::rethrow_exception(call->error);
+    }
+    if constexpr (!std::is_void_v<T>) {
+        return std::move(call->value).value();
+    }
 }
 
 /// The client's side of one subscriptions/listen stream. Every change to it happens on the client
@@ -2870,7 +2933,7 @@ Client::~Client() {
     }
     loop_->thread.join();
     if (impl_->blocking_loop) {
-        impl_->blocking_loop->ended.store(true, std::memory_order_release);
+        impl_->blocking_loop->mark_ended();
     }
     impl_.reset();
 }

@@ -9,6 +9,7 @@
 #include <boost/asio/io_context.hpp>
 #include <fstream>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <regex>
@@ -155,6 +156,31 @@ TEST(ClientSyncTest, ATimedOutCallThrowsMcpError) {
         ADD_FAILURE() << "the call did not time out";
     } catch (const mcp::McpError& error) {
         EXPECT_EQ(error.code(), mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
+    }
+}
+
+// A blocking call made on a handle while its Client is being destroyed returns, with the error of
+// a destroyed client, instead of waiting for a loop that no longer runs.
+TEST(ClientSyncTest, ABlockingCallDuringTheClientsDestructionReturns) {
+    for (int round = 0; round < 3; ++round) {
+        auto client = std::make_unique<mcp::Client>(test_server());
+        client->sync().connect("sync-test", "1.0");
+        mcp::SubscriptionFilter filter;
+        filter.toolsListChanged = true;
+        mcp::Subscription stream = client->sync().listen(filter);
+        auto caller = std::async(std::launch::async, [&stream] {
+            for (;;) {
+                try {
+                    stream.sync().close();
+                } catch (const std::exception&) {
+                    return;
+                }
+            }
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(2 + round));
+        client.reset();
+        EXPECT_EQ(caller.wait_for(std::chrono::seconds(20)), std::future_status::ready)
+            << "round " << round;
     }
 }
 
