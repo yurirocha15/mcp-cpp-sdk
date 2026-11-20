@@ -18,7 +18,8 @@ namespace mcp::detail {
  * @details The Client above it goes on with the new process and keeps its handlers:
  * - the requests still waiting for an answer when the process ended are answered with a
  *   g_CONNECTION_CLOSED error, so that their callers learn of the end at once;
- * - answers to requests the ended process sent are not written to the new one;
+ * - answers to requests the ended process sent are not written to the new one, and a request of
+ *   the new process whose id is that of one of those reaches the client with another id;
  * - a legacy session's initialize request and initialized notification go to the new process
  *   before anything else, and the answer to that initialize is not passed on;
  * - messages written while the process starts again wait for it.

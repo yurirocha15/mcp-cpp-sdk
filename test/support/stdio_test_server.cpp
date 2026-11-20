@@ -142,6 +142,27 @@ void add_tools(mcp::Server& server, int argc, char** argv) {
                         }
                         return "sent";
                     });
+    server.add_tool<json, json>(
+        "ask",
+        "Asks the client for a value and answers with it; ends the process crash_after_ms after asking",
+        json{{"type", "object"}}, [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+            const int crash_after_ms = args.value("crash_after_ms", 0);
+            if (crash_after_ms > 0) {
+                std::thread([crash_after_ms] {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(crash_after_ms));
+                    std::_Exit(9);
+                }).detach();
+            }
+            // On the heap: a std::string in the coroutine frame must not live across co_await.
+            const auto question = std::make_shared<const mcp::ElicitRequestParams>([&args] {
+                mcp::ElicitRequestFormParams form;
+                form.message = args.value("question", std::string());
+                form.requestedSchema = json{{"type", "object"}};
+                return mcp::ElicitRequestParams(std::move(form));
+            }());
+            const auto answer = co_await ctx.elicit(*question);
+            co_return json{{"answer", answer.content ? answer.content->value("v", json()) : json()}};
+        });
     server.add_tool<json, json>("crash", "Ends the process at once", json{{"type", "object"}},
                                 [](mcp::Context&, json args) -> mcp::Task<json> {
                                     std::cout.flush();

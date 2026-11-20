@@ -13,6 +13,9 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/system/system_error.hpp>
 #include <chrono>
@@ -153,6 +156,54 @@ TEST(ClientEndpointTest, ARestartedServerServesTheSameClient) {
                   mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
         EXPECT_FALSE(client.sync().list_tools().tools.empty());
     }
+}
+
+/// Waits on the client's loop until @p flag is set.
+mcp::Task<void> wait_for(const std::atomic<bool>& flag) {
+    while (!flag.load()) {
+        boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor,
+                                        std::chrono::milliseconds(10));
+        co_await timer.async_wait(boost::asio::use_awaitable);
+    }
+}
+
+// A restarted server numbers its requests from the start again. The answer to a question of the
+// ended process is not taken as the answer to the new process's question of the same id.
+TEST(ClientEndpointTest, AnAnswerForAnEndedServerDoesNotReachTheRestartedOne) {
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(mcp::Endpoint::stdio(
+                           test_server(), {.max_restarts = 1, .delay = std::chrono::milliseconds(50)}),
+                       options);
+    std::atomic<bool> second_asked{false};
+    std::atomic<bool> first_answered{false};
+    client.on_elicitation([&](const mcp::ElicitRequestParams& params) -> mcp::Task<mcp::ElicitResult> {
+        const bool first =
+            std::get<mcp::ElicitRequestFormParams>(params).message == "the first question";
+        if (first) {
+            // Answered once the restarted server has asked its own question.
+            co_await wait_for(second_asked);
+        } else {
+            second_asked = true;
+            co_await wait_for(first_answered);
+        }
+        mcp::ElicitResult result;
+        result.action = mcp::ElicitAction::eAccept;
+        result.content = json{{"v", first ? "the first answer" : "the second answer"}};
+        if (first) {
+            first_answered = true;
+        }
+        co_return result;
+    });
+    client.sync().connect("endpoint-test", "1.0");
+    EXPECT_EQ(failure_code([&] {
+                  client.sync().call_tool(
+                      "ask", json{{"question", "the first question"}, {"crash_after_ms", 100}});
+              }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    const auto result = client.sync().call_tool("ask", json{{"question", "the second question"}});
+    ASSERT_TRUE(result.structuredContent.has_value());
+    EXPECT_EQ(result.structuredContent->at("answer"), "the second answer");
 }
 
 // Past the last start the policy allows, the client closes as it does without one.

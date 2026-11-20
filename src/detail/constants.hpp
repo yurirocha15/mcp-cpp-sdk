@@ -453,4 +453,13 @@ inline constexpr std::string_view g_PROGRESS_TOKEN_PREFIX = "mcp-cpp-sdk-progres
 
 }  // namespace client_requests
 
+/// The stdio client transport that starts its server again.
+namespace stdio_restart {
+
+/// Starts the id a request of a restarted server gets toward the client when the id is still that
+/// of an unanswered request of an earlier process of that server.
+inline constexpr std::string_view g_RENAMED_REQUEST_PREFIX = "mcp-cpp-sdk-restart-";
+
+}  // namespace stdio_restart
+
 }  // namespace mcp::detail::constants

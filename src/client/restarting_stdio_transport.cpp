@@ -1,5 +1,6 @@
 #include "restarting_stdio_transport.hpp"
 
+#include "../detail/constants.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
@@ -42,6 +43,7 @@ struct RestartingStdioTransport::State {
     void launch() {
         current = std::make_shared<StdioClientTransport>(executor, process);
         ++generation;
+        renamed.clear();
     }
 
     /// An id as JSON writes it, so that ids the server and the client spell differently compare
@@ -91,18 +93,51 @@ struct RestartingStdioTransport::State {
         return policy.restart_after_clean_exit || exit.requested || exit.signaled || exit.code != 0;
     }
 
-    /// Bookkeeping for a message read from the current process.
-    void note_read(std::string_view message) {
+    /// @p message with its `id` replaced by @p id, or, with @p in_params, its `params.requestId`.
+    static std::string with_id(std::string_view message, const nlohmann::json& id,
+                               bool in_params = false) {
+        auto parsed = nlohmann::json::parse(message, nullptr, false);
+        if (!parsed.is_object()) {
+            return std::string(message);
+        }
+        if (in_params) {
+            parsed["params"]["requestId"] = id;
+        } else {
+            parsed["id"] = id;
+        }
+        return parsed.dump();
+    }
+
+    /// Bookkeeping for a message read from the current process. A request whose id is that of an
+    /// earlier process's request the client has yet to answer gets another id toward the client,
+    /// so that the answers to the two are told apart; note_write() gives the answer its id back.
+    void note_read(std::string& message) {
         const auto scanned = scan_jsonrpc_envelope(message);
         if (!scanned) {
             return;
         }
         const auto id = canonical_id(scanned->id);
         if (id.empty()) {
+            if (scanned->method == R"("notifications/cancelled")") {
+                if (const auto found = renamed.find(cancelled_id(message)); found != renamed.end()) {
+                    message = with_id(message, nlohmann::json::parse(found->second), true);
+                }
+            }
             return;
         }
         if (!scanned->method.empty()) {
-            incoming.insert_or_assign(id, generation);
+            const auto earlier = incoming.find(id);
+            if (earlier == incoming.end() || earlier->second.generation == generation) {
+                incoming.insert_or_assign(id, Incoming{generation, {}});
+                return;
+            }
+            const nlohmann::json alias =
+                std::string(mcp::detail::constants::stdio_restart::g_RENAMED_REQUEST_PREFIX) +
+                std::to_string(++renames);
+            auto alias_id = alias.dump();
+            message = with_id(message, alias);
+            renamed.insert_or_assign(id, alias_id);
+            incoming.insert_or_assign(std::move(alias_id), Incoming{generation, id});
             return;
         }
         if (const auto found = outstanding.find(id); found != outstanding.end()) {
@@ -117,8 +152,8 @@ struct RestartingStdioTransport::State {
     }
 
     /// Bookkeeping for a message the client writes. Returns false for an answer to a request of a
-    /// process that has ended, which is not written.
-    bool note_write(std::string_view message) {
+    /// process that has ended, which is not written; gives an answer to a renamed request its id.
+    bool note_write(std::string& message) {
         const auto scanned = scan_jsonrpc_envelope(message);
         if (!scanned) {
             return true;
@@ -129,8 +164,15 @@ struct RestartingStdioTransport::State {
             if (id.empty() || found == incoming.end()) {
                 return true;
             }
-            const bool same_process = found->second == generation;
+            const bool same_process = found->second.generation == generation;
+            const auto original = std::move(found->second.original);
             incoming.erase(found);
+            if (!original.empty()) {
+                renamed.erase(original);
+                if (same_process) {
+                    message = with_id(message, nlohmann::json::parse(original));
+                }
+            }
             return same_process;
         }
         if (id.empty()) {
@@ -186,7 +228,7 @@ struct RestartingStdioTransport::State {
         }
     }
 
-    static Task<void> write(std::shared_ptr<State> self, std::shared_ptr<const std::string> message) {
+    static Task<void> write(std::shared_ptr<State> self, std::shared_ptr<std::string> message) {
         co_await wait_until_ready(self);
         if (self->closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("transport closed");
@@ -331,9 +373,18 @@ struct RestartingStdioTransport::State {
     std::exception_ptr ended_with;
     /// The ids of the client's requests that the current process has not answered.
     std::set<std::string, std::less<>> outstanding;
-    /// The ids of the server's requests that the client has not answered, with the generation of
-    /// the process that sent each.
-    std::map<std::string, std::uint64_t, std::less<>> incoming;
+    /// A server's request that the client has not answered.
+    struct Incoming {
+        /// The generation of the process that sent it.
+        std::uint64_t generation = 0;
+        /// The id the process gave it, when the client knows it by another; empty otherwise.
+        std::string original;
+    };
+    /// The server's requests that the client has not answered, by the id the client knows.
+    std::map<std::string, Incoming, std::less<>> incoming;
+    /// The current process's renamed requests: the id it gave each, to the id the client knows.
+    std::map<std::string, std::string, std::less<>> renamed;
+    std::uint64_t renames = 0;
     std::optional<std::string> initialize_request;
     std::string initialize_id;
     std::optional<std::string> initialized_notification;
@@ -359,7 +410,7 @@ Task<std::string> RestartingStdioTransport::read_message() {
 
 Task<void> RestartingStdioTransport::write_message(std::string_view message) {
     return detail::spawn_awaitable(state_->strand,
-                                   State::write(state_, std::make_shared<const std::string>(message)));
+                                   State::write(state_, std::make_shared<std::string>(message)));
 }
 
 void RestartingStdioTransport::close() {
