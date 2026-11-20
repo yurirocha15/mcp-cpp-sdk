@@ -45,12 +45,30 @@ struct Runtime::Impl {
         keep_running.reset();
     }
 
-    /// Readies a loop that has ended for run(): io_context::run() returns at once after the loop
-    /// ran out of work, was stopped or was stopped by a task that threw, until it is restarted.
-    /// The threads of start() run it until they are joined, so it is left as it is then.
-    void ready_to_run() {
+    /// Begins a call of run(). Returns false, for a call that returns without running the loop,
+    /// when a stop() came while nothing ran it.
+    bool enter_run() {
         std::lock_guard lock(mutex);
-        if (threads.empty() && io_ctx->stopped()) {
+        if (stop_pending) {
+            stop_pending = false;
+            return false;
+        }
+        restart_ended_loop();
+        ++runs;
+        return true;
+    }
+
+    void leave_run() {
+        std::lock_guard lock(mutex);
+        --runs;
+    }
+
+    /// io_context::run() returns at once after the loop ran out of work, was stopped or was
+    /// stopped by a task that threw, until it is restarted, which Asio allows only while nothing
+    /// runs it. The threads of start() run it until they are joined, so it is left as it is then.
+    /// Called with mutex held.
+    void restart_ended_loop() {
+        if (runs == 0 && threads.empty() && io_ctx->stopped()) {
             io_ctx->restart();
         }
     }
@@ -61,6 +79,25 @@ struct Runtime::Impl {
     std::optional<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>
         keep_running;
     std::vector<std::thread> threads;
+    /// The calls of run() in progress.
+    std::size_t runs = 0;
+    /// A stop() came while nothing ran the loop; the next run() or start() returns without
+    /// running it.
+    bool stop_pending = false;
+
+    /// Counts a call of run() while it runs the loop.
+    class Running {
+       public:
+        explicit Running(Impl& impl) : impl_(impl) {}
+        Running(const Running&) = delete;
+        Running& operator=(const Running&) = delete;
+        Running(Running&&) = delete;
+        Running& operator=(Running&&) = delete;
+        ~Running() { impl_.leave_run(); }
+
+       private:
+        Impl& impl_;
+    };
 };
 
 Runtime::Runtime() : impl_(std::make_unique<Impl>()) {}
@@ -69,7 +106,10 @@ Runtime::Runtime(Runtime&&) noexcept = default;
 Runtime& Runtime::operator=(Runtime&&) noexcept = default;
 
 void Runtime::run() {
-    impl_->ready_to_run();
+    if (!impl_->enter_run()) {
+        return;
+    }
+    const Impl::Running running(*impl_);
     impl_->io_ctx->run();
 }
 
@@ -77,7 +117,10 @@ void Runtime::run(std::size_t threads) {
     if (threads == 0) {
         throw std::invalid_argument("mcp::Runtime::run: threads must be at least 1");
     }
-    impl_->ready_to_run();
+    if (!impl_->enter_run()) {
+        return;
+    }
+    const Impl::Running running(*impl_);
     auto& io_ctx = *impl_->io_ctx;
     std::mutex failure_mutex;
     std::exception_ptr failure;
@@ -116,6 +159,11 @@ void Runtime::start(std::size_t threads) {
     if (!impl_->threads.empty()) {
         throw std::logic_error("mcp::Runtime::start: the runtime has been started already");
     }
+    if (impl_->stop_pending) {
+        impl_->stop_pending = false;
+        return;
+    }
+    impl_->restart_ended_loop();
     impl_->keep_running.emplace(impl_->io_ctx->get_executor());
     impl_->threads.reserve(threads);
     for (std::size_t i = 0; i < threads; ++i) {
@@ -124,7 +172,11 @@ void Runtime::start(std::size_t threads) {
 }
 
 void Runtime::stop() {
-    impl_->release();
+    std::lock_guard lock(impl_->mutex);
+    impl_->keep_running.reset();
+    if (impl_->runs == 0 && impl_->threads.empty()) {
+        impl_->stop_pending = true;
+    }
     impl_->io_ctx->stop();
 }
 

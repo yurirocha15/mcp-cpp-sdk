@@ -6,6 +6,8 @@
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <future>
 #include <mutex>
@@ -194,10 +196,47 @@ TEST(RuntimeTest, RunRunsAgainAfterTheLoopEnded) {
     rt.spawn(count(runs));
     rt.run(2);
     EXPECT_EQ(runs, 3);
+    // A stop() made between runs ends the next one before it runs anything.
     rt.stop();
     rt.spawn(count(runs));
     rt.run();
+    EXPECT_EQ(runs, 3);
+    rt.run();
     EXPECT_EQ(runs, 4);
+}
+
+// A stop() that comes before run(), as from another thread that wins the race, is not lost: run()
+// returns although the loop has work.
+TEST(RuntimeTest, AStopBeforeRunMakesRunReturn) {
+    mcp::Runtime rt;
+    rt.spawn([](mcp::Executor executor) -> mcp::Task<void> {
+        boost::asio::steady_timer timer(executor.get(), std::chrono::hours(1));
+        co_await timer.async_wait(boost::asio::use_awaitable);
+    }(rt.executor()));
+    rt.stop();
+    rt.run();
+    rt.stop();
+    rt.run(2);
+}
+
+TEST(RuntimeTest, StartRunsWorkAfterTheLoopEnded) {
+    mcp::Runtime rt;
+    rt.run();
+    rt.start(1);
+    std::promise<void> ran;
+    boost::asio::post(rt.executor().get(), [&ran] { ran.set_value(); });
+    ran.get_future().get();
+}
+
+TEST(RuntimeTest, AStopBeforeStartStartsNoThread) {
+    mcp::Runtime rt;
+    rt.stop();
+    rt.start(1);
+    // Nothing was started, so the Runtime may be started now.
+    rt.start(1);
+    std::promise<void> ran;
+    boost::asio::post(rt.executor().get(), [&ran] { ran.set_value(); });
+    ran.get_future().get();
 }
 
 TEST(RuntimeTest, ARuntimeMayBeDestroyedByATaskOnItsOwnThread) {
