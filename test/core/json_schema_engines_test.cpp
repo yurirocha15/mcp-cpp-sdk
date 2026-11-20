@@ -73,10 +73,39 @@ TEST(SchemaEngines, ForcedEngineBypassesTheCache) {
 // The native evaluation refuses a schema it does not implement instead of handing it to jsoncons.
 TEST(SchemaEngines, ForcedNativeRefusesWhatItDoesNotImplement) {
     const ScopedSchemaEngine native(SchemaEngine::eNative);
-    EXPECT_THROW((void)CompiledSchema::compile({{"anyOf", {{{"type", "integer"}}}}}),
-                 std::domain_error);
+    EXPECT_THROW((void)CompiledSchema::compile({{"unevaluatedProperties", false}}), std::domain_error);
     // The checks every schema gets still come first.
     EXPECT_THROW((void)CompiledSchema::compile({{"type", 1}}), mcp::SchemaError);
+}
+
+// A violation's location is the same JSON Pointer from both evaluations, also deeper than the
+// steps the native evaluation keeps inline, with member names escaped and element indexes.
+TEST(SchemaEngines, ReportTheSameDeepLocations) {
+    json schema = {{"type", "integer"}};
+    json value = "leaf";
+    std::string expected;
+    for (int level = 11; level >= 0; --level) {
+        if (level % 3 == 0) {
+            schema = {{"type", "array"}, {"items", schema}};
+            value = json::array({value});
+            expected.insert(0, "/0");
+        } else {
+            const std::string name = level % 3 == 1 ? "a/b" : "c~d";
+            schema = {{"type", "object"}, {"properties", {{name, schema}}}};
+            value = {{name, value}};
+            expected.insert(0, level % 3 == 1 ? "/a~1b" : "/c~0d");
+        }
+    }
+    const auto native = try_compile(schema, SchemaEngine::eNative);
+    const auto jsoncons = try_compile(schema, SchemaEngine::eJsoncons);
+    ASSERT_TRUE(native.has_value());
+    ASSERT_TRUE(jsoncons.has_value());
+    const auto native_result = native->validate(value);
+    const auto jsoncons_result = jsoncons->validate(value);
+    ASSERT_EQ(native_result.violations.size(), 1U);
+    ASSERT_EQ(jsoncons_result.violations.size(), 1U);
+    EXPECT_EQ(native_result.violations[0].instance_path, expected);
+    EXPECT_EQ(jsoncons_result.violations[0].instance_path, expected);
 }
 
 // Every case of the JSON-Schema-Test-Suite data of the five dialects, the excluded groups too,
