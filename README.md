@@ -252,3 +252,23 @@ Package repository hosting is graciously provided by [Cloudsmith](https://clouds
 Cloudsmith is the only fully hosted, cloud-native, universal package management solution that
 enables your organization to create, store and share packages in any format, to any place, with total
 confidence.
+
+## Acknowledgements
+
+mcp-cpp-sdk is built on the work of these open-source projects. Thank you to their authors and
+maintainers.
+
+- [Boost](https://www.boost.org), in particular [Asio](https://github.com/boostorg/asio) and
+  [Beast](https://github.com/boostorg/beast): executors, coroutines, networking, HTTP and WebSocket.
+- [nlohmann/json](https://github.com/nlohmann/json): JSON and JSON-RPC serialization.
+- [OpenSSL](https://github.com/openssl/openssl): cryptographic randomness and OAuth helper
+  primitives.
+- [jsoncons](https://github.com/danielaparker/jsoncons): JSON Schema validation of tool schemas and
+  the values checked against them.
+- [Model Context Protocol](https://github.com/modelcontextprotocol/modelcontextprotocol) and its
+  [conformance suite](https://github.com/modelcontextprotocol/conformance): the specification this
+  SDK implements and the checks it is tested against.
+- [JSON-Schema-Test-Suite](https://github.com/json-schema-org/JSON-Schema-Test-Suite): the test
+  cases behind the schema validation.
+- [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2): the MCP server
+  benchmark whose workload and infrastructure our benchmark is based on.
