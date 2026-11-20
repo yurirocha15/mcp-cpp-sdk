@@ -1828,8 +1828,10 @@ StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& execu
     : StreamableHttpSessionManager(
           executor, std::move(host), port,
           [&server](const Executor&) { return server.session_server(); }, event_store_capacity) {
-    // The manager does not own the server, which the application keeps alive.
-    set_modern_server(std::shared_ptr<Server>(std::shared_ptr<Server>(), &server));
+    // The manager does not own the server, which the application keeps alive. The deleter does
+    // nothing, and the pointer still has a control block, so copies and weak pointers of it behave
+    // as those of any other server.
+    set_modern_server(std::shared_ptr<Server>(&server, [](Server*) {}));
 }
 
 StreamableHttpSessionManager::~StreamableHttpSessionManager() {

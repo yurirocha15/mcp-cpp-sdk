@@ -489,6 +489,9 @@ TEST_F(ServerHttpTest, ManagerServesTheServerItIsGiven) {
     asio::io_context io_ctx;
     mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", 0, *server_);
     EXPECT_EQ(manager.modern_server().get(), server_.get());
+    const std::weak_ptr<mcp::Server> held_weakly = manager.modern_server();
+    EXPECT_FALSE(held_weakly.expired());
+    EXPECT_EQ(held_weakly.lock().get(), server_.get());
     const auto url = "http://127.0.0.1:" + std::to_string(manager.port()) + "/mcp";
 
     mcp::ClientOptions legacy_options;
