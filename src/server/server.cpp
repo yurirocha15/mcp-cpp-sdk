@@ -958,6 +958,11 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Impl() = default;
     /// A server for another session of the application whose servers share @p shared.
     explicit Impl(std::shared_ptr<Registry> shared) : registry(std::move(shared)) {}
+    ~Impl();
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
 
     /// What this server shares with the servers built for the other sessions it serves; see
     /// Registry. Declared before the references into it below, which bind to it.
@@ -1529,6 +1534,17 @@ Server::Server(const Implementation& server_info, const ServerCapabilities& capa
 Server::Server(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
     std::lock_guard lock(impl_->registry->members_mutex);
     impl_->registry->members.push_back(impl_);
+}
+
+Server::Impl::~Impl() {
+    // Leaves the registry's members now: make_shared put this implementation in one allocation with
+    // its control block, which the member's weak pointer would otherwise keep until the next
+    // registry_members() call, one per ended session of run_http().
+    std::lock_guard lock(registry->members_mutex);
+    auto& members = registry->members;
+    members.erase(std::remove_if(members.begin(), members.end(),
+                                 [](const std::weak_ptr<Impl>& member) { return member.expired(); }),
+                  members.end());
 }
 
 std::unique_ptr<Server> Server::session_server() const {
