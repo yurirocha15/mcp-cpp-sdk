@@ -34,7 +34,6 @@ import re
 import subprocess
 import sys
 
-from check_doc_snippets import snippets_in_text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from release.version_bump import PINS  # noqa: E402
@@ -132,7 +131,6 @@ JOB_INPUTS = {
         "examples/*",
         "scripts/build.py",
         "scripts/check_boost_free_headers.py",
-        "scripts/check_doc_snippets.py",
         "scripts/check_example_progression.py",
         "scripts/check_json_matrix.py",
         "scripts/check_readme_snippets.py",
@@ -142,7 +140,6 @@ JOB_INPUTS = {
         "scripts/json_census.py",
         "scripts/json_census_dispositions.json",
         "scripts/run_examples.py",
-        "scripts/test_check_doc_snippets.py",
         "scripts/test_check_example_progression.py",
         "scripts/test_check_json_matrix.py",
     ),
@@ -228,15 +225,6 @@ def readme_cpp_blocks(revision):
     return CPP_FENCE_RE.findall(text)
 
 
-def doc_programs(revision, path):
-    """Return the programs CI compiles from an rst file; a file absent at revision has none."""
-    try:
-        text = git("show", f"{revision}:{path}")
-    except subprocess.CalledProcessError:
-        return []
-    return [body for _, body in snippets_in_text(text) if "int main(" in body]
-
-
 def version_pins(revision, path):
     """Return the text that names the release version in a file; an absent file has none."""
     try:
@@ -287,9 +275,6 @@ def needed_jobs(event, base, head):
     else:
         jobs = set().union(*(jobs_reading(path, event) for path in changed))
         if "README.md" in changed and readme_cpp_blocks(base) != readme_cpp_blocks(head):
-            jobs.add("code")
-        if any(doc_programs(base, path) != doc_programs(head, path)
-               for path in changed if path.endswith(".rst")):
             jobs.add("code")
         if any(version_pins(base, path) != version_pins(head, path)
                for path in changed if path in {pin.path for pin in PINS}):

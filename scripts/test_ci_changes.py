@@ -138,18 +138,12 @@ class ClassifierTests(unittest.TestCase):
             with self.subTest(event=event):
                 self.assertEqual(self.jobs_for_change("CHANGELOG.md", event), {"release"})
 
-    def test_doc_prose_and_fragments_run_nothing(self) -> None:
+    def test_doc_prose_and_code_run_nothing(self) -> None:
         self.write("docs/guide.rst",
-                   GUIDE.replace("Prose.", "Better prose.").replace("ping", "close"))
-        self.assertEqual(self.jobs("pull_request", self.commit()), set())
-
-    def test_doc_program_runs_code_jobs(self) -> None:
-        self.write("docs/guide.rst", GUIDE.replace("return 0;", "return 1;"))
-        self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
-
-    def test_new_doc_program_runs_code_jobs(self) -> None:
+                   GUIDE.replace("Prose.", "Better prose.").replace("ping", "close")
+                   .replace("return 0;", "return 1;"))
         self.write("docs/other.rst", GUIDE)
-        self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
+        self.assertEqual(self.jobs("pull_request", self.commit()), set())
 
     def test_removed_doc_page_runs_nothing(self) -> None:
         self.git("rm", "-q", "docs/index.rst")
@@ -164,7 +158,6 @@ class ClassifierTests(unittest.TestCase):
             "test/pipe_stream.hpp": {"code"},
             "examples/features/pagination.cpp": {"code", "naming"},
             "scripts/run_examples.py": {"code", "release"},
-            "scripts/check_doc_snippets.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
             "LICENSE": {"conan"},
             "benchmark/run.sh": {"benchmark"},
