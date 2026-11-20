@@ -15,1786 +15,421 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [0.3.0] - 2026-11-17
 
+Each entry is a summary; the full text is in the
+[changelog of v0.3.0](https://github.com/yurirocha15/mcp-cpp-sdk/blob/v0.3.0/CHANGELOG.md#030---2026-11-17).
+
+### Highlights
+
+- **Protocol revision 2026-07-28.** Servers serve it alongside 2025-11-25 and
+  earlier revisions. The client finds out which revision a server speaks
+  (`ClientProtocol::automatic()`, the default), or keeps to one with
+  `ClientProtocol::legacy()` or `pinned()`.
+- **Multi round-trip requests and subscriptions.** The handler of a 2026-07-28
+  `tools/call`, `prompts/get` or `resources/read` can ask the client to elicit,
+  sample or list roots, and the request resumes with the answers.
+  `subscriptions/listen` streams list-changed and resource-updated
+  notifications.
+- **Schema validation.** `CompiledSchema` validates JSON Schema 2020-12,
+  2019-09, draft-07, draft-06 and draft-04. Tool arguments and structured
+  results are checked against the tool's schemas, and elicitation answers
+  against `requestedSchema`, on both sides; each check can be turned off.
+- **Tasks.** The tasks extension (`io.modelcontextprotocol/tasks`) on the server
+  and the client.
+- **Cancellation.** `CancellationToken` cancels requests from any thread,
+  without their ids.
+- **Launching stdio servers.** `StdioClientTransport` starts an MCP server as a
+  child process, and `StdioClientSession` can start it again when it ends
+  unexpectedly.
+- **Typed elicitation forms.** `ElicitationSchema` builds a form's
+  `requestedSchema` from typed fields and decodes the answer into typed values.
+- **Extensions.** MCP Apps, Skills, OAuth client credentials and
+  enterprise-managed authorization.
+- **Builds** with Boost 1.74 and 1.75, the documented minimum, and with Boost
+  1.87 and later.
+
 ### Migrating from 0.2.0
 
 Code written for 0.2.0 needs these changes to compile with 0.3.0:
 
-- The public constants moved into groups under `mcp::constants`, and the old
-  names are gone. The error codes `mcp::g_INVALID_PARAMS`,
-  `mcp::g_INTERNAL_ERROR` and the rest are in `mcp::constants::jsonrpc`. The
-  protocol versions, such as `mcp::g_PROTOCOL_VERSION_2025_11_25`,
-  `g_LATEST_PROTOCOL_VERSION` and `g_SUPPORTED_PROTOCOL_VERSIONS`, are in
-  `mcp::constants::protocol`; use `g_SUPPORTED_PROTOCOL_VERSIONS` where the
-  removed `g_DISCOVERABLE_PROTOCOL_VERSIONS` was used.
-  `mcp::constants::g_event_store_default_capacity` is
-  `mcp::constants::event_store::g_DEFAULT_CAPACITY`, `g_shutdown_timeout_ms`
-  is `mcp::constants::shutdown::g_TIMEOUT_MS`, and
-  `g_default_max_request_body_bytes` is
-  `mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES`.
-  `mcp::auth::constants::g_default_max_metadata_bytes` and
-  `g_default_max_metadata_redirects` are
-  `mcp::constants::metadata_policy::g_DEFAULT_MAX_BYTES` and
-  `g_DEFAULT_MAX_REDIRECTS`; the other OAuth limits keep their names in upper
-  case in `mcp::constants::oauth`, so `g_default_cache_ttl_seconds` is
-  `mcp::constants::oauth::g_DEFAULT_CACHE_TTL_SECONDS`. The constants only the
-  implementation used, such as hex digits, bit masks and HTTP strings, are no
-  longer public.
-- `Client::connect()` resolves to `ConnectResult` instead of
-  `InitializeResult`. Its `serverInfo` is optional (`result.serverInfo->name`),
-  and `era` says which protocol family the session speaks.
-  `DiscoverResult::serverInfo` is optional too.
+- The public constants are grouped under `mcp::constants` with `g_UPPER_CASE`
+  names, such as `mcp::constants::jsonrpc::g_INVALID_PARAMS`; the old names are
+  gone.
+- `Client::connect()` resolves to `ConnectResult` instead of `InitializeResult`,
+  and its `serverInfo` is optional (`result.serverInfo->name`).
 - `Server::set_cache_hints()` replaces `Server::set_discover_ttl_ms()` and
   `Server::set_discover_cache_scope()`.
 - `PrimitiveSchemaDefinition` is a `std::variant` of `StringSchema`,
-  `NumberSchema`, `BooleanSchema` and the enum schemas instead of one struct
-  with `type`, `title` and `description`. `NumberSchema::integer` stands for
-  the `integer` type, and `EnumSchema` no longer derives from it.
-- `ElicitRequestURLParams::elicitationId` is a `std::optional<std::string>`,
-  and `ElicitationCompleteNotificationParams` names the elicitation by its
-  `elicitationId` instead of a `requestId`. The `task` member of the
-  elicitation request parameters is gone.
-- The task types have the shape of the tasks extension instead of the
-  experimental shape of 2025-11-25, as Removed lists: `TaskData` has
-  `ttlMs`, now optional, and `pollIntervalMs`; `GetTaskResult` is
-  `DetailedTask`, which holds the task in its `task` member; the request
-  parameters name the task `taskId`; and `TaskStatusNotification` is declared
-  in `mcp/protocol/tasks.hpp`.
+  `NumberSchema`, `BooleanSchema` and the enum schemas instead of one struct.
+- `ElicitRequestURLParams::elicitationId` is optional, and
+  `ElicitationCompleteNotificationParams` names the elicitation by
+  `elicitationId`, not `requestId`.
+- The task types follow the tasks extension: `GetTaskResult` is `DetailedTask`,
+  requests name the task `taskId`, and `TaskData::ttlMs` is optional.
 - A `RequestSender` that builds a `Context` takes a third argument, the key of
-  the question (`std::optional<std::string>`).
-- The enumerators of `AuthorizationResponseStatus`, `ClientIdentitySource` and
-  `ClientIdentityDecision` have the `eName` form: `state_missing` is
-  `eStateMissing`, `pre_registered` is `ePreRegistered`, and so on.
+  the question.
+- The enumerators of `AuthorizationResponseStatus`, `ClientIdentitySource`,
+  `ClientIdentityDecision` and `MetadataUrlDecision` have the `eName` form, such
+  as `eStateMissing`.
 - `BearerTokenValidator` and `AsyncBearerTokenValidator` return
-  `TokenValidation`. A validator that returns `bool` still converts; an
-  asynchronous one returns `Task<TokenValidation>`, where `co_return true;`
-  still works.
-- The `to_json` and `from_json` functions of the protocol types take
-  `nlohmann::json` only, as Changed describes.
-- `make_stdio_transport()` and `make_http_client_transport()` are deprecated
-  and warn, so a build with `-Werror` fails until it uses
-  `TransportFactory::create_stdio()` and `create_http_client()`.
+  `TokenValidation`; a validator returning `bool` still converts, and `co_return
+  true;` still works.
+- The `to_json` and `from_json` functions of the protocol types are compiled
+  into the library and take `nlohmann::json` only.
+- `make_stdio_transport()` and `make_http_client_transport()` warn as
+  deprecated, which fails a `-Werror` build; use `TransportFactory`.
 
 These changes in behavior and defaults need no change to compile:
 
-- `Client::connect()` sends `server/discover` before `initialize`. A server
-  that only speaks earlier revisions costs one more round trip, or
-  `ClientOptions::probe_timeout` if it does not answer.
-  `ClientOptions::protocol = ClientProtocol::legacy()` sends only
+- `Client::connect()` sends `server/discover` before `initialize`, one more
+  round trip for a legacy server; `ClientProtocol::legacy()` sends only
   `initialize`.
 - `g_LATEST_PROTOCOL_VERSION` is `2026-07-28`, and
-  `g_SUPPORTED_PROTOCOL_VERSIONS` includes it.
   `g_LATEST_LEGACY_PROTOCOL_VERSION` is `2025-11-25`.
-- `g_CONNECTION_CLOSED` is -31000. Its old value, -32002, is now
+- `g_CONNECTION_CLOSED` is -31000; its old value, -32002, is now
   `g_RESOURCE_NOT_FOUND`.
-- Tool schemas are checked. `Server::add_tool()` throws `SchemaError` for an
-  input or output schema that is not a valid JSON Schema object, or an input
-  schema without `"type": "object"`. The server answers `tools/call`
-  arguments that do not conform with an `isError` result without calling the
-  handler, and `structuredContent` that does not conform with
-  `g_INTERNAL_ERROR` (`Server::set_tool_validation()`). `Client::call_tool()`
-  throws `StructuredContentError` for a result that does not conform
-  (`ClientOptions::validate_tool_schemas`). Elicitation answers are checked
-  against `requestedSchema` on both sides (`InputOptions::validate_content`
-  and `ClientOptions::validate_elicitation_content`).
+- Tool schemas, tool arguments, structured tool results and elicitation answers
+  are checked, as Changed lists; each check can be turned off.
 - An unknown tool in `tools/call` or prompt in `prompts/get` is answered
-  `g_INVALID_PARAMS` (-32602) instead of `g_METHOD_NOT_FOUND`.
-- New default limits: a server session has at most 1024 requests and 256 MiB
-  in flight (`Server::set_max_in_flight_requests()` and
-  `set_max_in_flight_bytes()`). `StreamableHttpSessionManager` keeps at most
-  10,000 sessions and ends one idle for five minutes (`SessionLimits`), and
-  `HttpServerTransport` ends a session idle for five minutes when a new
-  `initialize` arrives (`set_session_idle_timeout()`). Stdio and WebSocket
-  messages are limited to 16 MiB (`set_max_message_bytes()`).
-- `StdioTransport::write_message()` throws `std::invalid_argument` for a
-  message that contains a newline.
+  `g_INVALID_PARAMS` instead of `g_METHOD_NOT_FOUND`.
+- New default limits: 1024 requests and 256 MiB in flight per session, 10,000
+  HTTP sessions, sessions idle for five minutes end, and stdio and WebSocket
+  messages of 16 MiB.
+- `StdioTransport::write_message()` throws `std::invalid_argument` for a message
+  that contains a newline.
 - `HttpClientTransport` starts a new session and sends the request again when
-  the server answers 404 for its session
-  (`set_reinitialize_on_expired_session()`).
-- OAuth asks for `offline_access` when the authorization server lists it
-  (`OAuthAuthorizationConfig::request_offline_access`), and
-  `OAuthClientTransport` asks for a wider scope once per request when a 403
-  challenge says `insufficient_scope`
-  (`OAuthClientTransportOptions::max_step_ups_per_request`).
-- `StreamableHttpSessionManager::set_tool_executor()` moves only handler
-  calls to that executor, and the server factory receives the HTTP executor.
-- `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only
-  when the SDK is the top-level project.
+  the server answers 404 for its session.
+- OAuth asks for `offline_access` when the authorization server lists it, and
+  for a wider scope once per request on an `insufficient_scope` challenge.
+- `StreamableHttpSessionManager::set_tool_executor()` moves only handler calls
+  to that executor, and the server factory receives the HTTP executor.
+- `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
+  the SDK is the top-level project.
 
 ### Added
 
-- Protocol revision 2026-07-28 is served alongside 2025-11-25 and earlier, as
-  the entries below describe, and is the newest revision the SDK supports.
-- Requests of protocol revision 2026-07-28, which carry their protocol
-  version, client capabilities and optionally client info and log level in
-  `_meta`, are served without `initialize`, alongside a legacy session, by
-  `Server::run()` on stdio, WebSocket and in-memory transports and by
-  `Server::dispatch_request_direct()`. A version the server does not serve,
-  including a legacy one, is answered with `g_UNSUPPORTED_PROTOCOL_VERSION`
-  whose `data` lists the served versions (`UnsupportedProtocolVersionData`); a
-  missing or malformed field with `g_INVALID_PARAMS`; and a method 2026-07-28
-  does not have (`ping`, `logging/setLevel`, `resources/subscribe`,
-  `resources/unsubscribe`, `shutdown`) with `g_METHOD_NOT_FOUND`. These
-  requests never change a session's lifecycle or log level: a handler logs
-  only at the request's own `io.modelcontextprotocol/logLevel`, and nothing
-  without one, and cannot send requests to the client.
-  `notifications/cancelled` cancels any of them that was read from the
-  session, and the server then sends nothing more for it, not even its
-  response; a 2026-07-28 request given to `Server::dispatch_request_direct()`
-  never sends notifications through the session's transport.
-  `Context::request_meta()` gives handlers the parsed fields
-  (`RequestMetadata`, in `mcp/protocol/request_meta.hpp`, with the `g_META_*`
-  key names) and the whole `_meta`.
-- `ServerProtocolPolicy` and `Server::set_protocol_policy()` choose whether a
-  server serves 2026-07-28 requests, legacy clients, or both (the default),
-  and which legacy versions `initialize` may negotiate. A server serving only
-  2026-07-28 answers `initialize` with `g_METHOD_NOT_FOUND` naming the
-  versions it serves in the message and in `data.supported`.
-  `Server::protocol_rejection_stats()` (`ProtocolRejectionStats`) counts the
-  requests refused for their version or `_meta` fields, separately counting
-  refusals of requests without a protocol version in `_meta`.
-  `ServerProtocolPolicy::validate()` checks a policy, and
-  `negotiate_protocol_version(requested, policy)` gives the version
-  `initialize` negotiates under it, and `served_protocol_versions(policy)` the
-  versions it serves.
-- `g_LEGACY_PROTOCOL_VERSIONS` and `g_LATEST_LEGACY_PROTOCOL_VERSION` for the
-  revisions that start a session with `initialize` (2025-11-25 and earlier),
-  `g_MODERN_PROTOCOL_VERSIONS` for those served per request (2026-07-28), and
+- Protocol revision 2026-07-28: servers answer its requests without
+  `initialize`, next to legacy sessions, and handlers read `_meta` with
+  `Context::request_meta()`.
+- `ServerProtocolPolicy` (`Server::set_protocol_policy()`) chooses whether a
+  server serves 2026-07-28, legacy clients or both.
+- `g_LEGACY_PROTOCOL_VERSIONS`, `g_MODERN_PROTOCOL_VERSIONS`,
   `is_legacy_protocol_version()` and `is_modern_protocol_version()`.
-  `negotiate_protocol_version()` and every `initialize`-time version check use
-  the legacy list, so `initialize` never selects 2026-07-28.
-- `Server::dispatch_request_direct()` overload taking a `RequestContext`,
-  whose `cancelled` flag cancels the request. Direct calls are never cancelled
-  by `notifications/cancelled`, so calls that reuse an id stay independent.
-- Results of 2026-07-28 requests carry `resultType: "complete"` and the
-  server's name and version under `_meta`
-  (`io.modelcontextprotocol/serverInfo`;
-  `Server::set_report_server_info(false)` leaves it out). Results of
-  `server/discover`, `tools/list`, `prompts/list`, `resources/list`,
-  `resources/templates/list` and `resources/read` also carry the `ttlMs` and
-  `cacheScope` hints that `Server::set_cache_hints()` sets per `CacheTarget`
-  as a `CacheHint` (by default `0` and `private`). A member a handler's result
-  already has is kept. Results of legacy requests are unchanged.
-  `ListToolsResult`, `ListPromptsResult`, `ListResourcesResult`,
-  `ListResourceTemplatesResult` and `ReadResourceResult` gain optional `ttlMs`
-  and `cacheScope`, and `DiscoverResult::serverInfo` is optional. A
-  `cacheScope` value other than `public` or `private` is read as unset.
-- `StreamableHttpSessionManager` serves 2026-07-28 requests on the same
-  endpoint as legacy sessions. Such a request needs no session:
-  `Mcp-Session-Id` and `Last-Event-ID` are ignored and never sent back, and
-  one Server answers all of them (`modern_server()`, built from the factory on
-  first use, or `set_modern_server()`). Its `MCP-Protocol-Version`,
-  `Mcp-Method` and, for `tools/call`, `prompts/get` and `resources/read`,
-  `Mcp-Name` headers must be present and match the body (an `Mcp-Name` in the
-  `=?base64?...?=` form is decoded first); otherwise it is answered `400` with
-  `g_HEADER_MISMATCH`, counted by `header_mismatch_rejections()`. Errors use
-  the statuses the specification gives them: `400` for invalid params,
-  unsupported version, header mismatch and missing client capability, `404`
-  for an unknown method. `GET` and `DELETE` with a version header that
-  `initialize` does not negotiate and no session are answered `405`.
-  `initialize` with a 2026-07-28 header is answered `404` with
-  `g_METHOD_NOT_FOUND`, naming the versions served in the message and in
-  `data.supported`. `server/discover` is always served this way.
-  `set_protocol_policy()` applies a `ServerProtocolPolicy` to every Server the
-  manager builds; without legacy clients, `initialize` creates no session and
-  every `GET` and `DELETE` is answered `405`.
-- `HttpServerTransport` serves 2026-07-28 requests alongside its legacy
-  session, with the same header checks, error statuses and `405` for a
-  sessionless `GET` or `DELETE` as `StreamableHttpSessionManager`, counted by
-  its own `header_mismatch_rejections()`. Once `Server::run()` reads the
-  transport, the server answers each request directly, so clients may reuse
-  ids; the answer never carries `Mcp-Session-Id` and never enters the replay
-  store. Ending the legacy session does not end them. They count against the
-  server's in-flight request limits (`Server::set_max_in_flight_requests()`)
-  and the transport's `HttpConnectionLimits`. A transport that no server reads
-  queues them for whoever calls `read_message()`, under a transport-private id,
-  and holds at most 256 at once; more are answered `503`. On both HTTP
-  transports, a request whose
-  `MCP-Protocol-Version` header names a version that `initialize` does not
-  negotiate (2026-07-28 or any other) but whose `_meta` names no version is
-  answered `400` with `g_INVALID_PARAMS`, and an `initialize` with a
-  2026-07-28 header is answered `404` with `g_METHOD_NOT_FOUND` naming the
-  versions the server serves.
-- `ITransport::http_server_transport()`, which a transport wrapping an
-  `HttpServerTransport` overrides to return it, so that `Server::run()` serves
-  the wrapper as an `HttpServerTransport`: it ends sessions on `DELETE`,
-  checks `Mcp-Param-*` headers and streams the notifications of 2026-07-28
-  requests. It returns null by default. Adding it changes the layout of
+- Results of 2026-07-28 requests carry the server's name and version, and the
+  cache hints set with `Server::set_cache_hints()`.
+- Both HTTP server transports serve 2026-07-28 requests on the endpoint of the
+  legacy sessions, check their `Mcp-*` headers and stream their notifications as
+  SSE.
+- `set_stream_options()` and `stream_stats()` bound and count the streamed
+  answers of both HTTP server transports.
+- `x-mcp-header` tool parameters: `add_tool()` checks the annotations, and the
+  server checks the `Mcp-Param-*` headers of a `tools/call` over HTTP against
+  its arguments.
+- `ITransport::http_server_transport()` lets a transport that wraps an
+  `HttpServerTransport` be served as one; it changes the layout of
   `ITransport`'s virtual table.
-- `StreamableHttpSessionManager` streams the answer to a 2026-07-28 request:
-  when a handler sends a notification (a log message at the request's own
-  `logLevel`, or progress) and the client accepts `text/event-stream` over
-  HTTP/1.1, the answer becomes a chunked SSE stream without event ids that
-  carries the notifications and then the response, with
-  `X-Accel-Buffering: no` and periodic keep-alive comments. Otherwise it is
-  plain JSON as before, except that a client that accepts SSE and half-closes
-  its connection gets a stream too, whose status is 200 even for an error
-  answer. A client that resets its connection while its request runs cancels
-  the request, before or after a half-close; after a half-close the stream is
-  probed with comments until a write fails, which cancels it too, and closing
-  the manager cancels it. Requests pipelined before a half-close are all
-  answered, and the connection then ends. `set_stream_options()`
-  (`StreamOptions`) sets the keep-alive and probe intervals and the limits on
-  queued notifications, and `stream_stats()` (`StreamStats`) counts streams,
-  cancellations, probes and dropped notifications. A request keeps at most
-  `max_queued_notifications` (4096) notifications and `max_queued_bytes`
-  (1 MiB) of them waiting; the bytes are charged to
-  `HttpConnectionLimits::max_request_bytes`. A notification over a limit is
-  dropped and counted, and the request is answered as usual, except that a
-  `subscriptions/listen` stream ends, so that the client lists again. Bytes of a
-  pipelined request that arrive while a request runs are kept for the next
-  one. `RequestContext::notifications` receives a 2026-07-28 request's
-  notifications on a direct dispatch.
-- `HttpServerTransport`, and so `Server::run_http()`, streams the answer to a
-  2026-07-28 request the way `StreamableHttpSessionManager` does: when a
-  handler sends a notification and the client accepts `text/event-stream`
-  over HTTP/1.1, the answer is an SSE stream of the notifications followed by
-  the response, and otherwise plain JSON. A client that closes the response
-  stream or resets its connection cancels the request. A request holds its
-  place under `HttpConnectionLimits::max_requests` and `max_request_bytes`
-  until its stream ends, and a write the client does not take within
-  `request_read_timeout` ends the connection. `subscriptions/listen` is served
-  over it, with the same acknowledgement and filtering as on the manager, and
-  ends when the client closes the stream, the server ends the subscription or
-  the transport closes. `set_stream_options()` and `stream_stats()` are the
-  transport's too; `StreamOptions` and `StreamStats` are declared in
-  `mcp/transport/http_types.hpp`. A write the client does not take within
-  `request_read_timeout` also ends a 2026-07-28 stream of
-  `StreamableHttpSessionManager`.
-- `x-mcp-header` tool parameters (2026-07-28). `add_tool()` and
-  `add_raw_tool()` refuse, with `SchemaError`, a tool whose input schema has
-  an `x-mcp-header` annotation that is not a string, empty, not an HTTP token,
-  repeated ignoring case, on a property without a `string`, `integer` or
-  `boolean` type, or on a property not reached from the root through
-  `properties` alone. `StreamableHttpSessionManager` passes a 2026-07-28
-  request's `Mcp-Param-*` headers to the server
-  (`RequestContext::param_headers` for a direct dispatch), and a `tools/call`
-  is answered `400` with `g_HEADER_MISMATCH` unless each annotated argument
-  that is present and not null has exactly one header matching it once
-  decoded: integers compare numerically and must lie within ±(2^53 − 1). A
-  header the tool names with characters a header may not carry, or with a
-  malformed Base64 sentinel, is refused the same way even when its argument is
-  absent. A 2026-07-28 request that repeats its `MCP-Protocol-Version`,
-  `Mcp-Method` or `Mcp-Name` header is also answered `g_HEADER_MISMATCH`.
-- `Context::principal()` says who sent a request. Over HTTP it is the
-  principal a bearer token validator names in its new `TokenValidation`
-  result, or else `h:` and the hex SHA-256 of the request's bearer token, or of
-  its `Authorization` header when that holds none, or empty without one; the requests of a
-  `StreamableHttpSessionManager` session carry none, and stdio, WebSocket and
-  memory transports give none. `ITransport::read_incoming()` returns a message
-  with its sender (`IncomingMessage`); `HttpServerTransport` keeps each queued
-  message with its own sender, and `RequestContext::principal` sets it for a
-  direct dispatch. A transport that wraps another must forward
-  `read_incoming()` as well as `read_message()`, or its messages arrive
-  without a principal. An HTTP session is bound to the principal that created
-  it only when a validator checks the tokens. A request naming a session of
-  another principal is answered 404, as for a session that does not exist, and
-  does not count as a use of the session.
-- Multi round-trip requests (2026-07-28): when the handler of a 2026-07-28
-  `tools/call`, `prompts/get` or `resources/read` calls `Context::elicit()`,
-  `sample_llm()` or `request_roots()`, the request is answered with an
-  `input_required` result carrying the questions under server-assigned keys
-  and an opaque `requestState`, and the handler waits. A retry with a new id,
-  the same method and parameters, the `requestState` and the answers in
-  `inputResponses` resumes it, and its result answers the retry; answers the
-  retry leaves out are asked for again. Questions the handler asks before the
-  request is answered share its round. The `requestState` is a random token,
-  usable once, bound to the principal, method and parameters of the request;
-  any mismatch, expiry or reuse gets the same `g_INVALID_PARAMS` error,
-  "Unknown or expired requestState". A question needing a capability the
-  client did not declare in the request is answered with
-  `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and `data.requiredCapabilities`.
-  Waiting handlers live in the server instance, so a retry must reach the same
-  instance, and they are given up when the `Server::run()` that served their
-  request ends, when `StreamableHttpSessionManager::close()` closes the
-  endpoint of its modern server, or on `Server::abandon_waiting_handlers()`.
-  `Server::set_mrtr_options()` (`MrtrOptions`: time to wait, at most 1024
-  waiting handlers, 64 per principal, 64 MiB of requests in all and 16 MiB per
-  principal by default, an eviction callback) and
-  `Server::mrtr_stats()` (`MrtrStats`) bound and count them. A handler given
-  up throws from its question and its answer is discarded. A cancelled retry
-  cancels the handler, and its notifications go to the request that carries it
-  now, with that request's progress token.
-- Sealed request state for multi round-trip requests:
-  `MrtrOptions::state_mode = MrtrStateMode::eSealed` (stored state stays the
-  default) makes the `requestState` an AES-256-GCM sealed blob, keyed by
-  HKDF-SHA256 from `MrtrOptions::sealing_keys` (the first key seals, all open,
-  so keys rotate), instead of keeping the handler in the server instance. Any
-  instance with the key serves the retry: it checks the principal, expiry,
-  method and parameters, then runs the handler again from the start, and the
-  questions earlier rounds answered return their answers at once.
-  `Context::is_replay()` is true while the handler re-executes work an earlier
-  round did. `state_ttl` (5 minutes), `max_rounds` (16) and `max_state_bytes`
-  (32 KiB) bound the state; `consume` is called with each state's id before its
-  retry is served, for deployments that serve a state once. A refused retry is
-  answered as for an unknown `requestState`. Progress and log notifications
-  sent while replaying are sent again. A sealed state is not single-use: until
-  it expires it can be sent again, and the steps of a handler after its last
-  question run again each time, so make them idempotent or set `consume`. A
-  handler is released at its first unanswered question without running any more
-  of its code. The expiry is a wall-clock time, so instances sharing keys need
-  reasonably synchronized clocks.
-- `subscriptions/listen` (2026-07-28). A request names the notifications it
-  opts in to (`toolsListChanged`, `promptsListChanged`,
-  `resourcesListChanged`, `resourceSubscriptions`). The server answers with
-  `notifications/subscriptions/acknowledged` first, listing the subset it
-  honors: a list-changed type only when the matching capability sets
-  `listChanged`, and resource URIs only when `resources.subscribe` is set.
-  `notify_tools_list_changed()`, `notify_prompts_list_changed()`,
-  `notify_resources_list_changed()` and `notify_resource_updated()` then also
-  send to every open subscription that asked for the type, with the request id
-  in `_meta` as `io.modelcontextprotocol/subscriptionId`
-  (`g_META_SUBSCRIPTION_ID`). A session that serves only 2026-07-28 requests
-  no longer receives the plain list-changed notifications while a subscription
-  is open on it. The request stays open until the client sends
-  `notifications/cancelled` (stdio, WebSocket, memory), closes the stream
-  (`StreamableHttpSessionManager`) or its transport closes, none of which is
-  answered, or until `Server::close_subscriptions()` ends every subscription
-  with an empty `resultType: "complete"` result, followed on stdio, WebSocket
-  and in-memory transports by `notifications/cancelled` naming the listen
-  request. On `StreamableHttpSessionManager` the subscription runs on the
-  shared modern server, built from the factory or given to
-  `set_modern_server()`; a client that does not accept `text/event-stream` is
-  answered with `g_INVALID_REQUEST`, as is a direct dispatch without
-  `RequestContext::notifications`. `HttpServerTransport` carries the stream as
-  `StreamableHttpSessionManager` does, on the `Server` that reads it.
-  `Server::subscription_count()` counts the open subscriptions, and
-  `RequestContext::watch_cancel` lets a transport wake a request when it sets
-  `cancelled`.
-- The client detects the server's protocol era and speaks both.
-  `ClientOptions::protocol` takes `ClientProtocol::automatic()` (the default),
-  `legacy()` or `pinned("...")`. `automatic()` sends `server/discover` first: a
-  `DiscoverResult` or a modern protocol error
-  (`g_UNSUPPORTED_PROTOCOL_VERSION`, `g_HEADER_MISMATCH`,
-  `g_MISSING_REQUIRED_CLIENT_CAPABILITY`) means a 2026-07-28 server, while any
-  other error (including `-32601` and `-32602`), a reply that is not JSON, or
-  no reply within `ClientOptions::probe_timeout` (3 s) means a legacy one and
-  the client sends `initialize`. A server that refuses `initialize` naming
-  modern versions after a timed-out probe is probed once more.
-  `ClientOptions::on_era_decision` reports each decision (`EraDecision`,
-  `EraReason`). In a modern session every request carries
-  `io.modelcontextprotocol/protocolVersion`, `clientCapabilities` (the
-  capabilities given to `connect()` plus what the registered handlers imply),
-  `clientInfo` and, when `RequestOptions::log_level` is set, `logLevel` in
-  `_meta`, merged with the caller's own `_meta` entries. In that session
-  `ping()` and the removed subscription and log-level methods fail locally,
-  `set_roots()` sends no list-changed notification, and a result whose
-  `resultType` is neither absent nor `"complete"` fails with `McpError`.
-  `Client::cancel()` ends the wait for the request at once (it fails with
-  `g_REQUEST_CANCELLED`) and a response that arrives anyway is dropped. A
-  request that times out is cancelled with `notifications/cancelled`.
-- `HttpClientTransport` sends requests that name a protocol version in `_meta`
-  (2026-07-28) as sessionless POSTs with the `MCP-Protocol-Version`,
-  `Mcp-Method`, `Mcp-Name` and `Mcp-Param-*` headers (Base64 encoded when the
-  value is not plain header text), reads event-stream answers as they arrive,
-  ends a response stream when its request is cancelled or times out, and
-  refreshes `tools/list` once before retrying a request refused with
-  `HeaderMismatch`. Tools with invalid `x-mcp-header` annotations are left out
-  of `tools/list`; `set_warning_handler()` reports them.
-- The client resumes `input_required` results (2026-07-28): when a modern
-  `tools/call`, `prompts/get` or `resources/read` is answered with one, it
-  runs the elicitation, sampling or roots handler registered for each entry of
-  `inputRequests` and sends the request again with a new id, the answers in
-  `inputResponses` and the server's `requestState` unchanged, until a complete
-  result arrives. `RequestOptions::max_input_rounds` (default 8) limits the
-  retries; the call's timeout covers all rounds, and a question with no
-  handler fails the call naming the method.
-- `Client::listen()` opens a `subscriptions/listen` stream on a 2026-07-28
-  session and returns a `Subscription`: the acknowledged filter (and what the
-  server left out), the notifications of that stream through `next()`,
-  `close()`, and whether the stream ended gracefully (the server's closing
-  result or its `notifications/cancelled`), by cancel, by error or by a
-  dropped connection. Streams on one connection are told apart by their
-  subscription id.
-- `CompiledSchema` (`mcp/protocol/schema.hpp`): compiles a JSON Schema and
-  validates values against it, reporting violations with instance paths. A
-  schema without `$schema` is read as 2020-12; 2019-09, draft-07, draft-06 and
-  draft-04 may be named, and any other `$schema` is refused with
-  `SchemaError`. The schema itself is checked against its dialect's
-  metaschema. `SchemaOptions` bounds the nesting of a validated value (64
-  levels by default), the number of violations reported, the pattern
-  matching steps and evaluation work of one validation, and the instructions
-  the patterns of one schema compile to. JSON cannot represent NaN or
-  Infinity: a schema holding one is refused, and a value holding one is
-  checked as the `null` it would be sent as. References resolve only within
-  the document and to the supported metaschemas; any other `$ref` is refused with
-  `SchemaError::Category::eUnresolvedRef`, and nothing is fetched. Evaluation
-  is bounded in path length, work and pattern matching steps (the latter in
-  proportion to the text in the value): a validation that exceeds them reports
-  the value as invalid, and a schema that exceeds them for any value, such as
-  `{"$ref": "#"}`, is refused when compiled.
-- `examples/features/schema_validation.cpp`, which shows each tool schema
-  check on the server and the client and exits with a failure status if one
-  does not hold.
-- Packages now include the license of the vendored jsoncons library (BSL-1.0):
-  under `share/licenses/mcp-cpp-sdk/jsoncons/` in the install tree, which is
-  also what the Windows archive holds, and as `LICENSE.jsoncons` in the RPM.
-- Sessions of protocol revision 2025-11-25 and earlier stream over HTTP. In
-  `StreamableHttpSessionManager` and `HttpServerTransport`, a POST from a
-  client that accepts SSE over HTTP/1.1 becomes a stream once the server sends
-  anything for the request before its response: the handler's notifications
-  and the server's own requests go on it as they are sent, and the response
-  ends it. A POST answered first gets its response alone, as before. A GET
-  opens the session's stream for what belongs to no request; in a 2025-11-25
-  session it starts with an event that has an id and no data. A GET with
-  `Last-Event-ID` resumes a stream that is still going on, live. A client
-  leaving a stream does not cancel its request. `Server` writes a handler's
-  messages with `ITransport::write_related_message()`, which names the request
-  they belong to, and `EventStore::stream_of()` names the stream of an event.
-- `HttpClientTransport` sends each message of a legacy session on an exchange
-  of its own, so requests overlap, and reads SSE answers as they arrive. After
-  notifications/initialized it opens the session's GET stream, opens it again
-  from its last event when it ends, after the pause its `retry` field asks for
-  but at least 100 ms, which doubles while streams keep ending with nothing, and
-  does not ask again after a 405. A request's stream that ends before its
-  response is resumed with a GET naming its last event, at most three times.
-- `OAuthAuthorizationConfig::request_offline_access` (default `true`):
-  `OAuthAuthorizationManager` adds `offline_access` to the scope of the
-  authorization request when the authorization server lists it in
-  `scopes_supported`, so the server may issue a refresh token. A server that
-  does not list it is never sent it, a scope set in
-  `OAuthAuthorizationConfig::scope` is used as it is, and `false` requests
-  exactly the selected scope.
+- `Context::principal()` names who sent a request, from the bearer token
+  validator's `TokenValidation`.
+- Multi round-trip requests: a 2026-07-28 handler can ask the client to elicit,
+  sample or list roots, and the client's retry resumes it
+  (`Server::set_mrtr_options()`).
+- Sealed request state (`MrtrStateMode::eSealed`), so that any server instance
+  with the key can serve the retry of a multi round-trip request.
+- `InputOptions` names a question of a multi round-trip request;
+  `Context::elicit()`, `sample_llm()` and `request_roots()` take it as an
+  optional argument.
+- `subscriptions/listen` on the server: the `notify_*()` calls also send
+  list-changed and resource-updated notifications to each open subscription.
+- The tasks extension on the server: `Server::enable_tasks()`,
+  `set_tool_task_mode()`, and `TaskStore` with the default `InMemoryTaskStore`.
+- `Server::set_tool_task_preparation()` runs a coroutine inside a `tools/call`
+  before its task exists, which may ask the client for input.
+- `Server::declare_extension()`, `Server::capabilities()` and
+  `Server::add_extension_method()`, which serves an extension's request method
+  to 2026-07-28 clients.
+- `declare_extension()`, `declares_extension()` and `extension_settings()` in
+  `mcp/protocol/extensions.hpp`.
+- `Server::set_handler_executor()` sets where a server's handlers run.
+- The client finds out whether a server speaks 2026-07-28
+  (`ClientProtocol::automatic()`, the default), or keeps to one with `legacy()`
+  or `pinned()`.
+- `HttpClientTransport` sends 2026-07-28 requests as sessionless POSTs with the
+  `Mcp-*` headers and reads streamed answers as they arrive.
+- The client answers the questions of an `input_required` result with its
+  registered handlers and retries until the result is complete.
+- `Client::listen()` opens a `subscriptions/listen` stream and returns a
+  `Subscription`.
+- The tasks extension on the client: `ClientOptions::tasks` follows a task to
+  its result, and `Client::start_tool()` returns a `TaskHandle`.
+- `CancellationToken` and `RequestOptions::cancellation` cancel requests from
+  any thread without their ids.
+- Sessions of 2025-11-25 and earlier stream over HTTP: a handler's notifications
+  and requests reach the client while the POST runs.
+- `HttpClientTransport` sends each message of a legacy session on its own
+  exchange, so requests overlap, and keeps the session's GET stream open.
+- `CompiledSchema` validates values against a JSON Schema of 2020-12, 2019-09,
+  draft-07, draft-06 or draft-04.
+- `ElicitationSchema` builds a form's `requestedSchema` from typed fields and
+  decodes the answer into typed values.
+- The client and `Context::elicit()` check accepted form content against
+  `requestedSchema` (`ElicitationContentError`).
+- `StdioClientTransport` launches an MCP server as a child process and talks to
+  it over its standard input and output.
+- `StdioClientSession` connects a `Client` to a launched server and starts the
+  server again when it ends unexpectedly.
+- MCP Apps (`io.modelcontextprotocol/ui`): `mcp/server/apps.hpp` registers views
+  and their tools, and `mcp/client/apps.hpp` reads them.
+- Skills (`io.modelcontextprotocol/skills`): `skills::SkillsExtension` serves
+  skills, and `mcp/client/skills.hpp` lists, gets and reads them.
+- OAuth client credentials: `auth::ClientCredentialsAuthenticator` gets an
+  access token for machine-to-machine use.
+- Enterprise-managed authorization: `auth::EnterpriseAuthorizationAuthenticator`
+  exchanges an identity assertion for an ID-JAG.
+- `set_scope_requirements()` on both HTTP server transports names the scopes
+  each request needs; a token without them is answered `403`.
 - `ITransport::set_interaction_observer()`, through which a transport reports
-  that the write of a request is waiting for a person. `OAuthClientTransport`
-  reports the wait for `Authenticator::try_handle_challenge()`, and `Client`
-  installs an observer on its transport.
-- `HttpServerTransport::set_scope_requirements()` and
-  `StreamableHttpSessionManager::set_scope_requirements()` take a
-  `ScopeRequirementProvider` that names the scopes each POSTed JSON-RPC message
-  needs, and `TokenValidation::scopes` carries the scopes a validator found in
-  a token. A request whose token lacks a needed scope is answered `403` with
-  `WWW-Authenticate: Bearer error="insufficient_scope", scope="...",
-  resource_metadata="..."` before it is dispatched or any response stream is
-  opened. A provider that throws, or that names a scope the header cannot carry
-  (anything but printable ASCII), is answered `500` without a challenge.
-  `listen()` throws `std::logic_error` when a provider is set without a token
-  validator, since no token could then hold a scope.
-- `OAuthDiscoveryClient::forget_protected_resource()` drops the cached
-  protected-resource metadata of one resource.
-- `Context::elicit()`, `Context::sample_llm()` and `Context::request_roots()`
-  take an optional `InputOptions` whose `key` names the question in the
-  `inputRequests` of a multi round-trip request, and so in the client's
-  `inputResponses`. Without one the SDK names it `elicitation-N`,
-  `sampling-N` or `roots-N` as before. A key that is empty, has the form of a
-  generated name or is already used by another question of the request makes
-  the call throw `std::invalid_argument`. Stored and sealed request state both
-  honor the key; requests before 2026-07-28 ignore it.
-- The tasks extension (`io.modelcontextprotocol/tasks`) of protocol revision
-  2026-07-28, on the server and the client. `Server::enable_tasks()` advertises
-  it in `server/discover` and answers `tasks/get`, `tasks/update` and
-  `tasks/cancel`; `Server::set_tool_task_mode()` lets a tool (`ToolTaskMode`:
-  `eNever`, the default, `eAuto` or `eRequired`) answer a client that declared
-  the extension with a task handle (`resultType: "task"`) and run apart from
-  the request, on the handler executor when one is set. A client that did not
-  declare the extension never gets a task, and is answered with
-  `g_MISSING_REQUIRED_CLIENT_CAPABILITY` where the tool or a task method
-  needs it. Inside a task, `Context::report_progress()` sets the task's
-  `statusMessage`, `Context::elicit()`, `sample_llm()` and `request_roots()`
-  put their questions in the task's `inputRequests` until `tasks/update`
-  answers them, under the key `InputOptions` names or one the SDK generates,
-  and `Context::report_progress_sync()` reports progress from a
-  handler that is not a coroutine. A task belongs to the principal that
-  started it. `TaskStore` is the interface tasks are kept through, and
-  `InMemoryTaskStore` the default, which expires tasks by their time to live
-  and limits the tasks of an owner and in all. `TaskOptions` sets the store,
-  the time to live, the polling interval and the limits on handlers that run at
-  once, per principal and in all, which count a task until its handler returns.
-- `Server::set_tool_task_preparation()` gives a task tool a coroutine
-  (`ToolTaskPreparation`) that runs inside the `tools/call`, before the task
-  exists. It may ask the client for input with `Context::elicit()`,
-  `sample_llm()` and `request_roots()` through the multi round-trip flow, in
-  stored and sealed request state; the call then returns the task, whose
-  handler gets the `TaskPreparation::arguments` it returns, or is answered
-  with `TaskPreparation::result` and no task. Middleware sees the call around
-  the preparation and again around the task's handler. The task limits are
-  checked before the preparation runs and again at creation, and a request
-  cancelled during the preparation creates no task.
-- `ClientOptions::tasks` (`ClientTaskMode`) makes a 2026-07-28 client declare
-  the tasks extension and `Client::call_tool()` follow a task to its result,
-  polling at the task's `pollIntervalMs` and answering its `inputRequests`
-  with the registered handlers. `Client::start_tool()` returns a `TaskHandle`
-  (`get()`, `update()`, `cancel()`, `wait()`, `result()`) when the server
-  starts a task, and `Client::task_handle()` makes one from a task id.
-  `ClientOptions::task_poll_interval` and `task_timeout` bound the polling.
-- `SubscriptionFilter::taskIds` asks a `subscriptions/listen` stream for
-  `notifications/tasks`, which carry the task as `tasks/get` returns it.
-  `Mcp-Name` carries the task id of `tasks/get`, `tasks/update` and
-  `tasks/cancel` over HTTP, which `HttpClientTransport` sets and the HTTP
-  servers check.
-- `mcp/protocol/extensions.hpp` with `declare_extension()`,
-  `declares_extension()` and `extension_settings()` for declaring and reading
-  the extensions of a client's or a server's capabilities.
-- `StdioClientTransport` launches an MCP server as a child process and speaks
-  to it over the process's standard input and output
-  (`mcp/transport/stdio_client.hpp`). `StdioProcessOptions` sets the command,
-  arguments, environment (added to the client's, or alone with
-  `inherit_environment = false`) and working directory, and what happens to
-  the server's standard error: inherited, passed line by line to
-  `on_stderr_line`, or discarded (`StderrMode`). Shutdown follows the stdio
-  transport text: `close()` and `shutdown()` close the server's standard
-  input, wait `stdin_close_wait`, then send SIGTERM, wait `terminate_wait`
-  and send SIGKILL (`TerminateProcess` after the first wait on Windows), and
-  the destructor does the same, so no process is left behind. A process that
-  ends on its own fails pending reads, which a `Client` reports as a closed
-  connection, and `on_exit` reports its `ProcessExit` (exit status or signal,
-  whether the transport asked for it, whether it had to be forced).
-  The server runs in its own process group (POSIX) or job object (Windows)
-  unless `own_process_tree` is false, so helpers it starts end with it. A
-  final line without a trailing newline is delivered as the last message, and
-  `max_message_bytes` limits complete lines as well as unfinished ones. On
-  Windows a `.cmd` script such as `npx` must be launched explicitly through
-  `cmd.exe`.
-- `StdioClientSession` (`mcp/client/stdio_session.hpp`) connects a `Client` to
-  a launched server and starts the server again when it ends unexpectedly, as
-  the stdio transport text asks (`StdioRestartPolicy`: number of restarts and
-  delay; the default never restarts). Each restart creates a new `Client`,
-  calls `configure` before and `on_connected` after it connects, which is where
-  an application registers handlers and opens its `subscriptions/listen`
-  streams again. Only an abnormal end (non-zero status or signal) restarts
-  the server unless `restart_after_clean_exit` is set, and a server that ends
-  before it is connected never triggers a restart. Destroying the session shuts
-  the server down and closes its `Client`, also one the application still holds.
-- `ElicitationSchema` builds the `requestedSchema` of a form from typed
-  fields: `StringSchema` (length limits, `format`, `default`), `NumberSchema`
-  (`number` or `integer`, bounds, `default`), `BooleanSchema`, `EnumSchema`
-  (with the legacy `enumNames`), `TitledEnumSchema` (`oneOf`),
-  `MultiSelectEnumSchema` and `TitledMultiSelectEnumSchema` (`type: "array"`).
-  `PrimitiveSchemaDefinition` is the variant of them, `to_titled()` converts
-  an `EnumSchema` with `enumNames`, and `ElicitationSchema::decode()` checks
-  accepted content against the schema and returns it as typed values
-  (`ElicitedContent`).
-  An `integer` field's bounds are written as integers (a minimum rounds up, a
-  maximum down), values no 64-bit integer can satisfy throw
-  `std::invalid_argument`, and a negative `minLength`, `maxLength`,
-  `minItems` or `maxItems` in a parsed schema throws it too. The order in
-  which fields were added is not preserved in the JSON form.
-- The client checks the content an `on_elicitation()` handler accepts for a
-  form request against the request's `requestedSchema` before sending it, in
-  both protocol eras. Content that does not conform is not sent: the handler's
-  call fails with `ElicitationContentError`, which answers a legacy
-  `elicitation/create` request with a JSON-RPC error and fails the call that
-  triggered a 2026-07-28 question. `ClientOptions::validate_elicitation_content`
-  turns the check off. `Context::elicit()` likewise checks accepted form
-  content against the request's schema and throws when it does not conform;
-  `InputOptions::validate_content` set to `false` turns that off.
-  `validate_elicitation_content()` and `describe_violations()` expose the check.
-- `Server::declare_extension()` declares an extension in the capabilities that
-  `initialize` and `server/discover` return, `Server::capabilities()` returns a
-  copy of them, and `Server::add_extension_method()` serves an extension's
-  request method to clients of protocol revision 2026-07-28. A handler reports
-  invalid parameters by throwing `std::invalid_argument`, answered with
-  `-32602`; middleware registered with `use()` wraps these handlers.
-  `TextResourceContents` and `BlobResourceContents` carry `_meta`.
-- MCP Apps (`io.modelcontextprotocol/ui`, revision 2026-01-26 of the
-  extension): `mcp/protocol/apps.hpp` has the `_meta.ui` types of views and
-  tools, `apps::declare_support()` for a host and `apps::supports_views()` for
-  a server, which reads a request's declared capabilities from its `Context`.
-  `mcp/server/apps.hpp` registers a `ui://` view with the
-  `text/html;profile=mcp-app` MIME type and the tools that link to it
-  (`apps::add_view_resource()`, `apps::add_view_tool()`), and
-  `mcp/client/apps.hpp` reads a view with its metadata (`apps::read_view()`).
-  Rendering views is left to the host. See `docs/concepts/apps.rst`.
-- Skills (`io.modelcontextprotocol/skills`, beta specification):
-  `mcp/protocol/skills.hpp` has the `Skill` entry, `skills/list`,
-  `skills/get` and `resources/directory/read` types, SHA-256 digests,
-  `skills::validate_skill()` (which also rejects listed paths with empty, `.`
-  or `..` segments, percent-encoded dot segments, backslashes or NUL) and
-  `skills::verify_content()`.
-  `skills::SkillsExtension` serves skills from a `Server`: it declares the
-  extension, registers every file as a resource, and answers `skills/list`,
-  `skills/get` and, with `directoryRead`, `resources/directory/read`.
-  `mcp/client/skills.hpp` lists skills, gets an entry, reads a directory, and
-  reads a skill file after checking it against the entry's size and digest
-  (`skills::read_skill_file()`). See `docs/concepts/skills.rst`.
-- OAuth client credentials (`io.modelcontextprotocol/oauth-client-credentials`):
-  `auth::ClientCredentialsAuthenticator` obtains an access token for
-  machine-to-machine use through the client credentials grant, with the
-  RFC 8707 `resource` indicator, from the discovery of the protected resource
-  and its authorization server. The client authenticates with a client secret
-  (`client_secret_basic` or `client_secret_post`) or a signed JWT assertion
-  (`private_key_jwt` with `RS256`, `PS256` or `ES256`; RSA keys under 2048
-  bits are refused); see
-  `auth::ClientAuthentication` and `auth::sign_client_assertion()`. It is an
-  `Authenticator`, so `OAuthClientTransport` replays a refused request with its
-  token. `OAuthHttpClient::post_form()` posts a form to a token endpoint under
-  the fetch policy.
-- Enterprise-managed authorization
-  (`io.modelcontextprotocol/enterprise-managed-authorization`):
-  `auth::EnterpriseAuthorizationAuthenticator` exchanges the identity assertion
-  an application supplies for an ID-JAG at the enterprise identity provider
-  (RFC 8693) and presents it to the authorization server as a JWT bearer grant
-  (RFC 7523), after checking that the server lists the `id-jag` grant profile.
-  A cached token is reused only for the identity assertion it was issued for.
-  See `docs/concepts/oauth.rst`.
-- The conformance fixtures carry what the 2026-07-28 scenarios of the official
-  runner's alpha channel call: input-required test tools and a prompt, a tool
-  that needs an undeclared capability, a streaming elicitation tool, a logging
-  tool, list-change triggers, a tool with `x-mcp-header` parameters and the
-  SEP-2106 keywords in `json_schema_2020_12_tool`; the client runs the
-  request-metadata, request-state, standard and custom header, invalid-tool,
-  `$ref` and schema-preservation scenarios. The conformance server also
-  serves the tools of the tasks scenarios through `Server::enable_tasks()` and
-  names the question of `test_input_required_result_elicitation` `user_name`,
-  and the client runs the Skills host scenarios. The conformance client speaks
-  the protocol version the runner names in `MCP_CONFORMANCE_PROTOCOL_VERSION`.
-  `conformance/run_alpha.sh` runs the alpha runner with
-  `--requirements 2026-07-28` and, one by one, the Skills scenarios that
-  requirement set lacks, and a CI job runs it on every change that
-  reads the fixtures and uploads the results. The job cannot fail the workflow:
-  the gate stays the pinned `0.1.16` run against `2025-11-25`.
-- `CancellationToken` and `RequestOptions::cancellation` cancel requests the
-  application has started, from any thread, without knowing their ids.
-  `CancellationToken::cancel()` tells the server about each request given the
-  token that is still waiting, with `notifications/cancelled` (or, for a
-  2026-07-28 request over HTTP, by closing its response stream), and ends its
-  wait at once in every protocol revision: the call throws `McpError` with
-  `g_REQUEST_CANCELLED`, and a response that arrives afterwards is dropped. A
-  request given a token that is already cancelled is not sent. A `call_tool()`
-  following a task stops polling and sends `tasks/cancel`; a task the server
-  starts for a call cancelled before its answer arrives stays unknown to the
-  client and runs on. `Client::call_tool()` has an overload that takes
-  `RequestOptions`.
+  that a request waits for a person.
+- `OAuthDiscoveryClient::forget_protected_resource()` drops the cached metadata
+  of one resource.
+- `TextResourceContents` and `BlobResourceContents` carry `_meta`.
+- `examples/features/schema_validation.cpp` shows each tool schema check.
+- Packages include the license of the vendored jsoncons library.
+- The conformance fixtures cover the 2026-07-28 scenarios of the official
+  runner's alpha channel, which a CI job runs without gating.
 
 ### Changed
 
-- `RequestSender` takes the key a handler chose for a question as a third
-  argument; senders that build a `Context` from their own `RequestSender` must
-  accept it.
-- `PrimitiveSchemaDefinition` is a `std::variant` of the typed schemas above
-  instead of a struct with `type`, `title` and `description`, and `StringSchema`,
-  `NumberSchema`, `BooleanSchema` and `EnumSchema` are structs of their own
-  rather than aliases of it. `EnumSchema` has no `type` member and requires
-  `enum` when decoded.
+- `Server::add_tool()` throws `SchemaError` for a schema that is not a valid
+  JSON Schema object, or an input schema without `"type": "object"`.
+- `tools/call` arguments that do not conform to the input schema are answered
+  with an `isError` result, and the handler does not run.
+- Structured tool content that does not conform to the output schema is answered
+  `g_INTERNAL_ERROR` by the server and throws `StructuredContentError` in the
+  client.
+- `make_tool_structured_result()` accepts any JSON value; a value that is not an
+  object is sent only to a 2026-07-28 request.
+- `server/discover` is a 2026-07-28 request: without a protocol version in
+  `_meta` it is answered `g_INVALID_PARAMS`.
+- `notifications/cancelled` cancels any request the session serves, so
+  `Context::is_cancelled()` turns true in resource and prompt handlers too.
 - An unknown resource in `resources/read` is answered with its URI in the
-  error's `data`, as the specification shows.
-- A GET on the MCP endpoint whose `Accept` header does not list
-  `text/event-stream` is answered `406` by both HTTP server transports, as the
-  TypeScript SDK does, instead of opening an event stream.
-- On a session, both HTTP server transports accept an `MCP-Protocol-Version`
-  header naming any version `initialize` can negotiate, not only the session's
-  own, as the TypeScript, Go and Rust SDKs do; another value is still answered
-  `400`. The conformance scenario `server-sse-multiple-streams`, which sends
-  2025-03-26 on a 2025-11-25 session, now passes.
+  error's `data`, and with -32002 in sessions of 2025-11-25 and earlier.
 - Middleware also runs for `resources/subscribe`, `resources/unsubscribe` and
-  `completion/complete`, so `make_auth_middleware()` guards them too.
-- `GET` on the MCP endpoint within a session opens the session's SSE stream,
-  one at a time (another is answered `409`), or resumes a stream with
-  `Last-Event-ID`; a `GET` without a session is answered `400`. It used to
-  answer `200` with an empty JSON body, which the specification does not
-  allow; a resume of a stream that ended with nothing to replay answers an
-  empty SSE stream.
-- `ITransport::overlapping_modern_writes()` is now `overlapping_writes()`. On a
-  transport that returns true, `Client` writes every message beside its queue,
-  in sessions of every protocol revision.
-- `BUILD_TESTING`, `BUILD_EXAMPLES` and `BUILD_DOCS` default to `ON` only when
-  the SDK is the top-level CMake project. Added with FetchContent or
-  `add_subdirectory`, the SDK no longer builds its tests and examples or needs
-  GTest; setting an option still overrides the default.
-- `server/discover` is a 2026-07-28 request: without
-  `io.modelcontextprotocol/protocolVersion` in `_meta` it is answered with
-  `g_INVALID_PARAMS`.
-- `StreamableHttpSessionManager` answers `server/discover` from
-  `modern_server()`, like every 2026-07-28 request, instead of from a separate
-  server, and `HttpServerTransport` serves it like any other 2026-07-28 request
-  instead of holding it to a limit of 16 for discovers.
-- `initialize` negotiation uses `g_LEGACY_PROTOCOL_VERSIONS` instead of
-  `g_SUPPORTED_PROTOCOL_VERSIONS`.
-- `g_LATEST_PROTOCOL_VERSION` names 2026-07-28, and
-  `g_SUPPORTED_PROTOCOL_VERSIONS`, now a `std::array` of five, lists it after
-  the four legacy revisions, so `is_supported_protocol_version()` is true for
-  every revision the SDK serves in either era. Code that used them for the
-  versions `initialize` negotiates should use
-  `g_LATEST_LEGACY_PROTOCOL_VERSION`, `g_LEGACY_PROTOCOL_VERSIONS` and
-  `is_legacy_protocol_version()`; `negotiate_protocol_version()` still selects
-  only those.
-- Before `notifications/initialized`, a session serves a request that carries
-  a 2026-07-28 protocol version in `_meta` instead of answering it with
-  `g_INVALID_REQUEST`; `server/discover` is exempt from the initialization
-  sequence only as such a request.
-- `notifications/cancelled` marks any request the session is still serving as
-  cancelled, so `Context::is_cancelled()` turns true in resource and prompt
-  handlers too, not only in tools. The response of a request of 2025-11-25 or
-  earlier is still sent.
-- `Client::connect()` sends `server/discover` before `initialize` by default
-  (`ClientProtocol::automatic()`, also what a default-constructed `ClientProtocol`
-  selects) and speaks 2026-07-28 with a server that serves it. A legacy server
-  costs one extra round trip, or `ClientOptions::probe_timeout` if it ignores
-  the request; one that closes the connection on it fails the connect.
-  `ClientOptions::protocol = ClientProtocol::legacy()` keeps sending only
-  `initialize`.
-- `Client::connect()` resolves to `ConnectResult` instead of
-  `InitializeResult`: `era`, `protocolVersion`, `capabilities`, `serverInfo`
-  (now optional, so write `result.serverInfo->name`), `instructions` and
-  `supportedVersions`. Branch on `era` where the two protocol families differ.
-- `ElicitRequestURLParams::elicitationId` is now a
-  `std::optional<std::string>`. `Context::elicit()` generates one for a
-  URL-mode request that leaves it unset, so the wire output for earlier
-  protocol revisions is unchanged; a request serialized without it omits the
-  field, as 2026-07-28 requires.
-- `ElicitationCompleteNotificationParams` holds the `elicitationId` of the
-  URL-mode request that completed, the field the specification gives
-  `notifications/elicitation/complete`. It held a `requestId`, so the
-  notification it sent or read did not match the specification.
-- An error response that answers no request it can name, such as a parse
-  error, leaves out `id` instead of writing `"id": null`. MCP's schema gives
-  the id the type of a request id, and the TypeScript SDK 1.32.1 refuses a
-  null one. A null id is still read as no id.
-- `g_CONNECTION_CLOSED`, the code the SDK uses locally when a transport
-  closes, is -31000, outside the range JSON-RPC reserves, so it cannot be
-  mistaken for an error the peer sent. It was -32002, the resource-not-found
-  code of 2025-11-25 and earlier, and a server's answer to
-  `subscriptions/listen` with that code read as a dropped stream.
-- `resources/read` of a resource that does not exist is answered -32002
-  (`g_RESOURCE_NOT_FOUND`) in sessions of 2025-11-25 and earlier, as those
-  revisions ask, and -32602 for 2026-07-28.
-- `make_tool_structured_result()` accepts any JSON value as
-  `structuredContent`. The server sends a value that is not an object only in
-  response to a 2026-07-28 request, and checks it against the tool's
-  `outputSchema` like any other. For a request of an earlier protocol
-  revision, a tool whose result carries non-object `structuredContent` is
-  answered with the internal error that a raw result got before, including
-  when the helper built it.
-- `BearerTokenValidator` returns a `TokenValidation` and
-  `AsyncBearerTokenValidator` a `Task<TokenValidation>`. A synchronous
-  validator returning `bool` still compiles; an asynchronous one returning
-  `Task<bool>` must change its return type (`co_return true;` still works).
-- `tools/call` naming an unknown tool and `prompts/get` naming an unknown
-  prompt are answered with `g_INVALID_PARAMS` (`-32602`), as the tools and
-  prompts specifications list, instead of `g_METHOD_NOT_FOUND` (`-32601`).
-- `Server::add_tool()` and `add_raw_tool()` compile the tool's `inputSchema`
-  and `outputSchema` and throw `SchemaError` when either is not a JSON Schema
-  object that `CompiledSchema` accepts, or when the input schema does not
-  declare `"type": "object"`, which the 2025-11-25 and 2026-07-28 schemas
-  require. Previously any JSON value was advertised as the schema.
-- `tools/call` arguments are validated against the tool's input schema, as the
-  2025-11-25 and 2026-07-28 revisions require of servers. Arguments that do
-  not conform are answered with an `isError` result listing the violations,
-  and the handler does not run; middleware still sees the call. The check also
-  applies to `Server::invoke_tool()`. `Server::set_tool_validation()` with
-  `ToolValidationOptions::validate_arguments = false` turns it off, and
-  `Server::tool_validation_stats()` counts refused calls.
-- The `structuredContent` of a successful tool result is checked against the
-  tool's `outputSchema`, which the 2025-11-25 and 2026-07-28 revisions require
-  it to conform to. A result that does not conform is answered with
-  `g_INTERNAL_ERROR` naming the violations
-  (`ToolValidationOptions::validate_structured_content` turns the check off).
-- `Client::list_tools()` compiles each listed tool's `outputSchema` and reports
-  one it cannot use through `ClientOptions::on_tool_schema_error`; the tool
-  stays listed. `Client::call_tool()` checks the `structuredContent` of a
-  successful result against the tool's listed `outputSchema` and throws
-  `StructuredContentError` when it does not conform. A call of a tool whose
-  `outputSchema` is invalid, in an unsupported dialect, or has a `$ref` outside
-  the document throws that `SchemaError` without sending the request; a schema
-  that only uses a pattern the matcher cannot run leaves the tool's results
-  unchecked. `ClientOptions::validate_tool_schemas = false` turns all of this
-  off.
-- `CompiledSchema::compile()` returns the schema it already compiled when it
-  is given the same schema and options again and something still holds that
-  schema, so a server factory that registers the same tools for every session
-  compiles their schemas once while sessions overlap, not once per session.
-  The cache keeps at most 256 schemas, oldest first out, and lets go of a
-  compiled schema with its last holder, so the schemas of a peer's tool
-  listing are not kept for the life of the process. A repeat is found by a
-  hash of the schema and options and confirmed by comparing the schema it
-  was compiled from, down to how each number is written, so finding it
-  serializes nothing, and a schema of any size is kept. A repeat is looked up
-  before the schema is measured for its nesting depth and for NaN or Infinity,
-  since the schema it matches passed those checks when it was compiled; a
-  schema that fails them is refused as before.
-- A tool registered with an input schema that `CompiledSchema` already shares
-  with a live tool reuses the `x-mcp-header` annotations read from it, so a
-  server factory that registers the same tools for every session reads each
-  input schema's annotations once while sessions overlap.
-- `Server::add_tool()` no longer copies the input and output schemas it is
-  given into the registered tool; the server keeps each schema only in its
-  compiled form, which servers registering the same schema share, and
-  `tools/list` lists the schemas from it, written as they were given.
-  Servers that list the same compiled schema while one of them holds its text
-  share that text, so a server built per session serializes each schema of
-  its `tools/list` once while sessions overlap, not once per session.
-- An in-memory transport allocates nothing for its message and reader queues
-  until something is queued; each endpoint used to allocate about 1 KiB for
-  them when it was created. The Streamable HTTP server creates a pair per
-  session.
-- `StreamableHttpSessionManager::set_tool_executor()` now moves only the call
-  of a tool, resource or prompt handler to that executor. A session's reading,
-  parsing and answering of protocol messages run on the HTTP executor, and the
-  new `Server::set_handler_executor()` is how a `Server` is told where its
-  handlers run. Each handler call runs on a strand of its own, so a handler
-  that fans out with `co_await (a || b)` never has two branches running at
-  once, and two calls of one session may run at the same time. The executor passed to the server factory is the HTTP
-  executor, where it used to be the tool executor when one was set.
-- The Streamable HTTP server no longer parses a finished 2026-07-28 response
-  to read its error code when the response has no `"error"` member.
-- A 2026-07-28 `tools/call`, `prompts/get` or `resources/read` from a client
-  that declares no `elicitation`, `sampling` or `roots` capability runs its
-  handler inside the request, since such a client can never be asked for
-  input. A handler that asks anyway still gets the missing-capability answer.
-  Other requests keep the parked-handler path.
-- A server without middleware calls a tool with the arguments as they arrived,
-  without copying the call's parameters or the registered handler, and
-  `tools/list` sends the tools as the text they serialize to when it lists
-  them all. That text is built by the first such list after a registration,
-  not by each registration, so a server built for a session that never lists
-  its tools never serializes them. A handler's `CallToolResult` is moved into the response, and a
-  result of type `CallToolResult` is no longer decoded a second time to
-  validate it; `to_json` has overloads that take a `CallToolResult`,
-  `ContentBlock` or `TextContent` by rvalue and move what they hold.
-- The strands that the HTTP session manager makes for a connection, `Server`
-  for a session, `MemoryTransport` for an endpoint and the serialized
-  transport writer are kept as an `any_io_executor`. A strand over the
-  executor of an `io_context` is built as
-  `boost::asio::strand<io_context::executor_type>`, which with Boost 1.83 is
-  small enough for the `any_io_executor` to store inline, so the copies and the
-  `prefer()` and `require()` calls that Boost.Asio makes for each asynchronous
-  operation no longer allocate; the `strand<any_io_executor>` it replaces
-  allocated for each of them. With Boost 1.74 that strand is 32 bytes and still
-  allocates. A `MemoryTransport` or writer given a strand of this kind uses it
-  instead of putting a second strand over it, and an in-memory read or write
-  made by a coroutine that already runs on the strand it needs runs in place
-  rather than through a spawned coroutine. The timer that wakes a pending HTTP
-  request is cancelled in place when the code that signals it already runs on
-  the timer's strand. On the benchmark's 2025-03-26 workload the strand change
-  took the allocation calls from 1396 to 767 per operation.
-- A 2026-07-28 request that `StreamableHttpSessionManager` serves keeps the
-  notifications it streams in a vector, which allocates nothing for a request
-  that sends none; the deque it replaces allocated on construction, once for
-  the request and once for each pass of the loop that writes its answer.
-- The server's identity that a 2026-07-28 result reports in `_meta` is
-  converted to JSON once, when the `Server` is constructed, instead of for
-  every result.
-- `RequestMetadata::meta` is a `std::shared_ptr<const nlohmann::json>` that
-  shares the `_meta` object of the request it was read from, instead of a copy
-  of that object; write `request_meta()->meta->find(...)`. It is never null,
-  and a default-constructed `RequestMetadata` holds an empty object. Reading
-  the per-request fields of a 2026-07-28 request no longer copies its `_meta`.
-- Registering a tool looks for `x-mcp-header` annotations without building
-  the JSON Pointer of every member of its input schema; the location is built
-  only along the path walked and named only in a refusal.
-- `StreamableHttpSessionManager` learns that a session's `initialize`
-  succeeded from the scan that routes its answer instead of parsing the
-  answer a second time.
-- The JSON-RPC messages `Server`, `Client` and the transports send, the text
-  of `tools/list` and the schema texts it shares are
-  written by the SDK's own JSON writer rather than `nlohmann::json::dump()`.
-  Its text is byte for byte what `dump()` writes, and a string that is not
-  valid UTF-8 throws the same `type_error` 316. A response is written around
-  its result instead of being built as a response object first.
-- The messages a `Server` reads from its transport and the bodies the HTTP
-  transports and `StreamableHttpSessionManager` receive are parsed by the
-  SDK's own JSON parser, which builds the same `nlohmann::json` value as
-  `nlohmann::json::parse()`, number types included. Text it does not read
-  itself, which is invalid JSON, a byte order mark, text after a NUL byte, an
-  integer out of the range of its type or a number read under a locale whose
-  decimal point is not `.`, is passed to `nlohmann::json::parse()` as before.
-- The JSON writer keeps its place in the output string as an index and grows
-  the string ahead of what it writes, so writing a character is a store
-  rather than a call into `std::string`, and a string that needs no escape is
-  copied in one step.
-- A 2026-07-28 result that has no `_meta` of its own is written with
-  `resultType`, the server's identity in `_meta` and any cache hints added
-  as it is written, in the order `dump()` would put them, rather than by
-  inserting them into the result first; a result with its own `_meta` is
-  still built as before. A result that already holds one of these members
-  keeps its value.
-- The scan that routes each answer of a `StreamableHttpSessionManager`
-  session to its HTTP request passes over string values eight bytes at a
-  time to the next quote or backslash, instead of testing every byte of a
-  tool result's text.
-- `Server` checks a request's JSON-RPC envelope looking each member up once,
-  and compares `jsonrpc` with `"2.0"` without building a JSON value for it.
-- `Server` checks the envelope of a request read from its session, and looks
-  up whether the request names its protocol version in `_meta`, once each
-  instead of twice.
-- `StreamableHttpSessionManager` and `HttpServerTransport` write an answer
-  that keeps its connection open and has a body of its `Content-Length` as
-  its start line and fields followed by its body, in one write, instead of
-  through Beast's serializer. The bytes sent are the same; other answers,
-  and those that close their connection, still go through Beast.
-- A message given to the serialized transport writer by a coroutine that runs
-  on the writer's strand, when no other message is queued or being written, is
-  written by that coroutine in place, without a coroutine spawned to queue it
-  and another to drain the queue. Messages still reach the transport one at a
-  time and in the order they were given, including one that a caller on the
-  strand gives after a `post_message()`.
-- The OAuth guides (`docs/concepts/oauth.rst`, `docs/guides/oauth-security.rst`)
-  describe how the scope of an authorization request is chosen, that a step-up
-  unions the challenge with the scope the issuer granted, the limits on
-  repeated authorization, `offline_access`, the client metadata document URL
-  rule and the deprecation of dynamic client registration, and
-  `docs/concepts/oauth.rst` says that request deadlines do not run while the
-  user answers an authorization prompt.
-- Public constants live in `mcp/core/constants.hpp`, grouped by namespace under
-  `mcp::constants` (`jsonrpc`, `protocol`, `meta`, `apps`, `skills`,
-  `tasks`, `oauth`, `metadata_policy`, `http_server`, `event_store`,
-  `shutdown`, `json_parse` and `transport_writer`), and every constant
-  is named `g_UPPER_CASE`. `mcp::g_INVALID_PARAMS` is now
-  `mcp::constants::jsonrpc::g_INVALID_PARAMS`, `mcp::g_LATEST_PROTOCOL_VERSION`
-  is `mcp::constants::protocol::g_LATEST_PROTOCOL_VERSION`,
-  `mcp::apps::g_EXTENSION_ID` is `mcp::constants::apps::g_EXTENSION_ID`,
-  `mcp::constants::g_event_store_default_capacity` is
-  `mcp::constants::event_store::g_DEFAULT_CAPACITY`,
-  `mcp::constants::g_default_max_request_body_bytes` is
-  `mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES` and the
-  constants of `mcp::auth::constants` are in
-  `mcp::constants::oauth` and `mcp::constants::metadata_policy`. The old names
-  are gone. Constants only the implementation uses moved to a private header.
-- Enum values follow the `eCamelCase` rule of `.clang-tidy`. These public enums
-  changed: `AuthorizationResponseStatus` (`eAccepted`, `eStateMissing`,
-  `eStateMismatch`, `eIssuerMissing`, `eIssuerMismatch`, `eServerError`,
-  `eCodeMissing`), `ClientIdentitySource` (`ePreRegistered`,
-  `eClientIdMetadataDocument`, `eDynamicRegistration`),
-  `ClientIdentityDecision` (`eUsePreRegistered`,
-  `eUseClientIdMetadataDocument`, `eReuseStoredRegistration`,
-  `eRegisterDynamically`, `eUnavailable`) and `MetadataUrlDecision`
-  (`eAllowed`, `eMalformedUrl`, `eSchemeNotAllowed`, `eOriginDenied`,
-  `eOriginNotAllowed`, `eAddressLinkLocal`, `eAddressPrivate`,
-  `eAddressLoopback`, `eAddressMulticast`, `eAddressReserved`,
-  `eRedirectLimitExceeded`, `eResponseTooLarge`,
-  `eDeniedOriginEntryMalformed`). The strings `describe()` returns are
-  unchanged. The `ClientProtocol` factories `Auto()`, `Legacy()` and
-  `Version()` are `automatic()`, `legacy()` and `pinned()`.
-- The `to_json` and `from_json` functions of the types in `mcp/protocol/` and
-  of `SubscriptionFilter` are compiled into the library; the headers only
-  declare them, so a file that includes the headers no longer compiles them.
-  The JSON they write and the input they accept are unchanged. They take
-  `nlohmann::json` only: the ones `NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE` used to
-  generate for the request, notification and parameter types were templates
-  that, with nlohmann_json 3.12, also took other `nlohmann::basic_json` types
-  such as `nlohmann::ordered_json`.
+  `completion/complete`.
+- A GET within an HTTP session opens the session's SSE stream, or resumes one
+  with `Last-Event-ID`, and a GET that does not accept `text/event-stream` is
+  answered `406`.
+- An HTTP session accepts an `MCP-Protocol-Version` header naming any version
+  `initialize` can negotiate.
+- An error response that answers no request it can name leaves out `id` instead
+  of writing `"id": null`.
+- Less copying, parsing and allocation per message: the SDK writes and parses
+  JSON itself, shares compiled tool schemas, and writes in place where it can.
+- The OAuth guides describe how the scope of an authorization request is chosen
+  and stepped up, and the limits on repeated authorization.
 
 ### Deprecated
 
-- `mcp::make_stdio_transport()` and `mcp::make_http_client_transport()` are
-  marked with the new `MCP_DEPRECATED` macro (`mcp/core/export.hpp`) and warn
-  at compile time. Use `TransportFactory::create_stdio()` and
-  `TransportFactory::create_http_client()`. They are removed no earlier than
-  the next major release.
-- `Context::sample_llm()` and `Context::request_roots()` are deprecated in
-  their documentation only, because protocol revision 2026-07-28 deprecates
-  sampling and roots but clients of earlier revisions still rely on them. They
-  get the compile-time warning in the first release after 2027-07-28, the
-  earliest date the revision allows their removal.
+- `make_stdio_transport()` and `make_http_client_transport()`; use
+  `TransportFactory::create_stdio()` and
+  `TransportFactory::create_http_client()`.
+- `Context::sample_llm()` and `Context::request_roots()`, in their documentation
+  only, since 2026-07-28 deprecates sampling and roots.
 
 ### Removed
 
-- The task types of the experimental shape of 2025-11-25: the `tasks` member of
-  `ClientCapabilities` and `ServerCapabilities` (a legacy peer that sends it
-  still parses, and the member is dropped), `ToolExecution` and `Tool::execution`,
-  `TaskMetadata` and `RelatedTaskMetadata`, the `task` member of the elicitation
-  request parameters, `GetTaskRequest`, `CancelTaskRequest`,
-  `CancelTaskResult`, `ListTasksRequest`, `ListTasksResult`,
-  `GetTaskPayloadRequest` and `GetTaskPayloadResult`, and the
-  `notifications/tasks/status` shape of `TaskStatusNotification`. `TaskData`,
-  `GetTaskRequestParams`, `CancelTaskRequestParams`, `CreateTaskResult` and
-  `TaskStatusNotification` now have the shape of the tasks extension, with
-  `taskId`, `ttlMs` and `pollIntervalMs`.
-- `Server::set_discover_ttl_ms()` and `set_discover_cache_scope()`, replaced
-  by `Server::set_cache_hints()`.
-- `g_DISCOVERABLE_PROTOCOL_VERSIONS`; `g_SUPPORTED_PROTOCOL_VERSIONS` lists
-  the same versions.
+- The task types of the experimental shape of 2025-11-25, such as
+  `GetTaskRequest`, `ListTasksRequest` and `Tool::execution`.
+- `Server::set_discover_ttl_ms()` and `Server::set_discover_cache_scope()`,
+  replaced by `Server::set_cache_hints()`.
+- `g_DISCOVERABLE_PROTOCOL_VERSIONS`; `g_SUPPORTED_PROTOCOL_VERSIONS` lists the
+  same versions.
 
 ### Fixed
 
-- The Chocolatey package names the SDK in its title, links the release notes
-  and the tagged source, and requires `vcredist140` at least as new as the
-  Visual C++ tools that built the archive.
-- The Chocolatey package no longer contains `LICENSE.txt` and
-  `VERIFICATION.txt`. It downloads the Windows archive at install time, with
-  the checksum in its install script.
-- The shared library exported the symbols of the dependencies linked into it
-  statically, such as the static OpenSSL of a Conan build. Another OpenSSL in
-  the same process, such as the system one that libcurl loads, then called the
-  SDK's copy with objects of its own and could crash. On platforms other than
-  Windows and macOS the library now keeps those symbols out of its exports.
-- `StreamableHttpSessionManager` did not finish refusing a `Last-Event-ID`
-  resume of a running request's stream whose replay did not fit
-  `HttpConnectionLimits::max_request_bytes`: the stream was detached through
-  a session it had not yet been given. It now answers 503, as it does for the
-  replay of a finished stream.
-- `StreamableHttpSessionManager` could create more sessions than
-  `SessionLimits::max_sessions` when initializes arrived together on an
-  executor with several threads. It now checks the limit again as it adds the
-  session.
-- `StdioTransport::write_message()` wrote a message that contains a newline as
-  two lines. It now throws `std::invalid_argument`, as
-  `StdioClientTransport::write_message()` does.
-- `HttpServerTransport` and `StreamableHttpSessionManager` closed the
-  connection without an answer when a request's headers passed the HTTP
-  parser's 8 KiB limit or the request was not valid HTTP. They now answer
-  `431 Request Header Fields Too Large` or `400 Bad Request` before closing it.
-- Examples and documentation that did not work as written: the
-  getting-started client handed `co_spawn` a coroutine of a temporary lambda,
-  which read the lambda's captures after it was destroyed; the server refused
-  the curl commands of the llama.cpp and LLDB example READMEs; the LLDB example
-  stopped answering requests while LLDB waited for the debugged process; the
-  stdio client examples read their own standard input instead of launching a
-  server, and the interactive one kept its server path as a reference to a
-  destroyed temporary; `graceful_shutdown()` did not say that its watchdog keeps
-  `io_context::run()` going until the timeout unless cancelled; and several
-  pages included the wrong lines of the examples.
-- Reading a protocol or OAuth type into an object that already holds values,
-  with `nlohmann::json::get_to()`, kept the optional members the new JSON
-  omits, such as a result's `nextCursor` or caching hints. Each `from_json`
-  now overwrites its whole target, so `get_to()` gives the same value as
-  `get()`.
-- With libc++, an exception of `nlohmann_json` that the shared library
-  throws, such as the `nlohmann::json::type_error` 316 of
-  `mcp::detail::dump_json()` for text that is not valid UTF-8, could not be
-  caught by its type: the library kept its own `type_info` for each of
-  `nlohmann_json`'s exception classes. It now gives them default visibility,
-  as it does Beast's error categories.
-- `OAuthAuthorizationManager` handed the authorization endpoint named in the
-  authorization server's metadata to the consent callback as
-  `AuthorizationRequest::authorization_url` without checking it. The endpoint
-  must now be an
-  absolute `https` URL (`http` only on loopback when
-  `MetadataFetchPolicy::allow_plain_http_loopback` is set), outside
-  `denied_origins`, without a fragment and made only of characters a URI may
-  contain; otherwise the challenge fails before the callback runs. It may sit
-  on another origin than the metadata, since only the browser connects to it.
-- A GET with `Last-Event-ID` replayed every later event of the session, so a
-  client resuming one POST's stream also got the answers of other POSTs and
-  messages that no stream carried. The specification does not allow replaying
-  messages of another stream. Both HTTP server transports now replay only the
-  stream the named event was sent on: `EventStore::append()` takes the stream
-  of the event, and `events_after()` returns only that stream's later events.
-- A request the server sent while it handled a POST of a legacy session over
-  HTTP, such as `elicitation/create` or `sampling/createMessage`, reached the
-  client only with the POST's response, which the handler could not produce
-  without the client's answer, so the call waited for the server's
-  reverse-request timeout. `HttpServerTransport` dropped such requests, and
-  every notification. Both now stream them, and `HttpClientTransport` reads
-  them as they arrive (see Added). The conformance server scenarios
-  `tools-call-elicitation`, `tools-call-sampling`,
-  `elicitation-sep1034-defaults` and `elicitation-sep1330-enums`, and the
-  client scenarios `sse-retry` and `elicitation-sep1034-client-defaults`, now
-  pass.
-- A `StreamableHttpSessionManager` handler that blocks its thread, with no tool
-  executor set, no longer holds up the other sessions created over the same
-  keep-alive connection. Each session's `Server` and its in-memory endpoint
-  now share a strand of the session's own.
-- A throw that does not derive from `std::exception`, from middleware or from
-  a resource or prompt handler, left the request unanswered. It is now answered
-  with `-32603`. Tool handlers still report it as a tool error.
-- A session runs at
-  most 1024 requests (`Server::set_max_in_flight_requests()`), and its running
-  requests and the answers the peer has not taken yet may hold at most 256 MiB
-  (`Server::set_max_in_flight_bytes()`). A request counts as its parsed JSON
-  takes memory, which for an array of empty objects is about 27 times its text.
-  A request past either limit is answered with `-32603`, and reading stops
-  while the peer takes no answers. Requests that belong to no session, such as
-  2026-07-28 requests, share one such limit per `Server` and count until their
-  handler ends, even when their client has gone. A 2026-07-28 handler waiting
-  for client input is bounded by `MrtrOptions` instead, and counts as a request
-  again when it goes on after being given up. Those refusals are queued
-  without holding up reading while they fit in the byte limit, so a client that
-  stopped reading until its own answers are read does not stall the session for
-  good. A
-  `Client` stops reading while it answers
-  1024 requests of the server or they hold 256 MiB
-  (`ClientOptions::max_incoming_request_bytes`). A session holds at most 4096
-  resource subscriptions, with at most 8 MiB of URIs together; those of an
-  ended HTTP session no longer count against the next one.
-- A request the server sent fails in its handler after ten minutes
-  (`Server::set_reverse_request_timeout()`), and at once when the `tools/call`
-  it belongs to is cancelled, instead of holding the handler for the session.
-  A cancel that arrives before the handler asks stops the request from being
-  sent. The client is sent `notifications/cancelled` for a request the server
-  gave up on.
-- Both HTTP server transports read a request's headers first and check the
-  origin and bearer token on them, so the body of a refused request is no
-  longer read. They close a connection that takes more than 60 seconds to send
-  a request or to read its answer, accept connections up to three quarters of
-  the descriptor limit, and handle at most 4096 requests holding at most 1 GiB
-  at once across all sessions (`set_connection_limits()`). A body counts by
-  what has arrived, so headers that announce a large body hold nothing. A
-  replay of missed events on a GET counts against that memory until it is
-  written, so slow readers can no longer each hold a copy of the whole replay
-  store.
-- `HttpClientTransport` starts a new session when the server answers 404 for
-  the current one, as the specification requires, and sends the failed request
-  once more in it (`set_reinitialize_on_expired_session()`). After a session
-  expired, every later call failed with 404. When the new session cannot be
-  started, such as while the server is full, the next request starts one before
-  it is sent. When the server answers the new initialize with another protocol
-  version or other capabilities, the request fails, since `Client` still knows
-  the server by the old ones; connect again to use them. `HttpServerTransport`
-  answers 500, not 404, to a request whose session ends while it runs, so the
-  client does not send it again.
-- `HttpClientTransport` opens a new connection when the server closed the one
-  it kept while it sat idle, as both HTTP server transports do after the
-  request read timeout. The first request after such a pause failed.
-- `StreamableHttpSessionManager` holds at most 10,000 sessions and ends a session
-  idle for five minutes (`set_session_limits()`), and keeps no session for a
-  failed initialize. An SSE replay store keeps at most 32 MiB.
-- On `HttpServerTransport`, an initialize now ends a session idle for five
-  minutes (`set_session_idle_timeout()`), so a client that left without a
-  DELETE does not keep the next one out. A request naming a session the
-  transport does not hold, such as one ended this way, is answered `404`,
-  as for a session that ended, so the client starts a new session. A request
-  sent without a session, as a 2026-07-28 client sends one, does not keep a
-  session in use.
-- An answer to a server request is accepted only from the session it was sent
-  in, and an answer needs an established session.
-- Both HTTP accept loops stopped when the process ran out of file
-  descriptors. They now wait and try again.
-- When a `Client` handler's answer to a server request could not be encoded as
-  JSON, such as a result or an error message holding text that is not UTF-8,
-  no answer was sent and the server's request waited out its timeout. Such an
-  answer is now an error.
-- A `Server` on a `MemoryTransport` ended its run when a message written as text
-  held a number past the range of a double, such as `1e400`. Such a message is
-  answered as a parse error, and the session goes on.
-- A 2026-07-28 request naming a protocol version the server does not implement
-  was refused for a missing `Mcp-Method` or `Mcp-Name` header before its
-  version was looked at, so the client never learned the versions served. It
-  is answered `-32022` with that list, as the specification requires.
-- A request answered 403 `insufficient_scope` again and again drove up to
-  three consent prompts. A request now gets one step-up by default
-  (`OAuthClientTransportOptions::max_step_ups_per_request`); zero leaves the
-  403 to the caller.
-- A reply to `elicitation/create` with an unknown action decoded as `accept`. It
-  now fails to decode. A form request may leave out `mode`, as the specification
-  allows.
-- The evaluation budget now covers `enum` and `const` comparisons,
-  `dependentRequired`, `properties` and `uniqueItems` on colliding hashes, the
-  base64 decoding of a draft-07 `contentEncoding`, and the text a failed branch
-  keeps. Regular expression compilation is bounded.
-  These comparisons are charged by the values they read. A message about a
-  property that `additionalProperties` or `unevaluatedProperties` refuses quotes
-  an excerpt of its name.
-- Schema validation copied a long property name at every step under it, kept
-  every message of every failed branch of a keyword such as `anyOf`, and built
-  some messages from the whole value. Locations keep the first 1024 bytes of a
-  name, which is more
-  than a report shows; a branching keyword keeps 16 messages, the kept messages
-  may hold 32 MiB, and messages quote an excerpt. The work allowed grows with
-  the size of the schema as well as of the value, so a large `enum` or a union
-  of object types over an ordinary array is not stopped, up to
-  `SchemaOptions::max_evaluation_work`. The patterns of one schema may compile
-  to `SchemaOptions::max_pattern_instructions` instructions in all.
-- jsoncons matched a property name or keyword containing NUL only up to the NUL,
-  and property names sharing a hash made its lookups quadratic.
-- A `pattern` that is not a regular expression, such as `(`, makes a schema
-  invalid instead of unsupported, and a pattern the matcher cannot run no
-  longer hides another problem in the schema, such as a `$ref` outside it.
-- `Server::run_stdio()` did not stop on SIGTERM or SIGINT while standard input
-  stayed open, and a parent that stopped reading standard output blocked the
-  server, including its signal handling. A closed standard output no longer
-  raises SIGPIPE; it ends the run. When standard input ends, the requests
-  already read are told to stop, and the answers of those that end are written
-  first, with every answer already queued. A transport that wraps a
-  `StdioTransport` is served the same way when it returns the wrapped one from
-  `ITransport::stdio_transport()`.
-- A request id that is an integer above INT64_MAX is refused as an invalid
-  request. It could not be echoed back unchanged, so over HTTP its request was
-  never answered and kept its session from expiring.
-- `StdioTransport` accepts input lines of at most 16 MiB
-  (`set_max_message_bytes()`) and reads at most 16 MiB ahead of `read_message()`.
-- `WebSocketServerTransport` has a 30 second deadline on the upgrade
-  (`set_handshake_timeout()`) and closes a connection whose peer has gone quiet
-  or stopped reading for five minutes (`set_idle_timeout()`), pinging it first.
-  Both WebSocket transports gained `set_max_message_bytes()`.
-- A new client on a reused `Server` starts at the default log level on every
-  transport, not only on `HttpServerTransport`.
-- A result that cannot be encoded as JSON is answered with a plain message
-  instead of the JSON library's exception text.
-- An error `code` that is not an integer in the range of `int` decodes to
-  `-32603`; converting it was undefined behaviour. A float with no fraction,
-  such as `-32601.0`, decodes to that integer. An error object that cannot be
-  decoded at all still answers the server's request it names, which fails
-  instead of waiting for its timeout.
-
-- With `BUILD_DOCS=ON` and Doxygen installed, configuring a project that adds
-  the SDK as a subproject failed: the SDK looked for `docs/Doxyfile.in` in the
-  parent project's source directory.
-- The SDK builds with Boost 1.74 and 1.75 (Ubuntu 22.04, Debian 12, RHEL 9),
-  the documented minimum, and with Boost 1.87 and later, which removed the
-  Asio timer overloads it called.
+- The SDK builds with Boost 1.74 and 1.75, the documented minimum, and with
+  Boost 1.87 and later.
+- Built with GCC 12, the auth middleware no longer hangs and
+  `OAuthClientTransport` reads no longer crash.
+- With Boost 1.77 to 1.84, cancelling a coroutine that awaits an SDK operation
+  no longer ends the process.
 - With Boost 1.75 and older, an OAuth metadata response larger than
-  `max_response_bytes` was read in full instead of being refused.
-- Built with GCC 12 (Debian 12), the auth middleware hung and
-  `OAuthClientTransport` reads crashed: GCC 12.2 miscompiles a `co_await`
-  inside an `if` condition, and the SDK no longer writes one.
-- With Boost 1.77 to 1.84, cancelling the coroutine awaiting an SDK
-  operation, such as an OAuth HTTP request, could end the process: Asio's
-  `co_spawn()` threw from its own completion.
-- With Boost older than 1.82, an error the shared library threw with a Beast
-  error code, such as a WebSocket connect timeout, did not compare equal to the
-  same `boost::beast` enumerator in the caller.
-- `HttpClientTransport` names the version the client asks for in the
-  `MCP-Protocol-Version` header of the initialize request, instead of always
-  the newest.
-- `HttpClientTransport` reports the JSON-RPC error a server sends with a 400
-  or 404 status to an initialize request, such as one from a server that
-  serves only 2026-07-28 naming the versions it serves, instead of only the
-  HTTP status.
-- A JSON Schema `pattern` was read whole before the limit on its compiled
-  program applied, so a long pattern took memory in proportion to its length
-  while it was refused. A pattern longer than 65,536 bytes is now refused
-  (`eUnsupportedPattern`) before it is read.
-- Each string checked against a `pattern` was charged the pattern's whole
-  program before matching, so a value with many short strings could fail with
-  "pattern matching takes too many steps" though it conforms. A string is now
-  charged for the matcher instructions it reaches.
-- `pattern` follows ECMA-262 more closely: two groups of one name are invalid
-  unless they are in different alternatives; `a{10001` without a closing brace
-  is literal text, as `a{5` is, instead of being refused for its count; and a
-  NUL character written after `-` in a class ends a range, as any other
-  character does, instead of making the `-` literal.
-- A value built in C++ may hold malformed UTF-8. `minLength`, `maxLength` and
-  `pattern` now count each byte that is not part of a well-formed sequence as
-  one character on both evaluation paths; the jsoncons path counted a string
-  holding one as empty, and the native path skipped stray continuation bytes.
-- Both HTTP server transports answer a request that sends
-  `Expect: 100-continue` with `100 Continue` before reading its body, so a
-  client that waits for it, as curl does for a large body, no longer waits for
-  its timeout first. A request refused on its headers gets only the refusal.
-- `http_bearer_token()` skips every space after `Bearer`, as RFC 6750 allows,
-  so a validator is no longer handed a token with leading spaces.
-- `OAuthAuthorizationManager` refuses a `client_identity.client_metadata_url`
-  that is not an `https` URL with a path, or that has a fragment, a username or
-  password, or a `.` or `..` path segment, by throwing
-  `std::invalid_argument`, instead of using it as a client identifier the
-  authorization specification does not allow.
-- A request's timeout, and the `probe_timeout` of `ClientProtocol::automatic()`, no
-  longer run while `OAuthClientTransport` waits for the user to answer an
-  authorization prompt. A prompt that took longer than the timeout failed the
-  request, and one that took longer than `probe_timeout` made `connect()` fall
-  back to a legacy `initialize` against a server that speaks 2026-07-28.
-- `OAuthAuthorizationManager` keeps the scope an authorization granted together
-  with the issuer that granted it, and unions it into a step-up request only
-  for that issuer. A step-up that moves to another authorization server asks
-  for the challenge's scope alone.
-- `OAuthAuthorizationManager` no longer asks the user to authorize again for an
-  `insufficient_scope` challenge whose every scope the authorization server
-  already granted: the refusal reaches the caller instead. A scope counts as
-  granted only when it appears literally in the granted scope, and the
-  step-ups one request may cost stay limited by
-  `OAuthClientTransportOptions::max_step_ups_per_request`.
-- `OAuthAuthorizationManager` reads the protected-resource metadata again for
-  every challenge it handles, so a resource that has moved to another
-  authorization server is noticed at the next challenge instead of after the
-  metadata cache interval: the client registers with the new server (or uses
-  the credentials bound to it) instead of authorizing again at the old one with
-  its client identifier.
+  `max_response_bytes` is refused instead of read in full.
+- With Boost older than 1.82, Beast errors that the shared library throws
+  compare equal to the caller's `boost::beast` enumerators.
+- With libc++, `nlohmann_json` exceptions that the shared library throws can be
+  caught by their type.
+- On platforms other than Windows and macOS, the shared library no longer
+  exports the symbols of statically linked dependencies, such as OpenSSL.
+- With `BUILD_DOCS=ON`, configuring a project that adds the SDK as a subproject
+  no longer fails.
+- The Chocolatey package downloads the Windows archive at install time and
+  requires a `vcredist140` at least as new as the tools that built it.
+- Examples and documentation that did not work as written, among them the
+  getting-started client and the LLDB, llama.cpp and stdio client examples.
+- `from_json` overwrites its whole target, so `nlohmann::json::get_to()` gives
+  the same value as `get()`.
+- A replay for `Last-Event-ID` carries only the stream of the named event, not
+  every later event of the session.
+- Requests a server sends while it handles a legacy HTTP POST, such as
+  `elicitation/create`, reach the client at once instead of with the POST's
+  response.
+- A `StreamableHttpSessionManager` handler that blocks its thread no longer
+  holds up the other sessions on its keep-alive connection.
+- A throw that does not derive from `std::exception`, in middleware or a
+  resource or prompt handler, is answered `-32603` instead of not at all.
+- A server session limits its requests in flight, their memory and its resource
+  subscriptions, and a request it sends fails after ten minutes.
+- Both HTTP server transports check the origin and token before they read a
+  body, and bound connections, requests and memory (`set_connection_limits()`).
+- `HttpServerTransport` ends a session idle for five minutes when a new
+  `initialize` arrives, and the SSE replay store keeps at most 32 MiB.
+- `StdioTransport` and both WebSocket transports bound message sizes, and
+  `WebSocketServerTransport` has handshake and idle timeouts.
+- `Server::run_stdio()` stops on SIGTERM and SIGINT, ends when standard output
+  closes, and writes the queued answers when standard input ends.
+- `HttpClientTransport` starts a new session when the server answers 404 for the
+  current one, and reconnects when the server closed its idle connection.
+- `HttpClientTransport` names the requested version in the
+  `MCP-Protocol-Version` header of `initialize`, and reports the JSON-RPC error
+  of a 400 or 404 answer.
+- Both HTTP server transports answer `431` or `400` to a request they cannot
+  parse, and `100 Continue` to `Expect: 100-continue`.
+- Both HTTP accept loops try again when the process runs out of file
+  descriptors.
+- An answer to a server request is accepted only from the session it was sent
+  in.
+- A `Client` handler's answer that cannot be encoded as JSON is sent as an
+  error, so the server's request no longer waits out its timeout.
+- A message holding a number past the range of a double is answered as a parse
+  error instead of ending a `MemoryTransport` server's run.
+- A request id above INT64_MAX is refused as an invalid request.
+- An error `code` that is not an `int` decodes to `-32603`, and a reply to
+  `elicitation/create` with an unknown action no longer decodes as `accept`.
+- A new client on a reused `Server` starts at the default log level on every
+  transport.
+- `http_bearer_token()` skips every space after `Bearer`.
+- `OAuthAuthorizationManager` checks the authorization endpoint and the client
+  metadata URL before it uses them.
+- OAuth step-ups: one per request by default (`max_step_ups_per_request`), none
+  for scopes the issuer already granted, and granted scopes count only for their
+  issuer.
+- `OAuthAuthorizationManager` reads the protected-resource metadata for every
+  challenge, so it notices a move to another authorization server.
+- Request timeouts no longer run while `OAuthClientTransport` waits for the user
+  to answer an authorization prompt.
 
 ## [0.2.0] - 2026-10-21
+
+Each entry is a summary; the full text is in the
+[changelog of v0.2.0](https://github.com/yurirocha15/mcp-cpp-sdk/blob/v0.2.0/CHANGELOG.md#020---2026-10-21).
 
 ### Added
 
 - Shared and static library variants with installed CMake and pkg-config
   metadata.
-- A manually dispatched, fail-closed release pipeline for GitHub Release,
-  ConanCenter contribution, APT/DEB, RPM, AUR, Homebrew, and Chocolatey.
-- Deterministic source assets, checksums, signatures, SBOMs, provenance, and
-  a signed release manifest anchored in an immutable GitHub Release.
-- Client error and request options: `McpError` (thrown for error responses,
-  timeouts and closed connections, carrying the JSON-RPC code),
-  `ClientOptions`, `RequestOptions` with a `send_request()` overload that
-  takes it, the `g_CONNECTION_CLOSED` code, and `RequestId::correlation_key()`.
-- Tool result helpers `make_tool_text_result()`, `make_tool_error_result()`
-  and `make_tool_structured_result()`, and `Server::add_raw_tool()` for a
-  handler that builds the whole `CallToolResult` itself.
-- `Server::add_resource_template(tmpl, handler)`: `resources/read` requests
-  whose URI matches the template's RFC 6570 pattern are routed to the handler.
-- Bearer authentication over HTTP: `HttpClientTransport::set_bearer_token_provider()`,
-  `set_bearer_token_validator()` on `HttpServerTransport` and
-  `StreamableHttpSessionManager` (with the `BearerTokenValidator` type and the
-  `http_bearer_token()` helper), and `HttpStatusError` for a non-success HTTP
-  status seen by the client.
-- `OAuthClientTransportOptions` and an `OAuthClientTransport` constructor
-  that takes it, bounding how many requests, and how many bytes of them, are
-  kept for a replay after a token refresh, and for how long.
+- A release pipeline for the GitHub Release, ConanCenter, APT, RPM, AUR,
+  Homebrew and Chocolatey, with deterministic, checksummed and signed assets.
+- Client errors and options: `McpError`, `ClientOptions`, `RequestOptions` and
+  `RequestId::correlation_key()`.
+- Tool result helpers `make_tool_text_result()`, `make_tool_error_result()` and
+  `make_tool_structured_result()`, and `Server::add_raw_tool()`.
+- `Server::add_resource_template()` routes `resources/read` requests whose URI
+  matches an RFC 6570 template.
+- Bearer authentication over HTTP: a token provider on `HttpClientTransport`,
+  token validators on the HTTP servers, and `HttpStatusError`.
+- `set_async_bearer_token_validator()`, for a token check that needs I/O.
+- Server-side OAuth challenges: `set_bearer_challenge()`,
+  `set_protected_resource_metadata()` and `set_unauthenticated_paths()` on the
+  HTTP servers.
+- `OAuthAuthorizationManager`, which runs the MCP authorization flow from a
+  `WWW-Authenticate` challenge.
+- `MetadataFetchPolicy`, which every `OAuthHttpClient` request passes, with
+  allowed and denied origins, address checks and size limits.
+- `OAuthHttpClient::make_scope()`, `post_json()` and `abort_pending()`, and the
+  challenge, discovery and client identity types of the authorization flow.
+- `OAuthClientTransportOptions`, which bounds the requests kept for a replay
+  after a token refresh.
+- The `server/discover` method, with `Server::set_instructions()` and the
+  `DiscoverRequest` and `DiscoverResult` types.
+- `set_max_request_body_bytes()` on the HTTP servers, 8 MiB by default.
 - `WebSocketServerTransport::set_allowed_origins()` and
   `set_allow_all_origins()`.
-- `Context` takes a `MessageSender`, so handlers can write to the peer through
-  the session's serialized writer. `MemoryTransport` is exported from the
-  shared library and is no longer copyable.
-- Fixtures and a pinned harness for the official MCP conformance runner
-  (`@modelcontextprotocol/conformance@0.1.16`, spec revision `2025-11-25`),
-  with a regression baseline in `conformance/expected-failures.yml`, a
-  `--conformance` build flag, and a CI workflow that fails on any drift.
-- Reproducible cross-SDK benchmark tooling (order counterbalancing,
-  environment/container capture, resource-headroom validation, protocol
-  verification) and audited benchmark results.
-- Project policy documents: `ROADMAP.md` (tier gates), `MAINTENANCE.md`
-  (triage SLAs), `VERSIONING.md` (compatibility surface), and
-  `DEPENDENCY_POLICY.md` (runtime dependency floors).
-- GitHub issue templates and a label manifest (`.github/labels.yml`).
-- JSON-RPC error code constants from the spec-reserved band:
-  `g_HEADER_MISMATCH` (`-32020`), `g_MISSING_REQUIRED_CLIENT_CAPABILITY`
-  (`-32021`) and `g_UNSUPPORTED_PROTOCOL_VERSION` (`-32022`).
+- A `connect_timeout` on `WebSocketClientTransport`, 30 seconds by default.
+- `StdioTransport::create_owning_stdout()`, which keeps stray output of the
+  application off the protocol stream.
+- `ClientOptions::on_protocol_error`, called when the client drops an incoming
+  message.
+- `Context` takes a `MessageSender`, and `MemoryTransport` is exported from the
+  shared library.
+- The JSON-RPC error codes `g_HEADER_MISMATCH`,
+  `g_MISSING_REQUIRED_CLIENT_CAPABILITY` and `g_UNSUPPORTED_PROTOCOL_VERSION`,
+  and `g_PROTOCOL_VERSION_2026_07_28`.
 - An optional `extensions` member on `ClientCapabilities` and
-  `ServerCapabilities`, keyed by extension name. Adding it changes the layout
-  of both structs.
-- `g_PROTOCOL_VERSION_2026_07_28` and `g_DISCOVERABLE_PROTOCOL_VERSIONS`, the
-  version list for `server/discover`. `g_SUPPORTED_PROTOCOL_VERSIONS`, which
-  governs `initialize` negotiation, is unchanged.
-- `OAuthAuthorizationManager`, an `Authenticator` that runs the MCP
-  authorization flow from a `WWW-Authenticate` challenge: protected-resource
-  and authorization-server discovery, client identity selection
-  (pre-registered credentials, a client ID metadata document, a stored
-  registration or dynamic registration, with `ClientCredentialStore` keyed by
-  issuer), PKCE, issuer binding, the authorization-code exchange, refresh, and
-  scope step-up. The application supplies consent as an
-  `AuthorizationCallback`. An authorization server whose metadata does not
-  list `S256` in `code_challenge_methods_supported` is refused, as the MCP
-  authorization specification requires. Injected credentials that carry a
-  `client_secret` must name their authorization server
-  (`OAuthAuthorizationConfig::client_issuer` or the pre-registered `issuer`);
-  a secret bound to no issuer is never presented, and a config that sets the
-  `client_id` shorthand alongside `client_identity.pre_registered` is refused
-  with `std::invalid_argument`. The built-in client has no
-  TLS support, so in this release it can reach only an authorization server
-  on a loopback address. It renews a grant only after it has authorized in
-  the same process; a refresh token loaded from a persistent `TokenStore`
-  after a restart is not used. Its `close()` aborts the work in flight and
-  refuses later attempts; a challenge on a closed manager fails when the
-  returned task is awaited, not when `try_handle_challenge()` is called.
-- `MetadataFetchPolicy`, which every `OAuthHttpClient` request passes: allowed
-  and denied origins, an `origin_allowance` hook, address classification that
-  refuses private, link-local and reserved targets and loopback unless
-  `allow_plain_http_loopback` is set (an IPv4-mapped, NAT64 or 6to4 IPv6
-  address is judged by the IPv4 address it carries), and redirect and
-  response-size limits.
-  A `denied_origins` entry that is not a bare origin is rejected with
-  `MetadataPolicyError` (`denied_origin_entry_malformed`), and every target is
-  refused until it is corrected. `OAuthHttpClient::set_metadata_policy()` and
-  `set_host_resolver()` configure a client, and `configure()` installs both as
-  one change, so no request can run with the new resolver and the old policy.
-  A request keeps the policy and resolver it started with across every
-  redirect hop.
-- `OAuthHttpClient::make_scope()` and `OAuthHttpClientScope`, a view of a
-  shared client whose requests `abort()` ends without touching other scopes or
-  the client's own requests. `abort_pending()` still ends everything.
-- A `discover_protected_resource()` overload taking a
-  `ProtectedResourceAcceptor`, called with the document before it is cached or
-  returned, including on a cache hit. Throwing rejects the document, and
-  nothing is cached.
-- `parse_www_authenticate()`, `select_bearer_challenge()` and
-  `BearerChallenge` for reading `WWW-Authenticate` headers.
-- The `server/discover` method, answered over HTTP before and after a session
-  exists, with `Server::set_instructions()`, `set_discover_ttl_ms()` and
-  `set_discover_cache_scope()`, and the `DiscoverRequest`, `DiscoverResult`
-  and `CacheScope` types. `StreamableHttpSessionManager` answers sessionless
-  discovers from one server built on the first, and `HttpServerTransport`
-  answers `503` to a sessionless discover while 16 are already waiting.
-- `AuthorizationRequest`, `AuthorizationResponse` and
-  `parse_authorization_response()` for the consent callback, and the client
-  identity types `OAuthClientMetadata`, `OAuthClientInformation`,
-  `ClientIdentityConfig` and `InMemoryClientCredentialStore`.
-- `OAuthHttpClient::post_json()` and `abort_pending()`, an
-  `OAuthDiscoveryClient::discover_protected_resource()` overload that takes
-  the `resource_metadata` URL from a challenge,
-  `OAuthConfig::token_endpoint_auth_method`, and the
-  `authorization_response_iss_parameter_supported`,
-  `client_id_metadata_document_supported` and
-  `token_endpoint_auth_methods_supported` members of `AuthServerMetadata`.
-  The new members change the layout of `OAuthConfig` and `AuthServerMetadata`.
-- The conformance harness runs the client authorization scenarios, and all 14
-  of them pass.
-- `StdioTransport::create_owning_stdout()`, which writes the protocol to a
-  private copy of the process's standard output and points standard output at
-  standard error while the transport lives, so stray output from the
-  application or a dependency cannot corrupt the message stream. With standard
-  error closed, standard output points at the null device instead. Standard
-  output is restored when the transport is destroyed, and only one such
-  transport may exist at a time. A process launched with standard error sent
-  to the same place as standard output (`2>&1`) is not protected.
-- CI compiles the README code snippets and checks that the stdio examples
-  write nothing but protocol messages to standard output.
-- Server-side OAuth challenge support on `HttpServerTransport` and
-  `StreamableHttpSessionManager`. `set_bearer_challenge()` sets the parameters
-  sent in the `WWW-Authenticate` header of every 401, rendered as RFC 7235
-  quoted-strings in the order `realm`, `error`, `scope`, `resource_metadata`;
-  `set_protected_resource_metadata()` serves an RFC 9728 protected-resource
-  metadata document, answered without an `Authorization` header so a client
-  holding no token can read it; and `set_unauthenticated_paths()` exempts
-  request paths from the bearer check while also removing them from MCP
-  dispatch, so an exempt path that no other route claims is answered
-  `404 Not Found` rather than serving MCP without authentication. A challenge
-  that carries no `resource_metadata` is filled in with the metadata
-  document's URL. The document's path defaults to the RFC 9728 3.1 derivation
-  — a resource at `https://host/mcp` is described at
-  `/.well-known/oauth-protected-resource/mcp` — and its URL is built from the
-  configured `resource`, never from the address the listener is bound to.
-  `<mcp/transport/http_types.hpp>` gains `BearerChallengeConfig`,
-  `ProtectedResourceMetadataConfig`, `format_www_authenticate()`,
-  `protected_resource_metadata_path()`, `protected_resource_metadata_url()`,
-  `format_protected_resource_metadata()` and `http_request_path()`.
-- `set_async_bearer_token_validator()` on `HttpServerTransport` and
-  `StreamableHttpSessionManager`, taking the new `AsyncBearerTokenValidator`
-  (`std::function<Task<bool>(std::string)>`), so a token decision that needs
-  I/O — introspection, a JWKS fetch — suspends instead of blocking the
-  executor serving MCP traffic. Installing it alongside the synchronous
-  validator throws `std::logic_error`. A validator of either kind that throws
-  is answered `500 Internal Server Error` without a challenge, so a failing
-  introspection endpoint does not send clients into re-authorization.
-- `set_max_request_body_bytes()` on `HttpServerTransport` and
-  `StreamableHttpSessionManager`, together with
-  `mcp::constants::g_default_max_request_body_bytes` (8 MiB), the new default.
-  A body over the cap is answered `413 Payload Too Large` and its connection
-  closed before MCP dispatch; zero is rejected with `std::invalid_argument`.
-  The default replaces Beast's own 1 MB limit, which admitted only about
-  750 KB of raw content once base64 inflation inside the JSON body is
-  accounted for. The body is read up to the cap before the bearer token is
-  checked, and parsed as JSON only after the origin and bearer checks pass.
-- `ClientOptions::on_protocol_error`, invoked when the client discards an
-  incoming message instead of dispatching it: a message the peer sent that
-  could not be decoded, reported as `g_PARSE_ERROR`, or an exception thrown by
-  an application notification callback, reported as `g_INTERNAL_ERROR` with
-  the notification method in the message. It runs on the read loop and must
-  not block.
-- A build check that every protocol type with a `from_json` is either covered
-  by the peer-input matrix test (`test/core/json_peer_input_matrix_test.cpp`)
-  or excluded with a stated reason, and that the test matches what
-  `scripts/gen_json_matrix.py` generates. It exits 2 for a row whose decoder
-  now throws on an explicit null or an absent key, and the generator refuses
-  to write such a row unless it is named with `--accept-regression`. The
-  check is governed by the new `MCP_CPP_SDK_CHECK_JSON_MATRIX` option: `ON` in
-  a checkout, where a `BUILD_TESTING=ON` build needs Python 3.9+, and `OFF` in
-  source archives, which do not ship the scripts.
-- Documentation for the server-side OAuth challenge work: the OAuth guide now
-  names the protected-resource metadata helpers and the exported bearer and
-  request-path helpers, and renders its example challenge through the
-  server-side API rather than hand-writing the header. The client guide now
-  covers the default 30-second request timeout, including that the typed
-  helpers such as `call_tool()` and `read_resource()` accept no
-  per-request override, that a request outliving it fails with
-  `g_REQUEST_TIMEOUT` while the peer may still be running it, and that no
-  value disables the deadline.
-- `python scripts/build.py --tsan --test` builds and runs the tests under
-  ThreadSanitizer (CMake option `ENABLE_TSAN`), and `--msan --test` under
-  MemorySanitizer, against a libc++ and dependencies it builds instrumented.
-  `--compiler clang` compiles the AddressSanitizer and ThreadSanitizer builds
-  with Clang. CI runs all of them on pushes to `main` and on pull requests
-  into it, and the AddressSanitizer run now also checks for stack use after
-  return.
-- `WebSocketClientTransport` takes a `connect_timeout` (default 30 seconds)
-  that bounds the TCP connect and the WebSocket handshake together. A peer
-  that accepts the connection and then stalls now fails the pending call with
-  a timeout instead of holding it forever. Zero, a negative value, or one too
-  long for the clock to represent, such as `std::chrono::milliseconds::max()`,
-  disables the limit.
+  `ServerCapabilities`.
+- Fixtures and a pinned harness for the official MCP conformance runner, with a
+  CI workflow that fails on any change of the results.
+- Cross-SDK benchmark tooling and results.
+- `ROADMAP.md`, `MAINTENANCE.md`, `VERSIONING.md` and `DEPENDENCY_POLICY.md`,
+  issue templates and a label manifest.
+- `scripts/build.py --tsan` and `--msan` build and run the tests under
+  ThreadSanitizer and MemorySanitizer, and CI runs every sanitizer.
+- CI compiles the README snippets, checks the stdio examples' output, and checks
+  the peer-input coverage of every protocol type's `from_json`.
 
 ### Changed
 
-- The canonical project version is now read from the root `VERSION` file.
-- The documented minimum toolchains and dependency versions are explicit.
-- Implementation moved out of oversized headers into compiled translation
-  units (OAuth, client runtime, protocol tools, memory transport, HTTP
-  types); protocol models and typed handler templates remain header-based.
-- Client requests now time out after 30 seconds by default and fail with
-  `g_REQUEST_TIMEOUT` (`ClientOptions::request_timeout`, or
-  `RequestOptions::timeout` for one `send_request()` call). Previously a
-  request waited until the peer answered.
-- Over an `HttpClientTransport`, `OAuthClientTransport` sends the access
-  token in the HTTP `Authorization: Bearer` header and no longer adds
-  `_meta.auth_token` to requests, so a server that checks tokens with
-  `make_auth_middleware()` rejects them; such a server should use
-  `set_bearer_token_validator()`. Other transports still carry the token in
-  `_meta.auth_token`. The transport refreshes the token on an HTTP 401 or a
-  `-32000` error response; `-32001` is now the client's request timeout code
-  and no longer triggers a refresh.
-- `Client::connect()` throws `McpError` when called a second time, and
-  `send_request()` throws when called before `connect()`.
-- The client rejects an incoming message whose `jsonrpc` member is missing or
-  not `"2.0"` (`ClientOptions::strict_protocol_validation`, on by default):
-  the message is dropped and reported through `ClientOptions::on_protocol_error`.
-- `HttpServerTransport` and `StreamableHttpSessionManager` answer `403` to a
-  request that carries an `Origin` header unless that origin was added with
-  `set_allowed_origins()` or `set_allow_all_origins(true)` was called.
-  Requests without an `Origin` header are unaffected. `Server::run_http()`
-  uses these defaults; to accept browser clients, configure an
-  `HttpServerTransport` and pass it to `Server::run()`.
-- `WebSocketServerTransport` answers `403` to an upgrade request that carries
-  an `Origin` header unless that origin was added with `set_allowed_origins()`
-  or `set_allow_all_origins(true)` was called. Upgrades without an `Origin`
-  header are unaffected. Previously every upgrade was accepted.
-- A server session enforces the initialization sequence: until
-  `notifications/initialized` arrives, every request other than `initialize`,
-  `ping` and `server/discover` is answered with `g_INVALID_REQUEST`, and a
-  second `initialize` within a session is rejected. When `Server::run()` is given an
-  `HttpServerTransport` (not a transport that wraps one), a session the client
-  ended with `DELETE` is over, and the next client must send `initialize` to
-  start a new one. Nothing of the ended session reaches the next one: its
-  events are not replayed, its resource subscriptions deliver no updates, its
-  handlers' responses, notifications and requests are not sent, and the log
-  level is reset to the default. Its requests still waiting for an answer are
-  answered with `404`.
-- `HttpServerTransport` and `StreamableHttpSessionManager` answer a request
-  whose id is neither a string nor an integer with `400` and a `-32600`
-  error response.
-- Tool results are always sent as a `CallToolResult`. A value returned by a
-  JSON tool handler, or by a typed handler whose result type is not
-  `CallToolResult`, is sent unchanged only when it is an object made of
-  `CallToolResult` members (`content`, `structuredContent`, `isError`,
-  `_meta`) that decodes as one; an object whose only member is an empty
-  `content` array is not. Any other value is wrapped: an object becomes
-  `structuredContent` with its serialization as the text block, a string
-  becomes the text block, and any other value is serialized into the text
-  block. Previously a value was sent as the result unchanged, except that a
-  tool with an `outputSchema` also had it copied into `structuredContent`.
-  `add_raw_tool()` handlers must return a valid `CallToolResult`, and a tool
-  with an `outputSchema` must return `structuredContent`.
-- A `std::exception` thrown by any tool handler, typed and asynchronous ones
-  included, is answered with a tool error result (`isError: true`) carrying
-  the exception message. Previously only the synchronous JSON `add_tool()`
-  overload did this, and other tool handlers' exceptions were answered with
-  `-32603`. Resource and prompt handler exceptions are still answered with
-  `-32603`.
-- Request params that fail to decode are answered with `-32602` (previously
-  `-32603`). A message the server cannot parse is answered with `-32700` and
-  the session stays open; previously the session ended.
-- Registering a second tool, resource, prompt or resource template with the
-  same name, URI or URI template throws `std::invalid_argument`.
-- `HttpServerTransport` and `StreamableHttpSessionManager` accept
-  configuration only before `listen()`, and `listen()` only once; later calls
-  throw `std::logic_error`. A second concurrent `read_message()` on the
-  stdio, WebSocket or HTTP transports throws `std::logic_error`.
-- `Server::run()` waits for in-flight handlers before it returns, and throws
-  if the server already has an active session.
-- The client closes the connection when the server picks a protocol version
-  outside the client's supported list. It advertises the `roots` capability
-  on its own once a `roots/list` handler is registered, and
-  `set_roots(..., true)` sends `notifications/roots/list_changed` only when
-  the client's own `roots.listChanged` capability is set.
-- A response is matched to its request by id value and type, as JSON-RPC
-  requires: a server that answers a string id `"1"` with the number `1` is
-  no longer matched, and the request runs into its timeout.
-- `Client::close()` and `~Client()` mark the client closed at once and close
-  the transport on the client's strand, so the transport closes when the
-  `io_context` next runs rather than inside the call.
-- `StdioTransport::read_message()` still returns lines that were read before
-  `close()`; it throws only once they are consumed.
-- Decoding a JSON-RPC message requires `"jsonrpc": "2.0"`, decoding a content
-  block requires the matching `type`, and an error response without an id is
-  written with `"id": null`.
-- `HttpClientTransport::session_id()` and `last_event_id()` return
-  `std::string` by value.
-- Documentation guides and feature examples refreshed to match the compiled
-  runtime split.
-- Less work per request in `StreamableHttpSessionManager` sessions: responses
-  are routed by their id without parsing the whole message, the session's
-  read loops and response waits end without throwing, and `MemoryTransport`
-  writes go straight to the peer's strand. Tool results and typed tool
-  registrations are moved rather than copied, and a `tools/list` page is
-  serialized from the registered tools without first copying them.
-- OAuth protected-resource metadata must carry the RFC 9728 `resource`
-  member, and it must identify the configured server (an exact match or an
-  origin/segment-boundary prefix); a document that fails either check is
-  rejected. Previously any document was accepted.
-- `OAuthHttpClient` constructed without a `MetadataFetchPolicy` now refuses
-  every request (deny-all default) instead of allowing any target; callers
-  must supply an explicit policy. No policy lets it reach a host other than
-  a loopback address: it refuses plain `http` to any other host and has no
-  TLS support for `https`, so token refresh against such a host no longer
-  works.
-- `OAuthClientTransport` follows an HTTP `401` into the authorization flow its
-  `WWW-Authenticate` challenge names when renewing the access token is not
-  possible or the renewed token is refused too, renewing at most once and
-  authorizing for a `401` at most once per request; a `403` whose challenge
-  carries `error="insufficient_scope"` goes straight to that flow. Previously an authentication failure got one refresh
-  and one retry. `Authenticator` gains `try_handle_challenge()`,
-  `cancel_pending()` and `close()`, which changes its layout.
-- Closing an `OAuthClientTransport` cancels the authorization work its
-  authenticator has in flight, through `cancel_pending()`, and leaves the
-  authenticator usable, so a new transport over the same `OAuthAuthenticator`
-  or `OAuthAuthorizationManager` can still refresh and authorize. A write still
-  retrying on the closed transport fails without asking the authenticator for a
-  new refresh or authorization; one it started while the transport was closing
-  is cancelled through `cancel_pending()` and waited for. Calling `close()` on
-  the authenticator itself is permanent.
-- `OAuthAuthenticator` rejects a null `OAuthHttpClient` with
-  `std::invalid_argument` when constructed, and its `close()` ends only the
-  requests it issued, leaving the client usable by anyone else sharing it.
-- Challenges that arrive while `OAuthAuthorizationManager` is already
-  authorizing wait for that attempt, and each of them reports its outcome,
-  rethrowing the same exception when it fails. Refreshes that overlap share
-  one refresh grant in the same way, and only the refresh that leads it reads
-  the refresh token, so none sends a token another refresh already replaced in
-  the store.
-- `scripts/build.py --sanitize --test` runs with LeakSanitizer enabled.
-- An optional member serialized as an explicit `null` is now read the same way
-  as an absent one. The protocol `from_json` overloads test presence through
-  the new `detail::has_json_value` helper instead of `contains()`, which
-  previously accepted the null and then threw when the value was extracted;
-  this covers `Error::data`, `RelatedTaskMetadata::title`, `TaskMetadata`'s
-  `ttl` and `relatedTasks`, request and notification `params`, response `id`
-  and `error`, and the notification `_meta`, `reason`, `total`, `message`,
-  `logger` and `metadata` members. An `Error` whose `message` is missing or
-  null now decodes to an empty message rather than throwing, so the `code` a
-  caller acts on survives. The server reads a null `error` member as absent
-  when validating request, notification and response envelopes and when
-  dispatching a response, and a null notification `params` as no params. The
-  client is asymmetric on purpose: a null `error` is the absence of an error,
-  while a null `result` is a legitimate empty result and still counts as
-  present. The same treatment covers the optional members of the protocol
-  types a peer's payload reaches: `description`, `mimeType`, `size`, `title`
-  and `icons` on `Resource` and `ResourceTemplate`; `description`, `title`,
-  `icons` and `execution` on `Tool`; and `isError` on both `CallToolResult`
-  and `ToolResultContent`.
-- A peer whose serializer writes absent optionals as explicit nulls could not
-  complete initialization at all. `clientInfo` is an `Implementation`, whose
-  `from_json` guarded `title`, `description`, `websiteUrl` and `icons` with a
-  bare presence test, so `"clientInfo": {"name": "x", "version": "1",
-  "title": null}` failed to decode and the `initialize` request was answered
-  `-32602`. Because `initialize` is the peer's first message, the failure was
-  unconditional: no such client could connect at all. Those members are now
-  read as absent when they arrive as null.
-- Explicit nulls in request parameters that previously drew `-32602` are now
-  read as absent: `arguments` on `prompts/get`, `context.arguments` on
-  `completion/complete`, and the pagination `cursor`, where `"cursor": null`
-  on a list request was rejected as an invalid cursor instead of returning the
-  first page. `CallToolParams::arguments` is deliberately unchanged: it is a
-  required member carrying a shape rule rather than an optional one, so
-  rejecting a null there remains correct.
-- An explicit null `_meta` or `annotations` no longer decodes to a value the
-  peer never sent. Unlike the members above these never threw: the guard
-  accepted the null and produced an engaged optional, so the SDK re-emitted
-  `"_meta": null` and turned `"annotations": null` into `"annotations": {}` —
-  a structurally present `Annotations` that a consumer reads as "annotations
-  supplied, carrying no constraints" rather than as none at all. Neither side
-  saw anything wrong, which is what made this worse than a rejection. The
-  affected members are `_meta` and `annotations` on `Resource`,
-  `ResourceTemplate`, `Tool`, `CallToolResult` and `ToolResultContent`,
-  `Tool::outputSchema`, `structuredContent` on `CallToolResult` and
-  `ToolResultContent`, and `CallToolParams::_meta` on the `tools/call` path.
-- The remaining optional members of the protocol types read an explicit null
-  as absent too: the capability flags (`listChanged`, `subscribe` and
-  `extensions` on both sides), `cursor` and `nextCursor` on every list request
-  and result, and the optional members of `Annotations`, `Icon`, `Prompt`,
-  `PromptArgument`, `ResourceLink`, `Root`, `ToolAnnotations`, the sampling and
-  elicitation types, completion results and tasks. Before this, `initialize`
-  was answered `-32602` when a client sent `"roots": {"listChanged": null}`,
-  and `connect()` or a `list_*` call threw when a server sent
-  `"listChanged": null` or `"nextCursor": null`.
-- A `resources/read` URI longer than 512 characters is now answered
-  `-32602` naming the limit instead of being matched against the resource
-  templates. Exact resource lookups happen first and are unaffected by the
-  limit.
-- Resource templates are matched without `std::regex`, in time linear in the
-  URI's length. A URI that nearly matches a template whose expressions are
-  separated by a literal their values may also contain, such as
-  `metrics://{year}-{month}-{day}-{hour}`, is answered at once instead of
-  holding the server's executor while a backtracking matcher tries every split.
-- Messages from a peer that nest arrays and objects more than 128 levels deep
-  are refused before they are decoded: the server answers `-32700`, the client
-  drops the message and reports it through `ClientOptions::on_protocol_error`,
-  and the HTTP transports answer `400`. Copying a decoded document recurses
-  once per level, so a request of a few hundred kilobytes made of nothing but
-  brackets could exhaust the stack and crash the process.
-- A resource URI template with two adjacent expressions is rejected at
-  registration with `std::invalid_argument` when the boundary between them is
-  ambiguous: the second expression has no leading literal (`{a}{b}`,
-  `{a}{+b}`), or its literal can occur in the first expression's value
-  (`{name}{.ext}`, `{+path}{/segment}`). Any split of a URI between two such
-  expressions would match, so their values would be ambiguous. Adjacent
-  expressions with a decidable boundary, such as
-  `{+path}{?query}` and `{id}{#section}`, are accepted.
-- A tool handler that throws something not derived from `std::exception` is
-  answered with a tool error result carrying the fixed text
-  `Tool handler failed`, and every tool exception message is flattened and
-  length-bounded before it reaches the peer. Such a throw from a resource or
-  prompt handler, or from middleware, still ends the request without a
-  response.
-- Middleware runs outside the tool handler's exception guard. An exception
-  thrown by middleware is answered with `-32603` for every request kind,
-  `tools/call` included, since middleware decides whether a call may proceed
-  at all. A tool handler's exception reaches middleware as an `isError`
-  result rather than as an exception. `make_auth_middleware()` answers a
-  missing or refused token with a tool error result on `tools/call` and with
-  `-32603` on `resources/read` and `prompts/get`, without invoking the
-  handler.
-- An incoming message the client cannot decode no longer ends the session.
-  Only a failure of `read_message()` — the peer hung up, the socket died, the
-  client was closed — fails pending requests and closes the transport;
-  anything that goes wrong after the bytes are off the wire is reported
-  through `ClientOptions::on_protocol_error` and the message is dropped.
-- An explicit `ProtectedResourceMetadataConfig::path` is now validated rather
-  than concatenated onto the origin verbatim. A path that does not begin with
-  `/` is rejected with `std::invalid_argument`, as is one carrying a `.` or
-  `..` whole segment. Previously `path = "evil"` produced `https://hevil` — a
-  corrupted authority rather than merely a bad path — and `path = "/../../x"`
-  was published unresolved. Only whole segments count, so a path such as
-  `/.well-known/a..b/c.d` is still accepted; dots inside a segment are
-  ordinary characters, and refusing them would refuse the well-known prefix
-  the derivation itself produces. The function does not normalize, and its
-  result is published to clients as the authoritative location of the
-  document, so an unusable path is refused rather than advertised. The
-  transport and session-manager setters reject it at configuration time and
-  leave the server unchanged.
-- A `Server` may now be destroyed while a session started with `run()` still
-  has handlers in flight. The implementation outlives the `Server` until that
-  work finishes, so such a handler no longer runs against freed state. Work
-  started through `dispatch()`, `dispatch_request_direct()` or the
-  `notify_*()` calls does not extend it, so the `Server` must outlive those. A
-  reverse request issued from a handler whose `Server` is gone throws
-  `std::runtime_error` naming that cause instead of faulting — distinct from
-  the failure reported for a session that is merely closing. Destroying a
-  `Server` from a thread other than the one running its session no longer
-  races on that session's request maps either: those entries are abandoned on
-  the session strand, which is the only executor permitted to touch them.
-- A session is now unregistered even when teardown throws — a transport that
-  throws from `close()`, or a drain wait that fails for any reason other than
-  cancellation. Previously such a failure left the session registered and
-  every later `run()` was refused for the lifetime of the `Server`.
-- Closing an OAuth client transport from a thread that does not run the
-  `io_context` could be lost while a metadata lookup was resolving: the close
-  found no socket to shut, and the flow went on to connect and blocked until
-  the HTTP timeout. The abort latch is now checked again just before the
-  connection is opened. `OAuthHttpClient` also keeps every request on the
-  client's one strand, so this holds when several threads run the `io_context`.
-  A request used to leave that strand at its first suspension, so a close could
-  run on another thread at the same time: a data race on the socket that could
-  crash, or a close lost in the instant before the socket opened. Callers are
-  still resumed on their own executor and never on the client's strand,
-  including a caller that has been cancelled. An installed `HostResolver` is
-  called on that strand too, so one that blocks holds up every other request
-  on the client and the closes that end them; it must return promptly.
-- Closing `HttpClientTransport` or `WebSocketClientTransport` from a thread
-  that does not run the `io_context` could be lost while the transport was
-  resolving its server's address: the close found no socket to act on, and the
-  transport went on to connect. The HTTP write blocked until the HTTP timeout,
-  and the WebSocket connect waited on its handshake with no limit. Both
-  transports now check for the close again once the address is known and fail
-  the pending call instead of connecting. For `WebSocketClientTransport` this
-  holds however many threads run the `io_context`.
-- `HttpClientTransport::close()` now closes the socket of a write that is in
-  flight instead of cancelling its pending operation once. A close that arrived
-  between two socket operations, or just after one had completed, cancelled
-  nothing and the write carried on until the HTTP timeout; with several threads
-  running the `io_context` that included a close racing the connect. The write
-  now fails promptly in each of these cases, however many threads run the
-  `io_context`, and reports `operation_aborted` on every platform, whatever the
-  closed socket itself reported. The session `DELETE` that `close()` sends
-  afterwards uses a new connection. It already did after a cancelled write;
-  when the response had already arrived as `close()` ran, it used to reuse the
-  write's connection and now opens a new one as well.
+- Client requests time out after 30 seconds by default and fail with
+  `g_REQUEST_TIMEOUT` (`ClientOptions::request_timeout`).
+- Over HTTP, `OAuthClientTransport` sends the access token in the
+  `Authorization` header instead of `_meta.auth_token`.
+- `OAuthClientTransport` follows a `401` or an `insufficient_scope` `403` into
+  the authorization flow its challenge names.
+- The HTTP and WebSocket servers answer `403` to a request whose `Origin` header
+  names an origin that is not allowed.
+- A server session enforces the initialization sequence, and a session the
+  client ended with `DELETE` is over.
+- Tool results are always sent as a `CallToolResult`, and a `std::exception`
+  from any tool handler is answered with an `isError` result.
+- Middleware runs outside the tool handler's exception guard; its exceptions are
+  answered `-32603`.
+- Params that fail to decode are answered `-32602`, and a message the server
+  cannot parse is answered `-32700` without ending the session.
+- An incoming message the client cannot decode is dropped and reported instead
+  of ending the session.
+- An optional member sent as an explicit `null` reads as absent in every
+  protocol type.
+- Registering a second tool, resource, prompt or resource template under the
+  same name or URI throws `std::invalid_argument`.
+- The HTTP servers accept configuration only before `listen()`, and a second
+  concurrent `read_message()` on a transport throws `std::logic_error`.
+- `Server::run()` waits for its handlers before it returns, and a `Server` may
+  be destroyed while a session still has handlers running.
+- `Client::connect()` throws when called twice, and the client rejects a message
+  without `"jsonrpc": "2.0"`.
+- A response is matched to its request by id value and type.
+- Resource templates are matched in time linear in the URI's length, and an
+  ambiguous template is refused at registration.
+- Messages nested more than 128 levels deep and `resources/read` URIs longer
+  than 512 characters are refused.
+- OAuth protected-resource metadata must name the configured server, and an
+  `OAuthHttpClient` without a `MetadataFetchPolicy` refuses every request.
+- Closing a client transport, `OAuthHttpClient` or `OAuthClientTransport` from
+  another thread takes effect at once.
+- The project version is read from the root `VERSION` file, and the minimum
+  toolchains and dependency versions are documented.
+- Implementation moved out of the headers into compiled translation units.
 
 ### Fixed
 
 - `HttpClientTransport` opens a new connection after a response with
-  `Connection: close`; previously the next request was written to the closed
-  connection and failed.
-- `HttpServerTransport` no longer takes a request the server sends to the
-  client for the response to a client request that has the same id.
-- `HttpClientTransport` and `OAuthHttpClient` no longer end the process when
-  a request's 30-second deadline passes between two of its socket operations,
-  for example while the io thread is busy as the response arrives; Boost.Beast
-  1.86 aborts when an operation starts after its stream's deadline. The
-  deadline now closes the socket, and the request fails with
-  `boost::beast::error::timeout`.
+  `Connection: close`.
+- `HttpServerTransport` no longer takes a request the server sends for the
+  response to a client request with the same id.
+- `HttpClientTransport` and `OAuthHttpClient` no longer end the process when a
+  request's deadline passes between two socket operations.
 
 ### Security
 
-- HTTP session ids for `HttpServerTransport` and
-  `StreamableHttpSessionManager` are generated with OpenSSL's `RAND_bytes`
-  instead of `std::mt19937`, which is not a cryptographic generator.
-- Text a peer controls (URLs, hosts, issuers, metadata fields, response
-  bodies) is cleaned before it appears in an OAuth exception message: cut to
-  256 bytes, with line breaks and bidirectional controls replaced by spaces and
-  ill-formed UTF-8 replaced by `?`, so it cannot forge or reorder log lines.
-  The helper is `mcp::detail::sanitize_for_diagnostics()`.
+- HTTP session ids are generated with OpenSSL's `RAND_bytes`.
+- Text a peer controls is cleaned before it appears in an OAuth exception
+  message.

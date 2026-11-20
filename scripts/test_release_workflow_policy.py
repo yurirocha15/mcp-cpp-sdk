@@ -407,6 +407,64 @@ class ReleaseWorkflowPolicyTests(unittest.TestCase):
             )
         )
 
+    def graph_error(self, blocks=None, candidate_blocks=None) -> None:
+        self.assert_policy_error(
+            lambda: policy.check_job_graph(
+                self.blocks if blocks is None else blocks,
+                self.combined_text,
+                self.candidate_blocks if candidate_blocks is None else candidate_blocks,
+                self.publication_blocks,
+            )
+        )
+
+    def test_secret_jobs_wait_for_the_run_approval(self) -> None:
+        for job in (*policy.PREFLIGHT_CONDITIONS, "candidate"):
+            with self.subTest(job=job):
+                blocks = self.copied(self.blocks)
+                blocks[job] = [line for line in blocks[job] if line != "      - run-approval"]
+                self.graph_error(blocks)
+        blocks = self.copied(self.blocks)
+        blocks["run-approval"] = [
+            line for line in blocks["run-approval"] if line != "      - repository-readiness"
+        ]
+        self.graph_error(blocks)
+
+    def test_publishing_jobs_wait_for_the_publication_approval(self) -> None:
+        for job in ("attestation", "github-release", "publication"):
+            with self.subTest(job=job):
+                blocks = self.copied(self.blocks)
+                blocks[job] = [
+                    line for line in blocks[job] if line != "      - publication-approval"
+                ]
+                self.graph_error(blocks)
+        blocks = self.copied(self.blocks)
+        blocks["publication-approval"] = [
+            line for line in blocks["publication-approval"] if "    if: " not in line
+        ]
+        self.graph_error(blocks)
+
+    def test_approval_jobs_hold_no_secrets(self) -> None:
+        for job in ("run-approval", "publication-approval"):
+            with self.subTest(job=job):
+                blocks = self.copied(self.blocks)
+                blocks[job] = [*blocks[job], "        run: echo ${{ secrets.CLOUDSMITH_API_KEY }}"]
+                self.graph_error(blocks)
+
+    def test_chocolatey_package_is_validated_before_the_anchor(self) -> None:
+        candidate_blocks = self.copied(self.candidate_blocks)
+        candidate_blocks["package-validation-gate"] = [
+            line.replace("--chocolatey-result", "--skip-result")
+            for line in candidate_blocks["package-validation-gate"]
+        ]
+        self.graph_error(candidate_blocks=candidate_blocks)
+        candidate_blocks = self.copied(self.candidate_blocks)
+        candidate_blocks["validate-chocolatey-package"] = [
+            line
+            for line in candidate_blocks["validate-chocolatey-package"]
+            if line != "      - candidate-gate"
+        ]
+        self.graph_error(candidate_blocks=candidate_blocks)
+
     def test_rejects_inline_python_or_missing_policy_hook(self) -> None:
         self.assert_policy_error(
             lambda: policy.check_delegation_and_ci(self.blocks, self.text + "\npython3 - <<'PY'")

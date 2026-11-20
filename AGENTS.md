@@ -9,6 +9,10 @@
 - Use conventional commit format for every commit subject, matching `docs/contributing.rst`: `feat:`, `fix:`, `docs:`, `style:`, `refactor:`, `perf:`, `test:`, `build:`, `ci:`, or `chore:` followed by an imperative summary under 80 characters.
 - Before pushing, check branch commit subjects with `git log --format='%s' <base>..HEAD` and reword any non-conforming commits.
 
+## Changelog
+
+- Give each change users notice one entry under `## [Unreleased]` in `CHANGELOG.md`, as `docs/contributing.rst` describes: one sentence of at most 200 characters about what changed for users. The documentation holds the details.
+
 ## CI guardrails
 
 - Keep example runner status output ASCII-only. Windows GitHub runners can use legacy console encodings such as cp1252, so Unicode symbols in `scripts/run_examples.py` can fail before examples finish.

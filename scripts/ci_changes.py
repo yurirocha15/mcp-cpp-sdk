@@ -7,11 +7,18 @@ reads changed. The exception is the C++ that the code jobs compile from the
 documentation: a change to README.md counts for them when its C++ blocks differ,
 and a change to an rst file when its complete programs differ.
 
-The package builds take most of a run's runner time, so pull requests skip them
-and pushes to main run them, for the source they build as well as for their own
-inputs. A pull request still constructs the source archive and recipes when it
-changes what they read. A manual run builds the packages on any branch, and the
-release workflow builds and validates every package again before publishing.
+The package builds take most of a run's runner time, so a pull request runs one
+only when it changes that package's own inputs, such as its packaging files,
+VERSION or its build scripts, and not for the build files and source that every
+package builds (PULL_REQUEST_UNPACKAGED). Pushes to main run them for both. A pull
+request still constructs the source archive and recipes when it changes what
+they read. A manual run builds the packages on any branch, and the release
+workflow builds and validates every package again before publishing.
+
+The release checks also read the text in the documentation that names the
+release version (release/version_bump.py PINS), so a change to that text counts
+for them, and CHANGELOG.md, whose entries they check and from which the release
+notes are written.
 
 conformance.yml, conformance-guards.yml and docs.yml filter their own triggers
 with `paths:`, and CodeQL is GitHub's default setup, which has no path filter.
@@ -22,11 +29,15 @@ the event runs.
 """
 import argparse
 import fnmatch
+from pathlib import Path
 import re
 import subprocess
 import sys
 
 from check_doc_snippets import snippets_in_text
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from release.version_bump import PINS  # noqa: E402
 
 # ci.yml defines every job, so a change to it needs them all.
 CI_WORKFLOW = ".github/workflows/ci.yml"
@@ -84,6 +95,7 @@ PACKAGE_CORE = (
     "release/native_builder_lock.py",
     "release/native_targets.py",
     "release/publication_contract.py",
+    "release/release_notes.py",
     "release/source-archive-inventory.txt",
     "release/strict_json.py",
     "release/templates.py",
@@ -173,6 +185,14 @@ JOB_INPUTS = {
     ),
 }
 PACKAGE_JOBS = frozenset({"native_package", "homebrew_package", "windows_package"})
+# Package inputs that most changes touch. A pull request does not build the packages for them.
+PULL_REQUEST_UNPACKAGED = (
+    ".gitattributes",
+    "CMakeLists.txt",
+    "cmake/*",
+    "conanfile.py",
+    "third_party/*",
+)
 # Source a package builds and tests. Events other than pull_request package these as well.
 PACKAGED_SOURCE = LIBRARY + TESTS + (
     "LICENSE",
@@ -182,6 +202,8 @@ PACKAGED_SOURCE = LIBRARY + TESTS + (
     "scripts/run_examples.py",
 )
 # Same block syntax as scripts/check_readme_snippets.py.
+# The release checks read it, though no job reads the other Markdown files.
+CHANGELOG = "CHANGELOG.md"
 CPP_FENCE_RE = re.compile(r"^```cpp\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 ZERO_SHA = "0" * 40
 
@@ -211,6 +233,15 @@ def doc_programs(revision, path):
     return [body for _, body in snippets_in_text(text) if "int main(" in body]
 
 
+def version_pins(revision, path):
+    """Return the text that names the release version in a file; an absent file has none."""
+    try:
+        text = git("show", f"{revision}:{path}")
+    except subprocess.CalledProcessError:
+        return []
+    return [match.group(0) for pin in PINS if pin.path == path for match in pin.pattern().finditer(text)]
+
+
 def changed_files(base, head):
     """Return the changed paths, or an empty list when the change cannot be determined."""
     if not base or base == ZERO_SHA:
@@ -223,19 +254,32 @@ def changed_files(base, head):
 
 def jobs_reading(path, event):
     if path == CI_WORKFLOW:
-        return set(JOB_INPUTS)
+        return all_jobs(event)
     if matches(path, NO_JOB_PATTERNS):
         return set()
     jobs = {job for job, patterns in JOB_INPUTS.items() if matches(path, patterns)}
-    if event != "pull_request" and matches(path, PACKAGED_SOURCE):
+    if event == "pull_request":
+        if matches(path, PULL_REQUEST_UNPACKAGED):
+            jobs -= PACKAGE_JOBS
+    elif matches(path, PACKAGED_SOURCE):
         jobs |= PACKAGE_JOBS
-    return jobs or set(JOB_INPUTS)
+    return jobs or all_jobs(event)
+
+
+def all_jobs(event):
+    """Every job the event runs when a change cannot be narrowed down."""
+    jobs = set(JOB_INPUTS)
+    if event == "pull_request":
+        jobs -= PACKAGE_JOBS
+    return jobs
 
 
 def needed_jobs(event, base, head):
     changed = changed_files(base, head)
-    if event == "workflow_dispatch" or not changed:
+    if event == "workflow_dispatch":
         jobs = set(JOB_INPUTS)
+    elif not changed:
+        jobs = all_jobs(event)
     else:
         jobs = set().union(*(jobs_reading(path, event) for path in changed))
         if "README.md" in changed and readme_cpp_blocks(base) != readme_cpp_blocks(head):
@@ -243,10 +287,13 @@ def needed_jobs(event, base, head):
         if any(doc_programs(base, path) != doc_programs(head, path)
                for path in changed if path.endswith(".rst")):
             jobs.add("code")
-        if jobs & PACKAGE_JOBS:
-            jobs.add("package_core")
-    if event == "pull_request":
-        jobs -= PACKAGE_JOBS
+        if any(version_pins(base, path) != version_pins(head, path)
+               for path in changed if path in {pin.path for pin in PINS}):
+            jobs.add("release")
+        if CHANGELOG in changed:
+            jobs.add("release")
+    if jobs & PACKAGE_JOBS:
+        jobs.add("package_core")
     return jobs
 
 

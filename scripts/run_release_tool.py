@@ -13,6 +13,7 @@ import sys
 _ALLOWED_MODULES = frozenset(
     {
         "release.assemble_unsigned",
+        "release.chocolatey_validation",
         "release.aur_preflight",
         "release.aur_ssh",
         "release.aur_validation",

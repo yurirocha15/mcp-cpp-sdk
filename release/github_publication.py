@@ -367,7 +367,7 @@ def verify_live_repository_policy(
     )
 
 
-def _release_assets(directory: Path) -> tuple[Path, tuple[Path, ...]]:
+def release_assets(directory: Path) -> tuple[Path, tuple[Path, ...]]:
     """Return the release notes and the exact regular-file upload inventory."""
 
     if directory.is_symlink() or not directory.is_dir():
@@ -414,7 +414,7 @@ def create_release(
         raise PublicationPolicyError("release kind differs from the canonical tag")
     if type(repository_id) is not int or repository_id < 1:
         raise PublicationPolicyError("repository ID is malformed")
-    notes, assets = _release_assets(directory)
+    notes, assets = release_assets(directory)
     verify_live_github_tag(
         repository=repository,
         tag=tag,

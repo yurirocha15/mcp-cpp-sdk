@@ -26,13 +26,20 @@ def require_package_validation(
     conan_linux_result: str,
     conan_windows_result: str,
     aur_result: str,
+    chocolatey_result: str,
 ) -> None:
     """Require exact package-manager behavior before a stable anchor exists."""
     if release_kind not in {"stable", "rc"}:
         raise WorkflowGateError("release kind is malformed")
     expected = "success" if release_kind == "stable" and not anchor_exists else "skipped"
-    observed = (homebrew_result, conan_linux_result, conan_windows_result, aur_result)
-    if observed != (expected,) * 4:
+    observed = (
+        homebrew_result,
+        conan_linux_result,
+        conan_windows_result,
+        aur_result,
+        chocolatey_result,
+    )
+    if observed != (expected,) * len(observed):
         raise WorkflowGateError("pre-anchor package validation has an unexpected result")
 
 
@@ -54,6 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     packages.add_argument("--conan-linux-result", required=True)
     packages.add_argument("--conan-windows-result", required=True)
     packages.add_argument("--aur-result", required=True)
+    packages.add_argument("--chocolatey-result", required=True)
     return parser
 
 
@@ -70,6 +78,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 conan_linux_result=args.conan_linux_result,
                 conan_windows_result=args.conan_windows_result,
                 aur_result=args.aur_result,
+                chocolatey_result=args.chocolatey_result,
             )
         else:
             raise AssertionError(f"unhandled workflow gate: {args.command}")
