@@ -2,6 +2,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/core/runtime.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -203,6 +204,128 @@ TEST_F(ServerHandlersTest, SyncToolRunsOnTheHandlerExecutor) {
     ASSERT_EQ(responses.size(), 2);
     EXPECT_FALSE(responses[1]["result"].value("isError", false)) << responses[1];
     EXPECT_EQ(handler_thread, pool_thread_id);
+}
+
+// run_stdio() and run_http() destroy their event loop once the shutdown deadline passes, and a
+// tool handler on the handler executor may still be running then. When it returns, its answer
+// cannot go to that loop, and the server is destroyed afterwards without reaching it either.
+TEST(ServerHandlerPoolTest, AHandlerThatOutlivesItsEventLoopEndsWithoutIt) {
+    boost::asio::thread_pool pool(1);
+    std::promise<void> started;
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool.get_executor());
+    server->add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
+                     [&started, released](const nlohmann::json&) -> nlohmann::json {
+                         started.set_value();
+                         released.wait();
+                         return "done";
+                     });
+
+    auto io_ctx = std::make_unique<boost::asio::io_context>();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx->get_executor());
+    transport->enqueue_message(make_initialize_request("1").dump());
+    transport->enqueue_message(make_initialized_notification().dump());
+    transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "block"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    boost::asio::co_spawn(*io_ctx, server->run(transport, io_ctx->get_executor()),
+                          boost::asio::detached);
+    std::thread loop([&io_ctx] { io_ctx->run(); });
+    started.get_future().wait();
+    io_ctx->stop();
+    loop.join();
+    transport.reset();
+    io_ctx.reset();
+
+    release.set_value();
+    pool.join();
+    server.reset();
+}
+
+// The same, when the handler executor ends before the handler's result is delivered, as when its
+// Runtime is destroyed after the loop.
+TEST(ServerHandlerPoolTest, AHandlerWhoseExecutorEndsAfterItsEventLoopEndsWithoutIt) {
+    auto pool = std::make_unique<mcp::Runtime>();
+    pool->start(1);
+    std::promise<void> started;
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool->executor());
+    server->add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
+                     [&started, released](const nlohmann::json&) -> nlohmann::json {
+                         started.set_value();
+                         released.wait();
+                         return "done";
+                     });
+
+    auto io_ctx = std::make_unique<boost::asio::io_context>();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx->get_executor());
+    transport->enqueue_message(make_initialize_request("1").dump());
+    transport->enqueue_message(make_initialized_notification().dump());
+    transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "block"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    boost::asio::co_spawn(*io_ctx, server->run(transport, io_ctx->get_executor()),
+                          boost::asio::detached);
+    std::thread loop([&io_ctx] { io_ctx->run(); });
+    started.get_future().wait();
+    io_ctx->stop();
+    loop.join();
+    transport.reset();
+    io_ctx.reset();
+
+    pool->stop();
+    release.set_value();
+    pool.reset();
+    server.reset();
+}
+
+// When the handler executor ends while a tool handler runs on it and the server's loop goes on,
+// the call ends with a tool error on that loop.
+TEST_F(ServerHandlersTest, AToolCallFailsWhenTheHandlerExecutorEndsFirst) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    auto pool = std::make_unique<mcp::Runtime>();
+    pool->start(1);
+    setup.server.set_handler_executor(pool->executor());
+    std::promise<void> started;
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    setup.server.add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
+                          [&started, released](const nlohmann::json&) -> nlohmann::json {
+                              started.set_value();
+                              released.wait();
+                              return "done";
+                          });
+    std::thread ender([&] {
+        started.get_future().wait();
+        pool->stop();
+        release.set_value();
+        pool.reset();
+    });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "block"}, {"arguments", nlohmann::json::object()}}}});
+    ender.join();
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_TRUE(responses[1]["result"].value("isError", false)) << responses[1];
+    EXPECT_NE(responses[1].dump().find("ended before the handler returned"), std::string::npos)
+        << responses[1];
 }
 
 TEST_F(ServerHandlersTest, SyncHandlersRunThroughMiddleware) {

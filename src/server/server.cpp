@@ -1,5 +1,6 @@
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/handler_pool.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/modern_methods.hpp"
@@ -2360,6 +2361,29 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
         }
         this->session = session;
     }
+    // The end below unregisters the session. When the event loop is destroyed while this coroutine
+    // waits, as run_stdio() and run_http() destroy theirs once the shutdown deadline passes, the
+    // session is unregistered here instead, so that ~Server does not reach the destroyed loop.
+    class Unregister {
+       public:
+        Unregister(Impl& impl, const std::shared_ptr<Session>& session)
+            : impl_(impl), session_(session) {}
+        Unregister(const Unregister&) = delete;
+        Unregister& operator=(const Unregister&) = delete;
+        Unregister(Unregister&&) = delete;
+        Unregister& operator=(Unregister&&) = delete;
+        ~Unregister() {
+            std::lock_guard lock(impl_.session_mutex);
+            if (impl_.session == session_) {
+                impl_.session.reset();
+            }
+        }
+
+       private:
+        Impl& impl_;
+        const std::shared_ptr<Session>& session_;
+    };
+    const Unregister unregister(*this, session);
 
     lifecycle.store(Impl::LifecycleState::eUninitialized, std::memory_order_relaxed);
     shutdown_requested.store(false, std::memory_order_relaxed);
@@ -3871,8 +3895,8 @@ Task<nlohmann::json> Server::Impl::call_on_handler_strand(const TypeErasedHandle
                                                           Context& ctx,
                                                           const nlohmann::json& arguments) {
     if (handler_executor) {
-        co_return co_await detail::spawn_awaitable(detail::make_strand_executor(*handler_executor),
-                                                   call_handler(handler, ctx, arguments));
+        co_return co_await detail::run_on_pool(*handler_executor,
+                                               call_handler(handler, ctx, arguments));
     }
     auto executor = co_await boost::asio::this_coro::executor;
     if (detail::is_strand_executor(executor)) {
