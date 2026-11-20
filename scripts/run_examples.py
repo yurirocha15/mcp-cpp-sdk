@@ -304,6 +304,10 @@ def run_sync_examples(build_dir):
                           [str(client_path), f"http://127.0.0.1:{port}/mcp"], expected,
                           should_succeed)
         stdout, stderr = stop_server(process)
+        # On Windows the server is terminated, which gives it no exit status of its own.
+        if ok and sys.platform != "win32" and process.returncode != 0:
+            print(f"example-{mode}-{server} ended with exit code {process.returncode} on SIGINT")
+            ok = False
         if not ok:
             print_process_output(subprocess.CompletedProcess([], process.returncode, stdout, stderr))
         record(ok)
