@@ -162,6 +162,8 @@ class ClassifierTests(unittest.TestCase):
             "test/core/protocol_test.cpp": {"code"},
             "test/data/json-schema/suite.json": {"code", "release"},
             "test/pipe_stream.hpp": {"code"},
+            "test/perf/schema_workload.cpp": {"code"},
+            "scripts/schema_ir_gate.py": {"release"},
             "examples/features/pagination.cpp": {"code", "naming"},
             "scripts/run_examples.py": {"code", "release"},
             "scripts/check_doc_snippets.py": {"code", "release"},

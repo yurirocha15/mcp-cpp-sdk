@@ -503,6 +503,9 @@ if(BUILD_TESTING)
   target_compile_definitions(
     mcp-schema-goldens
     PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
+  # The workload scripts/schema_ir_gate.py counts the instructions of.
+  add_executable(mcp-schema-workload test/perf/schema_workload.cpp)
+  target_link_libraries(mcp-schema-workload PRIVATE mcp-cpp-sdk)
   # The server the stdio client tests launch as a child process.
   add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
   target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)

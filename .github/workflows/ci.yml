@@ -450,7 +450,8 @@ jobs:
           scripts.test_release_dispatch_contract \
           scripts.test_release_workflow_policy \
           scripts.test_check_json_matrix \
-          scripts.test_ci_changes
+          scripts.test_ci_changes \
+          scripts.test_schema_ir_gate
 
     - name: Validate release artifacts and package templates
       run: |
