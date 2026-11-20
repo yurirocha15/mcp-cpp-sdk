@@ -1214,7 +1214,10 @@ class MCP_API Server {
      *
      * A client of protocol revision 2025-11-25 or earlier gets a session of its own
      * (`MCP-Session-Id`), served with this server's tools, resources, prompts, handlers and
-     * settings; notify_tools_list_changed() and the other notify_ calls reach every session. A
+     * settings; notify_tools_list_changed() and the other notify_ calls reach every session. The
+     * members of this server that belong to one session, send_request(), is_initialized(),
+     * is_shutdown_requested() and get_log_level(), stand for none of them: a handler reaches its
+     * client through its Context. A
      * 2026-07-28 request belongs to no session and is answered by this server with plain JSON,
      * or, when its handler sends a notification and the client accepts `text/event-stream`, with
      * an SSE stream of the notifications and then the response. `subscriptions/listen` is served

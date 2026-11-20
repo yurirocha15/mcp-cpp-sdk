@@ -1661,7 +1661,7 @@ TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticFlattensThePeerChosenMessage
     const auto outcome = reverse_request_against_peer_error(io_ctx_, forged);
 
     // Tripwire, ordered before the flattening assertions. send_request() has four other throw
-    // sites -- "reverse RPC is unavailable in stateless direct dispatch", "server session is
+    // sites -- "reverse RPC is unavailable: this Server serves no session", "server session is
     // closing", "duplicate pending request id", "pending request not found for id" -- none of
     // which interpolates a byte the peer chose, and each of which would satisfy everything below
     // for a reason unrelated to the site under test. Dump what() on failure so a vacuous pass

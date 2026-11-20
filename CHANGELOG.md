@@ -63,6 +63,7 @@ Code written for 0.3.0 needs these changes to compile with this release:
 These changes in behavior need no change to compile:
 
 - Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows those.
+- Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
 
 ### Fixed
 

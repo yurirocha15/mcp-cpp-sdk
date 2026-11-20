@@ -106,8 +106,10 @@ class MCP_API StreamableHttpSessionManager {
      *        does, on the program's own event loop.
      *
      * @details @p server answers the 2026-07-28 requests, and each session of an older revision
-     * is served by a server that shares its tools, resources, prompts, handlers and settings.
-     * set_protocol_policy() and set_tool_executor() therefore set them on @p server itself. While
+     * is served by a server that shares its tools, resources, prompts, handlers and settings, so
+     * the members of @p server that belong to one session, such as Server::send_request(), stand
+     * for none of them. set_protocol_policy() and set_tool_executor() set them on @p server
+     * itself. While
      * listen() runs, Server::stop() closes the manager. @p server must outlive the manager and the
      * task listen() returns.
      *
