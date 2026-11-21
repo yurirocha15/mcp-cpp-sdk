@@ -2,6 +2,7 @@
 #include <mcp/detail/regex.hpp>
 #include <mcp/protocol/schema.hpp>
 
+#include "../../src/detail/constants.hpp"
 #include "../../src/protocol/schema_cache.hpp"
 
 #include <gtest/gtest.h>
@@ -11,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -39,13 +41,6 @@ namespace {
 using mcp::CompiledSchema;
 using mcp::SchemaError;
 using nlohmann::json;
-
-/// @p schema with "not": false added, which constrains nothing but keeps the schema off the native
-/// evaluation, so it is evaluated by jsoncons.
-json through_jsoncons(json schema) {
-    schema["not"] = false;
-    return schema;
-}
 
 bool is_valid(const json& schema, const json& instance) {
     return CompiledSchema::compile(schema).validate(instance).valid;
@@ -394,13 +389,103 @@ TEST(SchemaRefPolicy, FileAndRelativeReferencesAreUnresolved) {
     EXPECT_EQ(compile_error({{"$ref", "other.json#/$defs/x"}}), SchemaError::Category::eUnresolvedRef);
 }
 
+/// The category of the error compiling @p schema with @p documents raises; eInvalidSchema when it
+/// compiles, which no caller expects.
+SchemaError::Category compile_error_with(const json& schema, const mcp::SchemaDocuments& documents) {
+    try {
+        (void)CompiledSchema::compile(schema, {}, documents);
+    } catch (const SchemaError& error) {
+        return error.category();
+    }
+    ADD_FAILURE() << "compiled: " << schema.dump();
+    return SchemaError::Category::eInvalidSchema;
+}
+
+const mcp::SchemaDocuments& address_documents() {
+    static const mcp::SchemaDocuments s_documents = {
+        {"https://example.com/address.json",
+         json::parse(R"({"type": "object", "properties": {"zip": {"$ref": "#/$defs/zip"}},
+                         "required": ["zip"], "$defs": {"zip": {"type": "string", "pattern": "^[0-9]+$"}}})")},
+        {"https://example.com/legacy.json",
+         json::parse(R"({"$schema": "http://json-schema.org/draft-07/schema#",
+                         "definitions": {"id": {"type": "integer"}}})")},
+    };
+    return s_documents;
+}
+
+// A reference reads a given document: whole, at a pointer within it, relative to an $id, and in a
+// document of another dialect. Both evaluations read the same documents.
+TEST(SchemaDocuments, ReferencesReadGivenDocuments) {
+    const json schema = json::parse(R"({
+        "$id": "https://example.com/order.json",
+        "properties": {
+            "home": {"$ref": "https://example.com/address.json"},
+            "zip": {"$ref": "address.json#/$defs/zip"},
+            "id": {"$ref": "legacy.json#/definitions/id"}
+        }
+    })");
+    const auto compiled = CompiledSchema::compile(schema, {}, address_documents());
+    EXPECT_TRUE(compiled.validate({{"home", {{"zip", "123"}}}, {"zip", "9"}, {"id", 4}}).valid);
+    EXPECT_FALSE(compiled.validate({{"home", json::object()}}).valid);
+    EXPECT_FALSE(compiled.validate({{"home", {{"zip", "abc"}}}}).valid);
+    EXPECT_FALSE(compiled.validate({{"zip", 9}}).valid);
+    EXPECT_FALSE(compiled.validate({{"id", "four"}}).valid);
+    // Without the documents, the same schema has unresolved references.
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnresolvedRef);
+}
+
+// Each document is checked as a schema of its own, and the documents' URIs as keys.
+TEST(SchemaDocuments, DocumentsAreChecked) {
+    const json schema = {{"$ref", "https://example.com/a.json"}};
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", {{"type", "integr"}}}}),
+              SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", json::array()}}),
+              SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error_with(
+                  schema, {{"https://example.com/a.json", {{"$schema", "https://example.com/meta"}}}}),
+              SchemaError::Category::eUnsupportedDialect);
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", true}, {"b.json", true}}),
+              SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", true},
+                                          {"https://example.com/b.json#", true}}),
+              SchemaError::Category::eInvalidSchema);
+    // An unchecked document would be read only when referenced; every document is checked.
+    EXPECT_EQ(compile_error_with({{"type", "string"}},
+                                 {{"https://example.com/unused.json", {{"minLength", -1}}}}),
+              SchemaError::Category::eInvalidSchema);
+    mcp::SchemaDocuments many;
+    for (int i = 0; i < 65; ++i) {
+        many.emplace("https://example.com/" + std::to_string(i) + ".json", true);
+    }
+    EXPECT_EQ(compile_error_with(schema, many), SchemaError::Category::eInvalidSchema);
+    many.erase(many.begin(), std::next(many.begin(), 2));
+    many.emplace("https://example.com/a.json", json::object());
+    ASSERT_EQ(many.size(), 64U);
+    EXPECT_NO_THROW((void)CompiledSchema::compile(schema, {}, many));
+}
+
+// A schema compiled with documents depends on them, so a later compile with other documents reads
+// those, not a cached result.
+TEST(SchemaDocuments, CompilingWithOtherDocumentsReadsThem) {
+    const json schema = {{"$ref", "https://example.com/a.json"}};
+    const auto strings =
+        CompiledSchema::compile(schema, {}, {{"https://example.com/a.json", {{"type", "string"}}}});
+    const auto numbers =
+        CompiledSchema::compile(schema, {}, {{"https://example.com/a.json", {{"type", "number"}}}});
+    EXPECT_TRUE(strings.validate("x").valid);
+    EXPECT_FALSE(strings.validate(1).valid);
+    EXPECT_TRUE(numbers.validate(1).valid);
+    EXPECT_FALSE(numbers.validate("x").valid);
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnresolvedRef);
+}
+
 TEST(SchemaRefPolicy, MissingLocalTargetIsUnresolved) {
     EXPECT_EQ(compile_error({{"$ref", "#/$defs/missing"}}), SchemaError::Category::eUnresolvedRef);
     EXPECT_EQ(compile_error({{"$ref", "#nope"}}), SchemaError::Category::eUnresolvedRef);
-    // Reported as written, not against the base URI jsoncons assumes for a document without $id.
+    // Reported as written, not against the base URI a document without $id is given.
     const auto message = compile_message({{"$ref", "#/$defs/missing"}});
     EXPECT_NE(message.find(": #/$defs/missing"), std::string::npos) << message;
-    EXPECT_EQ(message.find("jsoncons"), std::string::npos) << message;
+    EXPECT_EQ(message.find("schema.invalid"), std::string::npos) << message;
 }
 
 // Each of these schemas evaluates itself again without descending into the value, which would
@@ -434,8 +519,8 @@ TEST(SchemaLimits, ExponentialEvaluationIsStopped) {
     const auto result = schema.validate(value);
     EXPECT_FALSE(result.valid);
     ASSERT_EQ(result.violations.size(), 1U);
-    EXPECT_NE(result.violations.front().message.find("too many steps"), std::string::npos)
-        << result.violations.front().message;
+    EXPECT_EQ(result.violations.front().message,
+              "validation stopped: schema evaluation takes too much work");
 }
 
 // Each value of the array is compared with each value of the enum. No subschema is entered for a
@@ -449,11 +534,8 @@ TEST(SchemaLimits, EnumComparisonsAreCharged) {
     // The last value of the enum, so every comparison runs and no item is a violation: 250,000
     // comparisons at 8 units each, which a million units do not pay for and ten million do.
     const json value(500, allowed.back());
-    const std::vector<json> schemas{schema, through_jsoncons(schema)};
-    for (const auto& each : schemas) {
-        EXPECT_TRUE(stops_for_work(each, value, 1'000'000));
-        EXPECT_FALSE(stops_for_work(each, value, 10'000'000));
-    }
+    EXPECT_TRUE(stops_for_work(schema, value, 1'000'000));
+    EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
 }
 
 // A long string that differs from each long enum value only at its end costs its length per value.
@@ -593,9 +675,9 @@ TEST(SchemaLimits, PropertyNamesThatShareAHashAreLookedUpQuickly) {
         }
         return object;
     };
-    const auto closed = CompiledSchema::compile(
-        through_jsoncons({{"patternProperties", {{"^[\\x00-\\x7f]", {{"type", "integer"}}}}},
-                          {"additionalProperties", false}}));
+    const auto closed =
+        CompiledSchema::compile({{"patternProperties", {{"^[\\x00-\\x7f]", {{"type", "integer"}}}}},
+                                 {"additionalProperties", false}});
     const auto unevaluated =
         CompiledSchema::compile({{"anyOf", {{{"additionalProperties", {{"type", "integer"}}}}}},
                                  {"unevaluatedProperties", false}});
@@ -614,20 +696,19 @@ TEST(SchemaLimits, PropertyNamesThatShareAHashAreLookedUpQuickly) {
 }
 #endif
 
-// A recursive schema through anyOf adds several keywords to the evaluation path per level of the
-// value, so it reaches the path bound before max_instance_depth; the value is then invalid.
+// A recursive schema through anyOf, items, allOf and $ref takes four nested evaluations per level
+// of the value, so it reaches the bound of 192 before max_instance_depth: 47 levels validate, 48
+// do not.
 TEST(SchemaLimits, EvaluationPathIsBounded) {
     const auto schema = CompiledSchema::compile(json::parse(R"({
-        "anyOf": [{"type": "array", "items": {"$ref": "#"}}, {"type": "null"}]
+        "anyOf": [{"type": "array", "items": {"allOf": [{"$ref": "#"}]}}, {"type": "null"}]
     })"));
     json value = nullptr;
-    for (int i = 0; i < 40; ++i) {
+    for (int i = 0; i < 47; ++i) {
         value = json::array({std::move(value)});
     }
     EXPECT_TRUE(schema.validate(value).valid);
-    for (int i = 40; i < 63; ++i) {
-        value = json::array({std::move(value)});
-    }
+    value = json::array({std::move(value)});
     const auto result = schema.validate(value);
     EXPECT_FALSE(result.valid);
     ASSERT_EQ(result.violations.size(), 1U);
@@ -680,14 +761,17 @@ TEST(SchemaLimits, OrdinaryValuesStayWithinTheLimits) {
     EXPECT_TRUE(any_value.validate(wide_and_deep).valid);
 }
 
-TEST(SchemaLimits, SchemaNestingWithinTheMetaschemaBoundCompiles) {
+// Each level of `properties` is two levels of the document, so 31 of them fit the 64 levels a
+// schema document may nest, and are checked and compiled.
+TEST(SchemaLimits, SchemaNestingWithinTheDocumentBoundCompiles) {
     json schema = {{"type", "string"}};
-    for (int i = 0; i < 26; ++i) {
+    for (int i = 0; i < 31; ++i) {
         schema = {{"type", "object"}, {"properties", {{"c", std::move(schema)}}}};
     }
     EXPECT_NO_THROW((void)CompiledSchema::compile(schema));
     schema = {{"type", "object"}, {"properties", {{"c", std::move(schema)}}}};
     EXPECT_EQ(compile_error(schema), SchemaError::Category::eInvalidSchema);
+    EXPECT_NE(compile_message(schema).find("nests deeper than 64 levels"), std::string::npos);
 }
 
 // Pattern matching is linear in the input, but a pattern that runs many threads at once, such as
@@ -703,10 +787,8 @@ TEST(SchemaLimits, ManyShortStringsAgainstALargePatternConform) {
     for (int index = 0; index < 2000; ++index) {
         value.push_back("hi");
     }
-    for (const auto& each : {schema, through_jsoncons(schema)}) {
-        const auto result = CompiledSchema::compile(each).validate(value);
-        EXPECT_TRUE(result.valid) << (result.violations.empty() ? "" : result.violations[0].message);
-    }
+    const auto result = CompiledSchema::compile(schema).validate(value);
+    EXPECT_TRUE(result.valid) << (result.violations.empty() ? "" : result.violations[0].message);
 }
 
 // A pattern longer than mcp::detail::Regex::max_pattern_size is refused like any pattern the
@@ -722,17 +804,12 @@ TEST(SchemaDialect, OverlongPatternIsUnsupported) {
 // part of a well-formed sequence as one character, as pattern matching reads it.
 TEST(SchemaBridge, MalformedUtf8CountsOneCharacterPerByte) {
     const json value = std::string("\xC3\xA9\xFF\x80", 4);  // e-acute, then two stray bytes
-    for (const bool jsoncons : {false, true}) {
-        SCOPED_TRACE(jsoncons ? "jsoncons" : "native");
-        const auto check = [&](const json& schema) {
-            return is_valid(jsoncons ? through_jsoncons(schema) : schema, value);
-        };
-        EXPECT_TRUE(check({{"maxLength", 3}}));
-        EXPECT_FALSE(check({{"maxLength", 2}}));
-        EXPECT_TRUE(check({{"minLength", 3}}));
-        EXPECT_FALSE(check({{"minLength", 4}}));
-        EXPECT_TRUE(check({{"pattern", "^.{3}$"}}));
-    }
+    const auto check = [&](const json& schema) { return is_valid(schema, value); };
+    EXPECT_TRUE(check({{"maxLength", 3}}));
+    EXPECT_FALSE(check({{"maxLength", 2}}));
+    EXPECT_TRUE(check({{"minLength", 3}}));
+    EXPECT_FALSE(check({{"minLength", 4}}));
+    EXPECT_TRUE(check({{"pattern", "^.{3}$"}}));
 }
 
 TEST(SchemaLimits, PatternMatchingIsBounded) {
@@ -741,35 +818,27 @@ TEST(SchemaLimits, PatternMatchingIsBounded) {
     options.pattern_steps_per_text_byte = 64;
     // Matching all of it would take about 10 million steps; the budget for it is 420,000.
     const std::string long_text(5000, 'a');
-    for (const bool through_jsoncons : {false, true}) {
-        SCOPED_TRACE(through_jsoncons ? "jsoncons" : "native");
-        json costly = {{"type", "string"}, {"pattern", ".{1,1000}x"}};
-        json cheap = {{"type", "string"}, {"pattern", "^[a-z]+$"}};
-        if (through_jsoncons) {
-            costly["$defs"] = json::object();
-            cheap["$defs"] = json::object();
-        }
-        const auto result = CompiledSchema::compile(costly, options).validate(long_text);
-        ASSERT_FALSE(result.valid);
-        ASSERT_EQ(result.violations.size(), 1U);
-        EXPECT_EQ(result.violations[0].message,
-                  "validation stopped: pattern matching takes too many steps");
-
-        EXPECT_TRUE(CompiledSchema::compile(cheap, options).validate(long_text).valid);
-        EXPECT_TRUE(
-            CompiledSchema::compile(costly, options).validate(std::string(100, 'a') + "x").valid);
-    }
-    // Property names are matched by patternProperties, which only jsoncons evaluates.
-    const auto keys = CompiledSchema::compile({{"patternProperties", {{".{1,1000}x", true}}}}, options);
-    const auto result = keys.validate({{long_text, 1}});
+    const json costly = {{"type", "string"}, {"pattern", ".{1,1000}x"}};
+    const json cheap = {{"type", "string"}, {"pattern", "^[a-z]+$"}};
+    const auto result = CompiledSchema::compile(costly, options).validate(long_text);
     ASSERT_FALSE(result.valid);
+    ASSERT_EQ(result.violations.size(), 1U);
     EXPECT_EQ(result.violations[0].message,
+              "validation stopped: pattern matching takes too many steps");
+
+    EXPECT_TRUE(CompiledSchema::compile(cheap, options).validate(long_text).valid);
+    EXPECT_TRUE(CompiledSchema::compile(costly, options).validate(std::string(100, 'a') + "x").valid);
+    // Property names matched by patternProperties share the budget.
+    const auto keys = CompiledSchema::compile({{"patternProperties", {{".{1,1000}x", true}}}}, options);
+    const auto key_result = keys.validate({{long_text, 1}});
+    ASSERT_FALSE(key_result.valid);
+    EXPECT_EQ(key_result.violations[0].message,
               "validation stopped: pattern matching takes too many steps");
 }
 
 // uniqueItems must not compare every pair of elements: a request-sized array would then take time
 // quadratic in its length, outside the evaluation work budget. The check is timed against
-// validating the same array through jsoncons without it, so the bound holds in slow builds too.
+// validating the same array without it, so the bound holds in slow builds too.
 TEST(SchemaLimits, UniqueItemsOnALargeArrayTakesBoundedTime) {
     const auto unique = CompiledSchema::compile({{"uniqueItems", true}});
     const auto baseline = CompiledSchema::compile({{"$defs", json::object()}, {"type", "array"}});
@@ -810,60 +879,38 @@ TEST(SchemaLimits, LongPropertyNameAboveManyItemsIsCheap) {
             {"additionalProperties", {{"type", "array"}, {"items", {{"type", "integer"}}}}}}}}}};
     mcp::SchemaOptions options;
     options.max_evaluation_work = 10'000'000;
-    for (const auto& each : {schema, through_jsoncons(schema)}) {
-        const auto compiled = CompiledSchema::compile(each, options);
-        EXPECT_TRUE(compiled.validate(value).valid);
-        value["m"][name][5] = "x";
-        const auto result = compiled.validate(value);
-        value["m"][name][5] = 0;
-        ASSERT_EQ(result.violations.size(), 1U);
-        EXPECT_EQ(result.violations[0].instance_path,
-                  mcp::auth::detail::sanitize_for_diagnostics("/m/" + name + "/5"));
-    }
-}
-
-// Names up to 1024 bytes are kept whole, so a deep path of them makes each copy of a location long.
-// Copies are charged by their length, so a small budget stops what a large one allows.
-TEST(SchemaLimits, LocationCopiesAreCharged) {
-    json value = json(3000, 0);
-    for (int i = 0; i < 30; ++i) {
-        const std::string name = std::to_string(i) + std::string(1000, 'k');
-        value = {{name, std::move(value)}};
-    }
-    const json schema = through_jsoncons(json::parse(R"({
-        "type": ["object", "array"], "additionalProperties": {"$ref": "#"}, "items": {"type": "integer"}
-    })"));
-    EXPECT_TRUE(CompiledSchema::compile(schema).validate(value).valid);
-    mcp::SchemaOptions options;
-    options.max_evaluation_work = 4'000'000;
-    const auto result = CompiledSchema::compile(schema, options).validate(value);
-    EXPECT_FALSE(result.valid);
+    const auto compiled = CompiledSchema::compile(schema, options);
+    EXPECT_TRUE(compiled.validate(value).valid);
+    value["m"][name][5] = "x";
+    const auto result = compiled.validate(value);
+    value["m"][name][5] = 0;
     ASSERT_EQ(result.violations.size(), 1U);
-    EXPECT_EQ(result.violations[0].message,
-              "validation stopped: schema evaluation takes too much work");
+    EXPECT_EQ(result.violations[0].instance_path,
+              mcp::auth::detail::sanitize_for_diagnostics("/m/" + name + "/5"));
 }
 
-// A branching keyword counts every message its branches report but keeps only the first few, each
-// holding its location. 2000 failed branches under a long path would hold 40 MB.
+// A branching keyword keeps only a few of the first branch's messages, each holding its location.
+// Keeping those of 2000 failed branches under a long path would hold 40 MB.
 TEST(SchemaLimits, BranchesKeepAFewOfTheirMessages) {
     json branches = json::array({{{"type", "object"}, {"additionalProperties", {{"$ref", "#"}}}}});
     for (int i = 0; i < 2000; ++i) {
         branches.push_back({{"enum", {i}}});
     }
-    const json schema = through_jsoncons({{"anyOf", branches}});
+    const json schema = {{"anyOf", branches}};
     json value = 99999;
     for (int i = 0; i < 20; ++i) {
         value = {{std::to_string(i) + std::string(1000, 'k'), std::move(value)}};
     }
     const auto result = CompiledSchema::compile(schema).validate(value);
     EXPECT_FALSE(result.valid);
-    ASSERT_EQ(result.violations.size(), 1U);
-    EXPECT_EQ(result.violations[0].message,
-              "Must be valid against at least one schema, but found no matching schemas");
+    ASSERT_FALSE(result.violations.empty());
+    EXPECT_LE(result.violations.size(), 1U + mcp::detail::constants::schema::g_MAX_BRANCH_VIOLATIONS);
+    EXPECT_EQ(result.violations[0].message, "Value does not match any of the anyOf schemas");
 }
 
-// Branches that fail by recursing keep messages that hold the messages under them, so the kept
-// messages grow exponentially with the value's depth. What they hold is bounded.
+// Branches that fail by recursing would keep messages that hold the messages under them, growing
+// exponentially with the value's depth. Only the first branch keeps messages, so the evaluation is
+// stopped by the work budget, not by memory.
 TEST(SchemaLimits, MemoryOfKeptMessagesIsBounded) {
     const auto schema = CompiledSchema::compile(json::parse(R"({
         "$defs": {"a": {"anyOf": [{"type": "array", "items": {"$ref": "#/$defs/a"}},
@@ -881,21 +928,21 @@ TEST(SchemaLimits, MemoryOfKeptMessagesIsBounded) {
     EXPECT_FALSE(result.valid);
     ASSERT_EQ(result.violations.size(), 1U);
     EXPECT_EQ(result.violations[0].message,
-              "validation stopped: the messages kept for failed branches take too much memory");
+              "validation stopped: schema evaluation takes too much work");
 }
 
-// A message names the value it rejects. Quoting all of it would make each failed branch cost time in
-// proportion to the value; a structured value is named by its size, a string by an excerpt.
-TEST(SchemaValidation, MessagesNameLargeValuesBriefly) {
-    const auto compiled = CompiledSchema::compile(through_jsoncons({{"enum", {1, 2}}}));
-    const auto first_message = [&compiled](const json& value) {
+// A message does not quote the value it rejects: quoting all of it would make each failed branch
+// cost time in proportion to the value.
+TEST(SchemaValidation, MessagesDoNotQuoteLargeValues) {
+    const auto compiled = CompiledSchema::compile({{"anyOf", {{{"enum", {1, 2}}}, {{"const", 3}}}}});
+    for (const auto& value :
+         {json(100'000, 7), json(std::string(100'000, 'x')), json{{std::string(100'000, 'k'), 1}}}) {
         const auto result = compiled.validate(value);
-        return result.violations.empty() ? std::string() : result.violations[0].message;
-    };
-    EXPECT_EQ(first_message(json::array({1, 2, 3})), "An array of length 3 is not a valid enum value.");
-    EXPECT_EQ(first_message({{"a", 1}}), "An object of size 1 is not a valid enum value.");
-    EXPECT_EQ(first_message(7), "'7' is not a valid enum value.");
-    EXPECT_EQ(first_message("seven"), "'seven' is not a valid enum value.");
+        ASSERT_FALSE(result.violations.empty());
+        for (const auto& violation : result.violations) {
+            EXPECT_LT(violation.message.size(), 256U) << violation.message.substr(0, 256);
+        }
+    }
 }
 
 // Each branch counts a long string's characters again, which no evaluation step pays for.
@@ -904,7 +951,7 @@ TEST(SchemaLimits, WholeStringKeywordsAreCharged) {
     for (int i = 0; i < 200; ++i) {
         branches.push_back({{"minLength", 2'000'000 + i}});
     }
-    const json schema = through_jsoncons({{"anyOf", branches}});
+    const json schema = {{"anyOf", branches}};
     // 200 branches over 32 KiB read about 6.6 million bytes, about 410,000 units at 16 bytes each.
     // 250,000 units pay for checking the schema when it is compiled, but not for that.
     const std::string text(std::size_t{32} * 1024, 'x');
@@ -945,7 +992,7 @@ TEST(SchemaLimits, ConstComparisonsAreCharged) {
 }
 
 // 2,500 enum comparisons of arrays of 101 values. Charged by what they compare, they cost more than
-// 100,000 units on either validator.
+// 100,000 units.
 TEST(SchemaLimits, EnumComparisonsAreChargedByWhatTheyHold) {
     json allowed = json::array();
     for (int i = 0; i < 50; ++i) {
@@ -957,14 +1004,12 @@ TEST(SchemaLimits, EnumComparisonsAreChargedByWhatTheyHold) {
     const json value(50, allowed.back());
     EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
     EXPECT_TRUE(stops_for_work(schema, value, 100'000));
-    EXPECT_FALSE(stops_for_work(through_jsoncons(schema), value, 10'000'000));
-    EXPECT_TRUE(stops_for_work(through_jsoncons(schema), value, 100'000));
 }
 
-// 400 const comparisons of arrays of 500 values, on the validator that "not" sends a schema to.
-TEST(SchemaLimits, ConstComparisonsAreChargedOnEitherValidator) {
+// 400 const comparisons of arrays of 500 values.
+TEST(SchemaLimits, ConstComparisonsOfLongArraysAreCharged) {
     const json constant(500, 7);
-    const json schema = through_jsoncons({{"items", {{"const", constant}}}});
+    const json schema = {{"items", {{"const", constant}}}};
     const json value(400, constant);
     EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
     EXPECT_TRUE(stops_for_work(schema, value, 100'000));
@@ -976,7 +1021,7 @@ TEST(SchemaLimits, DependentRequiredEntriesAreCharged) {
     for (int i = 0; i < 500; ++i) {
         dependencies["d" + std::to_string(i)] = json::array();
     }
-    const json schema = through_jsoncons({{"items", {{"dependentRequired", dependencies}}}});
+    const json schema = {{"items", {{"dependentRequired", dependencies}}}};
     const json value(500, json::object());
     EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
     EXPECT_TRUE(stops_for_work(schema, value, 100'000));
@@ -988,7 +1033,7 @@ TEST(SchemaLimits, PropertiesLookedUpAreCharged) {
     for (int i = 0; i < 200000; ++i) {
         value["p" + std::to_string(i)] = 0;
     }
-    const json schema = through_jsoncons({{"properties", {{"q", json::object()}}}});
+    const json schema = {{"properties", {{"q", json::object()}}}};
     EXPECT_FALSE(stops_for_work(schema, value, 10'000'000));
     EXPECT_TRUE(stops_for_work(schema, value, 100'000));
 }
@@ -1001,9 +1046,7 @@ TEST(SchemaLimits, LargeSchemasOverOrdinaryArraysAreNotStopped) {
         allowed.push_back("v" + std::to_string(1000 + i));
     }
     const json codes = {{"type", "array"}, {"items", {{"enum", allowed}}}};
-    for (const auto& each : {codes, through_jsoncons(codes)}) {
-        EXPECT_TRUE(is_valid(each, json(1000, allowed.back())));
-    }
+    EXPECT_TRUE(is_valid(codes, json(1000, allowed.back())));
 
     json defs = json::object();
     json branches = json::array();
@@ -1031,16 +1074,13 @@ TEST(SchemaValidation, PropertyNamesWithNulAreComparedWhole) {
     const std::string name("a\0b", 3);
     const json schema = {{"type", "object"},
                          {"properties", {{"a", {{"type", "integer"}}}, {name, {{"type", "string"}}}}}};
-    for (const auto& each : {schema, through_jsoncons(schema)}) {
-        EXPECT_TRUE(is_valid(each, {{name, "text"}}));
-        EXPECT_FALSE(is_valid(each, {{name, 1}}));
-        EXPECT_FALSE(is_valid(each, {{"a", "text"}}));
-    }
-    const json closed =
-        through_jsoncons({{"properties", {{"a", true}}}, {"additionalProperties", false}});
+    EXPECT_TRUE(is_valid(schema, {{name, "text"}}));
+    EXPECT_FALSE(is_valid(schema, {{name, 1}}));
+    EXPECT_FALSE(is_valid(schema, {{"a", "text"}}));
+    const json closed = {{"properties", {{"a", true}}}, {"additionalProperties", false}};
     EXPECT_FALSE(is_valid(closed, {{name, 1}}));
     // An unknown keyword, not "type".
-    EXPECT_TRUE(is_valid(through_jsoncons({{std::string("type\0x", 6), "integer"}}), "text"));
+    EXPECT_TRUE(is_valid({{std::string("type\0x", 6), "integer"}}, "text"));
 }
 
 // A pattern that is not a regular expression makes the schema invalid. A pattern that cannot be run
@@ -1081,66 +1121,8 @@ TEST(SchemaLimits, PatternProgramsAreBoundedPerSchema) {
     EXPECT_NO_THROW((void)CompiledSchema::compile(schema, options));
 }
 
-// A 2020-12 schema that constrains only the value's type is evaluated natively, with the same
-// message as jsoncons gives. Adding "not": false, which constrains nothing, sends the same schema
-// through jsoncons; both must agree on every value, messages included.
-TEST(SchemaValidation, TypeOnlySchemasMatchFullEvaluation) {
-    const std::vector<json> values = {
-        nullptr,
-        true,
-        0,
-        -7,
-        std::numeric_limits<std::uint64_t>::max(),
-        1.5,
-        1e308,
-        "",
-        "text",
-        json::array(),
-        json::array({1, "a"}),
-        json::object(),
-        json{{"a", {{"b", 1}}}},
-    };
-    std::vector<json> schemas = {json::object(), json{{"title", "anything"}, {"x-note", 1}}};
-    for (const auto* type : {"object", "array", "string", "boolean", "null", "number"}) {
-        schemas.push_back({{"type", type}});
-        schemas.push_back({{"type", type},
-                           {"description", "d"},
-                           {"$comment", "c"},
-                           {"default", nullptr},
-                           {"$schema", "http://json-schema.org/draft-07/schema#"}});
-    }
-    for (const auto& schema : schemas) {
-        auto full_schema = schema;
-        full_schema["not"] = false;
-        const auto fast = CompiledSchema::compile(schema);
-        const auto full = CompiledSchema::compile(full_schema);
-        for (const auto& value : values) {
-            SCOPED_TRACE(schema.dump() + " against " + value.dump());
-            const auto fast_result = fast.validate(value);
-            const auto full_result = full.validate(value);
-            EXPECT_EQ(fast_result.valid, full_result.valid);
-            ASSERT_EQ(fast_result.violations.size(), full_result.violations.size());
-            for (std::size_t i = 0; i < fast_result.violations.size(); ++i) {
-                EXPECT_EQ(fast_result.violations[i].instance_path,
-                          full_result.violations[i].instance_path);
-                EXPECT_EQ(fast_result.violations[i].message, full_result.violations[i].message);
-            }
-        }
-    }
-    // The depth limit applies on both paths.
-    mcp::SchemaOptions options;
-    options.max_instance_depth = 4;
-    json deep = json::array();
-    for (int i = 0; i < 10; ++i) {
-        deep = json::array({std::move(deep)});
-    }
-    EXPECT_FALSE(CompiledSchema::compile({{"type", "array"}}, options).validate(deep).valid);
-    EXPECT_FALSE(CompiledSchema::compile(true, options).validate(deep).valid);
-}
-
-// Messages only the native evaluation produces show that a schema using just the keywords it
-// implements is evaluated that way.
-TEST(SchemaNative, SupportedSchemaIsEvaluatedNatively) {
+// Every violation is reported at its location, with a message that names what failed.
+TEST(SchemaValidation, ViolationsNameWhatFailed) {
     const auto schema = CompiledSchema::compile(json::parse(R"({
         "type": "object",
         "properties": {"n": {"type": "integer", "minimum": 1}},
@@ -1162,36 +1144,28 @@ TEST(SchemaNative, SupportedSchemaIsEvaluatedNatively) {
 }
 
 // A member that fails the additionalProperties subschema is reported at the member, as `properties`
-// reports its members, whichever evaluation runs: adding `$defs` sends the schema through jsoncons.
-// Only the instance paths are compared; the two evaluations word some messages differently.
+// reports its members.
 TEST(SchemaValidation, AdditionalPropertyViolationsNameTheMember) {
-    for (const bool through_jsoncons : {false, true}) {
-        SCOPED_TRACE(through_jsoncons ? "jsoncons" : "native");
-        json schema = {{"type", "object"},
-                       {"properties", {{"known", {{"type", "string"}}}}},
-                       {"additionalProperties", {{"type", "integer"}, {"minimum", 3}}}};
-        if (through_jsoncons) {
-            schema["$defs"] = json::object();
-        }
-        const auto result =
-            CompiledSchema::compile(schema).validate({{"known", 1}, {"a", "x"}, {"b", 1}, {"ok", 5}});
-        ASSERT_FALSE(result.valid);
-        std::set<std::string> paths;
-        for (const auto& violation : result.violations) {
-            paths.insert(violation.instance_path);
-        }
-        EXPECT_EQ(paths, (std::set<std::string>{"/a", "/b", "/known"}));
+    const json schema = {{"type", "object"},
+                         {"properties", {{"known", {{"type", "string"}}}}},
+                         {"additionalProperties", {{"type", "integer"}, {"minimum", 3}}}};
+    const auto result =
+        CompiledSchema::compile(schema).validate({{"known", 1}, {"a", "x"}, {"b", 1}, {"ok", 5}});
+    ASSERT_FALSE(result.valid);
+    std::set<std::string> paths;
+    for (const auto& violation : result.violations) {
+        paths.insert(violation.instance_path);
     }
+    EXPECT_EQ(paths, (std::set<std::string>{"/a", "/b", "/known"}));
 }
 
 // JSON Schema compares numbers by value. Converting an integer beyond 2^53 to a double rounds it,
-// so both evaluations compare an integer with a double exactly.
+// so an integer and a double are compared exactly.
 TEST(SchemaNative, IntegersAndDoublesCompareExactly) {
     const auto expect = [](bool valid, const char* schema_text, const json& instance) {
         SCOPED_TRACE(std::string(schema_text) + " against " + instance.dump());
         const auto schema = json::parse(schema_text);
         EXPECT_EQ(is_valid(schema, instance), valid);
-        EXPECT_EQ(is_valid(through_jsoncons(schema), instance), valid);
     };
     // 18446744073709551616 (2^64) does not fit std::uint64_t and is read as a double.
     const json above_uint64_max = json::parse("18446744073709551616");
@@ -1217,154 +1191,6 @@ TEST(SchemaNative, IntegersAndDoublesCompareExactly) {
     expect(true, R"({"const": -9223372036854775808})", json::parse("-9223372036854775808.0"));
     expect(true, R"({"const": 0})", json(-0.0));
     expect(false, R"({"uniqueItems": true})", json::parse("[9007199254740992, 9007199254740992.0]"));
-}
-
-// Generated schemas over the keywords the native evaluation implements, against generated values:
-// both evaluations must agree on every one.
-TEST(SchemaNative, AgreesWithJsonconsOnGeneratedSchemas) {
-    std::mt19937 random(20261019);
-    const auto pick = [&](std::size_t count) {
-        return std::uniform_int_distribution<std::size_t>(0, count - 1)(random);
-    };
-    const auto chance = [&](int percent) { return static_cast<int>(pick(100)) < percent; };
-    const std::vector<json> scalars = {
-        nullptr,
-        true,
-        false,
-        0,
-        1,
-        -1,
-        2,
-        3,
-        1.0,
-        2.5,
-        -0.5,
-        1e300,
-        std::numeric_limits<std::uint64_t>::max(),
-        "",
-        "a",
-        "ab1",
-        "zzz",
-        "\xc3\xa9\xc3\xa9",
-    };
-    const std::vector<std::string> names = {"a", "b", "c", "d"};
-    const std::vector<std::string> types = {"null",   "boolean", "integer", "number",
-                                            "string", "array",   "object"};
-    const std::vector<std::string> patterns = {"^a", "1$", "[0-9]", "^[a-z]*$", "^.{2}$"};
-
-    std::function<json(int)> make_value = [&](int depth) -> json {
-        const auto kind = pick(depth > 0 ? 4 : 2);
-        if (kind < 2) {
-            return scalars[pick(scalars.size())];
-        }
-        if (kind == 2) {
-            json array = json::array();
-            for (std::size_t i = pick(4); i > 0; --i) {
-                array.push_back(make_value(depth - 1));
-            }
-            return array;
-        }
-        json object = json::object();
-        for (std::size_t i = pick(4); i > 0; --i) {
-            object[names[pick(names.size())]] = make_value(depth - 1);
-        }
-        return object;
-    };
-    const auto number = [&]() -> json {
-        const std::vector<json> numbers = {0, 1, 2, -1, 1.5, 2.0, -0.5};
-        return numbers[pick(numbers.size())];
-    };
-    std::function<json(int)> make_schema = [&](int depth) -> json {
-        if (chance(10)) {
-            return chance(70);
-        }
-        json schema = json::object();
-        if (chance(50)) {
-            if (chance(70)) {
-                schema["type"] = types[pick(types.size())];
-            } else {
-                json list = json::array();
-                for (const auto& type : types) {
-                    if (chance(35)) {
-                        list.push_back(type);
-                    }
-                }
-                if (list.empty()) {
-                    list.push_back("string");
-                }
-                schema["type"] = list;
-            }
-        }
-        if (chance(15)) {
-            json values = json::array();
-            for (std::size_t i = pick(3) + 1; i > 0; --i) {
-                values.push_back(make_value(1));
-            }
-            schema["enum"] = values;
-        }
-        if (chance(8)) {
-            schema["const"] = make_value(1);
-        }
-        for (const auto* keyword : {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}) {
-            if (chance(12)) {
-                schema[keyword] = number();
-            }
-        }
-        for (const auto* keyword :
-             {"minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties"}) {
-            if (chance(12)) {
-                schema[keyword] = pick(4);
-            }
-        }
-        if (chance(15)) {
-            schema["pattern"] = patterns[pick(patterns.size())];
-        }
-        if (depth > 0 && chance(30)) {
-            schema["items"] = make_schema(depth - 1);
-        }
-        if (depth > 0 && chance(40)) {
-            json properties = json::object();
-            for (const auto& name : names) {
-                if (chance(40)) {
-                    properties[name] = make_schema(depth - 1);
-                }
-            }
-            schema["properties"] = properties;
-        }
-        if (chance(25)) {
-            json required = json::array();
-            for (const auto& name : names) {
-                if (chance(30)) {
-                    required.push_back(name);
-                }
-            }
-            schema["required"] = required;
-        }
-        if (depth > 0 && chance(25)) {
-            schema["additionalProperties"] = make_schema(depth - 1);
-        }
-        if (chance(10)) {
-            schema["description"] = "annotation";
-        }
-        return schema;
-    };
-
-    int compared = 0;
-    for (int i = 0; i < 600; ++i) {
-        const auto schema = make_schema(2);
-        if (!schema.is_object()) {
-            continue;
-        }
-        const auto native = CompiledSchema::compile(schema);
-        const auto full = CompiledSchema::compile(through_jsoncons(schema));
-        for (int j = 0; j < 12; ++j) {
-            const auto value = make_value(2);
-            SCOPED_TRACE(schema.dump() + " against " + value.dump());
-            EXPECT_EQ(native.validate(value).valid, full.validate(value).valid);
-            ++compared;
-        }
-    }
-    EXPECT_GT(compared, 5000);
 }
 
 TEST(SchemaBridge, NumbersStringsAndNullsKeepTheirMeaning) {
@@ -1411,19 +1237,12 @@ TEST(SchemaBridge, LargeDoublesAreHandled) {
 TEST(SchemaBridge, NonFiniteNumbersAreCheckedAsNull) {
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double infinity = std::numeric_limits<double>::infinity();
-    for (const bool through_jsoncons : {false, true}) {
-        SCOPED_TRACE(through_jsoncons ? "jsoncons" : "native");
-        json number = {{"type", "number"}};
-        json null = {{"type", "null"}};
-        if (through_jsoncons) {
-            number["$defs"] = json::object();
-            null["$defs"] = json::object();
-        }
-        for (const double value : {nan, infinity, -infinity}) {
-            EXPECT_FALSE(is_valid(number, value));
-            EXPECT_TRUE(is_valid(null, value));
-            EXPECT_TRUE(is_valid({{"items", null}}, json::array({value, value})));
-        }
+    const json number = {{"type", "number"}};
+    const json null = {{"type", "null"}};
+    for (const double value : {nan, infinity, -infinity}) {
+        EXPECT_FALSE(is_valid(number, value));
+        EXPECT_TRUE(is_valid(null, value));
+        EXPECT_TRUE(is_valid({{"items", null}}, json::array({value, value})));
     }
     // Nested in a value that `const` or `enum` compares, one is the null a peer would receive too.
     for (const double value : {nan, infinity, -infinity}) {
@@ -1435,14 +1254,11 @@ TEST(SchemaBridge, NonFiniteNumbersAreCheckedAsNull) {
                                       ? json{{"a", value}}
                                       : json::array({value});
             EXPECT_TRUE(is_valid(schema, instance)) << schema.dump();
-            EXPECT_TRUE(is_valid(through_jsoncons(schema), instance)) << schema.dump();
         }
         for (const auto& schema : {json::parse(R"({"const": [0.5, 1.5]})"),
                                    json::parse(R"({"const": [9223372036854775807, 1]})"),
                                    json::parse(R"({"enum": [[1, 1], [18446744073709551615, 2]]})")}) {
             EXPECT_FALSE(is_valid(schema, json::array({value, value}))) << schema.dump();
-            EXPECT_FALSE(is_valid(through_jsoncons(schema), json::array({value, value})))
-                << schema.dump();
         }
     }
     EXPECT_EQ(compile_error({{"maximum", nan}}), SchemaError::Category::eInvalidSchema);
@@ -1692,9 +1508,57 @@ struct GroupOutcome {
     std::vector<std::string> failures;
 };
 
-/// Runs one suite group. When @p dialect_uri is set it is added as `$schema` to an object schema
-/// that has none, because a schema without `$schema` is read as 2020-12.
-GroupOutcome run_group(const json& group, const std::string& key, const char* dialect_uri) {
+/// The suite's remote documents (test/data/json-schema/remotes), keyed by the URL the suite serves
+/// them at.
+const mcp::SchemaDocuments& suite_remotes() {
+    static const mcp::SchemaDocuments s_remotes = [] {
+        mcp::SchemaDocuments remotes;
+        const auto root = std::filesystem::path(MCP_TEST_DATA_DIR) / "json-schema" / "remotes";
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (entry.path().extension() == ".json") {
+                std::ifstream stream(entry.path());
+                remotes.emplace(
+                    "http://localhost:1234/" + entry.path().lexically_relative(root).generic_string(),
+                    json::parse(stream));
+            }
+        }
+        return remotes;
+    }();
+    return s_remotes;
+}
+
+/// The remote documents @p schema, of the suite directory @p dialect_dir, may reach: those of its
+/// directory or of no dialect's directory whose file name it mentions, then those the picked
+/// documents mention, and so on. Giving only these keeps the number checked per group small.
+mcp::SchemaDocuments remotes_for(const json& schema, const std::string& dialect_dir) {
+    std::string text = schema.dump();
+    mcp::SchemaDocuments picked;
+    if (text.find("localhost:1234") == std::string::npos) {
+        return picked;
+    }
+    const auto candidate = [&dialect_dir](const std::string& uri) {
+        const auto path = uri.substr(std::string("http://localhost:1234/").size());
+        return path.rfind(dialect_dir + "/", 0) == 0 || path.rfind("draft", 0) != 0;
+    };
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const auto& [uri, document] : suite_remotes()) {
+            if (picked.count(uri) == 0 && candidate(uri) &&
+                text.find(uri.substr(uri.rfind('/') + 1)) != std::string::npos) {
+                picked.emplace(uri, document);
+                text += document.dump();
+                grew = true;
+            }
+        }
+    }
+    return picked;
+}
+
+/// Runs one suite group, with the remote documents it references. When @p dialect_uri is set it is
+/// added as `$schema` to an object schema that has none, because a schema without `$schema` is read
+/// as 2020-12.
+GroupOutcome run_group(const json& group, const std::string& key, const std::string& dialect_dir,
+                       const char* dialect_uri) {
     GroupOutcome outcome;
     const auto& tests = group.at("tests");
     json schema_json = group.at("schema");
@@ -1703,7 +1567,7 @@ GroupOutcome run_group(const json& group, const std::string& key, const char* di
     }
     std::optional<CompiledSchema> schema;
     try {
-        schema = CompiledSchema::compile(schema_json);
+        schema = CompiledSchema::compile(schema_json, {}, remotes_for(schema_json, dialect_dir));
     } catch (const std::exception& error) {
         outcome.total += tests.size();
         outcome.failures.push_back(key + " | compile: " + error.what());
@@ -1760,12 +1624,12 @@ SuiteOutcome run_suite(const std::string& dialect_dir, const std::vector<SuiteEx
                 outcome.excluded += tests.size();
                 counts.second += tests.size();
                 if (*category == SuiteGap::eEngineGap &&
-                    run_group(group, key, dialect_uri).failures.empty()) {
+                    run_group(group, key, dialect_dir, dialect_uri).failures.empty()) {
                     outcome.fixed_engine_gaps.push_back(key);
                 }
                 continue;
             }
-            const auto result = run_group(group, key, dialect_uri);
+            const auto result = run_group(group, key, dialect_dir, dialect_uri);
             outcome.total += result.total;
             outcome.passed += result.passed;
             counts.first += result.total;
@@ -1810,25 +1674,12 @@ void expect_suite(const SuiteOutcome& outcome, const std::vector<SuiteFileCount>
     EXPECT_EQ(outcome.passed, outcome.total);
 }
 
-constexpr const char* g_remote_reason =
-    "references a schema served from http://localhost:1234; remote references are refused by design";
 constexpr const char* g_remote_metaschema_reason =
     "declares a custom metaschema served from http://localhost:1234; only the bundled dialects are "
     "supported";
 constexpr const char* g_unicode_property_reason = "mcp::detail::Regex rejects Unicode property escapes";
 
 const std::vector<SuiteExclusion> g_2020_12_exclusions = {
-    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "strict-tree schema, guards against misspelled properties", SuiteGap::eByDesign,
-     g_remote_reason},
-    {"dynamicRef.json", "tests for implementation dynamic anchor and reference link",
-     SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "$ref and $dynamicAnchor are independent of order - $defs first",
-     SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "$ref and $dynamicAnchor are independent of order - $ref first",
-     SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "$ref to $dynamicRef finds detached $dynamicAnchor", SuiteGap::eByDesign,
-     g_remote_reason},
     {"vocabulary.json", "schema that uses custom metaschema with with no validation vocabulary",
      SuiteGap::eByDesign, g_remote_metaschema_reason},
     {"vocabulary.json", "ignore unrecognized optional vocabulary", SuiteGap::eByDesign,
@@ -1837,13 +1688,9 @@ const std::vector<SuiteExclusion> g_2020_12_exclusions = {
      g_unicode_property_reason},
     {"patternProperties.json", "patternProperties with Unicode property escape", SuiteGap::eByDesign,
      g_unicode_property_reason},
-    {"dynamicRef.json", "$dynamicRef avoids the root of each schema, but scopes are still registered",
-     SuiteGap::eEngineGap, "jsoncons resolves this $dynamicRef scope case differently"},
 };
 
-const std::vector<SuiteExclusion> g_draft7_exclusions = {
-    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
-};
+const std::vector<SuiteExclusion> g_draft7_exclusions = {};
 
 const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"additionalProperties.json", 21, 0},
@@ -1858,7 +1705,7 @@ const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"defs.json", 2, 0},
     {"dependentRequired.json", 20, 0},
     {"dependentSchemas.json", 20, 0},
-    {"dynamicRef.json", 29, 15},
+    {"dynamicRef.json", 44, 0},
     {"enum.json", 53, 0},
     {"exclusiveMaximum.json", 4, 0},
     {"exclusiveMinimum.json", 4, 0},
@@ -1885,7 +1732,7 @@ const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"properties.json", 28, 0},
     {"propertyNames.json", 22, 0},
     {"ref.json", 79, 0},
-    {"refRemote.json", 0, 31},
+    {"refRemote.json", 31, 0},
     {"required.json", 18, 0},
     {"type.json", 80, 0},
     {"unevaluatedItems.json", 71, 0},
@@ -1928,9 +1775,139 @@ const std::vector<SuiteFileCount> g_draft7_counts = {
     {"properties.json", 28, 0},
     {"propertyNames.json", 22, 0},
     {"ref.json", 78, 0},
-    {"refRemote.json", 0, 23},
+    {"refRemote.json", 23, 0},
     {"required.json", 18, 0},
     {"type.json", 80, 0},
+    {"uniqueItems.json", 65, 0},
+};
+
+const std::vector<SuiteExclusion> g_2019_09_exclusions = {
+    {"vocabulary.json", "schema that uses custom metaschema with with no validation vocabulary",
+     SuiteGap::eByDesign, g_remote_metaschema_reason},
+    {"vocabulary.json", "ignore unrecognized optional vocabulary", SuiteGap::eByDesign,
+     g_remote_metaschema_reason},
+};
+
+const std::vector<SuiteExclusion> g_draft6_exclusions = {};
+
+const std::vector<SuiteExclusion> g_draft4_exclusions = {};
+
+const std::vector<SuiteFileCount> g_2019_09_counts = {
+    {"additionalItems.json", 19, 0},
+    {"additionalProperties.json", 21, 0},
+    {"allOf.json", 30, 0},
+    {"anchor.json", 8, 0},
+    {"anyOf.json", 18, 0},
+    {"boolean_schema.json", 18, 0},
+    {"const.json", 54, 0},
+    {"contains.json", 21, 0},
+    {"content.json", 18, 0},
+    {"default.json", 7, 0},
+    {"defs.json", 2, 0},
+    {"dependentRequired.json", 20, 0},
+    {"dependentSchemas.json", 20, 0},
+    {"enum.json", 53, 0},
+    {"exclusiveMaximum.json", 4, 0},
+    {"exclusiveMinimum.json", 4, 0},
+    {"format.json", 114, 0},
+    {"if-then-else.json", 30, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 28, 0},
+    {"maxContains.json", 14, 0},
+    {"maxItems.json", 6, 0},
+    {"maxLength.json", 7, 0},
+    {"maxProperties.json", 10, 0},
+    {"maximum.json", 8, 0},
+    {"minContains.json", 28, 0},
+    {"minItems.json", 6, 0},
+    {"minLength.json", 7, 0},
+    {"minProperties.json", 10, 0},
+    {"minimum.json", 11, 0},
+    {"multipleOf.json", 13, 0},
+    {"not.json", 40, 0},
+    {"oneOf.json", 27, 0},
+    {"pattern.json", 9, 0},
+    {"patternProperties.json", 23, 0},
+    {"properties.json", 28, 0},
+    {"propertyNames.json", 22, 0},
+    {"recursiveRef.json", 34, 0},
+    {"ref.json", 81, 0},
+    {"refRemote.json", 31, 0},
+    {"required.json", 18, 0},
+    {"type.json", 80, 0},
+    {"unevaluatedItems.json", 56, 0},
+    {"unevaluatedProperties.json", 129, 0},
+    {"uniqueItems.json", 65, 0},
+    {"vocabulary.json", 0, 5},
+};
+const std::vector<SuiteFileCount> g_draft6_counts = {
+    {"additionalItems.json", 19, 0},
+    {"additionalProperties.json", 16, 0},
+    {"allOf.json", 30, 0},
+    {"anyOf.json", 18, 0},
+    {"boolean_schema.json", 18, 0},
+    {"const.json", 54, 0},
+    {"contains.json", 19, 0},
+    {"default.json", 7, 0},
+    {"definitions.json", 2, 0},
+    {"dependencies.json", 36, 0},
+    {"enum.json", 47, 0},
+    {"exclusiveMaximum.json", 4, 0},
+    {"exclusiveMinimum.json", 4, 0},
+    {"format.json", 54, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 28, 0},
+    {"maxItems.json", 6, 0},
+    {"maxLength.json", 7, 0},
+    {"maxProperties.json", 10, 0},
+    {"maximum.json", 8, 0},
+    {"minItems.json", 6, 0},
+    {"minLength.json", 7, 0},
+    {"minProperties.json", 10, 0},
+    {"minimum.json", 11, 0},
+    {"multipleOf.json", 13, 0},
+    {"not.json", 38, 0},
+    {"oneOf.json", 27, 0},
+    {"pattern.json", 9, 0},
+    {"patternProperties.json", 23, 0},
+    {"properties.json", 28, 0},
+    {"propertyNames.json", 22, 0},
+    {"ref.json", 70, 0},
+    {"refRemote.json", 23, 0},
+    {"required.json", 18, 0},
+    {"type.json", 80, 0},
+    {"uniqueItems.json", 65, 0},
+};
+const std::vector<SuiteFileCount> g_draft4_counts = {
+    {"additionalItems.json", 17, 0},
+    {"additionalProperties.json", 16, 0},
+    {"allOf.json", 27, 0},
+    {"anyOf.json", 15, 0},
+    {"default.json", 7, 0},
+    {"definitions.json", 2, 0},
+    {"dependencies.json", 29, 0},
+    {"enum.json", 49, 0},
+    {"format.json", 36, 0},
+    {"infinite-loop-detection.json", 2, 0},
+    {"items.json", 21, 0},
+    {"maxItems.json", 4, 0},
+    {"maxLength.json", 5, 0},
+    {"maxProperties.json", 8, 0},
+    {"maximum.json", 14, 0},
+    {"minItems.json", 4, 0},
+    {"minLength.json", 5, 0},
+    {"minProperties.json", 8, 0},
+    {"minimum.json", 17, 0},
+    {"multipleOf.json", 13, 0},
+    {"not.json", 20, 0},
+    {"oneOf.json", 23, 0},
+    {"pattern.json", 9, 0},
+    {"patternProperties.json", 18, 0},
+    {"properties.json", 24, 0},
+    {"ref.json", 45, 0},
+    {"refRemote.json", 17, 0},
+    {"required.json", 17, 0},
+    {"type.json", 79, 0},
     {"uniqueItems.json", 65, 0},
 };
 
@@ -1941,6 +1918,22 @@ TEST(Suite, Required2020_12) {
 TEST(Suite, RequiredDraft7) {
     expect_suite(run_suite("draft7", g_draft7_exclusions, "http://json-schema.org/draft-07/schema#"),
                  g_draft7_counts);
+}
+
+TEST(Suite, Required2019_09) {
+    expect_suite(
+        run_suite("draft2019-09", g_2019_09_exclusions, "https://json-schema.org/draft/2019-09/schema"),
+        g_2019_09_counts);
+}
+
+TEST(Suite, RequiredDraft6) {
+    expect_suite(run_suite("draft6", g_draft6_exclusions, "http://json-schema.org/draft-06/schema#"),
+                 g_draft6_counts);
+}
+
+TEST(Suite, RequiredDraft4) {
+    expect_suite(run_suite("draft4", g_draft4_exclusions, "http://json-schema.org/draft-04/schema#"),
+                 g_draft4_counts);
 }
 
 }  // namespace

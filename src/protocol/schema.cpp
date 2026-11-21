@@ -6,12 +6,10 @@
 #include "../detail/diagnostic_text.hpp"
 #include "native_schema.hpp"
 #include "schema_cache.hpp"
-
-// The only translation unit that includes jsoncons. The vendored copy lives in the
-// mcp_detail_jsoncons namespace (see scripts/vendor_jsoncons.py), so none of it can collide with a
-// jsoncons the application uses.
-#include <jsoncons/json.hpp>
-#include <jsoncons_ext/jsonschema/jsonschema.hpp>
+#include "schema_checker.hpp"
+#include "schema_dialect.hpp"
+#include "schema_uri.hpp"
+#include "schema_values.hpp"
 
 #include <algorithm>
 #include <array>
@@ -24,6 +22,7 @@
 #include <list>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -32,34 +31,7 @@
 
 namespace mcp {
 
-namespace jc = mcp_detail_jsoncons;
-namespace jcs = mcp_detail_jsoncons::jsonschema;
-
 namespace {
-
-/// The `$schema` values this SDK implements, without a trailing empty fragment.
-const std::array<std::string_view, 5>& supported_dialects() {
-    static const std::array<std::string_view, 5> s_dialects = {
-        "https://json-schema.org/draft/2020-12/schema", "https://json-schema.org/draft/2019-09/schema",
-        "http://json-schema.org/draft-07/schema",       "http://json-schema.org/draft-06/schema",
-        "http://json-schema.org/draft-04/schema",
-    };
-    return s_dialects;
-}
-
-/// The supported dialect `$schema` names, or an empty view when it names none. "...schema#" and
-/// "...schema" name the same dialect.
-std::string_view find_dialect(std::string_view uri) {
-    if (!uri.empty() && uri.back() == '#') {
-        uri.remove_suffix(1);
-    }
-    for (auto dialect : supported_dialects()) {
-        if (uri == dialect) {
-            return dialect;
-        }
-    }
-    return {};
-}
 
 std::size_t saturating_add(std::size_t left, std::size_t right) {
     return left > std::numeric_limits<std::size_t>::max() - right
@@ -150,7 +122,8 @@ ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
         if (node->is_object()) {
             for (const auto& [key, child] : node->items()) {
                 shape.text_bytes += key.size();
-                const auto kept = std::min(key.size(), jcs::evaluation_limits::max_location_token);
+                const auto kept =
+                    std::min(key.size(), mcp::detail::constants::schema::g_MAX_COUNTED_NAME_BYTES);
                 pending.push_back({&child, depth + 1, path_bytes + kept});
             }
         } else {
@@ -160,148 +133,6 @@ ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
         }
     }
     return shape;
-}
-
-/// Sets the evaluation work, pattern matching and kept message budgets for the validations this
-/// thread runs while it is alive (see the evaluation limits scripts/vendor_jsoncons.py adds to
-/// jsoncons).
-class WorkBudget {
-   public:
-    WorkBudget(const ValueShape& shape, std::size_t schema_nodes, const SchemaOptions& options)
-        : saved_work_(jcs::evaluation_limits::work_left()),
-          saved_pattern_steps_(jcs::evaluation_limits::pattern_steps_left()),
-          saved_message_bytes_(jcs::evaluation_limits::kept_message_bytes_left()) {
-        jcs::evaluation_limits::work_left() =
-            shape.evaluation_work(schema_nodes, options.max_evaluation_work);
-        jcs::evaluation_limits::pattern_steps_left() = shape.pattern_steps(options);
-        jcs::evaluation_limits::kept_message_bytes_left() =
-            mcp::detail::constants::schema::g_MAX_KEPT_MESSAGE_BYTES;
-    }
-    ~WorkBudget() {
-        jcs::evaluation_limits::work_left() = saved_work_;
-        jcs::evaluation_limits::pattern_steps_left() = saved_pattern_steps_;
-        jcs::evaluation_limits::kept_message_bytes_left() = saved_message_bytes_;
-    }
-    WorkBudget(const WorkBudget&) = delete;
-    WorkBudget& operator=(const WorkBudget&) = delete;
-
-   private:
-    std::size_t saved_work_;
-    std::size_t saved_pattern_steps_;
-    std::size_t saved_message_bytes_;
-};
-
-/// Copies an nlohmann value into a jsoncons value. Recurses once per level, so callers check the
-/// depth first.
-jc::json to_jsoncons(const nlohmann::json& value) {
-    switch (value.type()) {
-        case nlohmann::json::value_t::null:
-            return jc::json::null();
-        case nlohmann::json::value_t::boolean:
-            return jc::json(value.get<bool>());
-        case nlohmann::json::value_t::number_integer:
-            return jc::json(value.get<std::int64_t>());
-        case nlohmann::json::value_t::number_unsigned:
-            return jc::json(value.get<std::uint64_t>());
-        case nlohmann::json::value_t::number_float: {
-            // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what a
-            // peer would receive, so that is what is checked.
-            const auto number = value.get<double>();
-            return std::isfinite(number) ? jc::json(number) : jc::json::null();
-        }
-        case nlohmann::json::value_t::string:
-            return jc::json(value.get_ref<const std::string&>());
-        case nlohmann::json::value_t::array: {
-            jc::json array(jc::json_array_arg);
-            array.reserve(value.size());
-            for (const auto& element : value) {
-                array.push_back(to_jsoncons(element));
-            }
-            return array;
-        }
-        case nlohmann::json::value_t::object: {
-            jc::json object(jc::json_object_arg);
-            for (const auto& [key, member] : value.items()) {
-                object.try_emplace(key, to_jsoncons(member));
-            }
-            return object;
-        }
-        case nlohmann::json::value_t::binary:
-        case nlohmann::json::value_t::discarded:
-            break;
-    }
-    throw std::invalid_argument("value has no JSON representation");
-}
-
-/// The compiled metaschema of @p dialect, built once.
-const jcs::json_schema<jc::json>& metaschema(std::string_view dialect) {
-    auto compile_meta = [](std::string_view uri) {
-        return jcs::make_json_schema(jcs::meta_resolver<jc::json>(jc::uri(std::string(uri))));
-    };
-    static const std::array<jcs::json_schema<jc::json>, 5> s_compiled = {
-        compile_meta(supported_dialects()[0]), compile_meta(supported_dialects()[1]),
-        compile_meta(supported_dialects()[2]), compile_meta(supported_dialects()[3]),
-        compile_meta(supported_dialects()[4]),
-    };
-    for (std::size_t i = 0; i < supported_dialects().size(); ++i) {
-        if (supported_dialects()[i] == dialect) {
-            return s_compiled[i];
-        }
-    }
-    return s_compiled[0];
-}
-
-/// @p uri as the schema author wrote it when it is relative to the document without `$id`.
-std::string_view without_default_base(std::string_view uri) {
-    if (uri.substr(0, mcp::detail::constants::schema::g_DEFAULT_BASE_URI.size()) ==
-        mcp::detail::constants::schema::g_DEFAULT_BASE_URI) {
-        uri.remove_prefix(mcp::detail::constants::schema::g_DEFAULT_BASE_URI.size());
-        if (!uri.empty() && uri.front() == '/') {
-            uri.remove_prefix(1);
-        }
-    }
-    return uri;
-}
-
-/// The innermost problem @p message reports. The 2020-12 and 2019-09 metaschemas combine their
-/// vocabularies with `allOf`, so the outermost message only says that a subschema failed.
-const jcs::validation_message& innermost(const jcs::validation_message& message) {
-    const auto* current = &message;
-    while (!current->details().empty()) {
-        current = &current->details().front();
-    }
-    return *current;
-}
-
-/// Whether @p document has a `$schema` member whose value is @p uri, compared without an empty
-/// trailing fragment. Iterative, so it is safe on any document.
-bool declares_dialect(const nlohmann::json& document, std::string_view uri) {
-    const auto without_fragment = [](std::string_view text) {
-        if (!text.empty() && text.back() == '#') {
-            text.remove_suffix(1);
-        }
-        return text;
-    };
-    uri = without_fragment(uri);
-    std::vector<const nlohmann::json*> pending{&document};
-    while (!pending.empty()) {
-        const auto* node = pending.back();
-        pending.pop_back();
-        if (node->is_object()) {
-            for (const auto& [key, member] : node->items()) {
-                if (key == "$schema" && member.is_string() &&
-                    without_fragment(member.get_ref<const std::string&>()) == uri) {
-                    return true;
-                }
-                pending.push_back(&member);
-            }
-        } else if (node->is_array()) {
-            for (const auto& member : *node) {
-                pending.push_back(&member);
-            }
-        }
-    }
-    return false;
 }
 
 std::string describe(std::string_view prefix, std::string_view detail) {
@@ -326,10 +157,7 @@ struct CompiledSchemaImpl {
     nlohmann::json source;
     SchemaOptions options;
     std::size_t schema_nodes;  ///< Values in the schema document, itself included.
-    jcs::json_schema<jc::json> compiled;
-    /// Set when the schema uses only the keywords NativeSchema implements; validation then walks
-    /// the value directly instead of converting it for jsoncons.
-    std::optional<detail::NativeSchema> native;
+    detail::NativeSchema native;
 };
 
 namespace {
@@ -560,6 +388,94 @@ CompiledSchemaCache& compiled_schema_cache() {
     return s_cache;
 }
 
+/// A schema document that passed the checks every document gets.
+struct CheckedDocument {
+    ValueShape shape;
+    detail::SchemaDialect dialect;
+};
+
+/// Checks @p schema's form, size and dialect, and checks it against its dialect's rules,
+/// @p dialect when it has no `$schema`; @p where prefixes every message.
+CheckedDocument check_document(const nlohmann::json& schema, const SchemaOptions& options,
+                               detail::SchemaDialect dialect, const std::string& where) {
+    if (!schema.is_object() && !schema.is_boolean()) {
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          where + "JSON Schema must be an object or a boolean");
+    }
+    CheckedDocument checked{measure(schema, mcp::detail::constants::schema::g_MAX_DEPTH), dialect};
+    if (checked.shape.too_deep) {
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          where + "JSON Schema nests deeper than " +
+                              std::to_string(mcp::detail::constants::schema::g_MAX_DEPTH) + " levels");
+    }
+    if (checked.shape.non_finite) {
+        // Serialized for a peer, it would carry null in that place: not the schema checked here.
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          where + "JSON Schema contains NaN or Infinity, which JSON cannot represent");
+    }
+
+    if (schema.is_object()) {
+        const auto declared = schema.find("$schema");
+        if (declared != schema.end()) {
+            if (!declared->is_string()) {
+                throw SchemaError(SchemaError::Category::eInvalidSchema,
+                                  where + "$schema must be a string");
+            }
+            const auto named = detail::find_schema_dialect(declared->get_ref<const std::string&>());
+            if (!named) {
+                throw SchemaError(SchemaError::Category::eUnsupportedDialect,
+                                  where + describe("unsupported JSON Schema dialect: ",
+                                                   declared->get_ref<const std::string&>()));
+            }
+            dialect = *named;
+        }
+    }
+
+    // The check is charged as an evaluation of the schema as a value, against a schema of no nodes.
+    std::size_t work = checked.shape.evaluation_work(0, options.max_evaluation_work);
+    std::optional<detail::SchemaProblem> problem;
+    try {
+        // measure() has bounded the nesting, so the check sets no depth bound of its own.
+        problem = detail::check_schema(schema, dialect, work, std::numeric_limits<std::size_t>::max());
+    } catch (const detail::WorkBudgetExceeded&) {
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          where + "checking the JSON Schema takes too much work");
+    }
+    if (problem) {
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          where + describe("JSON Schema is invalid at '" +
+                                               detail::sanitize_for_diagnostics(problem->path) + "': ",
+                                           problem->message));
+    }
+    checked.dialect = dialect;
+    return checked;
+}
+
+/// Checks the documents a schema of @p dialect may reach, each read in that dialect unless it
+/// declares its own; returns the values they hold.
+std::size_t check_documents(const SchemaDocuments& documents, const SchemaOptions& options,
+                            detail::SchemaDialect dialect) {
+    if (documents.size() > mcp::detail::constants::schema::g_MAX_SCHEMA_DOCUMENTS) {
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          "more than " +
+                              std::to_string(mcp::detail::constants::schema::g_MAX_SCHEMA_DOCUMENTS) +
+                              " schema documents");
+    }
+    std::size_t nodes = 0;
+    for (const auto& [uri, document] : documents) {
+        const auto reference = detail::parse_uri_reference(uri);
+        if (!reference.scheme || reference.fragment) {
+            throw SchemaError(
+                SchemaError::Category::eInvalidSchema,
+                describe("schema document URI is not absolute without a fragment: ", uri));
+        }
+        nodes = saturating_add(
+            nodes, check_document(document, options, dialect, describe("schema document ", uri) + ": ")
+                       .shape.nodes);
+    }
+    return nodes;
+}
+
 }  // namespace
 
 SchemaError::SchemaError(Category category, const std::string& message)
@@ -568,141 +484,60 @@ SchemaError::SchemaError(Category category, const std::string& message)
 CompiledSchema::CompiledSchema(std::shared_ptr<const CompiledSchemaImpl> impl)
     : impl_(std::move(impl)) {}
 
-CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const SchemaOptions& options) {
+CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const SchemaOptions& options,
+                                       const SchemaDocuments& documents) {
     if (!schema.is_object() && !schema.is_boolean()) {
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           "JSON Schema must be an object or a boolean");
     }
     // A schema the cache holds passed every check below when it was compiled, and a repeat is the
     // same document, so a hit needs neither measuring nor checking. NaN, the one value unequal to
-    // itself, never matches, and Infinity is never in the cache.
+    // itself, never matches, and Infinity is never in the cache. A schema compiled with documents
+    // depends on them too, so it neither reads nor fills the cache.
+    const bool use_cache = documents.empty();
     const auto hash = document_hash(schema, options);
-    if (hash) {
+    if (hash && use_cache) {
         if (auto cached = compiled_schema_cache().find(*hash, schema, options)) {
             return CompiledSchema(std::move(cached));
         }
     }
 
-    const auto schema_shape = measure(schema, mcp::detail::constants::schema::g_MAX_DEPTH);
-    if (!hash || schema_shape.too_deep) {
-        throw SchemaError(SchemaError::Category::eInvalidSchema,
-                          "JSON Schema nests deeper than " +
-                              std::to_string(mcp::detail::constants::schema::g_MAX_DEPTH) + " levels");
-    }
-    if (schema_shape.non_finite) {
-        // Serialized for a peer, it would carry null in that place: not the schema checked here.
-        throw SchemaError(SchemaError::Category::eInvalidSchema,
-                          "JSON Schema contains NaN or Infinity, which JSON cannot represent");
-    }
+    auto checked = check_document(schema, options, detail::SchemaDialect::eDraft202012, std::string());
+    ValueShape schema_shape = checked.shape;
+    schema_shape.nodes =
+        saturating_add(schema_shape.nodes, check_documents(documents, options, checked.dialect));
 
-    std::string_view dialect = supported_dialects()[0];
-    if (schema.is_object()) {
-        const auto declared = schema.find("$schema");
-        if (declared != schema.end()) {
-            if (!declared->is_string()) {
-                throw SchemaError(SchemaError::Category::eInvalidSchema, "$schema must be a string");
+    // Patterns that cannot be compiled are collected instead of ending the compile, so that any
+    // other problem the schema has is found and reported first. One stands in as a pattern that
+    // matches nothing until then.
+    const detail::PatternBudget patterns(options.max_pattern_instructions);
+    auto native = detail::NativeSchema::compile(schema, documents);
+    if (native.has_references()) {
+        // A reference cycle that never descends into the value exceeds the evaluation bounds
+        // whatever the value is. Trying a few trivial values finds it now instead of on every
+        // validation.
+        ValueShape trivial;
+        trivial.nodes = 1;
+        trivial.levels = 1;
+        for (const auto& probe : {nlohmann::json(), nlohmann::json::object(), nlohmann::json::array(),
+                                  nlohmann::json(""), nlohmann::json(0), nlohmann::json(true)}) {
+            if (const auto reason = native.stop_reason(
+                    probe, trivial.pattern_steps(options),
+                    trivial.evaluation_work(schema_shape.nodes, options.max_evaluation_work))) {
+                throw SchemaError(
+                    SchemaError::Category::eInvalidSchema,
+                    describe("evaluating the JSON Schema against a trivial value: ", *reason));
             }
-            dialect = find_dialect(declared->get_ref<const std::string&>());
-            if (dialect.empty()) {
-                throw SchemaError(SchemaError::Category::eUnsupportedDialect,
-                                  describe("unsupported JSON Schema dialect: ",
-                                           declared->get_ref<const std::string&>()));
-            }
-        }
-    }
-
-    auto converted = to_jsoncons(schema);
-
-    SchemaViolation first_problem;
-    bool schema_invalid = false;
-    try {
-        // The metaschema is the schema here; its size is fixed, so the value alone sets the budget.
-        const WorkBudget budget(schema_shape, 0, options);
-        metaschema(dialect).validate(converted, [&](const jcs::validation_message& message) {
-            if (!schema_invalid) {
-                const auto& problem = innermost(message);
-                first_problem = {problem.instance_location().string(), problem.message()};
-                schema_invalid = true;
-            }
-            return jcs::walk_state::abort;
-        });
-    } catch (const jcs::evaluation_limit_error& error) {
-        throw SchemaError(SchemaError::Category::eInvalidSchema,
-                          describe("checking the JSON Schema against its metaschema: ", error.what()));
-    }
-    if (schema_invalid) {
-        throw SchemaError(
-            SchemaError::Category::eInvalidSchema,
-            describe("JSON Schema is invalid at '" +
-                         detail::sanitize_for_diagnostics(first_problem.instance_path) + "': ",
-                     first_problem.message));
-    }
-
-    // jsoncons asks this resolver for every $ref target it cannot find in the document or the
-    // bundled metaschemas. It refuses all of them, so nothing is ever fetched, and records what it
-    // refused so the error can say so.
-    std::vector<std::string> refused;
-    auto refuse = [&refused](const jc::uri& uri) {
-        if (find_dialect(uri.base().string()).empty()) {
-            refused.push_back(uri.string());
-        }
-        return jc::json::null();
-    };
-    std::optional<jcs::json_schema<jc::json>> compiled;
-    // Patterns that cannot be used are collected instead of ending the compile, so that any other
-    // problem the schema has is found and reported first.
-    detail::PatternBudget patterns(options.max_pattern_instructions);
-    try {
-        auto evaluation =
-            jcs::evaluation_options{}.default_version(std::string(supported_dialects()[0]));
-        compiled.emplace(jcs::make_json_schema(std::move(converted), refuse, evaluation));
-    } catch (const detail::RegexError& error) {
-        throw pattern_error(error);
-    } catch (const std::exception& error) {
-        if (!refused.empty()) {
-            // jsoncons also asks for the metaschema of an embedded resource's `$schema`.
-            if (declares_dialect(schema, refused.front())) {
-                throw SchemaError(SchemaError::Category::eUnsupportedDialect,
-                                  describe("unsupported JSON Schema dialect: ", refused.front()));
-            }
-            throw SchemaError(SchemaError::Category::eUnresolvedRef,
-                              describe("JSON Schema reference cannot be resolved in the document: ",
-                                       without_default_base(refused.front())));
-        }
-        throw SchemaError(SchemaError::Category::eInvalidSchema,
-                          describe("JSON Schema cannot be compiled: ", error.what()));
-    }
-    // A reference cycle that never descends into the value exceeds the evaluation limits whatever
-    // the value is. Trying a few trivial values finds it now instead of on every validation. A
-    // pattern that could not be compiled stands in as one that matches nothing until then.
-    ValueShape trivial;
-    trivial.nodes = 1;
-    trivial.levels = 1;
-    for (const auto& probe :
-         {jc::json::null(), jc::json(jc::json_object_arg), jc::json(jc::json_array_arg), jc::json(""),
-          jc::json(0), jc::json(true)}) {
-        try {
-            const WorkBudget budget(trivial, schema_shape.nodes, options);
-            (void)compiled->is_valid(probe);
-        } catch (const jcs::evaluation_limit_error& error) {
-            throw SchemaError(
-                SchemaError::Category::eInvalidSchema,
-                describe("evaluating the JSON Schema against a trivial value: ", error.what()));
         }
     }
     if (patterns.problem()) {
         throw pattern_error(*patterns.problem());
     }
-
-    // NativeSchema compiles the patterns again, within a budget of its own; one it cannot compile
-    // leaves the schema to jsoncons.
-    auto native = [&schema, &options] {
-        const detail::PatternBudget native_patterns(options.max_pattern_instructions);
-        return detail::NativeSchema::compile(schema);
-    }();
-    auto result = std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
-        schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)});
-    compiled_schema_cache().insert(*hash, result);
+    auto result = std::make_shared<const CompiledSchemaImpl>(
+        CompiledSchemaImpl{schema, options, schema_shape.nodes, std::move(native)});
+    if (use_cache && hash) {
+        compiled_schema_cache().insert(*hash, result);
+    }
     return CompiledSchema(std::move(result));
 }
 
@@ -717,31 +552,9 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
         return result;
     }
 
-    if (impl_->native) {
-        impl_->native->validate(instance, options.max_reported_violations, shape.pattern_steps(options),
-                                shape.evaluation_work(impl_->schema_nodes, options.max_evaluation_work),
-                                result);
-        return result;
-    }
-
-    const auto converted = to_jsoncons(instance);
-    try {
-        const WorkBudget budget(shape, impl_->schema_nodes, options);
-        impl_->compiled.validate(converted, [&](const jcs::validation_message& message) {
-            result.valid = false;
-            if (result.violations.size() < options.max_reported_violations) {
-                result.violations.push_back(
-                    {detail::sanitize_for_diagnostics(message.instance_location().string()),
-                     detail::sanitize_for_diagnostics(message.message())});
-            }
-            return result.violations.size() < options.max_reported_violations ? jcs::walk_state::advance
-                                                                              : jcs::walk_state::abort;
-        });
-    } catch (const jcs::evaluation_limit_error& error) {
-        result.valid = false;
-        result.violations.clear();
-        result.violations.push_back({"", std::string("validation stopped: ") + error.what()});
-    }
+    impl_->native.validate(instance, options.max_reported_violations, shape.pattern_steps(options),
+                           shape.evaluation_work(impl_->schema_nodes, options.max_evaluation_work),
+                           result);
     return result;
 }
 

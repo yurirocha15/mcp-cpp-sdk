@@ -171,7 +171,7 @@ class AurPublishPolicyTests(unittest.TestCase):
             if line.startswith("\tlicense = ")
         ]
         self.assertEqual(srcinfo_licenses, pkgbuild_licenses)
-        self.assertEqual(pkgbuild_licenses, ["Apache-2.0", "BSL-1.0"])
+        self.assertEqual(pkgbuild_licenses, ["Apache-2.0"])
 
     def test_dependency_metadata_matches_the_public_header_interface(self) -> None:
         template = (ROOT / "packaging/aur/PKGBUILD.in").read_text(encoding="utf-8")

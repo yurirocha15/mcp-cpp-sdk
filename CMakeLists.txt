@@ -102,6 +102,9 @@ set(MCP_CPP_SDK_SOURCES
     src/core/json_parse.cpp
     src/core/serialized_transport_writer.cpp
     src/protocol/native_schema.cpp
+    src/protocol/schema_checker.cpp
+    src/protocol/schema_uri.cpp
+    src/protocol/schema_values.cpp
     src/protocol/schema.cpp
     src/protocol/base.cpp
     src/protocol/capabilities.cpp
@@ -163,12 +166,6 @@ function(mcp_cpp_sdk_configure_library target)
   target_link_libraries(
     ${target} PUBLIC Boost::headers nlohmann_json::nlohmann_json
                      OpenSSL::Crypto)
-  # Vendored jsoncons, used only by src/protocol/schema.cpp. PRIVATE keeps it
-  # out of the installed and exported interface; SYSTEM keeps its warnings out
-  # of the SDK's own.
-  target_include_directories(
-    ${target} SYSTEM
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/jsoncons/include")
   if(WIN32)
     target_compile_definitions(${target} PUBLIC _WIN32_WINNT=0x0A00)
   endif()
@@ -207,19 +204,12 @@ if(MCP_CPP_SDK_BUILD_SHARED)
               "SHELL:-include ${MCP_CPP_SDK_JSON_VISIBILITY_HEADER}")
   endif()
   if(NOT WIN32 AND NOT APPLE)
-    set(MCP_CPP_SDK_VENDORED_SYMBOLS_MAP
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vendored-symbols.map")
     # --exclude-libs keeps the symbols of static archives linked into the
     # library, such as a static OpenSSL or zlib, out of its exports. Exported,
     # they take the place of the same functions for other code in the process: a
     # system libssl loaded by libcurl, for example, then calls this copy's
     # libcrypto functions with objects its own libcrypto built.
-    target_link_options(
-      mcp-cpp-sdk-shared PRIVATE
-      "LINKER:--version-script=${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}"
-      "LINKER:--exclude-libs,ALL")
-    set_property(TARGET mcp-cpp-sdk-shared APPEND
-                 PROPERTY LINK_DEPENDS "${MCP_CPP_SDK_VENDORED_SYMBOLS_MAP}")
+    target_link_options(mcp-cpp-sdk-shared PRIVATE "LINKER:--exclude-libs,ALL")
   endif()
   add_library(mcp::sdk_shared ALIAS mcp-cpp-sdk-shared)
   list(APPEND MCP_CPP_SDK_INSTALL_TARGETS mcp-cpp-sdk-shared)
@@ -351,26 +341,6 @@ if(BUILD_TESTING)
       ${CMAKE_COMMAND} "${MCP_CPP_SDK_CONFIG_VERSION_TEMPLATE_ARGUMENT}"
       "${MCP_CPP_SDK_CONFIG_VERSION_STABLE_OUTPUT_ARGUMENT}" -P
       "${MCP_CPP_SDK_CONFIG_VERSION_STABLE_TEST}")
-  if(CMAKE_NM
-     AND CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux"
-     AND NOT CMAKE_CROSSCOMPILING)
-    set(MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS
-        "-DMCP_CPP_SDK_NM=${CMAKE_NM}"
-        "-DMCP_CPP_SDK_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}")
-    if(MCP_CPP_SDK_BUILD_STATIC)
-      list(APPEND MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS
-           "-DMCP_CPP_SDK_STATIC_LIBRARY=$<TARGET_FILE:mcp-cpp-sdk-static>")
-    endif()
-    if(MCP_CPP_SDK_BUILD_SHARED)
-      list(APPEND MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS
-           "-DMCP_CPP_SDK_SHARED_LIBRARY=$<TARGET_FILE:mcp-cpp-sdk-shared>")
-    endif()
-    add_test(
-      NAME packaging-vendored-jsoncons-private
-      COMMAND
-        ${CMAKE_COMMAND} ${MCP_CPP_SDK_VENDORED_SYMBOLS_ARGUMENTS} -P
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/verify-vendored-symbols.cmake")
-  endif()
   find_program(MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE pkg-config)
   if(MCP_CPP_SDK_BUILD_STATIC
      AND MCP_CPP_SDK_PKG_CONFIG_EXECUTABLE
@@ -428,7 +398,11 @@ if(BUILD_TESTING)
       test/core/json_dump_test.cpp
       test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
-      test/core/json_schema_engines_test.cpp
+      test/core/json_schema_stack_test.cpp
+      test/core/json_schema_checker_test.cpp
+      test/core/json_schema_compile_test.cpp
+      test/core/schema_uri_test.cpp
+      test/core/json_schema_goldens_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
       test/core/tasks_test.cpp
@@ -491,8 +465,13 @@ if(BUILD_TESTING)
       test/support/test_timeout.cpp)
   # The sealed-state codec is internal and not exported from the shared library,
   # so its test builds the source itself.
-  add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
+  add_executable(
+    mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp
+                  src/protocol/schema_uri.cpp test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # The workload scripts/schema_ir_gate.py counts the instructions of.
+  add_executable(mcp-schema-workload test/perf/schema_workload.cpp)
+  target_link_libraries(mcp-schema-workload PRIVATE mcp-cpp-sdk)
   # The server the stdio client tests launch as a child process.
   add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
   target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)
@@ -609,12 +588,13 @@ if(BUILD_TESTING)
       mcp-sdk-tests
       PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE
                                 ${MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE})
-    # The support sources are not tests: the gates replace libc functions and
-    # sealed_state.cpp is a library source that the test program rebuilds.
+    # The support sources are not tests: the gates replace libc functions, and
+    # sealed_state.cpp and schema_uri.cpp are library sources that the test
+    # program rebuilds.
     set_source_files_properties(
       test/support/test_timeout.cpp test/support/resolve_gate.cpp
       test/support/socket_gate.cpp src/detail/sealed_state.cpp
-      PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+      src/protocol/schema_uri.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     # A fixture in a test file's unnamed namespace is the base of the test
     # classes that gtest defines in the enclosing namespace. GCC reports that as
     # a linkage mismatch when the file is included from the unity source, where
@@ -740,10 +720,6 @@ install(
 install(
   FILES LICENSE
   DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk"
-  COMPONENT Runtime)
-install(
-  FILES third_party/jsoncons/LICENSE
-  DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/mcp-cpp-sdk/jsoncons"
   COMPONENT Runtime)
 
 configure_package_config_file(

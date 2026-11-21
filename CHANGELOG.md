@@ -6,6 +6,23 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Added
+
+- `CompiledSchema::compile()` takes `SchemaDocuments`: schema documents, by
+  absolute URI, that references may reach. Nothing is fetched.
+
+### Changed
+
+- Every JSON Schema is validated by the SDK's own evaluation. jsoncons is no
+  longer compiled into the library, and packages carry only the SDK's license.
+- Schemas are checked against the published metaschemas: a draft-06 `enum` must
+  be non-empty with unique values, and a draft-07 `writeOnly` must be a boolean.
+- An empty `$ref` or `$id` is accepted. A draft-04 `$ref` that is not a string,
+  and an anchor declared twice in one resource, make a schema invalid.
+- `properties` may nest 31 levels deep in a schema, up from 26.
+- A `$ref` to a location inside a metaschema, such as draft-07's
+  `#/definitions/nonNegativeInteger`, is refused as unresolved.
+
 ### Fixed
 
 - The friend declaration of `decode_elicitation_content()` is exported like its

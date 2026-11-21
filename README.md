@@ -263,8 +263,9 @@ maintainers.
 - [nlohmann/json](https://github.com/nlohmann/json): JSON and JSON-RPC serialization.
 - [OpenSSL](https://github.com/openssl/openssl): cryptographic randomness and OAuth helper
   primitives.
-- [jsoncons](https://github.com/danielaparker/jsoncons): JSON Schema validation of tool schemas and
-  the values checked against them.
+- [jsoncons](https://github.com/danielaparker/jsoncons): validated tool schemas and the values
+  checked against them up to version 0.3.0; its recorded verdicts are what the SDK's own JSON Schema
+  evaluation is tested against.
 - [Model Context Protocol](https://github.com/modelcontextprotocol/modelcontextprotocol) and its
   [conformance suite](https://github.com/modelcontextprotocol/conformance): the specification this
   SDK implements and the checks it is tested against.
