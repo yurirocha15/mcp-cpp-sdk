@@ -267,12 +267,15 @@ class Context {
      * @return A task that resolves to the client's CreateMessageResult.
      * @throws std::runtime_error If no request sender is available.
      * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
-     *         2026-07-28 request (other requests ignore the key).
+     *         2026-07-28 request (other requests ignore the key), or if `includeContext` is other
+     *         than "none" in a session whose client did not declare `sampling.context` in its
+     *         initialize request.
      *
      * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
      * client in the request's `input_required` result, and the call returns once the client
      * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
-     * declare the capability the question needs, the request is answered with
+     * declare the capability the question needs (`sampling.context` for an `includeContext` other
+     * than "none"), the request is answered with
      * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
      * when the client never retries in time; the handler's own answer then goes nowhere. Any other
      * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.

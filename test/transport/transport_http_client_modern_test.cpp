@@ -1368,9 +1368,10 @@ std::unique_ptr<mcp::Server> make_sdk_server() {
                                        {{"region", {{"type", "string"}, {"x-mcp-header", "Region"}}},
                                         {"count", {{"type", "integer"}, {"x-mcp-header", "Count"}}}}}},
                                  [](json args) -> mcp::Task<json> { co_return args; });
-    server->add_tool<json, json>(
-        "héllo wörld", "A name outside the header-safe characters", json{{"type", "object"}},
-        [](json /*args*/) -> mcp::Task<json> { co_return json{{"ok", true}}; });
+    // Tool names are limited to header-safe characters, prompt names are not: a prompt carries the
+    // name that needs Base64 in its Mcp-Name header. The registration declares the capability.
+    server->add_text_prompt("héllo wörld", "A name outside the header-safe characters", {},
+                            [](const auto& /*arguments*/) { return std::string("ok"); });
     server->add_tool<json, json>("progress", "Reports progress, then returns", json{{"type", "object"}},
                                  [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
                                      co_await ctx.report_progress(1, 2);
@@ -1399,8 +1400,8 @@ mcp::Task<void> sdk_exchange(mcp::Client& client, SdkOutcome& outcome, bool with
     json route_arguments = {{"region", "Hello, 世界"}, {"count", 7}};
     const auto routed = co_await client.call_tool("route", route_arguments);
     outcome.routed = *routed.structuredContent;
-    const auto encoded = co_await client.call_tool("héllo wörld", no_arguments);
-    outcome.encoded = *encoded.structuredContent;
+    const auto encoded = co_await client.get_prompt("héllo wörld", {});
+    outcome.encoded = json(encoded);
     if (with_progress) {
         json params = {
             {"name", "progress"}, {"arguments", json::object()}, {"_meta", {{"progressToken", "p1"}}}};
@@ -1454,7 +1455,7 @@ TEST(HttpClientModern, AgainstDualEraSessionManager) {
     EXPECT_EQ(outcome.connected.era, mcp::ProtocolEra::eModern);
     EXPECT_EQ(outcome.whoami.at("modern"), true);
     EXPECT_EQ(outcome.routed.at("region"), "Hello, 世界");
-    EXPECT_EQ(outcome.encoded.at("ok"), true);
+    EXPECT_EQ(outcome.encoded.at("messages").at(0).at("content").at("text"), "ok");
     EXPECT_EQ(sessions, 0u);
     EXPECT_EQ(transport->session_id(), "");
     // The progress notification came over the call's own stream, ahead of its result.
@@ -1506,7 +1507,7 @@ TEST(HttpClientModern, AgainstRunHttpJsonOnly) {
     EXPECT_EQ(outcome.connected.era, mcp::ProtocolEra::eModern);
     EXPECT_EQ(outcome.whoami.at("modern"), true);
     EXPECT_EQ(outcome.routed.at("count"), 7);
-    EXPECT_EQ(outcome.encoded.at("ok"), true);
+    EXPECT_EQ(outcome.encoded.at("messages").at(0).at("content").at("text"), "ok");
     EXPECT_FALSE(server->is_initialized());
 }
 

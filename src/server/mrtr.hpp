@@ -189,6 +189,10 @@ class InlineInput {
 nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabilities,
                                            const nlohmann::json& request);
 
+/// Whether the sampling/createMessage @p params ask for `includeContext` other than "none", which a
+/// server sends only to a client that declares `sampling.context`.
+bool asks_for_sampling_context(const nlohmann::json& params);
+
 /// Asks the client for input on behalf of the handler of @p entry, and returns the client's
 /// response once a retry brings it. Runs on the entry's strand. Throws MrtrAbandoned when the
 /// request is abandoned, and also, after reporting it, when the client lacks the capability the

@@ -325,6 +325,14 @@ nlohmann::json InlineInput::missing_capabilities() const {
     return missing_;
 }
 
+bool asks_for_sampling_context(const nlohmann::json& params) {
+    if (!params.is_object()) {
+        return false;
+    }
+    const auto include = params.find("includeContext");
+    return include != params.end() && include->is_string() && *include != "none";
+}
+
 nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabilities,
                                            const nlohmann::json& request) {
     const auto& method = request.at("method").get_ref<const std::string&>();
@@ -356,6 +364,9 @@ nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabili
         if (tools != params.end() && tools->is_array() && !tools->empty() &&
             !sampling->contains("tools")) {
             return {{"sampling", {{"tools", nlohmann::json::object()}}}};
+        }
+        if (asks_for_sampling_context(params) && !sampling->contains("context")) {
+            return {{"sampling", {{"context", nlohmann::json::object()}}}};
         }
     } else if (method == "roots/list") {
         if (declared("roots") == nullptr) {

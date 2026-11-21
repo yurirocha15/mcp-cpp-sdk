@@ -527,7 +527,9 @@ class MCP_API Server {
      *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
      *         that is not a string, integer or boolean, or on a property not reached through
      *         `properties` alone).
-     * @throws std::invalid_argument when a tool with the same name is already registered.
+     * @throws std::invalid_argument when a tool with the same name is already registered, or when
+     * the name is empty, longer than 128 characters or holds a character other than A-Z, a-z,
+     * 0-9, `_`, `-` and `.`.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
@@ -547,7 +549,9 @@ class MCP_API Server {
      *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
      *         that is not a string, integer or boolean, or on a property not reached through
      *         `properties` alone).
-     * @throws std::invalid_argument when a tool with the same name is already registered.
+     * @throws std::invalid_argument when a tool with the same name is already registered, or when
+     * the name is empty, longer than 128 characters or holds a character other than A-Z, a-z,
+     * 0-9, `_`, `-` and `.`.
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
@@ -572,7 +576,9 @@ class MCP_API Server {
      *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
      *         that is not a string, integer or boolean, or on a property not reached through
      *         `properties` alone).
-     * @throws std::invalid_argument when a tool with the same name is already registered.
+     * @throws std::invalid_argument when a tool with the same name is already registered, or when
+     * the name is empty, longer than 128 characters or holds a character other than A-Z, a-z,
+     * 0-9, `_`, `-` and `.`.
      */
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema,
@@ -641,7 +647,9 @@ class MCP_API Server {
      *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
      *         that is not a string, integer or boolean, or on a property not reached through
      *         `properties` alone).
-     * @throws std::invalid_argument when a tool with the same name is already registered.
+     * @throws std::invalid_argument when a tool with the same name is already registered, or when
+     * the name is empty, longer than 128 characters or holds a character other than A-Z, a-z,
+     * 0-9, `_`, `-` and `.`.
      */
     template <typename Fn>
         requires detail::JsonAsyncHandler<Fn>
@@ -661,7 +669,9 @@ class MCP_API Server {
      *         (not a string, empty or not an HTTP token, repeated ignoring case, on a property
      *         that is not a string, integer or boolean, or on a property not reached through
      *         `properties` alone).
-     * @throws std::invalid_argument when a tool with the same name is already registered.
+     * @throws std::invalid_argument when a tool with the same name is already registered, or when
+     * the name is empty, longer than 128 characters or holds a character other than A-Z, a-z,
+     * 0-9, `_`, `-` and `.`.
      */
     void add_raw_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);
 

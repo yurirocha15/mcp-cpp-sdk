@@ -212,6 +212,9 @@ inline constexpr std::size_t g_MAX_SUBSCRIPTIONS = 4096;
 
 inline constexpr std::size_t g_MAX_SUBSCRIPTION_BYTES = 8U * 1024U * 1024U;
 
+/// The longest tool name the tools page of the specification allows.
+inline constexpr std::size_t g_MAX_TOOL_NAME_LENGTH = 128;
+
 }  // namespace server
 
 /// Resource bounds of the client.

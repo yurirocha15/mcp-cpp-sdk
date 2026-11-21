@@ -1643,6 +1643,34 @@ TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
                  std::invalid_argument);
 }
 
+// tools.mdx "Tool Names": 1 to 128 characters from ASCII letters, digits, '_', '-' and '.'.
+TEST_F(ServerHandlersTest, ToolNamesFollowTheSpecificationRules) {
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+    auto handler = [](nlohmann::json) { return nlohmann::json::object(); };
+    const auto schema = nlohmann::json{{"type", "object"}};
+    for (const std::string name :
+         {std::string("get_weather"), std::string("DATA-export.v2"), std::string(128, 'a')}) {
+        EXPECT_NO_THROW(
+            (setup.server.add_tool<nlohmann::json, nlohmann::json>(name, "ok", schema, handler)))
+            << name;
+    }
+    for (const std::string name :
+         {std::string(), std::string(129, 'b'), std::string("my tool"), std::string("files/read"),
+          std::string("a,b"), std::string("caf\xc3\xa9")}) {
+        EXPECT_THROW(
+            (setup.server.add_tool<nlohmann::json, nlohmann::json>(name, "bad", schema, handler)),
+            std::invalid_argument)
+            << name;
+        mcp::Tool tool;
+        tool.name = name;
+        tool.inputSchema = schema;
+        EXPECT_THROW(
+            setup.server.add_tool(tool, [](const nlohmann::json&) { return nlohmann::json(); }),
+            std::invalid_argument)
+            << name;
+    }
+}
+
 // The prompts spec lists "Invalid prompt name" under -32602 (Invalid params): the method exists,
 // the name it was given does not.
 TEST_F(ServerHandlersTest, UnknownPromptReturnsInvalidParams) {

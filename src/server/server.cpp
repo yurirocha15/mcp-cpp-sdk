@@ -992,6 +992,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::shared_ptr<Session> session;
     std::atomic<int64_t> next_request_id{1};
     std::atomic<LoggingLevel> log_level{g_default_log_level};
+    /// The capabilities the client declared in its initialize request, for the requests a legacy
+    /// session sends it.
+    mutable std::mutex client_capabilities_mutex;
+    nlohmann::json client_capabilities = nlohmann::json::object();
     std::size_t& page_size = registry->page_size;
     std::atomic_size_t& max_in_flight_requests = registry->max_in_flight_requests;
     std::atomic_size_t& max_in_flight_bytes = registry->max_in_flight_bytes;
@@ -1230,6 +1234,14 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     // Server is destroyed has something valid to run against. Holders keep the implementation
     // alive; Server is only the handle the application owns.
     [[nodiscard]] std::shared_ptr<Session> session_snapshot() const;
+
+    /// Whether the client's initialize request declared `sampling.context`.
+    [[nodiscard]] bool client_declares_sampling_context() const {
+        std::lock_guard lock(client_capabilities_mutex);
+        const auto sampling = client_capabilities.find("sampling");
+        return sampling != client_capabilities.end() && sampling->is_object() &&
+               sampling->contains("context");
+    }
     /// Whether the session's transport has ended a session since the current one was initialized.
     [[nodiscard]] bool transport_started_new_session() const;
     void reset_session(const std::shared_ptr<Session>& session);
@@ -1714,22 +1726,42 @@ TypeErasedHandler lift_sync_handler(SyncTypeErasedHandler handler) {
     };
 }
 
+/// Refuses a name the tools page asks servers not to give a tool: empty, longer than 128
+/// characters, or holding a character other than an ASCII letter, a digit, `_`, `-` or `.`.
+void check_tool_name(std::string_view name) {
+    const bool allowed = !name.empty() &&
+                         name.size() <= mcp::detail::constants::server::g_MAX_TOOL_NAME_LENGTH &&
+                         std::ranges::all_of(name, [](char ch) {
+                             return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                                    (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.';
+                         });
+    if (!allowed) {
+        throw std::invalid_argument("Tool name '" + detail::sanitize_for_diagnostics(name) +
+                                    "' must be 1 to 128 characters from A-Z, a-z, 0-9, '_', '-' "
+                                    "and '.'");
+    }
+}
+
+/// Refuses a tool registration under @p name when the name breaks the naming rules or is @p taken.
+void check_new_tool(const std::string& name, bool taken) {
+    check_tool_name(name);
+    if (taken) {
+        throw std::invalid_argument("Duplicate tool registration: " + name);
+    }
+}
+
 }  // namespace
 
 void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + name);
-    }
+    check_new_tool(name, impl_->tool_handlers.contains(name));
     auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
                                         tool.outputSchema ? &*tool.outputSchema : nullptr);
     impl_->add_tool_registration(Tool(tool), name, std::move(schemas), std::move(handler), result_mode);
 }
 
 void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(tool.name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
-    }
+    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
     auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
                                         tool.outputSchema ? &*tool.outputSchema : nullptr);
     auto name = tool.name;
@@ -1740,9 +1772,7 @@ void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolR
 void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
                            const nlohmann::json* output_schema, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(tool.name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
-    }
+    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
     auto schemas = compile_tool_schemas(tool.name, input_schema, output_schema);
     auto name = tool.name;
     impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
@@ -1751,9 +1781,7 @@ void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
 
 void Server::register_sync_tool(const Tool& tool, SyncTypeErasedHandler handler,
                                 detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(tool.name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
-    }
+    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
     auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
                                         tool.outputSchema ? &*tool.outputSchema : nullptr);
     auto lifted = lift_sync_handler(handler);
@@ -1764,9 +1792,7 @@ void Server::register_sync_tool(const Tool& tool, SyncTypeErasedHandler handler,
 void Server::register_sync_tool(Tool&& tool, const nlohmann::json& input_schema,
                                 const nlohmann::json* output_schema, SyncTypeErasedHandler handler,
                                 detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(tool.name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
-    }
+    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
     auto schemas = compile_tool_schemas(tool.name, input_schema, output_schema);
     auto name = tool.name;
     auto lifted = lift_sync_handler(handler);
@@ -2754,6 +2780,13 @@ Context Server::Impl::make_context(
                              std::optional<std::string>) -> Task<nlohmann::json> {
             if (session && Impl::session_epoch(*session) != epoch) {
                 throw std::runtime_error("the client ended the session this request belongs to");
+            }
+            if (method == "sampling/createMessage" && params &&
+                detail::asks_for_sampling_context(*params) &&
+                !impl->client_declares_sampling_context()) {
+                throw std::invalid_argument(
+                    "includeContext other than \"none\" needs a client that declares the "
+                    "sampling.context capability");
             }
             return impl->send_request(cancelled, method, params, related_request);
         };
@@ -3828,6 +3861,14 @@ Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& jso
     init_result.instructions = instructions;
 
     if (update_lifecycle) {
+        {
+            const auto& params = json_msg.at("params");
+            const auto declared = params.find("capabilities");
+            std::lock_guard lock(client_capabilities_mutex);
+            client_capabilities = declared != params.end() && declared->is_object()
+                                      ? *declared
+                                      : nlohmann::json::object();
+        }
         if (auto current = session_snapshot(); current && current->http_transport != nullptr) {
             const auto epoch = session_epoch(*current);
             if (epoch != terminated_sessions_at_initialize.load(std::memory_order_relaxed)) {

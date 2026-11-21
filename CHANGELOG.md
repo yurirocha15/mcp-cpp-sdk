@@ -62,6 +62,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `HttpClientTransport` warns once through its warning handler when bearer tokens would go over `http://` to a host other than a loopback one.
 - HTTP and WebSocket servers answer 403 to a request on a loopback connection whose `Host` names no loopback host; `set_allowed_hosts()` lists other names, as a same-host proxy needs.
 - A `Client` pinned to 2026-07-28 sends `server/discover` once more when the server refuses that version while listing it as supported.
+- Tool registration throws for a name that is empty, longer than 128 characters or holds characters other than ASCII letters, digits, `_`, `-` and `.`.
+- `Context::sample_llm()` refuses an `includeContext` other than "none" for a client that did not declare `sampling.context`.
 
 ### Removed
 
