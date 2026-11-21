@@ -12,16 +12,6 @@ The MCP C++ SDK leverages a combination of JSON-RPC error codes, C++ exceptions,
 2. **Isolation**: Prevent a single failure from crashing the entire server or client session.
 3. **Graceful Degradation**: Allow clients to handle errors and continue functioning where possible.
 
-Adding This to a Sync-Mode Program
-----------------------------------
-
-The client of :doc:`/getting-started` tells the two kinds of failure apart: a tool that
-reports an error in its result, and a request the server refuses, which throws
-``mcp::McpError``.
-
-.. literalinclude:: /_generated/progression/client_add_errors.diff
-   :language: diff
-
 JSON-RPC Error Codes
 --------------------
 
@@ -171,6 +161,28 @@ Client-side Error Handling
 
 Clients should always wrap server calls in ``try-catch`` blocks to handle potential network issues, protocol violations, or server-side errors.
 
+A tool that fails says so in its result, with ``isError`` set; a request the
+server refuses throws ``mcp::McpError``, whose ``code()`` is the JSON-RPC error
+code. The blocking calls of sync mode throw the same exceptions as the awaited
+calls of async mode:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Errors:
+   :end-before: // Pagination:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Errors:
+   :end-before: // Pagination:
+   :dedent: 4
+
+A failed connection throws ``McpError`` with code ``-31000``, as `JSON-RPC Error
+Codes`_ describes.
+
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
    :start-after: // ========== TEST 1: Catch exception from thrown error ==========
@@ -189,9 +201,19 @@ Request Timeouts
    call, a slow build, a batch job — fails on the client side while the server
    is still working on it.
 
-Raise it for the whole client by passing ``ClientOptions`` to the constructor:
+Raise it for the whole client by passing ``ClientOptions`` to the constructor,
+after the ``Endpoint`` in sync mode or after the transport and executor in async
+mode:
 
 .. code-block:: cpp
+   :caption: Sync mode
+
+   mcp::ClientOptions options;
+   options.request_timeout = std::chrono::minutes(5);
+   mcp::Client client(mcp::Endpoint::http(url), options);
+
+.. code-block:: cpp
+   :caption: Async mode
 
    mcp::ClientOptions options;
    options.request_timeout = std::chrono::minutes(5);
@@ -200,7 +222,7 @@ Raise it for the whole client by passing ``ClientOptions`` to the constructor:
 A single request can be given its own deadline through ``RequestOptions``,
 which ``call_tool()``, ``send_request()``, ``read_resource()``, ``get_prompt()``,
 ``complete()``, ``start_tool()`` and the ``list_*()`` members take as their last
-argument, as do their blocking twins on ``client.sync()``. A client that makes
+argument, as do their blocking forms on ``client.sync()``. A client that makes
 one slow call among many fast ones gives that call a longer deadline:
 
 .. code-block:: cpp
@@ -209,7 +231,6 @@ one slow call among many fast ones gives that call a longer deadline:
    slow.timeout = std::chrono::minutes(30);
 
    auto result = co_await client.call_tool("render", args, slow);
-   // In sync mode: client.sync().call_tool("render", args, slow)
 
 When the deadline expires the awaiting coroutine throws
 :cpp:class:`mcp::McpError` with code ``-32001``

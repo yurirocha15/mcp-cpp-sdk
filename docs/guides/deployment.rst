@@ -30,15 +30,15 @@ Convenience API (run_http)
 
 For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up a :cpp:class:`mcp::StreamableHttpSessionManager` that serves each older-protocol client in a session of its own with the same server, and handles signal mapping automatically.
 
-.. literalinclude:: ../../examples/sync/server_add_auth.cpp
+.. literalinclude:: ../../examples/sync/server.cpp
    :language: cpp
-   :start-at: #include
+   :start-at: // HTTP until a signal
+   :end-at: server.run_http(
+   :dedent: 4
 
 ``run_http()`` blocks until SIGINT or SIGTERM, or until ``server.stop()`` is
 called from another thread or a handler. ``server.bound_port()`` returns the
 port it listens on, which is the one the system chose when it was given port 0.
-:doc:`growing-a-server` builds this program up from the stdio server of
-:doc:`/getting-started`.
 
 Manual HTTP Setup
 ~~~~~~~~~~~~~~~~~

@@ -11,11 +11,12 @@ Examples that ARE run:
   - example-benchmark-*: Throughput measurement examples
   - example-client-stdio: Launches example-server-stdio as a child process
 
-  - example-sync-*: The sync-mode programs, in pairs: each stdio server is
-    launched by a client, and each HTTP server is started on a free port and
+  - example-sync-minimal-client: Launches example-sync-minimal-server
+  - example-sync-notes-client and example-async-notes-client: Each launches
+    example-sync-notes-server and example-async-notes-server
+  - example-sync-server and example-sync-client, example-async-server and
+    example-async-client: HTTP pairs; each server is started on a free port and
     then called by its client
-  - example-async-server and example-async-client: The async-mode programs, an
-    HTTP pair run as the sync-mode ones are
 
 Examples NOT run:
   - example-interactive-client: Needs the path of a server to launch
@@ -32,69 +33,29 @@ import sys
 import time
 from pathlib import Path
 
-# The sync-mode stdio servers, each launched by example-sync-client-base.
-SYNC_STDIO_SERVERS = [
-    "server-base",
-    "server-add-resource",
-    "server-add-prompt",
-    "server-add-context",
-    "server-add-completions",
-    "server-add-handler-pool",
-    "server-add-own-loop",
-    "server-add-elicitation",
-    "server-add-sampling",
-    "server-add-roots",
-    "server-add-middleware",
-    "server-add-pagination",
-    "server-add-tasks",
-    "server-add-subscriptions",
-    "server-add-apps",
-    "server-add-skills",
-]
-
-# (client, the stdio server it launches, lines the client prints).
-SYNC_STDIO_CLIENTS = [
-    ("client-add-resource", "server-add-resource", ["Hello, Ada!", "Be kind to each other."]),
-    ("client-add-prompt", "server-add-prompt",
-     ["Hello, Ada!", "Write a short welcome message for Ada."]),
-    ("client-add-progress", "server-add-context", ["progress: 1", "Hello, Ada!"]),
-    ("client-add-logging", "server-add-context", ['log: "Composing a greeting"', "Hello, Ada!"]),
-    ("client-add-coroutine", "server-base", ["Hello, Ada!", "tool: greet"]),
-    ("client-add-restart", "server-base", ["Hello, Ada!"]),
-    ("client-add-own-loop", "server-base", ["Hello, Ada!"]),
-    ("client-add-elicitation", "server-add-elicitation", ["Hello, Dr. Ada!"]),
-    ("client-add-sampling", "server-add-sampling", ["Greetings, friend!"]),
-    ("client-add-roots", "server-add-roots", ["The client has 1 root(s)"]),
-    ("client-add-tasks", "server-add-tasks", ["Hello, Grace!"]),
-    ("client-add-subscriptions", "server-add-subscriptions",
-     ["updated: notifications/resources/updated"]),
-    ("client-add-errors", "server-base", ["Hello, Ada!", "request error -32602"]),
-    ("client-add-legacy", "server-base", ["protocol: 2025-11-25", "Hello, Ada!"]),
-]
-
-# (HTTP server, its client, lines the client prints, whether the client succeeds). The last pair
-# checks that the server with a bearer token validator refuses a client without the token; for a
-# client that fails, the lines are text its error output contains.
+# (HTTP server, its client, lines the client prints, whether the client succeeds); for a client
+# that fails, the lines are text its error output contains.
 SYNC_HTTP_PAIRS = [
-    ("server-add-http", "client-add-http", ["Hello, Ada!"], True),
-    ("server-add-auth", "client-add-auth", ["Hello, Ada!"], True),
-    ("server-all", "client-all",
-     ['log: "Composing a greeting"', "progress: 1", "Hello, Ada!", "Be kind to each other.",
-      "Write a short welcome message for Ada.", "Hello, Dr. Ada!",
+    ("server", "client",
+     ["Hello, Ada!", 'log: "Composing a greeting"', "progress: 1", "Be kind to each other.",
+      "Write a short welcome message for Ada.", "completion: Ada", "Hello, Dr. Ada!",
       "Greetings, friend!", "The client has 1 root(s)", "Hello, Grace!",
-      "updated: notifications/resources/updated", "request error -32602", "tool: greet"], True),
-    ("server-add-auth", "client-add-http", ["HTTP status 401"], False),
+      "updated: notifications/resources/updated", "request error -32602", "tool: greet",
+      "tool: greeting_card", "from a coroutine: Hello, Linus!"], True),
 ]
 
 # The async-mode HTTP pair, as SYNC_HTTP_PAIRS.
 ASYNC_HTTP_PAIRS = [
     ("server", "client",
-     ['log: "Composing a greeting"', "progress: 1", "Hello, Ada!", "Be kind to each other.",
+     ["Hello, Ada!", 'log: "Composing a greeting"', "progress: 1", "Be kind to each other.",
       "Write a short welcome message for Ada.", "completion: Ada", "Hello, Dr. Ada!",
       "Greetings, friend!", "The client has 1 root(s)", "Hello, Grace!",
       "updated: notifications/resources/updated", "request error -32602", "tool: greet",
       "tool: greeting_card", "together: Hello, Ada!", "together: Hello, Grace!"], True),
 ]
+
+# Lines each notes client prints, whichever notes server it launches.
+NOTES_OUTPUT = ["changed: notes://all", "- Buy milk", "Summarize these 1 notes."]
 
 def is_example_executable(path):
     if not path.is_file():
@@ -255,28 +216,22 @@ def run_sync_examples(build_dir):
         else:
             failed += 1
 
-    client_base = example_executable(build_dir, "client-base")
-    if client_base is None:
-        print("example-sync-client-base not found")
-        return 0, 1
-    for server in SYNC_STDIO_SERVERS:
-        server_path = example_executable(build_dir, server)
-        if server_path is None:
-            print(f"example-sync-{server} not found")
+    def check_stdio_pair(client_mode, client_name, server_mode, server_name, expected):
+        client = example_executable(build_dir, client_name, client_mode)
+        server = example_executable(build_dir, server_name, server_mode)
+        if client is None or server is None:
+            print(f"example-{client_mode}-{client_name} or "
+                  f"example-{server_mode}-{server_name} not found")
             record(False)
-            continue
-        record(check_client(f"example-sync-client-base with {server}",
-                            [str(client_base), str(server_path)], ["Hello, Ada!"], True))
+            return
+        record(check_client(f"example-{client_mode}-{client_name} with {server_mode} {server_name}",
+                            [str(client), str(server)], expected, True))
 
-    for client, server, expected in SYNC_STDIO_CLIENTS:
-        client_path = example_executable(build_dir, client)
-        server_path = example_executable(build_dir, server)
-        if client_path is None or server_path is None:
-            print(f"example-sync-{client} or example-sync-{server} not found")
-            record(False)
-            continue
-        record(check_client(f"example-sync-{client} with {server}",
-                            [str(client_path), str(server_path)], expected, True))
+    check_stdio_pair("sync", "minimal-client", "sync", "minimal-server", ["Hello, Ada!"])
+    # Each notes client launches each notes server.
+    for client_mode in ("sync", "async"):
+        for server_mode in ("sync", "async"):
+            check_stdio_pair(client_mode, "notes-client", server_mode, "notes-server", NOTES_OUTPUT)
 
     http_pairs = [("sync", pair) for pair in SYNC_HTTP_PAIRS]
     http_pairs += [("async", pair) for pair in ASYNC_HTTP_PAIRS]

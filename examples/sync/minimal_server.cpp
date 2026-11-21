@@ -1,4 +1,5 @@
-// server_base.cpp listing its tools, resources and prompts one page at a time.
+// A minimal MCP server: one tool, served over stdio. Build it and let an MCP client launch it, or
+// run it through minimal_client.
 
 #include <mcp/mcp.hpp>
 
@@ -12,8 +13,6 @@ int main() {
                     [](const nlohmann::json& args) -> nlohmann::json {
                         return "Hello, " + args.at("name").get<std::string>() + "!";
                     });
-
-    server.set_page_size(10);
 
     server.run_stdio();
 }

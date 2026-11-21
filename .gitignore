@@ -78,6 +78,3 @@ benchmark/benchmark-mcp-servers-v2/
 # Generated files
 compile_commands.json
 graphify-out/
-
-# Written by docs/conf.py from examples/sync
-docs/_generated/

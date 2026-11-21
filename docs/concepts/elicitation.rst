@@ -9,18 +9,28 @@ Key features include:
 - **Asynchronous**: Execution pauses until the user responds or the request times out.
 - **Structured**: Supports both form-based input (with JSON Schema validation) and URL-based redirects.
 
-Adding This to a Sync-Mode Program
-----------------------------------
+Using Elicitation
+-----------------
 
-A tool of the server of :doc:`/getting-started` asks the user a question with
-``ctx.elicit()``, and the client answers with the handler it registers with
-``on_elicitation()``.
+A tool asks the user a question with ``ctx.elicit()`` and awaits the answer, so
+its handler is a coroutine in both modes, and so is the client's handler, which
+``on_elicitation()`` registers. A real client shows the form to its user and
+returns what they entered, or declines:
 
-.. literalinclude:: /_generated/progression/server_add_elicitation.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Elicitation:
+   :end-before: // Sampling:
+   :dedent: 4
 
-.. literalinclude:: /_generated/progression/client_add_elicitation.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :start-after: // Elicitation:
+   :end-before: // Sampling:
+   :dedent: 4
+
+The tool is called like any other, through ``client.sync()`` in sync mode and
+with ``co_await`` in async mode (see :doc:`tools`).
 
 Server-side Elicitation
 -----------------------

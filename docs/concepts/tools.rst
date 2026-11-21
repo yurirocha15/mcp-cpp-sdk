@@ -14,20 +14,49 @@ class. Each tool requires:
   declare ``"type": "object"``, since tool arguments are always an object.
 - **Handler**: A C++ function or lambda that executes the tool logic.
 
-Adding This to a Sync-Mode Program
-----------------------------------
+Using Tools
+-----------
 
-The server of :doc:`/getting-started` registers its tool with ``add_tool()``: a name, a
-description, an input schema that ``tool_params()`` makes from the arguments'
-names, types and descriptions (each one required unless marked otherwise), and
-a synchronous handler. The handler's return value becomes the result; a string,
-as here, becomes its text. :doc:`/guides/growing-a-server` adds a handler that
-takes the ``Context``, and :doc:`/guides/growing-a-client` handles a tool's
-errors.
+A server registers a tool with ``add_tool()``: a name, a description, an input
+schema and a handler. In sync mode the handler is a plain function that returns
+the result; in async mode it is a coroutine that returns
+``mcp::Task<nlohmann::json>``:
 
-.. literalinclude:: ../../examples/sync/server_base.cpp
+.. literalinclude:: ../../examples/sync/server.cpp
    :language: cpp
-   :start-at: #include
+   :caption: Sync mode
+   :start-after: // Tools.
+   :end-before: // Logging and progress.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Tools.
+   :end-before: // Logging and progress.
+   :dedent: 4
+
+``mcp::tool_params()`` writes the input schema from one ``ParamSpec`` per
+argument: its name, JSON Schema type and description, and whether it is
+required, which it is by default. ``{"title", "string", "Such as Dr. or Ms.",
+false}`` adds an optional argument.
+
+A client calls the tool with ``call_tool()``, through ``client.sync()`` in sync
+mode and with ``co_await`` in async mode:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Tools.
+   :end-before: // Logging and progress:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Tools.
+   :end-before: // Logging and progress:
+   :dedent: 4
 
 Basic Tool Registration
 -----------------------

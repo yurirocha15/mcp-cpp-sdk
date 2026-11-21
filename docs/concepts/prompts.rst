@@ -11,15 +11,49 @@ In `mcp-cpp-sdk`, prompts are registered with a name, description, and an option
 set of arguments. Clients can discover these prompts and request them with
 specific arguments to get a list of messages to include in the conversation.
 
-Adding This to a Sync-Mode Program
-----------------------------------
+Using Prompts
+-------------
 
-The server of :doc:`/getting-started` gets a prompt with ``add_text_prompt()``, whose
-function makes the text of the prompt's one user message from the
-arguments.
+``add_text_prompt()`` registers a prompt whose one message, from the user, is
+the text a function makes of the request's arguments. The function receives the
+arguments as a ``Server::PromptArguments`` map, empty when the request gave
+none. In sync mode it returns ``std::string``; in async mode it is a coroutine
+that returns ``mcp::Task<std::string>``:
 
-.. literalinclude:: /_generated/progression/server_add_prompt.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
+
+A request that leaves out a required argument is answered with invalid params,
+without calling the function. A ``Prompt`` passed in place of the name,
+description and arguments sets the title and icons as well.
+
+A client fills in a prompt with ``get_prompt()``, whose arguments are given by
+name; the result's ``messages`` are the conversation to hand to a model:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
 
 Registering a Basic Prompt
 --------------------------

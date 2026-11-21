@@ -20,36 +20,30 @@ The SDK builds nine core examples plus 16 specialized feature examples:
 8. **llama_server** - llama.cpp MCP adapter
 9. **debugger_server** - LLDB debugger MCP server (uses stubs when LLDB is unavailable)
 
-Sync-Mode Examples
-------------------
+Sync-Mode and Async-Mode Examples
+---------------------------------
 
-``examples/sync/`` holds the programs of :doc:`getting-started`,
-:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client`: a base server
-and a base client, one program per feature added to them, and
-``server_all.cpp`` and ``client_all.cpp``, which combine the features. Each
-builds as ``example-sync-<name>``, with dashes for the underscores. A stdio
-client takes the server's command, and an HTTP server its port and an HTTP
-client the server's URL:
+``examples/sync/`` and ``examples/async/`` hold the same programs in the two
+modes:
 
-.. code-block:: bash
+* ``notes_server`` and ``notes_client``: a server with a tool, a resource that
+  can be subscribed to and a prompt, and a client that uses them, over stdio.
+  :doc:`guides/sync-to-async` converts the sync programs to async mode.
+* ``server`` and ``client``: a server and a client with every feature, over HTTP
+  with a bearer token. The pages of :doc:`concepts/index` show each feature from
+  them, and :doc:`guides/async-mode` walks through the async programs.
 
-   ./build/release/example-sync-client-base ./build/release/example-sync-server-base
-   ./build/release/example-sync-server-add-http 8080 &
-   ./build/release/example-sync-client-add-http http://127.0.0.1:8080/mcp
-
-Async-Mode Examples
--------------------
-
-``examples/async/`` holds the programs of :doc:`guides/async-mode`: a server and
-a client with every feature of ``server_all.cpp`` and ``client_all.cpp``, whose
-handlers and calls are coroutines on an event loop the program runs. They build
-as ``example-async-server``, which takes its port, and ``example-async-client``,
-which takes the server's URL:
+``examples/sync/`` also holds ``minimal_server`` and ``minimal_client``, the
+programs of :doc:`getting-started`. Each program builds as
+``example-<mode>-<name>``, with dashes for the underscores. A stdio client takes
+the server's command, an HTTP server its port, and an HTTP client the server's
+URL:
 
 .. code-block:: bash
 
-   ./build/release/example-async-server 8080 &
-   ./build/release/example-async-client http://127.0.0.1:8080/mcp
+   ./build/release/example-async-notes-client ./build/release/example-async-notes-server
+   ./build/release/example-sync-server 8080 &
+   ./build/release/example-sync-client http://127.0.0.1:8080/mcp
 
 Feature Examples
 ----------------

@@ -19,14 +19,17 @@ implements the transport binding. The types follow the beta specification in
 ``ext-skills``, and the extension requires protocol revision 2026-07-28: the
 methods are served to its clients only.
 
-Adding this to a sync-mode program
-----------------------------------
+Using Agent Skills
+------------------
 
-The server of :doc:`/getting-started` serves a skill through a ``SkillsExtension`` made
-for it.
+A ``SkillsExtension`` serves the skills added to it, the same way in both
+modes:
 
-.. literalinclude:: /_generated/progression/server_add_skills.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Agent Skills.
+   :end-before: // HTTP until a signal
+   :dedent: 4
 
 Serving skills
 --------------

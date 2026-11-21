@@ -1,18 +1,15 @@
 Guides
 ======
 
-Practical guides for common tasks when working with the `mcp-cpp-sdk`. These guides
-provide step-by-step instructions and best practices for growing a sync-mode
-server or client one feature at a time, up to async mode, a complete server and
-client in async mode, testing, error handling, deployment, and older protocol
-revisions.
+Practical guides for common tasks when working with the `mcp-cpp-sdk`: servers
+and clients with coroutines, converting a server or client to them, testing,
+error handling, OAuth, deployment, and older protocol revisions.
 
 .. toctree::
    :maxdepth: 2
 
-   growing-a-server
-   growing-a-client
    async-mode
+   sync-to-async
    testing
    error-handling
    oauth-security

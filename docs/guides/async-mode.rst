@@ -1,15 +1,16 @@
-Async Mode
-==========
+Async Servers and Clients
+=========================
 
-In async mode the program runs the Boost.Asio event loop itself, and its
-handlers and client calls are C++20 coroutines that return ``mcp::Task``. This
-guide walks through ``examples/async/server.cpp`` and
-``examples/async/client.cpp``, a server and a client with every feature of the
-sync-mode ``server_all.cpp`` and ``client_all.cpp``. What each feature does is
-explained in :doc:`../concepts/index`; this page covers what async mode changes.
-:doc:`growing-a-server` and :doc:`growing-a-client` move a sync-mode program to
-async mode one step at a time, and :doc:`../examples` shows how to run the two
-programs.
+In async mode the program runs a Boost.Asio event loop, and handlers and client
+calls are C++20 coroutines that return ``mcp::Task``. While a handler waits, the
+server answers other requests on the same thread; a client has several calls in
+flight at once; and the program chooses its executors and transports and runs
+other work on the same loop.
+
+This guide walks through ``examples/async/server.cpp`` and
+``examples/async/client.cpp``, a server and a client that use every feature.
+Each feature is described on its page in :doc:`../concepts/index`, and
+:doc:`../examples` shows how to run the programs.
 
 Coroutines
 ----------
@@ -32,14 +33,14 @@ Coroutine Handlers
 
 .. literalinclude:: ../../examples/async/server.cpp
    :language: cpp
-   :start-at: // A coroutine handler
-   :end-before: // Resources, one that
+   :start-after: // Tools.
+   :end-before: // Resources.
    :dedent: 4
 
 The server runs each request in a coroutine of its own. A handler that returns
 ``mcp::Task`` suspends at each ``co_await``, and the server answers other
-requests until it resumes. This one waits on a timer of the executor it runs
-on, which ``boost::asio::this_coro::executor`` gives. A handler that blocks
+requests until it resumes. ``compose_greeting`` waits on a timer of the executor
+it runs on, which ``boost::asio::this_coro::executor`` gives. A handler that blocks
 instead holds up the thread it runs on. The ``Context`` carries the request's
 log messages and progress (:doc:`../concepts/context`).
 
@@ -48,8 +49,8 @@ Resources, Prompts and Requests to the Client
 
 .. literalinclude:: ../../examples/async/server.cpp
    :language: cpp
-   :start-at: // Resources, one that
-   :end-before: // Middleware, lists in pages
+   :start-after: // Resources.
+   :end-before: // Middleware:
    :dedent: 4
 
 Text resources, prompts and the completion provider take coroutines as tools
@@ -58,26 +59,13 @@ do. See :doc:`../concepts/resources`, :doc:`../concepts/subscriptions`,
 :doc:`../concepts/elicitation`, :doc:`../concepts/roots`, and
 :doc:`../concepts/context` for requests to the client's model.
 
-Middleware, Pages, Tasks, Apps and Skills
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-.. literalinclude:: ../../examples/async/server.cpp
-   :language: cpp
-   :start-at: // Middleware, lists in pages
-   :end-before: // Tool, resource and prompt handlers run on a pool
-   :dedent: 4
-
-See :doc:`../concepts/middleware`, :doc:`../concepts/pagination`,
-:doc:`../concepts/tasks`, :doc:`../concepts/apps` and
-:doc:`../concepts/skills`.
-
 A Pool for Handlers
 ^^^^^^^^^^^^^^^^^^^
 
 .. literalinclude:: ../../examples/async/server.cpp
    :language: cpp
-   :start-at: // Tool, resource and prompt handlers run on a pool
-   :end-before: // The event loop:
+   :start-at: // Handler pool:
+   :end-before: // Tools.
    :dedent: 4
 
 ``set_handler_executor()`` moves the call of each tool, resource and prompt
@@ -88,6 +76,19 @@ handler that only awaits needs no pool. Handlers that run on the pool share
 state through a mutex, as ``remember`` does. The pool's ``Runtime`` is
 constructed before the ``io_context``, so that it is destroyed after it, as
 ``set_handler_executor()`` requires.
+
+Middleware, Pages, Tasks, Apps and Skills
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :start-after: // Middleware:
+   :end-before: // The event loop:
+   :dedent: 4
+
+See :doc:`../concepts/middleware`, :doc:`../concepts/pagination`,
+:doc:`../concepts/tasks`, :doc:`../concepts/apps` and
+:doc:`../concepts/skills`.
 
 The Event Loop
 ^^^^^^^^^^^^^^
@@ -105,8 +106,8 @@ connections until ``close()``, which the program calls on SIGINT or SIGTERM, as
 ``run_http()`` does itself; ``io.run()`` then returns once the handlers still
 running have finished.
 :ref:`signal-handling` shows a shutdown that also sets a deadline for them. A
-stdio server is one more coroutine on the loop, ``server.run(transport,
-executor)``, as :doc:`growing-a-server` shows.
+stdio server runs ``server.run(transport, executor)`` on the loop instead, as
+in `Another Event Loop`_.
 
 The Client
 ----------
@@ -116,14 +117,16 @@ Construction and Handlers
 
 .. literalinclude:: ../../examples/async/client.cpp
    :language: cpp
-   :start-at: // The transport and the client run
+   :start-at: // The connection:
    :end-before: // co_spawn hands what
    :dedent: 4
 
 A client constructed with a transport and an executor runs on the program's
 event loop and is used through its coroutines; ``sync()`` and ``run()`` are for
-a client that runs a loop of its own (:doc:`growing-a-client`). The handlers for
+a client that runs a loop of its own (:doc:`sync-to-async`). The handlers for
 the server's requests are coroutines in both modes.
+
+.. _async-starting-the-session:
 
 Starting the Session
 ^^^^^^^^^^^^^^^^^^^^
@@ -177,6 +180,15 @@ Another Event Loop
 
 The programs run a ``boost::asio::io_context``. ``mcp::Runtime`` is an event
 loop that the SDK provides: its ``executor()`` takes the place of
-``io.get_executor()``, ``spawn()`` starts a ``Task`` and ``run()`` runs the
-loop, as the last steps of :doc:`growing-a-server` and :doc:`growing-a-client`
-show.
+``io.get_executor()``, ``spawn()`` starts a ``Task``, and ``run()`` runs the loop
+until no work is left. ``examples/async/notes_server.cpp`` serves stdio on one:
+
+.. literalinclude:: ../../examples/async/notes_server.cpp
+   :language: cpp
+   :start-after: // The event loop:
+   :end-before: }
+   :dedent: 4
+
+``run()`` returns once ``Server::run()`` has returned, when standard input
+closes. ``start(threads)`` runs the loop on threads of its own instead, until
+``stop()``.

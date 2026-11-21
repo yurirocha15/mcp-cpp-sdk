@@ -16,7 +16,6 @@ on:
       - 'examples/**'
       - 'include/**'
       - 'scripts/build.py'
-      - 'scripts/check_example_progression.py'
       - 'scripts/init.py'
       - 'test/e2e/**'
   pull_request:
@@ -31,7 +30,6 @@ on:
       - 'examples/**'
       - 'include/**'
       - 'scripts/build.py'
-      - 'scripts/check_example_progression.py'
       - 'scripts/init.py'
       - 'test/e2e/**'
 

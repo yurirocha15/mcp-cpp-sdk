@@ -23,16 +23,33 @@ Key use cases include:
 - Suggesting valid resource template URI components (e.g., file paths, identifiers).
 - Providing valid options for a configuration prompt.
 
-Adding This to a Sync-Mode Program
-----------------------------------
+Using Completions
+-----------------
 
-The server of :doc:`/getting-started`, with the prompt of :doc:`/guides/growing-a-server`,
-completes the prompt's argument with a provider. The provider is a coroutine, so
-the program includes ``<mcp/core/async.hpp>``; the other handlers stay
-synchronous.
+The completion provider is a coroutine in both modes. It receives the reference
+and the argument being completed, and returns the suggestions:
 
-.. literalinclude:: /_generated/progression/server_add_completions.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Completions.
+   :end-before: // Elicitation:
+   :dedent: 4
+
+A client asks for suggestions with ``complete()``:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Completions.
+   :end-before: // Elicitation, sampling and roots:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Completions.
+   :end-before: // Elicitation, sampling and roots:
+   :dedent: 4
 
 Server-side Setup
 -----------------

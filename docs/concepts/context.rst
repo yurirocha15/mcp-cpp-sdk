@@ -3,33 +3,6 @@ Server Context
 
 The ``mcp::Context`` object is a fundamental construct in the MCP C++ SDK. It is passed as a reference to every handler for tools, resources, and prompts that takes one. Think of the ``Context`` as the per-request interface between your server's logic and the connected client.
 
-Adding This to a Sync-Mode Program
-----------------------------------
-
-A synchronous handler of the server of :doc:`/getting-started` takes the ``Context`` and
-becomes a coroutine to log and report progress, and its ``add_tool()`` call
-keeps its form. On the client, ``RequestOptions::on_progress`` follows the
-progress and ``on_notification()`` receives the log messages. :doc:`/guides/growing-a-server`
-and :doc:`/guides/growing-a-client` show the other steps.
-
-.. literalinclude:: /_generated/progression/server_add_context.diff
-   :language: diff
-
-.. literalinclude:: /_generated/progression/client_add_progress.diff
-   :language: diff
-
-.. literalinclude:: /_generated/progression/client_add_logging.diff
-   :language: diff
-
-A tool asks the client's language model with ``ctx.sample_llm()``, and the
-client answers with the handler it registers with ``on_sampling()``:
-
-.. literalinclude:: /_generated/progression/server_add_sampling.diff
-   :language: diff
-
-.. literalinclude:: /_generated/progression/client_add_sampling.diff
-   :language: diff
-
 Core Responsibilities
 ---------------------
 
@@ -116,6 +89,57 @@ The ``report_progress`` method accepts:
 
 The example above demonstrates a typical pattern where a tool loops through several steps, reporting the percentage completion and a descriptive message at each stage.
 
+Using Logging and Progress
+--------------------------
+
+A handler that logs or reports progress takes the request's ``Context`` and
+awaits each message, so it is a coroutine in both modes. In async mode it can
+also await other work, here a timer, while the server answers other requests:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Logging and progress.
+   :end-before: // Resources.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Logging and progress.
+   :end-before: // Resources.
+   :dedent: 4
+
+A client asks for the progress of one call with ``RequestOptions::on_progress``,
+which sends a progress token with the request and is called for each report
+until the answer arrives. ``RequestOptions::log_level`` asks the server for the
+log messages of that call at that level and above; a session of protocol
+revision 2025-11-25 or earlier sets one level for all its requests with a
+``logging/setLevel`` request instead.
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Logging and progress:
+   :end-before: // Resources.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Logging and progress:
+   :end-before: // Resources.
+   :dedent: 4
+
+``on_notification()`` registers a function for a notification method, here the
+server's log messages. It is the same in both modes:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :start-after: // Logging:
+   :end-before: // Elicitation:
+   :dedent: 4
+
 Cancellation
 ------------
 
@@ -161,6 +185,12 @@ Implementation Pattern
 ~~~~~~~~~~~~~~~~~~~~~~
 
 Handlers should periodically check ``ctx.is_cancelled()`` during long-running operations. Since cancellation is cooperative, the server doesn't forcibly terminate the coroutine; it's the handler's responsibility to stop work.
+
+A plain-function handler can take the ``Context`` too,
+``[](mcp::Context& ctx, const nlohmann::json& args) -> nlohmann::json``, and call
+``ctx.is_cancelled()``. The server reads the cancellation on its event loop, so
+such a handler sees it only when it runs on the handler executor (see
+``Server::set_handler_executor()``).
 
 .. code-block:: cpp
 
@@ -224,6 +254,23 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                            {"content", nlohmann::json::array(
                                {nlohmann::json{{"type", "text"}, {"text", "Sampling failed"}}})}};
                    });
+
+In both modes the tool that asks is a coroutine, and so is the client's
+handler, which ``on_sampling()`` registers: it passes the messages to the
+client's model and returns the reply. Registered before ``connect()``, the
+handler also declares the sampling capability:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Sampling:
+   :end-before: // Roots:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :start-after: // Sampling:
+   :end-before: // Roots:
+   :dedent: 4
 
 Elicitation
 -----------

@@ -23,9 +23,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::sync()` sends the `notify_*` notifications of `run_stdio()` and `run_http()` from threads other than the server's loop.
 - `Runtime::executor()`, `spawn()`, `run(threads)` and `start(threads)`, so that a `Runtime` runs a program's loop or a pool for `set_handler_executor()`.
 - `SyncTypeErasedHandler`, the synchronous form of `TypeErasedHandler`, and `Client::executor()`.
-- `examples/sync/` grows a base server and client one feature per program, and the guides "Growing a Server" and "Growing a Client" show each step as a diff.
 - `StreamableHttpSessionManager` takes a `Server` in place of a factory and serves it as `run_http()` does, on the application's event loop.
-- `examples/async/` holds a server and a client with every feature in async mode, which the guide "Async Mode" walks through.
+- `examples/sync/` and `examples/async/` hold a notes server and client, which the guide "Converting to Async Mode" converts, and a server and client with every feature, in each mode.
 
 ### Changed
 

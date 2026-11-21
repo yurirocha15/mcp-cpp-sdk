@@ -26,16 +26,6 @@ if _version_match is None:
 version = f'{_version_match.group(1)}.{_version_match.group(2)}'
 release = _version_text
 
-# -- Sync-mode examples ------------------------------------------------------
-
-# The sync-mode pages include the diff of each examples/sync add-on against its base program.
-# They are written on every build, so the pages show the examples as they are.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-import check_example_progression  # noqa: E402
-
-check_example_progression.write_checked_diffs(
-    Path(__file__).resolve().parent / '_generated' / 'progression')
-
 # -- General configuration ---------------------------------------------------
 
 # Conditionally enable Breathe only when Doxygen XML is available.
@@ -74,7 +64,7 @@ templates_path = ['_templates']
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.
 # Exclude API reference pages when Doxygen XML is not available.
-exclude_patterns = ['_build', '_generated', 'Thumbs.db', '.DS_Store']
+exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 # The name of the Pygments (syntax highlighting) style to use.
 pygments_style = 'sphinx'

@@ -15,16 +15,27 @@ sandbox, and the messages between a view and its host are the host
 application's work and are not part of the SDK. The types follow revision
 2026-01-26 of the extension specification.
 
-Adding this to a sync-mode program
-----------------------------------
+Using MCP Apps
+--------------
 
-The server of :doc:`/getting-started` gets a view with two calls:
-``add_view_resource()`` registers the page and ``add_view_tool()`` a tool
-linked to it, beside the tools it already has. :doc:`/guides/growing-a-server` adds the
-other features the same way.
+``apps::add_view_resource()`` registers the page under a ``ui://`` URI, and
+``apps::add_view_tool()`` registers a tool linked to it. In sync mode the tool's
+handler is a plain function; in async mode it is a coroutine that takes the
+request's ``Context``:
 
-.. literalinclude:: /_generated/progression/server_add_apps.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // MCP Apps:
+   :end-before: // Agent Skills.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // MCP Apps:
+   :end-before: // Agent Skills.
+   :dedent: 4
 
 Serving views
 -------------

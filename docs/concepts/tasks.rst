@@ -12,18 +12,37 @@ The server decides, call by call, whether a call becomes a task. A client only
 declares that it understands the extension, and the server never returns a task
 to a client that did not declare it.
 
-Adding this to a sync-mode program
-----------------------------------
+Using Tasks
+-----------
 
-The tool of the server of :doc:`/getting-started` may run as a task once tasks are
-enabled, with its handler on a handler pool, and the client starts it with
-``start_tool()`` and waits for its result through the handle.
+The server enables tasks and chooses the tools whose calls may become tasks. A
+task's handler runs on the handler executor, which the server sets in both
+modes (see ``Server::set_handler_executor()``):
 
-.. literalinclude:: /_generated/progression/server_add_tasks.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Tasks:
+   :end-before: // MCP Apps:
+   :dedent: 4
 
-.. literalinclude:: /_generated/progression/client_add_tasks.diff
-   :language: diff
+A client starts a call that may become a task with ``start_tool()``, which
+returns the result, or a ``TaskHandle`` when the server made the call a task.
+The handle's ``result()`` waits for the task to finish, through ``sync()`` in
+sync mode and with ``co_await`` in async mode:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Tasks:
+   :end-before: // Resource subscriptions:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Tasks:
+   :end-before: // Resource subscriptions:
+   :dedent: 4
 
 Serving tasks
 -------------
@@ -257,6 +276,10 @@ server ran the call in place, or a ``TaskHandle`` when it started a task:
 ``result()`` answer them with the registered handlers. A task id kept from
 earlier gives a handle again through ``Client::task_handle(id)``, which a
 restarted client can poll if the server still has the task.
+
+For a client constructed from an ``Endpoint``, ``TaskHandle::sync()`` makes the
+same calls block until they are done: ``get()``, ``update()``, ``cancel()``,
+``wait()`` and ``result()``.
 
 Cancellation is a request: ``tasks/cancel`` is acknowledged, the handler sees
 ``Context::is_cancelled()``, and the server records the task as ``cancelled``

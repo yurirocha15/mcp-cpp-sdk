@@ -11,9 +11,9 @@ The mcp-cpp-sdk is organized into several key namespaces and components:
 
 * **mcp::Server** - MCP server implementation for hosting tools, resources, and prompts
 * **mcp::Client** - MCP client implementation for connecting to servers
-* **mcp::SyncServer** / **mcp::SyncClient** - Blocking calls of sync mode, from ``sync()``
+* **mcp::SyncServer** / **mcp::SyncClient** - Blocking calls, from ``sync()``
 * **mcp::Endpoint** - The server a ``Client`` launches or connects to
-* **mcp::Runtime** - An event loop or thread pool for async mode
+* **mcp::Runtime** - An event loop, or a pool of threads for handlers
 * **mcp::ITransport** - Transport abstraction for communication (stdio, WebSocket, Streamable HTTP)
 * **mcp::HttpClientTransport** / **mcp::HttpServerTransport** - Streamable HTTP transport implementations
 * **mcp::StreamableHttpSessionManager** - Multi-session HTTP endpoint manager
@@ -41,8 +41,8 @@ Client
    :members:
    :undoc-members:
 
-Sync Mode
-^^^^^^^^^
+Blocking Calls
+^^^^^^^^^^^^^^
 
 .. doxygenclass:: mcp::SyncServer
    :members:

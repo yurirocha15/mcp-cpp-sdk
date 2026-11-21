@@ -26,18 +26,48 @@ The server side is the same in both: the server calls ``notify_resource_updated(
 and the ``notify_*_list_changed()`` methods, and the SDK sends each
 notification to the clients that asked for it.
 
-Adding This to a Sync-Mode Program
-----------------------------------
+Using Resource Subscriptions
+----------------------------
 
-The server of :doc:`/getting-started` gets a resource that changes and a tool that changes
-it and tells the subscribers; the client subscribes with ``listen()`` and
-waits for the update.
+A server that lets clients subscribe to its resources sets the ``subscribe``
+flag of its resources capability, and calls ``notify_resource_updated()`` when a
+resource changes. In sync mode a plain-function handler on the handler pool sends
+the notification through the blocking ``server.sync()``; in async mode a
+coroutine awaits it:
 
-.. literalinclude:: /_generated/progression/server_add_subscriptions.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Prompts.
+   :dedent: 4
 
-.. literalinclude:: /_generated/progression/client_add_subscriptions.diff
-   :language: diff
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Prompts.
+   :dedent: 4
+
+``server.sync()`` throws ``std::logic_error`` on the thread of the server's
+event loop, where handlers run when no handler executor is set.
+
+A client of protocol revision 2026-07-28 subscribes with ``listen()`` and takes
+each notification with ``next()``, or its blocking form on ``sync()``:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Errors:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Errors:
+   :dedent: 4
 
 Listening for Notifications
 ---------------------------
@@ -91,6 +121,9 @@ when it is destroyed. ``Subscription::end_reason()`` says how a stream ended
 dropped, or the server answered with an error. After a dropped connection,
 connect a new client and call ``listen()`` again; the server keeps no
 subscription across connections.
+
+For a client constructed from an ``Endpoint``, ``Subscription::sync()`` makes
+``next()`` and ``close()`` block until they are done.
 
 ``Client::listen()`` throws ``McpError`` with ``g_METHOD_NOT_FOUND`` in a
 session of an older revision.

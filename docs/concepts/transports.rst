@@ -35,13 +35,23 @@ extremely easy to deploy as a subprocess.
 Server Side
 ~~~~~~~~~~~
 
-The simplest way to start a stdio-based server is the ``run_stdio()`` method,
-which blocks until the connection is closed, as the server of
-:doc:`/getting-started` does:
+In sync mode ``run_stdio()`` serves stdio on an event loop of its own and
+blocks until the connection is closed. In async mode ``Server::run()`` serves a
+``StdioTransport`` on the application's event loop, here an ``mcp::Runtime``:
 
-.. literalinclude:: ../../examples/sync/server_base.cpp
+.. literalinclude:: ../../examples/sync/notes_server.cpp
    :language: cpp
-   :start-at: #include
+   :caption: Sync mode
+   :start-after: // The event loop:
+   :end-before: }
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/notes_server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // The event loop:
+   :end-before: }
+   :dedent: 4
 
 ``run_stdio()`` returns when the client closes standard input, once the requests
 already read have ended and their answers are written, and when standard output
@@ -55,14 +65,28 @@ call ``set_max_message_bytes()`` and pass it to ``Server::run()``.
 Client Side
 ~~~~~~~~~~~
 
-The client of :doc:`/getting-started` launches its server with
-``mcp::Endpoint::stdio()`` and talks to it on an event loop of its own.
-``Endpoint::stdio()`` also takes the ``StdioProcessOptions`` below, for the
-server's environment, working directory and standard error handling. On the
-application's own event loop, ``StdioClientTransport`` launches the server as a
-child process and owns it:
+``StdioClientTransport`` launches the server as a child process and owns it:
 the server's standard input and output carry the messages, and the transport
-ends the process when the client is done.
+ends the process when the client is done. In sync mode ``Endpoint::stdio()``
+makes it for a client that runs its own event loop, from a command or from the
+same ``StdioProcessOptions``; in async mode the application makes it on its own
+event loop:
+
+.. literalinclude:: ../../examples/sync/notes_client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // The client launches the server
+   :end-before: // The session
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/notes_client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // The client launches the server
+   :end-before: // The session
+   :dedent: 4
+
+The options of the process, in either mode:
 
 .. code-block:: cpp
 
@@ -153,8 +177,9 @@ built from ``Endpoint::stdio()`` with a ``StdioRestartPolicy`` starts the server
 again itself, and goes on with the new process, keeping its handlers, callbacks
 and ``sync()`` view:
 
-.. literalinclude:: /_generated/progression/client_add_restart.diff
-   :language: diff
+.. code-block:: cpp
+
+   mcp::Client client(mcp::Endpoint::stdio({"./server"}, mcp::StdioRestartPolicy{.max_restarts = 3}));
 
 The requests waiting for an answer when the process ended fail with
 ``g_CONNECTION_CLOSED``; requests made while it starts again wait for it, within
@@ -268,14 +293,42 @@ its own. Its optional third argument is a callback that receives the manager
 before it listens, where the Origin allowlist, bearer-token validation and the
 other manager settings are set. Without one, the manager keeps its default
 settings: use it that way only on a suitable trusted boundary, such as
-loopback. This server sets a bearer token validator and an allowed origin:
+loopback. In async mode the application constructs a
+``StreamableHttpSessionManager`` with the ``Server`` instead, configures it and
+runs ``listen()`` on its own event loop. Both servers here set a bearer token
+validator and an allowed origin:
 
-.. literalinclude:: ../../examples/sync/server_add_auth.cpp
+.. literalinclude:: ../../examples/sync/server.cpp
    :language: cpp
-   :start-at: #include
+   :caption: Sync mode
+   :start-at: // HTTP until a signal
+   :end-at: server.run_http(
+   :dedent: 4
 
-A client talks to it with ``mcp::Endpoint::http(url)``, sending the token as
-:doc:`/guides/growing-a-client` shows.
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-at: // The event loop:
+   :end-at: io.run();
+   :dedent: 4
+
+A client connects with ``Endpoint::http(url)`` in sync mode, and with an
+``HttpClientTransport`` on its own event loop in async mode. These send a bearer
+token:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // The connection:
+   :end-before: // Logging:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // The connection:
+   :end-before: // Logging:
+   :dedent: 4
 
 Manual HTTP Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -375,10 +428,7 @@ Runtime
 as ``std::make_shared<mcp::StdioTransport>(runtime.executor())``, ``spawn()``
 starts a coroutine on it, ``run()`` runs the loop on the calling thread until
 its work is done, and ``start(threads)`` runs it on threads of its own until
-``stop()``. :doc:`/guides/growing-a-server` serves a server on one this way:
-
-.. literalinclude:: /_generated/progression/server_add_own_loop.diff
-   :language: diff
+``stop()``. The async stdio server and client above run on one.
 
 Choosing the Right Transport
 ----------------------------

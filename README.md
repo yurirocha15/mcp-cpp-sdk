@@ -12,7 +12,8 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 
 ## Why mcp-cpp-sdk?
 
-- **Two modes**: Sync mode (plain-function handlers, blocking client calls) for fast development, and async mode (C++20 coroutines on Boost.Asio) for performance and full control.
+- **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`.
+- **Blocking API**: Synchronous handlers and blocking client calls for small programs, which include no Boost header.
 - **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
 - **Three transports**: Stdio, WebSocket and Streamable HTTP.
 - **Protocol revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
@@ -58,8 +59,6 @@ target_link_libraries(your_target PRIVATE mcp::sdk)
 
 ### 2. A Minimal Server
 
-The programs of this quick start are in sync mode.
-
 ```cpp
 #include <mcp/mcp.hpp>
 
@@ -78,12 +77,8 @@ int main() {
 }
 ```
 
-`Server("greeter", "1.0.0")` advertises the capabilities its registrations
-imply, `mcp::tool_params()` writes the tool's input schema, and the handler's
-string becomes the text of the result. `run_stdio()` serves until standard input
-closes or the process gets SIGINT or SIGTERM; `run_http("127.0.0.1", 8080)`
-serves Streamable HTTP at `http://127.0.0.1:8080/mcp` instead. Link the program
-with `target_link_libraries(greeter PRIVATE mcp::sdk)`.
+Link it with `target_link_libraries(greeter PRIVATE mcp::sdk)`. MCP hosts launch it as a stdio
+server.
 
 ### 3. A Minimal Client
 
@@ -103,29 +98,12 @@ int main(int argc, char** argv) {
 }
 ```
 
-`Endpoint::stdio()` launches the server and `Endpoint::http(url)` connects to a
-running one. A client constructed from an `Endpoint` runs its own event loop on
-a thread of its own, and `client.sync()` blocks until each call is done. Neither
-program includes a Boost header or sets up an event loop.
+`./greeter-client ./greeter` prints `Hello, Ada!`.
 
-`Client` defaults to `mcp::ClientProtocol::automatic()`: it sends `server/discover`
-first and falls back to `initialize` when the server does not answer as a
-2026-07-28 server. `connect()` returns a `mcp::ConnectResult` holding the
-session's `era`, the `protocolVersion` in use, the server's `capabilities`, and,
-when the server sent them, `serverInfo`, `instructions` and `supportedVersions`.
-To skip detection, set `ClientOptions::protocol` to
-`mcp::ClientProtocol::legacy()` or `mcp::ClientProtocol::pinned("2026-07-28")`.
-
-### 4. Grow Them One Feature at a Time
-
-Resources, prompts, HTTP and its authentication, logging and progress, handler
-pools, and async mode's coroutines and event loop of your own are each added to
-these programs without rewriting them. [Growing a server](https://www.yurirocha.com/mcp-cpp-sdk/guides/growing-a-server.html)
-and [growing a client](https://www.yurirocha.com/mcp-cpp-sdk/guides/growing-a-client.html)
-show every step as a diff, and each step is a compiled program in
-[examples/sync](examples/sync). [Async mode](https://www.yurirocha.com/mcp-cpp-sdk/guides/async-mode.html)
-walks through a server and a client with every feature in async mode, in
-[examples/async](examples/async).
+Both programs use the blocking API. The
+[getting-started guide](https://www.yurirocha.com/mcp-cpp-sdk/getting-started.html) explains
+them, and [Async Servers and Clients](https://www.yurirocha.com/mcp-cpp-sdk/guides/async-mode.html)
+covers the coroutine API.
 
 ## Usage Highlights
 
@@ -139,7 +117,7 @@ compiled registrations.
 
 ### Server Context (Logging & Progress)
 
-Async handlers have access to a `Context` for real-time interaction:
+A handler that takes the request's `Context` logs to the client and reports progress:
 
 ```cpp
 server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progress", schema,
@@ -156,6 +134,7 @@ Guides, API reference and integration details are on the **[documentation site](
 
 - **[Getting Started](https://www.yurirocha.com/mcp-cpp-sdk/getting-started.html)**: Detailed installation and build instructions.
 - **[Core Concepts](https://www.yurirocha.com/mcp-cpp-sdk/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
+- **[Guides](https://www.yurirocha.com/mcp-cpp-sdk/guides/index.html)**: Async servers and clients, converting sync programs, testing, error handling and deployment.
 - **[Client App Integrations](https://www.yurirocha.com/mcp-cpp-sdk/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
 - **[Examples](https://www.yurirocha.com/mcp-cpp-sdk/examples.html)**: Walkthrough of included example applications.
 

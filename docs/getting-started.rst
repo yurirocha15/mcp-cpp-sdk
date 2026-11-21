@@ -1,29 +1,11 @@
 Getting Started
 ===============
 
-This guide will help you get started with the mcp-cpp-sdk, from installation
-to building your first MCP server and client.
-
-Sync Mode and Async Mode
-------------------------
-
-The SDK is used in two modes, with the same ``mcp::Server`` and
-``mcp::Client``:
-
-* **Sync mode**, for fast development: handlers are ordinary functions, client
-  calls block until they are answered, and the server or client runs its own
-  event loop, so a program takes a few lines and has no event loop, executor
-  or Boost in it.
-* **Async mode**, for performance and full control: handlers and client calls
-  are C++20 coroutines on Boost.Asio. A handler that waits lets the server
-  answer other requests on the same thread, a client can have several requests
-  in flight from one thread, and the program can run the event loop itself,
-  beside its other work, with the executors and transports it chooses.
-
-A program moves to async mode one handler or call at a time, without a rewrite;
-:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how, and
-:doc:`guides/async-mode` walks through a complete server and client in async
-mode. The programs on this page are in sync mode.
+This page installs the SDK and builds a minimal server and client with the
+blocking API, in which handlers are plain functions, client calls block until
+they are answered, and the ``Server`` and ``Client`` run their own event loop.
+The coroutine API, in which the program runs the event loop and handlers and
+calls are C++20 coroutines, is described in :doc:`guides/async-mode`.
 
 Prerequisites
 -------------
@@ -129,23 +111,19 @@ Your First Server
 
 This server offers one tool, ``greet``, over stdio:
 
-.. literalinclude:: ../examples/sync/server_base.cpp
+.. literalinclude:: ../examples/sync/minimal_server.cpp
    :language: cpp
    :start-at: #include
 
-* ``mcp::Server server("greeter", "1.0.0")`` names the server. It advertises the
-  capabilities its registrations imply: tools once it has a tool, resources once
-  it has a resource, and so on.
-* ``mcp::tool_params()`` writes the tool's input schema: one ``ParamSpec`` per
-  argument, with its name, JSON Schema type, description and whether it is
-  required (it is unless the fourth member says otherwise). Arguments that do not
-  match the schema are answered with an error result without calling the
-  handler. Any JSON Schema can be passed instead.
-* The handler takes the arguments as JSON and returns a JSON value: a string
-  becomes the text of the result, and an object its structured content. An
-  exception it throws becomes an error result (``isError: true``).
-* ``server.run_stdio()`` serves until the client closes standard input or the
-  process gets SIGINT or SIGTERM.
+* The server advertises the capabilities its registrations imply, here tools.
+* ``mcp::tool_params()`` makes the tool's input schema from the name, JSON Schema
+  type and description of each argument. Arguments are required unless marked
+  optional, and a call whose arguments do not match is answered with an error
+  result. See :doc:`concepts/tools`.
+* The handler's return value becomes the result: a string its text, an object
+  its structured content. An exception becomes an error result.
+* ``run_stdio()`` serves until standard input closes or the process receives
+  SIGINT or SIGTERM.
 
 Build it with CMake against an installed SDK (see :doc:`installation`):
 
@@ -154,65 +132,45 @@ Build it with CMake against an installed SDK (see :doc:`installation`):
    cmake_minimum_required(VERSION 3.20)
    project(greeter CXX)
    find_package(mcp-cpp-sdk CONFIG REQUIRED)
-   add_executable(greeter server_base.cpp)
+   add_executable(greeter minimal_server.cpp)
    target_compile_features(greeter PRIVATE cxx_std_20)
    target_link_libraries(greeter PRIVATE mcp::sdk)
-
-An MCP host such as an editor or a desktop assistant can now launch
-``./greeter`` as a stdio server.
 
 Your First Client
 -----------------
 
 This client launches the server, calls its tool and prints the answer:
 
-.. literalinclude:: ../examples/sync/client_base.cpp
+.. literalinclude:: ../examples/sync/minimal_client.cpp
    :language: cpp
    :start-at: #include
 
-* ``mcp::Endpoint::stdio({command})`` names the server to launch, by its program
-  and arguments. ``Endpoint::http(url)`` names a Streamable HTTP server instead.
-* A client constructed from an ``Endpoint`` runs its own event loop on a thread of
-  its own. ``client.sync()`` returns a view whose members block the calling
-  thread until the call is done and return its result or throw its exception.
-* ``connect()`` detects the protocol revision the server speaks: it sends
-  ``server/discover`` and falls back to ``initialize`` for a server of
-  2025-11-25 or earlier. See :doc:`guides/older-protocols` to choose one
-  instead.
+* ``mcp::Endpoint::stdio()`` launches the server and talks to it over its
+  standard input and output. ``Endpoint::http(url)`` connects to a Streamable
+  HTTP server instead.
+* The calls of ``client.sync()`` block until they return the result or throw.
+* ``connect()`` detects the protocol revision the server speaks; see
+  :doc:`guides/older-protocols`.
 * ``mcp::result_text()`` joins the text blocks of a tool result.
-* Destroying the client closes the connection, which ends the server process.
 
-It builds like the server, with ``add_executable(greeter-client client_base.cpp)``
-and the same ``target_compile_features`` and ``target_link_libraries`` lines.
-``./greeter-client ./greeter`` then prints ``Hello, Ada!``.
+Build it as ``greeter-client`` the same way. ``./greeter-client ./greeter``
+prints ``Hello, Ada!``.
 
 .. important::
 
    **Client requests time out after 30 seconds by default.** A call that takes
    longer throws ``mcp::McpError`` with code ``-32001``, even though the server
-   may still be working on it. Pass ``ClientOptions`` with a longer
-   ``request_timeout`` when constructing the client if a tool runs longer:
-   ``mcp::ClientOptions options; options.request_timeout = std::chrono::minutes(5);``
-   and then ``mcp::Client client(mcp::Endpoint::stdio({command}), options);``.
-   See :doc:`guides/error-handling` for per-request deadlines and what a timeout
-   does and does not guarantee about the server.
-
-Growing the Program
--------------------
-
-Each feature is added to these programs without rewriting them: a resource or
-a prompt is one more call on the same ``Server``, HTTP is a different run line,
-and a handler that logs or reports progress becomes a coroutine, in async mode,
-while the other handlers stay as they are. :doc:`guides/growing-a-server` and
-:doc:`guides/growing-a-client` show each step as a diff against the programs
-above, and every step is a compiled example in ``examples/sync``.
+   may still be working on it. Set ``ClientOptions::request_timeout`` when
+   constructing the client, or give one call a deadline through
+   ``RequestOptions``; see :doc:`guides/error-handling`.
 
 Next Steps
 ----------
 
-* Grow the server and the client one feature at a time:
-  :doc:`guides/growing-a-server` and :doc:`guides/growing-a-client`
-* Explore the :doc:`examples` to see more advanced usage patterns
-* Read the :doc:`api/index` for detailed API documentation
-* Learn about the :doc:`architecture` and design decisions
-* Check out :doc:`contributing` to contribute to the project
+* :doc:`guides/async-mode`: servers and clients with coroutines on an event loop
+* :doc:`guides/sync-to-async`: converting a server or client to the coroutine API
+* :doc:`concepts/index`: each MCP feature, on the server and the client
+* :doc:`examples`: the example programs and how to run them
+* :doc:`api/index`: the API reference
+* :doc:`architecture`: the design and its decisions
+* :doc:`contributing`: building, testing and contributing to the SDK

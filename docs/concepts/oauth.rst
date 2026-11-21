@@ -13,24 +13,6 @@ transport-level bearer authentication — but they are **components of the
 manager, not an alternative to it**. See
 :ref:`oauth-low-level-building-blocks` for what using them directly costs you.
 
-Adding this to a sync-mode program
-----------------------------------
-
-The server of :doc:`/getting-started`, served over HTTP, checks a bearer token in the
-function to which ``run_http()`` passes its ``StreamableHttpSessionManager``,
-and the client of :doc:`/getting-started` sends one through
-``HttpEndpointOptions::configure``. The server sets its protected resource
-metadata in the same function, and the client's
-``HttpEndpointOptions::authenticator`` makes an ``auth::Authenticator`` that
-obtains and refreshes the tokens instead. See :doc:`/guides/growing-a-server` and
-:doc:`/guides/growing-a-client`.
-
-.. literalinclude:: /_generated/progression/server_add_auth.diff
-   :language: diff
-
-.. literalinclude:: /_generated/progression/client_add_auth.diff
-   :language: diff
-
 Challenge-driven authorization
 ------------------------------
 
@@ -84,6 +66,12 @@ Hand that header to the manager and it runs the whole exchange:
 ``try_handle_challenge`` returns ``false`` when the header carried no ``Bearer``
 challenge to act on, and throws when discovery is refused by the policy or the
 authorization response is rejected.
+
+In sync mode a client constructed from an ``Endpoint`` gets the same transport
+through ``HttpEndpointOptions::authenticator``, a function that makes the
+authenticator, this manager or any other ``auth::Authenticator`` below, from the
+executor the client runs on. The client then talks to the server through an
+``auth::OAuthClientTransport``.
 
 A manager serves the one server its ``server_url`` names. The transport sends
 the manager's tokens to whatever server ``inner`` talks to, and does not compare

@@ -9,15 +9,48 @@ In ``mcp-cpp-sdk``, resources can be registered either directly or via templates
 Resources are identified by URIs, which should follow a hierarchical structure
 appropriate for your application.
 
-Adding This to a Sync-Mode Program
-----------------------------------
+Using Resources
+---------------
 
-The server of :doc:`/getting-started` gets a resource with ``add_text_resource()``, whose
-function returns the text that each read returns. :doc:`/guides/growing-a-server` also
-adds a resource that changes and tells its subscribers.
+``add_text_resource()`` registers a resource whose contents are the text a
+function returns, read again on each ``resources/read``. In sync mode the
+function returns ``std::string``; in async mode it is a coroutine that returns
+``mcp::Task<std::string>``:
 
-.. literalinclude:: /_generated/progression/server_add_resource.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resources.
+   :end-before: // Resource subscriptions:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resources.
+   :end-before: // Resource subscriptions:
+   :dedent: 4
+
+The MIME type is ``text/plain`` unless a fourth argument names another. A
+``Resource`` passed in place of the URI and name sets the title, description,
+annotations, icons and size as well.
+
+A client reads a resource with ``read_resource()``. Its ``contents`` hold one
+``TextResourceContents`` or ``BlobResourceContents`` per part:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resources.
+   :end-before: // Prompts.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resources.
+   :end-before: // Prompts.
+   :dedent: 4
 
 Static Resources
 ----------------

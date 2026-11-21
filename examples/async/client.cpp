@@ -1,6 +1,6 @@
-// The client of examples/sync/client_all.cpp in async mode: it runs the event loop itself and
-// awaits every call in a coroutine. It also completes a prompt argument, lists the tools page by
-// page, and has two tool calls in flight at the same time. It talks to server.cpp.
+// An MCP client with every feature, in async mode: the program runs the event loop, and every call
+// is awaited in a coroutine, two of them in flight at the same time. examples/sync/client.cpp is
+// the same client in sync mode. It talks to server.cpp.
 
 #include <mcp/core/async.hpp>
 #include <mcp/mcp.hpp>
@@ -18,31 +18,41 @@
 #include <string>
 #include <variant>
 
-// Every feature of the client, one awaited call after another.
+// Every feature of the client, one awaited call after another. The arguments of each co_await are
+// built in named variables first, as GCC 11 to 13 need.
 mcp::Task<void> use_every_feature(mcp::Client& client) {
-    // A call that reports its progress and sends log messages.
+    const nlohmann::json ada{{"name", "Ada"}};
+
+    // Tools.
+    const auto greeted = co_await client.call_tool("greet", ada);
+    std::cout << mcp::result_text(greeted) << "\n";
+
+    // Logging and progress: the options ask for the call's progress and log messages.
     mcp::RequestOptions options;
     options.on_progress = [](const mcp::ProgressNotificationParams& progress) {
         std::cout << "progress: " << progress.progress << "\n";
     };
     options.log_level = mcp::LoggingLevel::eInfo;
-    const nlohmann::json ada{{"name", "Ada"}};
-    const auto greeted = co_await client.call_tool("greet", ada, options);
-    std::cout << mcp::result_text(greeted) << "\n";
+    const auto composed = co_await client.call_tool("compose_greeting", ada, options);
+    std::cout << mcp::result_text(composed) << "\n";
 
-    // A resource, a prompt, and a completion for the prompt's argument.
+    // Resources.
     const auto motd = co_await client.read_resource("greeter://motd");
     std::cout << std::get<mcp::TextResourceContents>(motd.contents.at(0)).text << "\n";
+
+    // Prompts.
     const std::map<std::string, std::string> prompt_args{{"name", "Ada"}};
     const auto welcome = co_await client.get_prompt("welcome", prompt_args);
     std::cout << std::get<mcp::TextContent>(welcome.messages.at(0).content).text << "\n";
+
+    // Completions.
     mcp::CompleteParams completing;
     completing.ref = mcp::PromptReference{.name = "welcome"};
     completing.argument = {.name = "name", .value = "A"};
     const auto completed = co_await client.complete(completing);
     std::cout << "completion: " << completed.completion.values.at(0) << "\n";
 
-    // Tools that ask this client for a form, for model output and for its roots.
+    // Elicitation, sampling and roots: tools that ask this client's handlers.
     const auto formal = co_await client.call_tool("greet_formally", ada);
     std::cout << mcp::result_text(formal) << "\n";
     const auto written = co_await client.call_tool("write_greeting", ada);
@@ -51,7 +61,7 @@ mcp::Task<void> use_every_feature(mcp::Client& client) {
     const auto roots = co_await client.call_tool("count_roots", no_arguments);
     std::cout << mcp::result_text(roots) << "\n";
 
-    // A tool run as a task, when the server makes it one.
+    // Tasks: start_tool() returns a handle when the server makes the call a task.
     const nlohmann::json grace{{"name", "Grace"}};
     auto started = co_await client.start_tool("greet", grace);
     if (auto* task = std::get_if<mcp::TaskHandle>(&started)) {
@@ -60,7 +70,7 @@ mcp::Task<void> use_every_feature(mcp::Client& client) {
     }
     std::cout << mcp::result_text(std::get<mcp::CallToolResult>(started)) << "\n";
 
-    // A subscription to the resource that the remember tool changes.
+    // Resource subscriptions: the remember tool changes the resource.
     mcp::SubscriptionFilter filter;
     filter.resourceSubscriptions = {"greeter://last"};
     auto subscription = co_await client.listen(filter);
@@ -74,7 +84,7 @@ mcp::Task<void> use_every_feature(mcp::Client& client) {
     }
     co_await subscription.close();
 
-    // A tool error is a result; a request error is an McpError.
+    // Errors: a tool error is a result; a request error is an McpError.
     const auto refused = co_await client.call_tool("greet", no_arguments);
     if (refused.isError.value_or(false)) {
         std::cout << "tool error: " << mcp::result_text(refused) << "\n";
@@ -85,7 +95,7 @@ mcp::Task<void> use_every_feature(mcp::Client& client) {
         std::cout << "request error " << error.code() << "\n";
     }
 
-    // The tools, page by page.
+    // Pagination: each page's nextCursor asks for the next one.
     std::optional<std::string> cursor;
     do {
         const auto page = co_await client.list_tools(cursor);
@@ -99,20 +109,25 @@ mcp::Task<void> use_every_feature(mcp::Client& client) {
 int main(int argc, char** argv) {
     const std::string url = argc > 1 ? argv[1] : "http://127.0.0.1:8080/mcp";
 
-    // The transport and the client run on the program's event loop.
+    // The connection: the transport and the client run on the program's event loop, and the
+    // transport sends a bearer token.
     boost::asio::io_context io;
     auto transport = std::make_shared<mcp::HttpClientTransport>(io.get_executor(), url);
     transport->set_bearer_token_provider([] { return std::string("greeter-secret-token"); });
     mcp::Client client(transport, io.get_executor());
 
-    // Handlers for what the server sends: log messages, questions, model requests and roots.
+    // Logging: the server's log messages arrive as notifications.
     client.on_notification("notifications/message", [](const nlohmann::json& params) {
         std::cout << "log: " << params.value("data", nlohmann::json()).dump() << "\n";
     });
+
+    // Elicitation: this handler answers the server's questions for the user.
     client.on_elicitation([](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
         co_return mcp::ElicitResult{mcp::ElicitAction::eAccept, nlohmann::json{{"title", "Dr."}},
                                     std::nullopt};
     });
+
+    // Sampling: this handler answers the server's requests for model output.
     client.on_sampling(
         [](const mcp::CreateMessageRequestParams&) -> mcp::Task<mcp::CreateMessageResult> {
             mcp::CreateMessageResult reply;
@@ -121,6 +136,8 @@ int main(int argc, char** argv) {
             reply.model = "example-model";
             co_return reply;
         });
+
+    // Roots: this handler lists the client's roots.
     client.on_roots_list([](const nlohmann::json&) -> mcp::Task<mcp::ListRootsResult> {
         mcp::ListRootsResult roots;
         roots.roots.push_back({"file:///home/user/projects", "projects", std::nullopt});

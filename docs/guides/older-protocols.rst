@@ -11,15 +11,6 @@ and what differs in a legacy session.
 By default nothing needs to change. A ``Server`` serves both eras on the same
 transport, and a ``Client`` detects the era of the server it connects to.
 
-Adding This to a Sync-Mode Program
-----------------------------------
-
-The client of :doc:`/getting-started` connects with ``initialize`` alone by setting
-``ClientOptions::protocol``.
-
-.. literalinclude:: /_generated/progression/client_add_legacy.diff
-   :language: diff
-
 Choosing a Protocol on the Client
 ---------------------------------
 
@@ -48,7 +39,7 @@ factory functions:
    options.protocol = mcp::ClientProtocol::legacy();
    // or: options.protocol = mcp::ClientProtocol::pinned("2025-06-18");
 
-   mcp::Client client(transport, executor, options);
+   mcp::Client client(transport, executor, options);   // or Client(endpoint, options) in sync mode
 
    {
        mcp::ConnectResult connected = co_await client.connect("my-client", "1.0.0");

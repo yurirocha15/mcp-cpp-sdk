@@ -811,56 +811,22 @@ endif()
 # Examples
 option(BUILD_EXAMPLES "Build example programs" ${MCP_CPP_SDK_IS_TOP_LEVEL})
 if(BUILD_EXAMPLES)
-  # The sync-mode programs: server_base and client_base, and the add-ons that
-  # each grow one of them by one feature (examples/sync/progression.json).
-  set(MCP_SYNC_EXAMPLES
-      server_base
-      server_add_resource
-      server_add_prompt
-      server_add_http
-      server_add_auth
-      server_add_context
-      server_add_completions
-      server_add_handler_pool
-      server_add_own_loop
-      server_add_elicitation
-      server_add_sampling
-      server_add_roots
-      server_add_middleware
-      server_add_pagination
-      server_add_tasks
-      server_add_subscriptions
-      server_add_apps
-      server_add_skills
-      server_all
-      client_base
-      client_add_resource
-      client_add_prompt
-      client_add_http
-      client_add_auth
-      client_add_progress
-      client_add_logging
-      client_add_coroutine
-      client_add_restart
-      client_add_own_loop
-      client_add_elicitation
-      client_add_sampling
-      client_add_roots
-      client_add_tasks
-      client_add_subscriptions
-      client_add_errors
-      client_add_legacy
-      client_all)
+  # The sync-mode programs: a minimal server and client, a notes server and
+  # client, and a server and client with every feature.
+  set(MCP_SYNC_EXAMPLES minimal_server minimal_client notes_server notes_client
+                        server client)
   foreach(example IN LISTS MCP_SYNC_EXAMPLES)
     string(REPLACE "_" "-" example_target "example-sync-${example}")
     add_executable(${example_target} examples/sync/${example}.cpp)
     target_link_libraries(${example_target} PRIVATE mcp-cpp-sdk)
   endforeach()
 
-  # The async-mode server and client, with every feature.
-  foreach(example IN ITEMS server client)
-    add_executable(example-async-${example} examples/async/${example}.cpp)
-    target_link_libraries(example-async-${example} PRIVATE mcp-cpp-sdk)
+  # The async-mode programs: the notes server and client, and the server and
+  # client with every feature.
+  foreach(example IN ITEMS notes_server notes_client server client)
+    string(REPLACE "_" "-" example_target "example-async-${example}")
+    add_executable(${example_target} examples/async/${example}.cpp)
+    target_link_libraries(${example_target} PRIVATE mcp-cpp-sdk)
   endforeach()
 
   add_executable(example-server-stdio examples/servers/stdio/server_stdio.cpp)

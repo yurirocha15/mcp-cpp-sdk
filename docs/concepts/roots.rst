@@ -11,18 +11,24 @@ In the Model Context Protocol, roots represent the "home" or "workspace" directo
 - The absolute URIs (typically ``file:///``) that the server is allowed to interact with.
 - The names of these workspaces to provide context to the LLM.
 
-Adding This to a Sync-Mode Program
-----------------------------------
+Using Roots
+-----------
 
-A tool of the server of :doc:`/getting-started` asks for the client's roots with
-``ctx.request_roots()``, and the client answers with the handler it registers
-with ``on_roots_list()``.
+A tool asks for the client's roots with ``ctx.request_roots()`` and awaits
+them, so its handler is a coroutine in both modes, and so is the client's
+handler, which ``on_roots_list()`` registers:
 
-.. literalinclude:: /_generated/progression/server_add_roots.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Roots:
+   :end-before: // Middleware:
+   :dedent: 4
 
-.. literalinclude:: /_generated/progression/client_add_roots.diff
-   :language: diff
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :start-after: // Roots:
+   :end-before: // The session
+   :dedent: 4
 
 Client-side Setup
 -----------------

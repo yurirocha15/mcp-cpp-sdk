@@ -14,20 +14,6 @@ When testing your MCP applications, you should focus on three levels of verifica
 
 This guide focuses primarily on Integration and E2E testing using the built-in :cpp:class:`mcp::MemoryTransport`.
 
-Testing a Sync-Mode Program
----------------------------
-
-A sync-mode server is a program, so the plainest test runs it: a sync-mode
-client such as the one of :doc:`/getting-started` launches it with ``Endpoint::stdio()``,
-calls its tools with the blocking calls, and the test checks what they return.
-CI tests the programs of ``examples/sync`` this way, each client against its
-server. For an HTTP server, ``run_http("127.0.0.1", 0)`` on a thread of the
-test lets the system choose a free port, which ``server.bound_port()`` returns
-once the server listens (0 until then), and ``server.stop()`` ends
-``run_http()`` when the test is done. For a test in one process, without a child
-process or a socket, the same ``Server`` is served over a memory transport pair
-with ``run()``, as below.
-
 MemoryTransport for Testing
 ---------------------------
 
@@ -187,6 +173,13 @@ Key considerations for E2E tests:
 - **Environment Setup**: Ensure that any external servers or tools your MCP server relies on are available and in a known state.
 - **Cleanup**: Use teardown logic to kill child processes or close open sockets to avoid leaking resources between test runs.
 - **Port Management**: When testing network transports, use ephemeral ports to avoid collisions in parallel CI environments.
+
+A server program is tested end to end by launching it: a client constructed
+from ``Endpoint::stdio()`` starts the program and calls its tools with the
+blocking calls of ``client.sync()``. For an HTTP server, ``run_http("127.0.0.1", 0)``
+on a thread of the test lets the system choose a free port, which
+``server.bound_port()`` returns once the server listens (0 until then), and
+``server.stop()`` ends ``run_http()`` when the test is done.
 
 When running E2E tests in CI, prefer MemoryTransport for most logic verification, and reserve real I/O tests for a smaller set of smoke tests to keep the test suite fast.
 
