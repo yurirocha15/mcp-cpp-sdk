@@ -1,4 +1,5 @@
 #include <mcp/auth/client_credentials.hpp>
+#include <mcp/core/async.hpp>
 
 #include "grant_flow.hpp"
 
@@ -61,9 +62,9 @@ struct ClientCredentialsAuthenticator::Impl {
     std::shared_ptr<CredentialsFlow> flow;
 };
 
-ClientCredentialsAuthenticator::ClientCredentialsAuthenticator(
-    const boost::asio::any_io_executor& executor, std::shared_ptr<TokenStore> token_store,
-    ClientCredentialsConfig config)
+ClientCredentialsAuthenticator::ClientCredentialsAuthenticator(const Executor& executor,
+                                                               std::shared_ptr<TokenStore> token_store,
+                                                               ClientCredentialsConfig config)
     : impl_(std::make_shared<Impl>()) {
     if (!token_store) {
         throw std::invalid_argument("ClientCredentialsAuthenticator requires a token store");
@@ -80,7 +81,7 @@ ClientCredentialsAuthenticator::ClientCredentialsAuthenticator(
         throw std::invalid_argument("The client credentials grant needs client authentication");
     }
     impl_->flow =
-        std::make_shared<CredentialsFlow>(executor, std::move(token_store), std::move(config));
+        std::make_shared<CredentialsFlow>(executor.get(), std::move(token_store), std::move(config));
 }
 
 ClientCredentialsAuthenticator::~ClientCredentialsAuthenticator() = default;

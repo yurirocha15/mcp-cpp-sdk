@@ -3,19 +3,19 @@
 #include <mcp/auth/challenge.hpp>
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/metadata_policy.hpp>
+#include <mcp/core/async_fwd.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
-#include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <array>
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -24,8 +24,6 @@
 #include <vector>
 
 namespace mcp::auth {
-
-namespace net = boost::asio;
 
 namespace detail {
 MCP_API std::string base64_encode(const unsigned char* data, std::size_t len);
@@ -225,7 +223,7 @@ class MCP_API OAuthHttpClient {
      * `WWW-Authenticate` challenges must be given a policy naming the origins it is meant to reach,
      * because the URLs it then visits are influenced by the server it talks to.
      */
-    explicit OAuthHttpClient(const net::any_io_executor& executor);
+    explicit OAuthHttpClient(const Executor& executor);
 
     /**
      * @brief Apply an outbound-request policy to every request this client issues.
@@ -597,7 +595,7 @@ MCP_API std::string extract_bearer_token(std::string_view auth_header_value);
  * string. `try_refresh_token()` is a coroutine that performs network I/O to refresh the token and
  * persists the new token via the configured token store on success.
  */
-class Authenticator {
+class MCP_API Authenticator {
    public:
     virtual ~Authenticator() = default;
 
@@ -628,10 +626,7 @@ class Authenticator {
      * full authorization exchange rather than only renewing an existing grant. The default
      * implementation reports that it handled nothing.
      */
-    virtual Task<bool> try_handle_challenge(const std::string& www_authenticate) {
-        (void)www_authenticate;
-        co_return false;
-    }
+    virtual Task<bool> try_handle_challenge(const std::string& www_authenticate);
 
     /**
      * @brief Cancel the authorization work this authenticator has in flight and release parked
@@ -758,9 +753,8 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      *         sets `client_id`, `client_secret` or `client_issuer` together with
      *         `client_identity.pre_registered`.
      */
-    OAuthAuthorizationManager(const net::any_io_executor& executor,
-                              std::shared_ptr<TokenStore> token_store, OAuthAuthorizationConfig config,
-                              AuthorizationCallback callback);
+    OAuthAuthorizationManager(const Executor& executor, std::shared_ptr<TokenStore> token_store,
+                              OAuthAuthorizationConfig config, AuthorizationCallback callback);
 
     /**
      * @brief Return the stored access token without network I/O.

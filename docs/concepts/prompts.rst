@@ -11,6 +11,16 @@ In `mcp-cpp-sdk`, prompts are registered with a name, description, and an option
 set of arguments. Clients can discover these prompts and request them with
 specific arguments to get a list of messages to include in the conversation.
 
+Adding This to a Sync-Mode Program
+----------------------------------
+
+The server of :doc:`/getting-started` gets a prompt with ``add_text_prompt()``, whose
+function makes the text of the prompt's one user message from the
+arguments.
+
+.. literalinclude:: /_generated/progression/server_add_prompt.diff
+   :language: diff
+
 Registering a Basic Prompt
 --------------------------
 
@@ -123,9 +133,11 @@ dynamic content from your server's resources in the prompt response.
 
 .. code-block:: cpp
 
+   TextResourceContents contents;
+   contents.uri = "mcp://system/config";
+   contents.text = "System configuration data...";
    EmbeddedResource resource;
-   resource.resource.uri = "mcp://system/config";
-   resource.resource.text = "System configuration data...";
+   resource.resource = std::move(contents);
    msg.content = std::move(resource);
 
 Advanced Registration
@@ -186,9 +198,10 @@ prompting them to call `prompts/list` again if they need the updated list.
 Prompt Capabilities
 -------------------
 
-To enable prompts, include them in your server capabilities during initialization.
-If the client does not see prompt capabilities, it may not attempt to list or
-get prompts.
+A server that has a prompt advertises the prompts capability on its own. What
+registration cannot imply, such as list-changed notifications, is set in the
+capabilities the server is constructed with, or on ``server.capabilities()``
+before it serves:
 
 .. code-block:: cpp
 

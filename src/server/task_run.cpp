@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <mcp/core/async.hpp>
 #include <sstream>
 #include <stdexcept>
 

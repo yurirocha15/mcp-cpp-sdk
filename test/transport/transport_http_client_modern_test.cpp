@@ -4,6 +4,7 @@
 #include "../../src/detail/header_value.hpp"
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -86,6 +87,8 @@ struct Reply {
     std::vector<Step> stream;
     /// When set, nothing of the answer is sent until this holds, as for a handler that stays quiet.
     std::function<bool()> hold_until;
+    /// When true, the connection is closed after the stream's steps instead of ending the stream.
+    bool drop_after_stream{false};
 };
 
 std::string sse_event(const json& message) { return "data: " + message.dump() + "\n\n"; }
@@ -211,6 +214,12 @@ class RawServer {
                 *frame = std::string(size.data()) + "\r\n" + step.chunk + "\r\n";
                 co_await asio::async_write(*socket, asio::buffer(*frame), asio::use_awaitable);
             }
+        }
+        if (reply.drop_after_stream) {
+            beast::error_code ignored;
+            (void)socket->shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+            (void)socket->close(ignored);
+            co_return;
         }
         auto last = std::make_shared<std::string>("0\r\n\r\n");
         co_await asio::async_write(*socket, asio::buffer(*last), asio::use_awaitable);
@@ -1192,6 +1201,53 @@ TEST(HttpClientModern, ResponseWithAnotherIdDoesNotEndTheStream) {
     EXPECT_EQ(result["content"][0]["text"], "real") << result;
 }
 
+// A response stream that breaks before the answer ends the call with g_CONNECTION_CLOSED. The message
+// alone describes the connection's failure, without the source location Boost adds to it.
+TEST(HttpClientModern, ABrokenResponseStreamEndsTheCallWithItsReason) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.rpc_method() != "tools/call") {
+            return modern_reply(request, json::array());
+        }
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        const json progress = {{"jsonrpc", "2.0"},
+                               {"method", "notifications/progress"},
+                               {"params", {{"progressToken", "t1"}, {"progress", 1}, {"total", 2}}}};
+        reply.stream.push_back({sse_event(progress), nullptr});
+        reply.drop_after_stream = true;
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+
+    int code = 0;
+    std::string message;
+    bool nested = false;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("drop", "1.0");
+        try {
+            json params = {
+                {"name", "slow"}, {"arguments", json::object()}, {"_meta", {{"progressToken", "t1"}}}};
+            (void)co_await client.send_request("tools/call", params);
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+            message = error.what();
+            try {
+                std::rethrow_if_nested(error);
+            } catch (...) {
+                nested = true;
+            }
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_FALSE(nested);
+    EXPECT_NE(message.find("The connection to the server failed: "), std::string::npos) << message;
+    EXPECT_EQ(message.find('['), std::string::npos) << message;
+}
+
 TEST(HttpClientModern, ListenStreamThatBreaksEndsAsDropped) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
@@ -1324,9 +1380,8 @@ TEST(HttpClientModern, AgainstDualEraSessionManager) {
     asio::io_context io;
     asio::steady_timer guard(io);
     bool fired = false;
-    mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", port,
-        [](const asio::any_io_executor&) { return make_sdk_server(); });
+    mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", port,
+                                              [](const mcp::Executor&) { return make_sdk_server(); });
     auto transport = make_transport(io, "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::Client client(transport, io.get_executor(), auto_options());
     SdkOutcome outcome;
@@ -1562,7 +1617,7 @@ PinnedOutcome run_pinned(ServerKind kind, unsigned short manager_port, const std
     if (kind == ServerKind::eSessionManager) {
         manager = std::make_unique<mcp::StreamableHttpSessionManager>(
             io.get_executor(), "127.0.0.1", manager_port,
-            [](const asio::any_io_executor&) { return make_sdk_server(); });
+            [](const mcp::Executor&) { return make_sdk_server(); });
         if (policy) {
             manager->set_protocol_policy(*policy);
         }
@@ -1722,8 +1777,21 @@ TEST(HttpClientLegacy, InitializeRefusedWithoutAJsonRpcErrorReportsTheStatus) {
     EXPECT_NE(error.find("status 400"), std::string::npos) << error;
 }
 
-// Inside a session an error status keeps its HTTP meaning: a 404 there says the session is gone.
-TEST(HttpClientLegacy, ErrorStatusInsideASessionStaysAnHttpStatusError) {
+/// The HTTP status of the HttpStatusError nested in @p error, the McpError a client call threw.
+std::optional<unsigned int> nested_http_status(const mcp::McpError& error) {
+    try {
+        std::rethrow_if_nested(error);
+    } catch (const mcp::HttpStatusError& failure) {
+        return failure.status();
+    } catch (...) {
+        // Another nested type has no status.
+    }
+    return std::nullopt;
+}
+
+// Inside a session an error status keeps its HTTP meaning, a 404 there saying the session is gone:
+// the call throws McpError with the status in its data and the HttpStatusError nested in it.
+TEST(HttpClientLegacy, ErrorStatusInsideASessionKeepsItsHttpStatus) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
         const auto message = request.parsed();
@@ -1743,20 +1811,26 @@ TEST(HttpClientLegacy, ErrorStatusInsideASessionStaysAnHttpStatusError) {
     mcp::ClientOptions options;
     options.protocol = mcp::ClientProtocol::legacy();
     mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
+    std::optional<int> code;
     std::optional<unsigned int> status;
+    unsigned int data_status = 0;
     std::string other;
     run_guarded(io, raw, [&]() -> mcp::Task<void> {
         try {
             co_await client.connect("legacy", "1.0");
             co_await client.list_tools();
-        } catch (const mcp::HttpStatusError& failure) {
-            status = failure.status();
+        } catch (const mcp::McpError& failure) {
+            code = failure.code();
+            status = nested_http_status(failure);
+            data_status = failure.data() ? failure.data()->value("httpStatus", 0u) : 0u;
         } catch (const std::exception& failure) {
             other = failure.what();
         }
         client.close();
     });
-    EXPECT_EQ(status, 404u) << other;
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED) << other;
+    EXPECT_EQ(status, 404u);
+    EXPECT_EQ(data_status, 404u);
 }
 
 // A new session started in place of a forgotten one that answers with another version and other
@@ -1886,8 +1960,8 @@ TEST(HttpClientLegacy, ForgottenSessionIsNotReplacedWhenTurnedOff) {
         co_await client.ping();
         try {
             co_await client.ping();
-        } catch (const mcp::HttpStatusError& failure) {
-            status = failure.status();
+        } catch (const mcp::McpError& failure) {
+            status = nested_http_status(failure);
         } catch (const std::exception& failure) {
             other = failure.what();
         }

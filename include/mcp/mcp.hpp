@@ -1,9 +1,10 @@
 #pragma once
 
-// High-level convenience API for MCP servers.
-// For advanced usage with direct transport or executor access,
-// include individual headers like mcp/transport/stdio.hpp.
+// The MCP server and client API, without Boost. Code that defines or awaits coroutines adds
+// <mcp/core/async.hpp>; transports and other advanced parts have headers of their own, such as
+// <mcp/transport/stdio.hpp>.
 
+#include <mcp/client/client.hpp>
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/core/runtime.hpp>

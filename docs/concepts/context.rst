@@ -1,7 +1,34 @@
 Server Context
 ==============
 
-The ``mcp::Context`` object is a fundamental construct in the MCP C++ SDK. It is passed as a reference to every asynchronous handler for tools, resources, and prompts. Think of the ``Context`` as the per-request interface between your server's logic and the connected client.
+The ``mcp::Context`` object is a fundamental construct in the MCP C++ SDK. It is passed as a reference to every handler for tools, resources, and prompts that takes one. Think of the ``Context`` as the per-request interface between your server's logic and the connected client.
+
+Adding This to a Sync-Mode Program
+----------------------------------
+
+A synchronous handler of the server of :doc:`/getting-started` takes the ``Context`` and
+becomes a coroutine to log and report progress, and its ``add_tool()`` call
+keeps its form. On the client, ``RequestOptions::on_progress`` follows the
+progress and ``on_notification()`` receives the log messages. :doc:`/guides/growing-a-server`
+and :doc:`/guides/growing-a-client` show the other steps.
+
+.. literalinclude:: /_generated/progression/server_add_context.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_progress.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_logging.diff
+   :language: diff
+
+A tool asks the client's language model with ``ctx.sample_llm()``, and the
+client answers with the handler it registers with ``on_sampling()``:
+
+.. literalinclude:: /_generated/progression/server_add_sampling.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_sampling.diff
+   :language: diff
 
 Core Responsibilities
 ---------------------
@@ -39,6 +66,7 @@ Available log levels (from most to least severe):
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/mcp.hpp>
 
    server.add_tool<nlohmann::json, nlohmann::json>("debug_tool", "Tool with logging", schema,
@@ -67,9 +95,8 @@ For long-running tasks, you can report progress to the client. This is essential
 Prerequisites
 ~~~~~~~~~~~~~
 
-Progress reporting requires:
-1.  The client must support the ``notifications/progress`` capability.
-2.  The client must provide a ``progressToken`` in the request metadata (``_meta``).
+Progress reporting requires the client to provide a ``progressToken`` in the
+request metadata (``_meta``), as ``RequestOptions::on_progress`` does for one request.
 
 If no token is provided in the request, ``ctx.report_progress()`` calls are silently ignored.
 
@@ -175,6 +202,8 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                        params.messages.push_back(std::move(msg));
                        params.maxTokens = 100;
 
+                       // A json, not a std::string, which must not live across co_await on GCC 11.
+                       nlohmann::json failure;
                        try {
                            auto result = co_await ctx.sample_llm(params);
                            std::string summary;
@@ -187,12 +216,13 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                                {"content", nlohmann::json::array(
                                    {nlohmann::json{{"type", "text"}, {"text", summary}}})}};
                        } catch (const std::exception& e) {
-                           co_await ctx.log(mcp::LoggingLevel::eError,
-                                            "Sampling failed: " + std::string(e.what()));
-                           co_return nlohmann::json{
-                               {"content", nlohmann::json::array(
-                                   {nlohmann::json{{"type", "text"}, {"text", "Sampling failed"}}})}};
+                           failure = std::string("Sampling failed: ") + e.what();
                        }
+                       // A catch block cannot contain co_await, so the failure is logged after it.
+                       co_await ctx.log(mcp::LoggingLevel::eError, failure.get_ref<const std::string&>());
+                       co_return nlohmann::json{
+                           {"content", nlohmann::json::array(
+                               {nlohmann::json{{"type", "text"}, {"text", "Sampling failed"}}})}};
                    });
 
 Elicitation
@@ -276,8 +306,8 @@ To further explore the MCP C++ SDK and how it integrates with other features, co
 *   :doc:`resources`: Learn how to expose read-only data via MCP URIs.
 *   :doc:`prompts`: Guide to creating dynamic prompt templates for LLMs.
 *   :doc:`transports`: Understand the underlying communication layers (Stdio, WebSocket, HTTP).
-*   :doc:`elicitation` (if available): Advanced patterns for user interaction.
-*   :doc:`roots` (if available): Deep dive into the roots discovery protocol.
+*   :doc:`elicitation`: Advanced patterns for user interaction.
+*   :doc:`roots`: Deep dive into the roots discovery protocol.
 *   **Examples**: The ``examples/features/`` directory in the source tree contains self-contained code for all features discussed here.
 
 Summary

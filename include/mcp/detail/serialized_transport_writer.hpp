@@ -1,7 +1,7 @@
 #pragma once
 
+#include <mcp/core/async_fwd.hpp>
 #include <mcp/core/constants.hpp>
-#include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 
 #include <boost/asio/any_io_executor.hpp>

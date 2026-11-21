@@ -13,6 +13,7 @@
 /// protocol revision, and the tool sees ctx.is_cancelled() at its next step.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
@@ -44,6 +45,7 @@ int main() {
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
+        server_caps.logging = nlohmann::json::object();
 
         Implementation server_info;
         server_info.name = "progress-server";

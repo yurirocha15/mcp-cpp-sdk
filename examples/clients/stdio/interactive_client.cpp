@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/transport/stdio_client.hpp>
 #include <memory>
 #include <string>

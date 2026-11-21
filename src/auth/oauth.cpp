@@ -1,4 +1,5 @@
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/constants.hpp"
 #include "../detail/middleware_rejection.hpp"
@@ -1011,8 +1012,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     // consult it, which in practice means never being cleaned up.
 };
 
-OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
-    : impl_(std::make_shared<Impl>(executor)) {}
+OAuthHttpClient::OAuthHttpClient(const Executor& executor)
+    : impl_(std::make_shared<Impl>(executor.get())) {}
 
 /// Safe to call at any time, including mid-flight: exchanges already running keep what they started
 /// with, and the next one picks up the new value. See configure() below for changing both together.
@@ -2624,7 +2625,7 @@ bool is_valid_client_metadata_url(const std::string& url) {
 
 }  // namespace
 
-OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
+OAuthAuthorizationManager::OAuthAuthorizationManager(const Executor& executor,
                                                      std::shared_ptr<TokenStore> token_store,
                                                      OAuthAuthorizationConfig config,
                                                      AuthorizationCallback callback) {
@@ -2647,7 +2648,7 @@ OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor&
             "fragment: " +
             sanitize_for_diagnostics(*metadata_url));
     }
-    impl_ = std::make_shared<Impl>(executor, std::move(token_store), std::move(config),
+    impl_ = std::make_shared<Impl>(executor.get(), std::move(token_store), std::move(config),
                                    std::move(callback));
 }
 
@@ -3186,6 +3187,11 @@ void OAuthClientTransport::close() {
     // transports and outlive this one, so closing it is left to its owner.
     impl_->authenticator->cancel_pending();
     impl_->inner->close();
+}
+
+Task<bool> Authenticator::try_handle_challenge(const std::string& www_authenticate) {
+    static_cast<void>(www_authenticate);
+    co_return false;
 }
 
 }  // namespace mcp::auth

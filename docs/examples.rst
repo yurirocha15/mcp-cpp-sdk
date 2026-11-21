@@ -20,6 +20,37 @@ The SDK builds nine core examples plus 16 specialized feature examples:
 8. **llama_server** - llama.cpp MCP adapter
 9. **debugger_server** - LLDB debugger MCP server (uses stubs when LLDB is unavailable)
 
+Sync-Mode Examples
+------------------
+
+``examples/sync/`` holds the programs of :doc:`getting-started`,
+:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client`: a base server
+and a base client, one program per feature added to them, and
+``server_all.cpp`` and ``client_all.cpp``, which combine the features. Each
+builds as ``example-sync-<name>``, with dashes for the underscores. A stdio
+client takes the server's command, and an HTTP server its port and an HTTP
+client the server's URL:
+
+.. code-block:: bash
+
+   ./build/release/example-sync-client-base ./build/release/example-sync-server-base
+   ./build/release/example-sync-server-add-http 8080 &
+   ./build/release/example-sync-client-add-http http://127.0.0.1:8080/mcp
+
+Async-Mode Examples
+-------------------
+
+``examples/async/`` holds the programs of :doc:`guides/async-mode`: a server and
+a client with every feature of ``server_all.cpp`` and ``client_all.cpp``, whose
+handlers and calls are coroutines on an event loop the program runs. They build
+as ``example-async-server``, which takes its port, and ``example-async-client``,
+which takes the server's URL:
+
+.. code-block:: bash
+
+   ./build/release/example-async-server 8080 &
+   ./build/release/example-async-client http://127.0.0.1:8080/mcp
+
 Feature Examples
 ----------------
 
@@ -138,7 +169,8 @@ server_with_sampling
 
 Demonstrates **reverse RPC** (server-to-client calls) via ``Context::sample_llm()``:
 
-* **Server capabilities**: Declares tool support with change notifications
+* **Server capabilities**: Declares tool support with change notifications, and logging
+  because the tool logs to the client
 * **Sampling tool**: Tool handler that calls back to the client via ``ctx.sample_llm()``
 * **Async context handlers**: Using ``Context&`` parameter for reverse RPC
 

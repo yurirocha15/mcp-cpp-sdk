@@ -1,7 +1,7 @@
 #include "../../src/detail/http_response_write.hpp"
 #include "../support/spawn.hpp"
 
-#include <mcp/core/core.hpp>
+#include <mcp/core/async.hpp>
 
 #include <gtest/gtest.h>
 

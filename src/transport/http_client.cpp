@@ -6,6 +6,7 @@
 #include "../detail/request_meta.hpp"
 #include "../detail/socket_deadline.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/http_client.hpp>
@@ -1708,9 +1709,14 @@ struct HttpClientTransport::Impl {
         enqueue_message(std::move(text));
     }
 
+    /// The text of the error a reader gets for @p failure. A connection's failure is described by
+    /// its error code, as a failed call's McpError describes it, without the source location that
+    /// Boost puts in what().
     static std::string describe(const std::exception_ptr& failure) {
         try {
             std::rethrow_exception(failure);
+        } catch (const boost::system::system_error& error) {
+            return "The connection to the server failed: " + error.code().message();
         } catch (const std::exception& error) {
             return error.what();
         } catch (...) {
@@ -1841,8 +1847,8 @@ struct HttpClientTransport::Impl {
     std::function<void(const std::string&)> warning_handler;
 };
 
-HttpClientTransport::HttpClientTransport(const net::any_io_executor& executor, const std::string& url)
-    : impl_(std::make_shared<Impl>(executor, url)) {}
+HttpClientTransport::HttpClientTransport(const Executor& executor, const std::string& url)
+    : impl_(std::make_shared<Impl>(executor.get(), url)) {}
 
 HttpClientTransport::~HttpClientTransport() {
     try {
@@ -1915,7 +1921,7 @@ void HttpClientTransport::close() {
         Impl::CloseTarget{impl_->host, impl_->port, impl_->path, impl_->pin_bearer_token_provider()});
     net::co_spawn(
         impl_->strand,
-        [shared_state, close_target = std::move(close_target)]() -> Task<void> {
+        [shared_state, close_target = std::move(close_target)]() -> boost::asio::awaitable<void> {
             for (auto& entry : shared_state->modern_calls) {
                 Impl::SharedState::close_call_socket(*entry.second);
             }

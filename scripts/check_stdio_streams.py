@@ -40,6 +40,22 @@ SERVER_REQUESTS = [
 # in the build directory is skipped, so this runs against partial builds.
 CASES = [
     ("example-server-stdio", SERVER_REQUESTS),
+    ("example-sync-server-base", SERVER_REQUESTS),
+    ("example-sync-server-add-resource", SERVER_REQUESTS),
+    ("example-sync-server-add-prompt", SERVER_REQUESTS),
+    ("example-sync-server-add-context", SERVER_REQUESTS),
+    ("example-sync-server-add-completions", SERVER_REQUESTS),
+    ("example-sync-server-add-handler-pool", SERVER_REQUESTS),
+    ("example-sync-server-add-own-loop", SERVER_REQUESTS),
+    ("example-sync-server-add-elicitation", SERVER_REQUESTS),
+    ("example-sync-server-add-sampling", SERVER_REQUESTS),
+    ("example-sync-server-add-roots", SERVER_REQUESTS),
+    ("example-sync-server-add-middleware", SERVER_REQUESTS),
+    ("example-sync-server-add-pagination", SERVER_REQUESTS),
+    ("example-sync-server-add-tasks", SERVER_REQUESTS),
+    ("example-sync-server-add-subscriptions", SERVER_REQUESTS),
+    ("example-sync-server-add-apps", SERVER_REQUESTS),
+    ("example-sync-server-add-skills", SERVER_REQUESTS),
 ]
 
 

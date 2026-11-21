@@ -1,6 +1,6 @@
 #pragma once
 
-#include <boost/asio/any_io_executor.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -42,7 +42,7 @@ class MCP_API MemoryTransport final : public ITransport {
      *
      * @param executor The executor for async operations.
      */
-    explicit MemoryTransport(const boost::asio::any_io_executor& executor);
+    explicit MemoryTransport(const Executor& executor);
     ~MemoryTransport() override;
 
     MemoryTransport(const MemoryTransport&) = delete;
@@ -135,6 +135,6 @@ class MCP_API MemoryTransport final : public ITransport {
  * @return A pair of connected transport instances that can exchange in-memory messages.
  */
 MCP_API std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>>
-create_memory_transport_pair(const boost::asio::any_io_executor& executor);
+create_memory_transport_pair(const Executor& executor);
 
 }  // namespace mcp

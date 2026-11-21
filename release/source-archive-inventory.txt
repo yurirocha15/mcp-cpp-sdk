@@ -16,6 +16,7 @@ keys/release-signing-key.asc
 release/source-archive-inventory.txt
 release/verify_gnupg_status.py
 scripts/build.py
+scripts/check_example_progression.py
 scripts/init.py
 scripts/run_examples.py
 src/**

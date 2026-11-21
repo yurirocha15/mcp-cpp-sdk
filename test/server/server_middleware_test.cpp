@@ -13,6 +13,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <chrono>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>

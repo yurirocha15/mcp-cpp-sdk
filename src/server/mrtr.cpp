@@ -4,6 +4,7 @@
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 

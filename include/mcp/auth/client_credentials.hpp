@@ -4,7 +4,7 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/export.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -61,8 +61,7 @@ class MCP_API ClientCredentialsAuthenticator : public Authenticator {
      * @throws std::invalid_argument When @p token_store is null, `server_url` is empty, or the
      *         client has neither a secret nor a private key.
      */
-    ClientCredentialsAuthenticator(const boost::asio::any_io_executor& executor,
-                                   std::shared_ptr<TokenStore> token_store,
+    ClientCredentialsAuthenticator(const Executor& executor, std::shared_ptr<TokenStore> token_store,
                                    ClientCredentialsConfig config);
     ~ClientCredentialsAuthenticator() override;
 

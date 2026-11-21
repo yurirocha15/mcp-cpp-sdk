@@ -3,6 +3,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/protocol/extensions.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"

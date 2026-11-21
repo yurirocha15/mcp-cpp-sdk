@@ -32,6 +32,7 @@
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_client.hpp>
@@ -5858,7 +5859,7 @@ mcp::Task<RawChallenge> fetch_unauthenticated_challenge(const asio::any_io_execu
 }
 
 mcp::StreamableHttpSessionManager::ServerFactory make_pairing_server_factory() {
-    return [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+    return [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
         return std::make_unique<mcp::Server>(mcp::Implementation{"auth-pairing-server", "1.0.0"},

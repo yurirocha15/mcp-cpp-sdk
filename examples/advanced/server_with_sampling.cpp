@@ -7,6 +7,7 @@
 /// server asks the client with an input_required result and the client answers on the retry of the
 /// tools/call; a client of an earlier revision receives a sampling/createMessage request instead.
 
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/stdio.hpp>
 
@@ -23,6 +24,7 @@ int main() {
 
         ServerCapabilities caps;
         caps.tools = ServerCapabilities::ToolsCapability{.listChanged = true};
+        caps.logging = nlohmann::json::object();
 
         Implementation info;
         info.name = "sampling-server";

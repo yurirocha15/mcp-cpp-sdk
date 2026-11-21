@@ -187,7 +187,6 @@ done
 
 **What it demonstrates:**
 - `create_memory_transport_pair()` for in-process testing
-- `TransportFactory` with `Runtime` for transport creation
 - Direct `ITransport` message exchange over an in-memory bidirectional pair
 - JSON-RPC frames carried through the same `read_message()` / `write_message()` API
 
@@ -195,13 +194,10 @@ done
 - `create_memory_transport_pair()`
 - `ITransport::read_message()`
 - `ITransport::write_message()`
-- `TransportFactory::create_stdio()`
-- `TransportFactory::create_http_client()`
-- `Runtime` class
 
 **Run:** `./build/release/example-feature-transport-memory`
 
-**Expected output:** MemoryTransport message round trips and TransportFactory overview
+**Expected output:** MemoryTransport message round trips
 
 ---
 

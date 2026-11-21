@@ -22,6 +22,7 @@ BUILTIN_STL_SUPPORT    = YES
 ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = YES
 PREDEFINED             = DOXYGEN_SHOULD_SKIP_THIS \
+                         MCP_API= \
                          "MCP_DEPRECATED(message)="
 STRIP_FROM_PATH        = @PROJECT_SOURCE_DIR@/include
 STRIP_FROM_INC_PATH    = @PROJECT_SOURCE_DIR@/include

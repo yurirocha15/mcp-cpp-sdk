@@ -13,6 +13,24 @@ transport-level bearer authentication — but they are **components of the
 manager, not an alternative to it**. See
 :ref:`oauth-low-level-building-blocks` for what using them directly costs you.
 
+Adding this to a sync-mode program
+----------------------------------
+
+The server of :doc:`/getting-started`, served over HTTP, checks a bearer token in the
+function to which ``run_http()`` passes its ``StreamableHttpSessionManager``,
+and the client of :doc:`/getting-started` sends one through
+``HttpEndpointOptions::configure``. The server sets its protected resource
+metadata in the same function, and the client's
+``HttpEndpointOptions::authenticator`` makes an ``auth::Authenticator`` that
+obtains and refreshes the tokens instead. See :doc:`/guides/growing-a-server` and
+:doc:`/guides/growing-a-client`.
+
+.. literalinclude:: /_generated/progression/server_add_auth.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_auth.diff
+   :language: diff
+
 Challenge-driven authorization
 ------------------------------
 
@@ -29,6 +47,7 @@ Hand that header to the manager and it runs the whole exchange:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/auth/oauth.hpp>
 
    // A default-constructed policy refuses every origin, so name the ones this
@@ -257,6 +276,7 @@ credentials and no dynamic client registration is involved.
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/auth/client_credentials.hpp>
 
    mcp::auth::ClientCredentialsConfig config;
@@ -325,6 +345,7 @@ supplies the assertion through a callback:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/auth/enterprise_authorization.hpp>
 
    mcp::auth::EnterpriseAuthorizationConfig config;

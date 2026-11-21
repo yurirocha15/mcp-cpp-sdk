@@ -21,6 +21,7 @@
 /// that resumed a waiting tool.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 

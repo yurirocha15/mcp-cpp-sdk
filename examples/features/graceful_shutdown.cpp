@@ -6,6 +6,7 @@
 /// - Manual transport pattern (not run_stdio convenience)
 /// - Timer-based auto-exit for CI/testing
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/signal.hpp>
 #include <mcp/server/server.hpp>

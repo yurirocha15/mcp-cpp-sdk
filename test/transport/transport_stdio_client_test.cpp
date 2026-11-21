@@ -3,6 +3,7 @@
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/client/stdio_session.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/transport/stdio_client.hpp"
 
 #include <gtest/gtest.h>

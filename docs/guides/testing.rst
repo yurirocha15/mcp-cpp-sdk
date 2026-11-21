@@ -14,6 +14,20 @@ When testing your MCP applications, you should focus on three levels of verifica
 
 This guide focuses primarily on Integration and E2E testing using the built-in :cpp:class:`mcp::MemoryTransport`.
 
+Testing a Sync-Mode Program
+---------------------------
+
+A sync-mode server is a program, so the plainest test runs it: a sync-mode
+client such as the one of :doc:`/getting-started` launches it with ``Endpoint::stdio()``,
+calls its tools with the blocking calls, and the test checks what they return.
+CI tests the programs of ``examples/sync`` this way, each client against its
+server. For an HTTP server, ``run_http("127.0.0.1", 0)`` on a thread of the
+test lets the system choose a free port, which ``server.bound_port()`` returns
+once the server listens (0 until then), and ``server.stop()`` ends
+``run_http()`` when the test is done. For a test in one process, without a child
+process or a socket, the same ``Server`` is served over a memory transport pair
+with ``run()``, as below.
+
 MemoryTransport for Testing
 ---------------------------
 
@@ -57,7 +71,9 @@ A typical loopback test follows these steps:
 Here is a simplified example of this pattern. A default ``Client`` and a default
 ``Server`` speak protocol revision 2026-07-28 with each other, so the test
 needs no handshake of its own: ``connect()`` sends one ``server/discover``
-request.
+request. The test includes ``<mcp/core/async.hpp>``, ``<mcp/mcp.hpp>``,
+``<mcp/transport/memory.hpp>`` for ``create_memory_transport_pair()``, and the
+Boost.Asio headers of ``io_context``, ``co_spawn`` and ``detached``.
 
 .. code-block:: cpp
 
@@ -184,7 +200,7 @@ For tool handlers, you can pass mock dependencies into your lambda captures or f
 CI Integration
 --------------
 
-MCP tests can be integrated into any standard C++ CI pipeline. Since the SDK relies on Boost.Asio and C++20, ensure your CI environment has a compatible compiler (GCC 11+, Clang 13+, or MSVC 2022+) and the necessary libraries installed.
+MCP tests can be integrated into any standard C++ CI pipeline. Since the SDK relies on Boost.Asio and C++20, ensure your CI environment has a compatible compiler (GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022) and the necessary libraries installed.
 
 We recommend running tests under sanitizers (ASan, UBSan) to catch memory leaks or undefined behavior in your asynchronous code.
 

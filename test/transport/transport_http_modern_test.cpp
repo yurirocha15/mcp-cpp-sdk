@@ -2,6 +2,7 @@
 
 #include "../../src/detail/http_request_metadata.hpp"
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -145,7 +146,7 @@ class HttpModernTest : public ::testing::Test {
     std::atomic<int> factory_calls_{0};
 
     mcp::StreamableHttpSessionManager::ServerFactory factory() {
-        return [this](const asio::any_io_executor&) {
+        return [this](const mcp::Executor&) {
             factory_calls_.fetch_add(1);
             return make_server("factory-server");
         };

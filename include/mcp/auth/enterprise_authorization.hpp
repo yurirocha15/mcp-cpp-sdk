@@ -5,8 +5,8 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <functional>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -82,7 +82,7 @@ class MCP_API EnterpriseAuthorizationAuthenticator : public Authenticator {
      * @throws std::invalid_argument When @p token_store or @p provider is empty, or `server_url`,
      *         `idp_token_endpoint` or a client identifier is empty.
      */
-    EnterpriseAuthorizationAuthenticator(const boost::asio::any_io_executor& executor,
+    EnterpriseAuthorizationAuthenticator(const Executor& executor,
                                          std::shared_ptr<TokenStore> token_store,
                                          EnterpriseAuthorizationConfig config,
                                          IdentityAssertionProvider provider);

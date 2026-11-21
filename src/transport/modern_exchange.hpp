@@ -2,8 +2,9 @@
 
 #include "../detail/http_limits.hpp"
 
-#include <mcp/core/core.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/server/request_context.hpp>
+#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_types.hpp>
 
 #include <boost/asio/any_io_executor.hpp>

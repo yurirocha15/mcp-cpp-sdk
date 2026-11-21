@@ -9,6 +9,19 @@ Key features include:
 - **Asynchronous**: Execution pauses until the user responds or the request times out.
 - **Structured**: Supports both form-based input (with JSON Schema validation) and URL-based redirects.
 
+Adding This to a Sync-Mode Program
+----------------------------------
+
+A tool of the server of :doc:`/getting-started` asks the user a question with
+``ctx.elicit()``, and the client answers with the handler it registers with
+``on_elicitation()``.
+
+.. literalinclude:: /_generated/progression/server_add_elicitation.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_elicitation.diff
+   :language: diff
+
 Server-side Elicitation
 -----------------------
 

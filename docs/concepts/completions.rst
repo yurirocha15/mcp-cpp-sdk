@@ -23,6 +23,17 @@ Key use cases include:
 - Suggesting valid resource template URI components (e.g., file paths, identifiers).
 - Providing valid options for a configuration prompt.
 
+Adding This to a Sync-Mode Program
+----------------------------------
+
+The server of :doc:`/getting-started`, with the prompt of :doc:`/guides/growing-a-server`,
+completes the prompt's argument with a provider. The provider is a coroutine, so
+the program includes ``<mcp/core/async.hpp>``; the other handlers stay
+synchronous.
+
+.. literalinclude:: /_generated/progression/server_add_completions.diff
+   :language: diff
+
 Server-side Setup
 -----------------
 
@@ -48,7 +59,7 @@ The ``CompleteParams`` structure provides the context for the completion request
 CompleteResult
 --------------
 
-The server returns a ``CompleteResult`` containing:
+The server returns a ``CompleteResult`` whose ``completion`` member contains:
 
 - ``values``: A list of string suggestions.
 - ``total``: (Optional) The total number of completions available if the list is truncated.

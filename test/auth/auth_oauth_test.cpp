@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <future>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>

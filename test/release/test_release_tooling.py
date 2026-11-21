@@ -155,6 +155,20 @@ class ArtifactTests(unittest.TestCase):
             {"release/source-archive-inventory.txt", "release/verify_gnupg_status.py"},
         )
 
+    def test_source_distribution_carries_the_scripts_the_docs_import(self) -> None:
+        names = {
+            path.relative_to(Path(".").resolve()).as_posix()
+            for path in SourceInventory.from_file(
+                Path("release/source-archive-inventory.txt")
+            ).expand(Path("."))
+        }
+        conf = Path("docs/conf.py").read_text(encoding="utf-8")
+        imported = re.findall(r"^import (\w+)", conf, flags=re.MULTILINE)
+        scripts = [name for name in imported if Path(f"scripts/{name}.py").is_file()]
+        self.assertTrue(scripts)
+        for name in scripts:
+            self.assertIn(f"scripts/{name}.py", names)
+
     def test_archives_are_byte_reproducible_and_normalized(self) -> None:
         first = Path(self.temporary.name) / "first"
         second = Path(self.temporary.name) / "second"

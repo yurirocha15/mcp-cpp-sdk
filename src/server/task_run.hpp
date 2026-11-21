@@ -4,7 +4,7 @@
 // cancel the task. The task's own state lives in its TaskStore; a TaskRun holds only what exists
 // while the handler runs in this process.
 
-#include <mcp/core/core.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/server/task_store.hpp>
 
 #include <atomic>

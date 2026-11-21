@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mcp/core/core.hpp>
+#include <mcp/core/async.hpp>
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/this_coro.hpp>

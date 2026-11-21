@@ -4,6 +4,27 @@ Getting Started
 This guide will help you get started with the mcp-cpp-sdk, from installation
 to building your first MCP server and client.
 
+Sync Mode and Async Mode
+------------------------
+
+The SDK is used in two modes, with the same ``mcp::Server`` and
+``mcp::Client``:
+
+* **Sync mode**, for fast development: handlers are ordinary functions, client
+  calls block until they are answered, and the server or client runs its own
+  event loop, so a program takes a few lines and has no event loop, executor
+  or Boost in it.
+* **Async mode**, for performance and full control: handlers and client calls
+  are C++20 coroutines on Boost.Asio. A handler that waits lets the server
+  answer other requests on the same thread, a client can have several requests
+  in flight from one thread, and the program can run the event loop itself,
+  beside its other work, with the executors and transports it chooses.
+
+A program moves to async mode one handler or call at a time, without a rewrite;
+:doc:`guides/growing-a-server` and :doc:`guides/growing-a-client` show how, and
+:doc:`guides/async-mode` walks through a complete server and client in async
+mode. The programs on this page are in sync mode.
+
 Prerequisites
 -------------
 
@@ -31,7 +52,9 @@ In a clone of this repository, Conan can provide the dependencies:
 .. code-block:: bash
 
    # Install dependencies
-   conan install . --build=missing -s compiler.cppstd=20
+   conan install . --output-folder=build --build=missing \
+     -s compiler.cppstd=20 \
+     -c tools.cmake.cmaketoolchain:generator=Ninja
 
    # Build the project
    cmake --preset conan-release
@@ -101,172 +124,94 @@ To build the SDK and examples from source:
    # Run tests
    python scripts/build.py --test
 
-Quick Start: Minimal Server
-----------------------------
+Your First Server
+-----------------
 
-Here's a minimal MCP server that exposes a single tool over stdio.
+This server offers one tool, ``greet``, over stdio:
 
-.. code-block:: cpp
+.. literalinclude:: ../examples/sync/server_base.cpp
+   :language: cpp
+   :start-at: #include
 
-   #include <mcp/mcp.hpp>
+* ``mcp::Server server("greeter", "1.0.0")`` names the server. It advertises the
+  capabilities its registrations imply: tools once it has a tool, resources once
+  it has a resource, and so on.
+* ``mcp::tool_params()`` writes the tool's input schema: one ``ParamSpec`` per
+  argument, with its name, JSON Schema type, description and whether it is
+  required (it is unless the fourth member says otherwise). Arguments that do not
+  match the schema are answered with an error result without calling the
+  handler. Any JSON Schema can be passed instead.
+* The handler takes the arguments as JSON and returns a JSON value: a string
+  becomes the text of the result, and an object its structured content. An
+  exception it throws becomes an error result (``isError: true``).
+* ``server.run_stdio()`` serves until the client closes standard input or the
+  process gets SIGINT or SIGTERM.
 
-   int main() {
-       mcp::ServerCapabilities caps;
-       caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+Build it with CMake against an installed SDK (see :doc:`installation`):
 
-       mcp::Implementation info{"hello-server", "1.0.0"};
-       mcp::Server server(std::move(info), std::move(caps));
+.. code-block:: cmake
 
-       nlohmann::json schema = {
-           {"type", "object"},
-           {"properties", {{"name", {{"type", "string"}}}}},
-           {"required", nlohmann::json::array({"name"})}};
+   cmake_minimum_required(VERSION 3.20)
+   project(greeter CXX)
+   find_package(mcp-cpp-sdk CONFIG REQUIRED)
+   add_executable(greeter server_base.cpp)
+   target_compile_features(greeter PRIVATE cxx_std_20)
+   target_link_libraries(greeter PRIVATE mcp::sdk)
 
-       server.add_tool("hello", "Greets the user", std::move(schema),
-                       [](const nlohmann::json& args) -> nlohmann::json {
-                           return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
-                       });
+An MCP host such as an editor or a desktop assistant can now launch
+``./greeter`` as a stdio server.
 
-       server.run_stdio();
-   }
+Your First Client
+-----------------
 
-``server.run_stdio()`` blocks until the client closes the connection or the
-process receives SIGINT/SIGTERM. The runtime, transport, and event loop are
-all managed internally.
+This client launches the server, calls its tool and prints the answer:
 
-Advanced: Manual Transport Setup
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. literalinclude:: ../examples/sync/client_base.cpp
+   :language: cpp
+   :start-at: #include
 
-If you need direct control over the ``io_context`` — for example, to share it
-with other async work — you can wire up the transport manually:
+* ``mcp::Endpoint::stdio({command})`` names the server to launch, by its program
+  and arguments. ``Endpoint::http(url)`` names a Streamable HTTP server instead.
+* A client constructed from an ``Endpoint`` runs its own event loop on a thread of
+  its own. ``client.sync()`` returns a view whose members block the calling
+  thread until the call is done and return its result or throw its exception.
+* ``connect()`` detects the protocol revision the server speaks: it sends
+  ``server/discover`` and falls back to ``initialize`` for a server of
+  2025-11-25 or earlier. See :doc:`guides/older-protocols` to choose one
+  instead.
+* ``mcp::result_text()`` joins the text blocks of a tool result.
+* Destroying the client closes the connection, which ends the server process.
 
-.. code-block:: cpp
-
-   #include <mcp/server/server.hpp>
-   #include <mcp/transport/stdio.hpp>
-   #include <boost/asio/co_spawn.hpp>
-   #include <boost/asio/detached.hpp>
-   #include <boost/asio/io_context.hpp>
-
-   int main() {
-       mcp::ServerCapabilities caps;
-       caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-
-       mcp::Implementation info{"math-server", "1.0.0"};
-       mcp::Server server(std::move(info), std::move(caps));
-
-       nlohmann::json schema = {
-           {"type", "object"},
-           {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}},
-           {"required", nlohmann::json::array({"a", "b"})}};
-
-       server.add_tool<nlohmann::json, nlohmann::json>(
-           "add", "Add two numbers", std::move(schema),
-           [](const nlohmann::json& params) -> mcp::Task<nlohmann::json> {
-               double result = params.at("a").get<double>() + params.at("b").get<double>();
-               co_return nlohmann::json{{"result", result}};
-           });
-
-       boost::asio::io_context io;
-       auto transport = std::make_shared<mcp::StdioTransport>(io.get_executor());
-       boost::asio::co_spawn(
-           io,
-           [&]() -> mcp::Task<void> {
-               co_await server.run(transport, io.get_executor());
-           },
-           boost::asio::detached);
-       io.run();
-   }
-
-Quick Start: Minimal Client
-----------------------------
-
-.. note::
-
-   A client runs on an ``io_context`` that the application owns, as below. To
-   launch a stdio server as a child process and talk to it, give the ``Client`` a
-   ``StdioClientTransport``, or use ``StdioClientSession``, which also restarts
-   the server when it exits; see :doc:`concepts/transports` and the
-   ``stdio_launch`` example.
-
-Here's a minimal MCP client that connects to an already running Streamable HTTP
-server and calls its ``hello`` tool. The quick-start server above serves it over
-HTTP when ``server.run_stdio()`` is replaced by
-``server.run_http("127.0.0.1", 3000)``:
-
-.. code-block:: cpp
-
-   #include <mcp/client/client.hpp>
-   #include <mcp/transport/http_client.hpp>
-   #include <boost/asio/co_spawn.hpp>
-   #include <boost/asio/detached.hpp>
-   #include <boost/asio/io_context.hpp>
-   #include <iostream>
-
-   int main() {
-       using namespace mcp;
-
-       boost::asio::io_context io;
-
-       auto transport = std::make_shared<HttpClientTransport>(
-           io.get_executor(), "http://127.0.0.1:3000/mcp");
-       Client client(transport, io.get_executor());
-
-       boost::asio::co_spawn(
-           io,
-           [&]() -> Task<void> {
-               // Connect. The client detects the protocol revision the server speaks.
-               ConnectResult connected = co_await client.connect("hello-client", "1.0.0");
-               std::cout << "Protocol: " << connected.protocolVersion << std::endl;
-
-               // Call the "hello" tool
-               nlohmann::json args = {{"name", "World"}};
-               auto result = co_await client.call_tool("hello", args);
-               std::cout << "Result: " << nlohmann::json(result).dump(2) << std::endl;
-
-               client.close();
-           },
-           boost::asio::detached
-       );
-
-       io.run();
-   }
-
-``co_spawn`` is given the lambda itself, not the result of calling it: it keeps
-the lambda alive until the coroutine finishes. A coroutine started from a
-temporary lambda would read the lambda's captures after the temporary is
-destroyed.
-
-``connect()`` returns a ``ConnectResult`` with the ``era`` of the session
-(``ProtocolEra::eModern`` for protocol revision 2026-07-28 or ``eLegacy`` for
-2025-11-25 and earlier), the negotiated ``protocolVersion`` and what the server
-declared (``capabilities``, ``serverInfo``, ``instructions``). By default the
-client sends ``server/discover`` first and falls back to ``initialize`` for an
-older server. To keep speaking an older revision, or to skip that probe, set
-``ClientOptions::protocol``; see :doc:`guides/older-protocols`.
+It builds like the server, with ``add_executable(greeter-client client_base.cpp)``
+and the same ``target_compile_features`` and ``target_link_libraries`` lines.
+``./greeter-client ./greeter`` then prints ``Hello, Ada!``.
 
 .. important::
 
-   **Client requests time out after 30 seconds by default.** The ``Client``
-   above takes no options, so every ``call_tool``, ``read_resource`` and
-   ``list_*`` it issues carries a 30-second deadline and throws
-   ``mcp::McpError`` with code ``-32001`` when it expires — even though the
-   server may still be working on the call. Set
-   ``ClientOptions::request_timeout`` before constructing the client if any of
-   your tools legitimately run longer:
+   **Client requests time out after 30 seconds by default.** A call that takes
+   longer throws ``mcp::McpError`` with code ``-32001``, even though the server
+   may still be working on it. Pass ``ClientOptions`` with a longer
+   ``request_timeout`` when constructing the client if a tool runs longer:
+   ``mcp::ClientOptions options; options.request_timeout = std::chrono::minutes(5);``
+   and then ``mcp::Client client(mcp::Endpoint::stdio({command}), options);``.
+   See :doc:`guides/error-handling` for per-request deadlines and what a timeout
+   does and does not guarantee about the server.
 
-   .. code-block:: cpp
+Growing the Program
+-------------------
 
-      mcp::ClientOptions options;
-      options.request_timeout = std::chrono::minutes(5);
-      Client client(transport, io.get_executor(), options);
-
-   See :doc:`guides/error-handling` for per-request deadlines and what a
-   timeout does and does not guarantee about the server.
+Each feature is added to these programs without rewriting them: a resource or
+a prompt is one more call on the same ``Server``, HTTP is a different run line,
+and a handler that logs or reports progress becomes a coroutine, in async mode,
+while the other handlers stay as they are. :doc:`guides/growing-a-server` and
+:doc:`guides/growing-a-client` show each step as a diff against the programs
+above, and every step is a compiled example in ``examples/sync``.
 
 Next Steps
 ----------
 
+* Grow the server and the client one feature at a time:
+  :doc:`guides/growing-a-server` and :doc:`guides/growing-a-client`
 * Explore the :doc:`examples` to see more advanced usage patterns
 * Read the :doc:`api/index` for detailed API documentation
 * Learn about the :doc:`architecture` and design decisions

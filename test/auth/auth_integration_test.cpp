@@ -21,6 +21,7 @@
 #include <chrono>
 #include <exception>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>

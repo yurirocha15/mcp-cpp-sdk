@@ -6,8 +6,7 @@
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/beast/http.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/transport/http_types.hpp>
 
 #include <chrono>
@@ -20,6 +19,12 @@
 #include <vector>
 
 namespace mcp {
+
+namespace detail {
+/// Gives set_custom_request_handler(), declared with the Beast types in
+/// <mcp/transport/http_beast.hpp>, its way into the manager.
+struct CustomRouteAccess;
+}  // namespace detail
 
 /** @brief What a StreamableHttpSessionManager holds for clients it has not heard from. */
 struct SessionLimits {
@@ -63,7 +68,7 @@ struct SessionLimits {
  * @code
  * asio::io_context io_ctx;
  *
- * auto server_factory = [](const asio::any_io_executor&) {
+ * auto server_factory = [](const mcp::Executor&) {
  *     ServerCapabilities caps;
  *     caps.tools = ServerCapabilities::ToolsCapability{};
  *     Implementation info{"my-server", "1.0"};
@@ -81,11 +86,7 @@ struct SessionLimits {
 class MCP_API StreamableHttpSessionManager {
    public:
     /// Callback that creates a configured Server instance for a new session.
-    using ServerFactory = std::function<std::unique_ptr<Server>(const boost::asio::any_io_executor&)>;
-
-    /// Optional callback for handling non-MCP HTTP requests (e.g., health checks).
-    /// Return std::nullopt to let the session manager handle the request normally.
-    using CustomRequestHandler = std::function<std::optional<StringResponse>(const StringRequest&)>;
+    using ServerFactory = std::function<std::unique_ptr<Server>(const Executor&)>;
 
     /**
      * @brief Construct a multi-session HTTP endpoint.
@@ -97,8 +98,29 @@ class MCP_API StreamableHttpSessionManager {
      * @param event_store_capacity Per-session event store capacity.
      */
     StreamableHttpSessionManager(
-        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
-        ServerFactory factory,
+        const Executor& executor, std::string host, unsigned short port, ServerFactory factory,
+        std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
+
+    /**
+     * @brief Construct a multi-session HTTP endpoint that serves @p server, as Server::run_http()
+     *        does, on the program's own event loop.
+     *
+     * @details @p server answers the 2026-07-28 requests, and each session of an older revision
+     * is served by a server that shares its tools, resources, prompts, handlers and settings, so
+     * the members of @p server that belong to one session, such as Server::send_request(), stand
+     * for none of them. set_protocol_policy() and set_tool_executor() set them on @p server
+     * itself, and a policy set with Server::set_protocol_policy() before listen() holds for the
+     * endpoint as one set here does. While listen() runs, Server::stop() closes the manager.
+     * @p server must outlive the manager and the task listen() returns.
+     *
+     * @param executor Executor for async operations.
+     * @param host Local bind address.
+     * @param port Local bind port, or 0 for one the system chooses (see port()).
+     * @param server The server to serve.
+     * @param event_store_capacity Per-session event store capacity.
+     */
+    StreamableHttpSessionManager(
+        const Executor& executor, std::string host, unsigned short port, Server& server,
         std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~StreamableHttpSessionManager();
@@ -109,14 +131,10 @@ class MCP_API StreamableHttpSessionManager {
     StreamableHttpSessionManager& operator=(StreamableHttpSessionManager&&) = delete;
 
     /**
-     * @brief Set a custom request handler for non-MCP routes (e.g., health checks).
-     *
-     * @param handler A function that receives the HTTP request and optionally returns
-     *                a response. If it returns std::nullopt, the request is handled
-     *                as MCP protocol.
-     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     * @brief The local port the manager listens on: the one the constructor was given, or the one
+     *        the system chose when it was given 0.
      */
-    void set_custom_request_handler(CustomRequestHandler handler);
+    [[nodiscard]] unsigned short port() const;
 
     /**
      * @brief Replace the allowlist used for requests carrying an Origin header.
@@ -329,23 +347,26 @@ class MCP_API StreamableHttpSessionManager {
      * When set, tool handlers will run on this executor instead of the HTTP I/O executor.
      * This allows parallel tool execution independent of HTTP request handling.
      * If not set, tool handlers fall back to the HTTP executor (backward compatible).
+     * A manager constructed with a Server calls that server's Server::set_handler_executor().
      *
      * @param exec The executor to use for tool execution.
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
-    void set_tool_executor(const boost::asio::any_io_executor& exec);
+    void set_tool_executor(const Executor& exec);
 
     /**
      * @brief Choose which protocol revisions the endpoint serves.
      *
      * @details Applied to every Server the manager builds from its factory: each session's, the
-     * stateless one and the shared modern server (unless set_modern_server() supplied it). When
+     * stateless one and the shared modern server (unless set_modern_server() supplied it). A
+     * manager constructed with a Server calls that server's Server::set_protocol_policy(). When
      * legacy clients are not served, no session is created: initialize is answered `404` with
      * `mcp::constants::jsonrpc::g_METHOD_NOT_FOUND` naming the versions served, and GET and DELETE
      * `405`.
      *
      * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
-     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     * @throws std::logic_error If listen() has already been called or the manager is closed, or
+     *         when Server::set_protocol_policy() refuses it.
      */
     void set_protocol_policy(ServerProtocolPolicy policy);
 
@@ -404,8 +425,12 @@ class MCP_API StreamableHttpSessionManager {
     Task<void> listen();
 
    private:
+    friend struct detail::CustomRouteAccess;
+
     struct Impl;
     static Task<void> listen_impl(std::shared_ptr<Impl> impl);
+    static Task<void> listen_as_run(std::shared_ptr<Impl> impl, Task<void> listening);
+    static void close_impl(const std::shared_ptr<Impl>& impl);
     std::shared_ptr<Impl> impl_;
 };
 

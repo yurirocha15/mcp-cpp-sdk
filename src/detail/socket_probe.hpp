@@ -6,6 +6,7 @@
 #include <boost/asio/socket_base.hpp>
 
 #include <cstdint>
+#include <mcp/core/async.hpp>
 
 namespace mcp::detail {
 

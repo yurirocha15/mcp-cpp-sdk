@@ -7,11 +7,11 @@
 //   [wire-builders]        make_result_wire/make_error_wire are synchronous helpers;
 //                          do NOT convert them to Task<T> coroutines.
 
-#include <boost/asio/any_io_executor.hpp>
+#include <mcp/core/async_fwd.hpp>
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
-#include <mcp/core/core.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/request_context.hpp>
@@ -20,10 +20,14 @@
 
 #include <atomic>
 #include <chrono>
+#include <concepts>
+#include <coroutine>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <iosfwd>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -34,8 +38,19 @@
 
 namespace mcp {
 
+class StreamableHttpSessionManager;
+class SyncServer;
+
+namespace detail {
+class RunControl;
+}  // namespace detail
+
 /// @brief Type-erased handler: takes a Context and JSON params, returns JSON result.
 using TypeErasedHandler = std::function<Task<nlohmann::json>(Context&, const nlohmann::json&)>;
+
+/// @brief Type-erased synchronous handler: takes a Context and JSON params, returns the JSON
+/// result directly.
+using SyncTypeErasedHandler = std::function<nlohmann::json(Context&, const nlohmann::json&)>;
 
 /// @brief Middleware function signature for intercepting handler invocations.
 using Middleware =
@@ -43,6 +58,26 @@ using Middleware =
 
 /// @brief Completion handler: takes CompleteParams, returns CompleteResult.
 using CompletionHandler = std::function<Task<CompleteResult>(const CompleteParams&)>;
+
+/// @brief One argument of a tool, for tool_params().
+struct ParamSpec {
+    std::string name;
+    /// The JSON Schema type: "string", "number", "integer", "boolean", "array" or "object".
+    std::string type;
+    std::string description;
+    bool required = true;
+};
+
+/**
+ * @brief The input schema of a tool whose arguments are @p params, such as
+ *        `mcp::tool_params({{"name", "string", "Who to greet"}})`.
+ *
+ * @return An object schema with a property of the given type and description per argument, and
+ *         the required arguments listed under `required`. Any other schema is written as JSON.
+ * @throws std::invalid_argument For an argument without a name, a name given twice, or a type
+ *         other than those ParamSpec::type lists.
+ */
+MCP_API nlohmann::json tool_params(std::initializer_list<ParamSpec> params);
 
 namespace detail {
 
@@ -78,35 +113,42 @@ concept SyncHandlerWithCtx = requires(Fn fn, Context& ctx, In in) {
     { fn(ctx, std::move(in)) } -> std::same_as<Out>;
 };
 
+/// @brief Detects a synchronous handler of either supported signature.
+template <typename Fn, typename In, typename Out>
+concept SyncHandler = SyncHandlerWithCtx<Fn, In, Out> || SyncHandlerNoCtx<Fn, In, Out>;
+
+/// @brief Detects an asynchronous handler of either supported signature.
+template <typename Fn, typename In, typename Out>
+concept AsyncHandler = AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>;
+
 /**
- * @brief Ensures a handler is async by wrapping sync handlers into Task-returning ones.
+ * @brief Wraps a synchronous handler into a SyncTypeErasedHandler, without a coroutine.
  *
- * @tparam In  The input type deserialized from JSON.
- * @tparam Out The output type serialized to JSON.
- * @tparam Fn  The handler callable type (may be sync or async).
- *
- * @details This template accepts four handler signatures:
- * - `Task<Out>(Context&, In)` — async with context
- * - `Task<Out>(In)` — async without context
- * - `Out(Context&, In)` — sync with context (wrapped in co_return)
- * - `Out(In)` — sync without context (wrapped in co_return)
- *
- * Sync handlers are automatically lifted into coroutines.
+ * @tparam In  The input type (must satisfy JsonSerializable).
+ * @tparam Out The output type (must satisfy JsonSerializable).
+ * @tparam Fn  The handler callable type: `Out(Context&, In)` or `Out(In)`.
+ * @param fn The sync handler to wrap.
+ * @return A SyncTypeErasedHandler that deserializes JSON to In, calls fn, and serializes Out.
  */
-template <typename In, typename Out, typename Fn>
-auto ensure_async_handler(Fn fn) {
-    if constexpr (AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>) {
-        return fn;
-    } else if constexpr (SyncHandlerWithCtx<Fn, In, Out>) {
-        return [handler = std::move(fn)](Context& ctx, In in) -> Task<Out> {
-            co_return handler(ctx, std::move(in));
-        };
-    } else {
-        static_assert(SyncHandlerNoCtx<Fn, In, Out>,
-                      "Handler must be sync or async with supported signature");
-        return [handler = std::move(fn)](In in) -> Task<Out> { co_return handler(std::move(in)); };
-    }
+template <JsonSerializable In, JsonSerializable Out, typename Fn>
+    requires SyncHandler<Fn, In, Out>
+SyncTypeErasedHandler wrap_sync_handler(Fn fn) {
+    return [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> nlohmann::json {
+        if constexpr (SyncHandlerWithCtx<Fn, In, Out>) {
+            return nlohmann::json(handler(ctx, params.get<In>()));
+        } else {
+            return nlohmann::json(handler(params.get<In>()));
+        }
+    };
 }
+
+/// @brief T, named through a type that depends on Dependent, so that a coroutine returning it is
+/// checked only when the enclosing template is instantiated: a header can then define a
+/// coroutine returning Task while Task is only declared.
+template <typename Dependent, typename T>
+struct DependentType {
+    using type = T;
+};
 
 /**
  * @brief Wraps an asynchronous handler into a TypeErasedHandler.
@@ -118,20 +160,45 @@ auto ensure_async_handler(Fn fn) {
  * @return A TypeErasedHandler that deserializes JSON to In, calls fn, and serializes Out to JSON.
  */
 template <JsonSerializable In, JsonSerializable Out, typename Fn>
-    requires AsyncHandlerWithCtx<Fn, In, Out> || AsyncHandlerNoCtx<Fn, In, Out>
+    requires AsyncHandler<Fn, In, Out>
 TypeErasedHandler wrap_handler(Fn fn) {
-    return
-        [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
-            // [gcc11-sso: no-named-temporaries] DO NOT introduce a named `input` variable here.
-            if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
-                Out output = co_await handler(ctx, params.get<In>());
-                co_return nlohmann::json(std::move(output));
-            } else {
-                Out output = co_await handler(params.get<In>());
-                co_return nlohmann::json(std::move(output));
-            }
-        };
+    using Result = typename DependentType<Fn, Task<nlohmann::json>>::type;
+    return [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Result {
+        // [gcc11-sso: no-named-temporaries] DO NOT introduce a named `input` variable here.
+        if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {
+            Out output = co_await handler(ctx, params.get<In>());
+            co_return nlohmann::json(std::move(output));
+        } else {
+            Out output = co_await handler(params.get<In>());
+            co_return nlohmann::json(std::move(output));
+        }
+    };
 }
+
+/// @brief Detects a coroutine handler shaped as TypeErasedHandler is, which is stored as one
+/// without another coroutine around it.
+template <typename Fn>
+concept ErasedAsyncHandler =
+    std::same_as<std::invoke_result_t<Fn&, Context&, const nlohmann::json&>, Task<nlohmann::json>>;
+
+/// @brief A coroutine handler of JSON params and results, with or without the Context.
+template <typename Fn>
+concept JsonAsyncHandler = ErasedAsyncHandler<Fn> || AsyncHandler<Fn, nlohmann::json, nlohmann::json>;
+
+/// @brief A JsonAsyncHandler as a TypeErasedHandler.
+template <typename Fn>
+    requires JsonAsyncHandler<Fn>
+TypeErasedHandler erase_json_handler(Fn fn) {
+    if constexpr (ErasedAsyncHandler<Fn>) {
+        return TypeErasedHandler(std::move(fn));
+    } else {
+        return wrap_handler<nlohmann::json, nlohmann::json>(std::move(fn));
+    }
+}
+
+/// @brief Detects a coroutine that returns text, called with @p Args.
+template <typename Fn, typename... Args>
+concept TextAsyncHandler = std::same_as<std::invoke_result_t<Fn&, Args...>, Task<std::string>>;
 
 }  // namespace detail
 
@@ -207,6 +274,8 @@ struct ServerProtocolPolicy {
     /// mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS. Unset means all of them. An initialize
     /// asking for another version negotiates the newest one listed.
     std::optional<std::vector<std::string>> legacy_versions;
+
+    bool operator==(const ServerProtocolPolicy&) const = default;
 
     /**
      * @brief Check that the policy can be applied.
@@ -411,10 +480,27 @@ struct TaskOptions {
 class MCP_API Server {
    public:
     /**
+     * @brief Construct a Server named @p name at version @p version, such as
+     *        `Server server("hello", "1.0.0");`.
+     *
+     * @details The server advertises what its registrations imply: tools once a tool is
+     * registered, resources for a resource or resource template, prompts for a prompt and
+     * completions for a completion provider. capabilities() adjusts what registration cannot
+     * imply, such as list-changed notifications, resource subscriptions or logging.
+     */
+    template <typename Name, typename Version>
+        requires(std::convertible_to<const Name&, std::string_view> &&
+                 std::convertible_to<const Version&, std::string_view>)
+    Server(const Name& name, const Version& version)
+        : Server(named(name, version), ServerCapabilities{}) {}
+
+    /**
      * @brief Construct a Server.
      *
      * @param server_info Information about this server implementation.
-     * @param capabilities The capabilities this server advertises.
+     * @param capabilities The capabilities this server advertises; each registration adds the
+     *        capability of its kind when @p capabilities does not set it, as the constructor above
+     *        describes.
      */
     Server(const Implementation& server_info, const ServerCapabilities& capabilities);
 
@@ -446,15 +532,7 @@ class MCP_API Server {
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema, Fn handler) {
-        Tool tool;
-        tool.name = name;
-        tool.description = description;
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eTyped
-                                         : detail::ToolResultMode::eNormalize;
-        register_tool(std::move(tool), input_schema, nullptr,
-                      detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
+        add_typed_tool<In, Out>(name, description, input_schema, nullptr, std::move(handler));
     }
 
     /**
@@ -474,15 +552,7 @@ class MCP_API Server {
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_tool(const std::string& name, const std::string& description,
                   const nlohmann::json& input_schema, const nlohmann::json& output_schema, Fn handler) {
-        Tool tool;
-        tool.name = name;
-        tool.description = description;
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        constexpr auto result_mode = std::same_as<Out, CallToolResult>
-                                         ? detail::ToolResultMode::eTyped
-                                         : detail::ToolResultMode::eNormalize;
-        register_tool(std::move(tool), input_schema, &output_schema,
-                      detail::wrap_handler<In, Out>(std::move(async_handler)), result_mode);
+        add_typed_tool<In, Out>(name, description, input_schema, &output_schema, std::move(handler));
     }
 
     /**
@@ -508,6 +578,53 @@ class MCP_API Server {
                   const nlohmann::json& input_schema,
                   std::function<nlohmann::json(const nlohmann::json&)> handler);
 
+    /// @brief As add_tool() above, with a synchronous handler that takes the request's Context
+    /// first, such as for Context::is_cancelled() or, in a task, Context::report_progress_sync().
+    void add_tool(const std::string& name, const std::string& description,
+                  const nlohmann::json& input_schema,
+                  std::function<nlohmann::json(Context&, const nlohmann::json&)> handler);
+
+    /**
+     * @brief As add_tool() above, with a coroutine handler, such as
+     *        `[](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json>`.
+     *
+     * @details The handler takes the JSON arguments, after the request's Context if it wants it.
+     * A coroutine needs <mcp/core/async.hpp>.
+     */
+    template <typename Fn>
+        requires detail::JsonAsyncHandler<Fn>
+    void add_tool(const std::string& name, const std::string& description,
+                  const nlohmann::json& input_schema, Fn handler) {
+        Tool tool;
+        tool.name = name;
+        tool.description = description;
+        tool.inputSchema = input_schema;
+        add_tool(tool, std::move(handler));
+    }
+
+    /**
+     * @brief Register the tool @p tool describes, with its title, annotations, icons, output
+     *        schema and `_meta` (such as an Apps link) as given.
+     *
+     * @details The handler takes the JSON arguments and returns a JSON value. A string becomes the
+     * result's text. An object that is not already a CallToolResult becomes its
+     * `structuredContent`, with the object's JSON text as its text, so a tool with an output schema
+     * returns an object. Any other value is sent as its JSON text.
+     * @throws SchemaError and std::invalid_argument as add_tool() above.
+     */
+    void add_tool(const Tool& tool, std::function<nlohmann::json(const nlohmann::json&)> handler);
+    /// @brief As add_tool() above, with a synchronous handler that takes the request's Context
+    /// first.
+    void add_tool(const Tool& tool,
+                  std::function<nlohmann::json(Context&, const nlohmann::json&)> handler);
+    /// @brief As add_tool() above, with a coroutine handler, with or without the Context.
+    template <typename Fn>
+        requires detail::JsonAsyncHandler<Fn>
+    void add_tool(const Tool& tool, Fn handler) {
+        register_tool(tool, tool.name, detail::erase_json_handler(std::move(handler)),
+                      detail::ToolResultMode::eNormalize);
+    }
+
     /**
      * @brief Register a low-level tool whose handler returns a complete CallToolResult JSON object.
      *
@@ -516,7 +633,8 @@ class MCP_API Server {
      * is sent to the client.
      *
      * @param tool Tool metadata.
-     * @param handler Asynchronous raw handler receiving tool arguments.
+     * @param handler Coroutine raw handler receiving tool arguments, after the request's Context
+     *        if it wants it, such as a TypeErasedHandler.
      * @throws SchemaError when a schema is not a JSON Schema the SDK can use (see
      *         CompiledSchema), the input schema does not declare `"type": "object"`, or an
      *         `x-mcp-header` annotation breaks the rules of the 2026-07-28 tools specification
@@ -525,7 +643,12 @@ class MCP_API Server {
      *         `properties` alone).
      * @throws std::invalid_argument when a tool with the same name is already registered.
      */
-    void add_raw_tool(const Tool& tool, TypeErasedHandler handler);
+    template <typename Fn>
+        requires detail::JsonAsyncHandler<Fn>
+    void add_raw_tool(const Tool& tool, Fn handler) {
+        register_tool(tool, tool.name, detail::erase_json_handler(std::move(handler)),
+                      detail::ToolResultMode::eValidated);
+    }
 
     /**
      * @brief Register a synchronous low-level tool returning complete CallToolResult JSON.
@@ -553,8 +676,14 @@ class MCP_API Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource(const Resource& resource, Fn handler) {
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_resource(resource, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_resource(resource, detail::wrap_sync_handler<In, Out>(std::move(handler)));
+        } else {
+            register_resource(resource, detail::wrap_handler<In, Out>(std::move(handler)));
+        }
     }
 
     /**
@@ -580,8 +709,15 @@ class MCP_API Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_resource_template(const ResourceTemplate& tmpl, Fn handler) {
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_resource_template(tmpl, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_resource_template(tmpl,
+                                            detail::wrap_sync_handler<In, Out>(std::move(handler)));
+        } else {
+            register_resource_template(tmpl, detail::wrap_handler<In, Out>(std::move(handler)));
+        }
     }
 
     /**
@@ -595,8 +731,87 @@ class MCP_API Server {
      */
     template <JsonSerializable In, JsonSerializable Out, typename Fn>
     void add_prompt(const Prompt& prompt, Fn handler) {
-        auto async_handler = detail::ensure_async_handler<In, Out>(std::move(handler));
-        register_prompt(prompt, detail::wrap_handler<In, Out>(std::move(async_handler)));
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_prompt(prompt, detail::wrap_sync_handler<In, Out>(std::move(handler)));
+        } else {
+            register_prompt(prompt, detail::wrap_handler<In, Out>(std::move(handler)));
+        }
+    }
+
+    /**
+     * @brief Register a text resource at @p uri named @p name, whose text @p read returns on
+     *        each read, such as
+     *        `server.add_text_resource("config://motd", "Message of the day", [] { return
+     * std::string("hi"); });`.
+     *
+     * @param mime_type The MIME type the resource and its contents report.
+     * @throws std::invalid_argument When a resource with the same URI is already registered.
+     */
+    void add_text_resource(const std::string& uri, const std::string& name,
+                           std::function<std::string()> read,
+                           const std::string& mime_type = "text/plain");
+    /// @brief As add_text_resource() above, for the resource @p resource describes, with its
+    /// title, description, annotations, icons and size as given and its MIME type text/plain when
+    /// unset.
+    void add_text_resource(const Resource& resource, std::function<std::string()> read);
+    /// @brief As add_text_resource() above, with a coroutine that returns the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn>
+    void add_text_resource(const std::string& uri, const std::string& name, Fn read,
+                           const std::string& mime_type = "text/plain") {
+        Resource resource;
+        resource.uri = uri;
+        resource.name = name;
+        resource.mimeType = mime_type;
+        add_text_resource(resource, std::move(read));
+    }
+    /// @brief As add_text_resource() above, with a coroutine that returns the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn>
+    void add_text_resource(const Resource& resource, Fn read) {
+        register_text_resource(resource, std::function<Task<std::string>()>(std::move(read)));
+    }
+
+    /// @brief The arguments of a prompts/get request, by name.
+    using PromptArguments = std::map<std::string, std::string>;
+
+    /**
+     * @brief Register a prompt named @p name whose one message, from the user, is the text
+     *        @p render makes of the request's arguments, such as
+     *        `server.add_text_prompt("review", "Review code", {{"code", "The code", true}}, render);`.
+     *
+     * @details @p render gets the arguments the request gave, an empty map when it gave none. A
+     * request that leaves out an argument @p arguments marks as required is answered with
+     * mcp::constants::jsonrpc::g_INVALID_PARAMS, and @p render does not run.
+     * @throws std::invalid_argument When a prompt with the same name is already registered.
+     */
+    void add_text_prompt(const std::string& name, const std::string& description,
+                         std::vector<PromptArgument> arguments,
+                         std::function<std::string(const PromptArguments&)> render);
+    /// @brief As add_text_prompt() above, for the prompt @p prompt describes, with its title,
+    /// icons and arguments as given.
+    void add_text_prompt(const Prompt& prompt,
+                         std::function<std::string(const PromptArguments&)> render);
+    /// @brief As add_text_prompt() above, with a coroutine that makes the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn, const PromptArguments&>
+    void add_text_prompt(const std::string& name, const std::string& description,
+                         std::vector<PromptArgument> arguments, Fn render) {
+        Prompt prompt;
+        prompt.name = name;
+        prompt.description = description;
+        prompt.arguments = std::move(arguments);
+        add_text_prompt(prompt, std::move(render));
+    }
+    /// @brief As add_text_prompt() above, with a coroutine that makes the text.
+    template <typename Fn>
+        requires detail::TextAsyncHandler<Fn, const PromptArguments&>
+    void add_text_prompt(const Prompt& prompt, Fn render) {
+        register_text_prompt(
+            prompt, std::function<Task<std::string>(const PromptArguments&)>(std::move(render)));
     }
 
     /**
@@ -628,15 +843,27 @@ class MCP_API Server {
     void set_tool_validation(const ToolValidationOptions& options);
 
     /**
-     * @brief Run tool handlers on @p executor instead of the executor the server runs on.
+     * @brief Run tool, resource, prompt and extension method handlers on @p executor instead of
+     *        the executor the server runs on.
      *
      * @details The server's own work (reading, parsing and answering protocol messages) stays on
-     * the executor passed to run(); only the call of a tool handler moves to @p executor, and the
-     * server resumes on its own executor when it returns. A handler that blocks then ties up a
-     * thread of @p executor rather than one the transport needs. Read unsynchronized by request
-     * handlers; must be called before run().
+     * the executor passed to run(), and so do middleware and the completion provider; only the
+     * call of one of those handlers moves to @p executor, and the server resumes on its own
+     * executor when it returns. A tool call made as a task runs on @p executor whole, its
+     * middleware included. A handler that blocks then ties up a thread of @p executor rather than
+     * one the transport needs. Read unsynchronized by request handlers; must be called before
+     * run().
+     *
+     * The execution context of @p executor must be destroyed after the one the server runs on: a
+     * program that runs its own event loop constructs the Runtime that gives @p executor before
+     * that loop's io_context. Destroying the server's execution context waits for the handlers on
+     * @p executor that its requests still wait for; from the start of that destruction their
+     * Context calls throw std::runtime_error, and what they return goes nowhere. run_stdio() and
+     * run_http() return at the shutdown deadline all the same (see stop()), and destroy their
+     * event loop on a thread of its own once those handlers have returned.
+     * @throws std::invalid_argument If @p executor holds none.
      */
-    void set_handler_executor(const boost::asio::any_io_executor& executor);
+    void set_handler_executor(const Executor& executor);
 
     /**
      * @brief Declare support for an extension in the capabilities this server advertises.
@@ -652,8 +879,18 @@ class MCP_API Server {
      */
     void declare_extension(const std::string& id, nlohmann::json settings = nlohmann::json::object());
 
-    /// A copy of the capabilities this server advertises, including declared extensions.
-    [[nodiscard]] ServerCapabilities capabilities() const;
+    /**
+     * @brief The capabilities this server advertises: those it was constructed with, what its
+     *        registrations imply and the declared extensions.
+     *
+     * @details Change them before the server serves its first request, such as
+     * `server.capabilities().tools->listChanged = true;` after registering a tool, or
+     * `server.capabilities().logging = nlohmann::json::object();`. A registration does not
+     * replace a capability that is already set.
+     */
+    [[nodiscard]] ServerCapabilities& capabilities();
+    /// @copydoc capabilities()
+    [[nodiscard]] const ServerCapabilities& capabilities() const;
 
     /**
      * @brief Serve an extension's request method to clients of protocol revision 2026-07-28.
@@ -769,11 +1006,13 @@ class MCP_API Server {
      * @brief Choose which protocol revisions this server serves.
      *
      * @details Takes effect for every transport. Must be called before the server serves its
-     * first request.
+     * first request; afterwards only the policy in effect may be set again, as run_http() does
+     * when its configure sets the same policy on every run.
      *
      * @param policy The revisions to serve.
      * @throws std::invalid_argument If ServerProtocolPolicy::validate() refuses the policy.
-     * @throws std::logic_error If the server has already served a request or run() has started.
+     * @throws std::logic_error If the server has already served a request or run() has started,
+     *         and @p policy differs from the policy in effect.
      */
     void set_protocol_policy(ServerProtocolPolicy policy);
 
@@ -951,7 +1190,7 @@ class MCP_API Server {
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
      */
-    Task<void> run(std::shared_ptr<ITransport> transport, boost::asio::any_io_executor executor);
+    Task<void> run(std::shared_ptr<ITransport> transport, Executor executor);
 
     /**
      * @brief Run the server on stdio (stdin/stdout), blocking until shutdown.
@@ -967,6 +1206,10 @@ class MCP_API Server {
      * Same as run_stdio() but reads from / writes to the given streams
      * instead of stdin / stdout.
      *
+     * @p input and @p output are used until the run's handlers have finished: when the shutdown
+     * deadline ends the run while a handler on the set_handler_executor() executor still runs,
+     * that is after this returns.
+     *
      * @param input  Stream to read JSON-RPC messages from.
      * @param output Stream to write JSON-RPC responses to.
      */
@@ -976,21 +1219,73 @@ class MCP_API Server {
      * @brief Run the server over HTTP, blocking until shutdown.
      *
      * Binds to the given host and port, accepts HTTP connections, and
-     * processes JSON-RPC requests. Handles SIGINT and SIGTERM for clean
-     * shutdown. Exceptions from the server session are propagated to the caller.
+     * processes JSON-RPC requests from any number of clients. Handles SIGINT and SIGTERM for
+     * clean shutdown. Exceptions from listening are propagated to the caller.
      *
-     * A 2026-07-28 request is answered with plain JSON, or, when its handler sends a
-     * notification and the client accepts `text/event-stream`, with an SSE stream of the
-     * notifications and then the response. `subscriptions/listen` is served as a stream.
+     * A client of protocol revision 2025-11-25 or earlier gets a session of its own
+     * (`MCP-Session-Id`), served with this server's tools, resources, prompts, handlers and
+     * settings; notify_tools_list_changed() and the other notify_ calls reach every session. The
+     * members of this server that belong to one session, send_request(), is_initialized(),
+     * is_shutdown_requested() and get_log_level(), stand for none of them: a handler reaches its
+     * client through its Context. A
+     * 2026-07-28 request belongs to no session and is answered by this server with plain JSON,
+     * or, when its handler sends a notification and the client accepts `text/event-stream`, with
+     * an SSE stream of the notifications and then the response. `subscriptions/listen` is served
+     * as a stream.
      *
-     * The transport keeps its default settings, so a request carrying an Origin
-     * header is answered with 403. To accept browser clients, construct an
-     * HttpServerTransport, call set_allowed_origins() on it, and pass it to run().
+     * The server listens through a StreamableHttpSessionManager, which @p configure, when given,
+     * receives before it listens: its setters choose the allowed origins, bearer token validation,
+     * protected resource metadata, limits and stream options, such as
+     * `server.run_http("127.0.0.1", 8080, [](mcp::StreamableHttpSessionManager& http) {
+     * http.set_allowed_origins({"https://app.example"}); });`. A program that passes @p configure
+     * includes `<mcp/transport/http_session_manager.hpp>`, which declares the manager. Without
+     * @p configure the endpoint keeps its default settings, so a request carrying an Origin
+     * header is answered with 403.
+     *
+     * stop() ends the call as SIGINT does, and bound_port() gives the port it listens on.
      *
      * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
-     * @param port  TCP port to listen on.
+     * @param port  TCP port to listen on, or 0 for one the system chooses.
+     * @param configure Called with the session manager before it listens; an exception it throws
+     *        ends run_http() before anything is served.
      */
-    void run_http(const std::string& host, uint16_t port);
+    void run_http(const std::string& host, uint16_t port,
+                  const std::function<void(StreamableHttpSessionManager&)>& configure = {});
+
+    /**
+     * @brief Ends the runs of this server in progress: run_stdio() and run_http() return as they
+     *        do on SIGINT, run() closes its transport and completes as it does when the transport
+     *        closes, and a StreamableHttpSessionManager constructed with this server closes.
+     *
+     * @details May be called from any thread, including from a handler. As on SIGINT, the transport
+     * closes at once, so a request still being served is not answered, and run_stdio() and
+     * run_http() return once the handlers still running have finished, or after
+     * mcp::constants::shutdown::g_TIMEOUT_MS. A synchronous handler that runs on the server's own
+     * loop holds that loop, and with it the deadline, until it returns; one on the
+     * set_handler_executor() executor is left running. The handler of a tool call made as a task
+     * is not waited for either: it goes on, and a question it asks the client afterwards is never
+     * answered. Does nothing when the server is not running: a run that starts after the call is
+     * not ended by it.
+     */
+    void stop();
+
+    /**
+     * @brief The TCP port run_http() listens on, which is the one the system chose when it was
+     *        given port 0.
+     *
+     * @return The port while run_http() runs and from before the first connection is accepted,
+     *         and 0 before and after; may be called from any thread.
+     */
+    [[nodiscard]] std::uint16_t bound_port() const;
+
+    /**
+     * @brief A view of this server whose members block the calling thread until the matching
+     *        coroutine finishes, for threads other than the event loop of run_stdio() and
+     *        run_http(), such as `server.sync().notify_resource_updated("file:///notes.txt");`.
+     *
+     * @details See SyncServer.
+     */
+    [[nodiscard]] SyncServer sync();
 
     /**
      * @brief Dispatch a parsed JSON-RPC message to the appropriate handler.
@@ -1139,6 +1434,44 @@ class MCP_API Server {
     void register_resource(const Resource& resource, TypeErasedHandler handler);
     void register_resource_template(const ResourceTemplate& tmpl, TypeErasedHandler handler);
     void register_prompt(const Prompt& prompt, TypeErasedHandler handler);
+    /// The synchronous counterparts of the helpers above: the handler is stored without a
+    /// coroutine around it.
+    void register_sync_tool(const Tool& tool, SyncTypeErasedHandler handler,
+                            detail::ToolResultMode result_mode);
+    void register_sync_tool(Tool&& tool, const nlohmann::json& input_schema,
+                            const nlohmann::json* output_schema, SyncTypeErasedHandler handler,
+                            detail::ToolResultMode result_mode);
+    void register_sync_resource(const Resource& resource, SyncTypeErasedHandler handler);
+    void register_sync_resource_template(const ResourceTemplate& tmpl, SyncTypeErasedHandler handler);
+    void register_sync_prompt(const Prompt& prompt, SyncTypeErasedHandler handler);
+    /// The registration helpers of the coroutine add_text_resource() and add_text_prompt().
+    void register_text_resource(const Resource& resource, std::function<Task<std::string>()> read);
+    void register_text_prompt(const Prompt& prompt,
+                              std::function<Task<std::string>(const PromptArguments&)> render);
+
+    /// Registers a typed tool: a sync handler without a coroutine, an async one through
+    /// wrap_handler().
+    template <JsonSerializable In, JsonSerializable Out, typename Fn>
+    void add_typed_tool(const std::string& name, const std::string& description,
+                        const nlohmann::json& input_schema, const nlohmann::json* output_schema,
+                        Fn handler) {
+        static_assert(detail::SyncHandler<Fn, In, Out> || detail::AsyncHandler<Fn, In, Out>,
+                      "Handler must be sync or async with supported signature; a coroutine handler "
+                      "returns mcp::Task<Out>, from <mcp/core/async.hpp>");
+        Tool tool;
+        tool.name = name;
+        tool.description = description;
+        constexpr auto result_mode = std::same_as<Out, CallToolResult>
+                                         ? detail::ToolResultMode::eTyped
+                                         : detail::ToolResultMode::eNormalize;
+        if constexpr (detail::SyncHandler<Fn, In, Out>) {
+            register_sync_tool(std::move(tool), input_schema, output_schema,
+                               detail::wrap_sync_handler<In, Out>(std::move(handler)), result_mode);
+        } else {
+            register_tool(std::move(tool), input_schema, output_schema,
+                          detail::wrap_handler<In, Out>(std::move(handler)), result_mode);
+        }
+    }
 
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
 
@@ -1155,10 +1488,56 @@ class MCP_API Server {
     /// to call from any thread.
     void reset_session();
 
+    /// The implementation information the name-and-version constructor gives the server.
+    static Implementation named(std::string_view name, std::string_view version);
+
     struct Impl;
+    explicit Server(std::shared_ptr<Impl> impl);
+    /// A server for another session, sharing this server's identity, capabilities, registrations
+    /// and settings; run_http() serves each legacy session with one.
+    [[nodiscard]] std::unique_ptr<Server> session_server() const;
+
+    friend class SyncServer;
+    friend class StreamableHttpSessionManager;
+
+    /// The runs of this server in progress, which the run forms register with.
+    [[nodiscard]] std::shared_ptr<detail::RunControl> run_control() const;
+
+    /// The protocol policy in effect (see set_protocol_policy()).
+    [[nodiscard]] ServerProtocolPolicy protocol_policy() const;
+
     /// Shared rather than owned outright: work already in flight when this Server is destroyed
     /// keeps the implementation alive until it finishes, so it never runs against freed state.
     std::shared_ptr<Impl> impl_;
+};
+
+/**
+ * @brief Blocking twins of the Server's notify_ coroutines, from Server::sync().
+ *
+ * @details Each member runs the coroutine on the event loop of run_stdio() or run_http() and
+ * blocks the calling thread until it finishes, rethrowing what it throws. When the server is not
+ * running there is no client to notify, and the member returns at once; a run that ends before the
+ * notification is sent ends the wait as well.
+ * @throws std::logic_error From each member when called on that event loop's thread, where
+ *         synchronous handlers run (except those set_handler_executor() moves) and waiting
+ *         would never end; and when the server runs only through
+ *         Server::run() or a StreamableHttpSessionManager, whose coroutines are awaited instead.
+ */
+class MCP_API SyncServer {
+   public:
+    explicit SyncServer(Server& server);
+
+    /// Blocking Server::notify_tools_list_changed().
+    void notify_tools_list_changed();
+    /// Blocking Server::notify_resources_list_changed().
+    void notify_resources_list_changed();
+    /// Blocking Server::notify_prompts_list_changed().
+    void notify_prompts_list_changed();
+    /// Blocking Server::notify_resource_updated().
+    void notify_resource_updated(const std::string& uri);
+
+   private:
+    Server* server_;
 };
 
 }  // namespace mcp

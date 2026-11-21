@@ -14,6 +14,21 @@ class. Each tool requires:
   declare ``"type": "object"``, since tool arguments are always an object.
 - **Handler**: A C++ function or lambda that executes the tool logic.
 
+Adding This to a Sync-Mode Program
+----------------------------------
+
+The server of :doc:`/getting-started` registers its tool with ``add_tool()``: a name, a
+description, an input schema that ``tool_params()`` makes from the arguments'
+names, types and descriptions (each one required unless marked otherwise), and
+a synchronous handler. The handler's return value becomes the result; a string,
+as here, becomes its text. :doc:`/guides/growing-a-server` adds a handler that
+takes the ``Context``, and :doc:`/guides/growing-a-client` handles a tool's
+errors.
+
+.. literalinclude:: ../../examples/sync/server_base.cpp
+   :language: cpp
+   :start-at: #include
+
 Basic Tool Registration
 -----------------------
 

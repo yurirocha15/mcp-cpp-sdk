@@ -9,6 +9,16 @@ In ``mcp-cpp-sdk``, resources can be registered either directly or via templates
 Resources are identified by URIs, which should follow a hierarchical structure
 appropriate for your application.
 
+Adding This to a Sync-Mode Program
+----------------------------------
+
+The server of :doc:`/getting-started` gets a resource with ``add_text_resource()``, whose
+function returns the text that each read returns. :doc:`/guides/growing-a-server` also
+adds a resource that changes and tells its subscribers.
+
+.. literalinclude:: /_generated/progression/server_add_resource.diff
+   :language: diff
+
 Static Resources
 ----------------
 
@@ -114,7 +124,7 @@ polling loop or opening a file watch) when a client expresses interest.
    :linenos:
    :caption: Handling resource subscriptions and unsubscriptions.
 
-For more details on how notifications work across the protocol, see :doc:`/index`.
+For more details on subscriptions and the notifications they deliver, see :doc:`subscriptions`.
 
 Resource Change Notifications
 -----------------------------
@@ -146,9 +156,10 @@ again; delivery and refresh timing still depend on the connection and client.
 Resource Capabilities
 ---------------------
 
-To allow clients to discover your resources, ensure you enable the resources
-capability in your server configuration. You can also specify if the server
-supports sending notifications for resource changes.
+A server that has a resource or resource template advertises the resources
+capability on its own. What registration cannot imply, such as subscriptions or
+list-changed notifications, is set in the capabilities the server is constructed
+with, or on ``server.capabilities()`` before it serves:
 
 .. code-block:: cpp
 

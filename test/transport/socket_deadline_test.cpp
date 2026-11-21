@@ -23,6 +23,7 @@
 #include <boost/system/system_error.hpp>
 #include <chrono>
 #include <future>
+#include <mcp/core/async.hpp>
 #include <string>
 #include <thread>
 

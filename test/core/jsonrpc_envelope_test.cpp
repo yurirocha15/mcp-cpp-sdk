@@ -30,6 +30,28 @@ TEST(JsonRpcEnvelopeTest, KeepsAnEscapedStringIdVerbatim) {
     EXPECT_EQ(scan->id, expected_id);
 }
 
+TEST(JsonRpcEnvelopeTest, ReportsTheTopLevelMethodWithItsQuotes) {
+    const auto request = scan_jsonrpc_envelope(
+        R"({"jsonrpc":"2.0","id":"7","method":"tools/call","params":{"method":"inner"}})");
+    ASSERT_TRUE(request.has_value());
+    constexpr std::string_view expected_method = R"("tools/call")";
+    constexpr std::string_view expected_id = R"("7")";
+    EXPECT_EQ(request->method, expected_method);
+    EXPECT_EQ(request->id, expected_id);
+    EXPECT_FALSE(request->has_result_or_error);
+
+    const auto notification =
+        scan_jsonrpc_envelope(R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+    ASSERT_TRUE(notification.has_value());
+    EXPECT_TRUE(notification->id.empty());
+    constexpr std::string_view expected_notification = R"("notifications/initialized")";
+    EXPECT_EQ(notification->method, expected_notification);
+
+    const auto response = scan_jsonrpc_envelope(R"({"jsonrpc":"2.0","id":3,"result":{}})");
+    ASSERT_TRUE(response.has_value());
+    EXPECT_TRUE(response->method.empty());
+}
+
 TEST(JsonRpcEnvelopeTest, AcceptsWhitespaceBetweenTokens) {
     const auto scan = scan_jsonrpc_envelope(" {\n \"id\" : null ,\t\"error\" : { \"code\" : 1 } }\r\n");
     ASSERT_TRUE(scan.has_value());

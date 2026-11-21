@@ -12,6 +12,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -336,9 +337,7 @@ Outcome run_cell(ClientKind client_kind, ServerKind server_kind, TransportKind t
             const auto port = port_for(client_kind, server_kind, transport_kind);
             mcp::StreamableHttpSessionManager manager(
                 io.get_executor(), "127.0.0.1", port,
-                [server_kind](const boost::asio::any_io_executor&) {
-                    return make_server(server_kind);
-                });
+                [server_kind](const mcp::Executor&) { return make_server(server_kind); });
             manager.set_protocol_policy(policy_of(server_kind));
             manager.set_stateless_json_mode(transport_kind == TransportKind::eStatelessJson);
             auto transport = std::make_shared<mcp::HttpClientTransport>(
@@ -576,9 +575,7 @@ FeatureOutcome run_feature_cell(ClientKind client_kind, ServerKind server_kind,
                                             variant);
             mcp::StreamableHttpSessionManager manager(
                 io.get_executor(), "127.0.0.1", port,
-                [server_kind](const boost::asio::any_io_executor&) {
-                    return make_server(server_kind);
-                });
+                [server_kind](const mcp::Executor&) { return make_server(server_kind); });
             manager.set_protocol_policy(policy_of(server_kind));
             manager.set_json_only(transport_kind == FeatureTransport::eSessionManagerJsonOnly);
             manager.set_stateless_json_mode(transport_kind == FeatureTransport::eStatelessJson);

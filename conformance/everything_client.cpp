@@ -6,6 +6,7 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/client/client.hpp>
 #include <mcp/client/skills.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/transport/http_client.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -555,7 +556,7 @@ std::string resolve_injected_issuer(boost::asio::io_context& io_context, const s
 
     auto resolved = boost::asio::co_spawn(
         io_context,
-        [discovery, server_url]() -> mcp::Task<std::string> {
+        [discovery, server_url]() -> boost::asio::awaitable<std::string> {
             const auto metadata = co_await discovery->discover_protected_resource(server_url);
             if (metadata.authorization_servers.empty()) {
                 throw std::runtime_error(

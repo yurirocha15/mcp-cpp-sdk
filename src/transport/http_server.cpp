@@ -10,6 +10,7 @@
 #include "../detail/socket_probe.hpp"
 #include "modern_exchange.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
@@ -1701,9 +1702,9 @@ struct HttpServerTransport::Impl {
     std::atomic<bool> json_only_{false};
 };
 
-HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
+HttpServerTransport::HttpServerTransport(const Executor& executor, std::string host,
                                          unsigned short port, std::size_t event_store_capacity)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), port, event_store_capacity)) {}
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), port, event_store_capacity)) {}
 
 HttpServerTransport::~HttpServerTransport() {
     try {
@@ -1963,7 +1964,7 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
 
         boost::asio::co_spawn(
             impl->strand,
-            [impl, connection]() -> Task<void> {
+            [impl, connection]() -> boost::asio::awaitable<void> {
                 try {
                     co_await impl->handle_connection(connection);
                 } catch (...) {
@@ -1986,6 +1987,9 @@ std::uint64_t terminated_session_count(const HttpServerTransport& transport) noe
 }
 
 void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
+    if (binding.modern_dispatch && !binding.dispatch_executor) {
+        throw std::invalid_argument("bind_server() needs a dispatch_executor for modern_dispatch");
+    }
     std::lock_guard lock(transport.impl_->configuration_mutex);
     transport.impl_->param_header_check = std::move(binding.param_header_check);
     transport.impl_->served_versions = std::move(binding.served_versions);
@@ -1993,7 +1997,8 @@ void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
         binding.modern_dispatch
             ? std::make_shared<const detail::ModernDispatch>(std::move(binding.modern_dispatch))
             : nullptr;
-    transport.impl_->modern_dispatch_executor = std::move(binding.dispatch_executor);
+    transport.impl_->modern_dispatch_executor =
+        binding.dispatch_executor ? binding.dispatch_executor.get() : boost::asio::any_io_executor();
 }
 
 }  // namespace detail

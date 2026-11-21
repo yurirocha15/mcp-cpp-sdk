@@ -150,6 +150,10 @@ namespace stdio_client {
 
 inline constexpr std::size_t g_CHUNK_BYTES = 64U * 1024U;
 
+/// How long a killed process may take to be seen as ended, which the destructor of a Client that
+/// launched it waits on top of the process's stdin_close_wait and terminate_wait.
+inline constexpr std::chrono::milliseconds g_KILL_WAIT{1000};
+
 /// Whether the process can be asked to exit before it is killed: SIGTERM on POSIX, nothing on Windows.
 inline constexpr bool g_HAS_TERMINATE_STEP =
 #if defined(_WIN32)
@@ -443,5 +447,23 @@ inline constexpr int g_OCTET2_SHIFT = 16;
 inline constexpr int g_OCTET3_SHIFT = 8;
 
 }  // namespace ipv4
+
+/// Requests a Client sends.
+namespace client_requests {
+
+/// Starts each progress token the client makes for RequestOptions::on_progress. A string, so that
+/// no integer token an application writes into another request can equal it.
+inline constexpr std::string_view g_PROGRESS_TOKEN_PREFIX = "mcp-cpp-sdk-progress-";
+
+}  // namespace client_requests
+
+/// The stdio client transport that starts its server again.
+namespace stdio_restart {
+
+/// Starts the id a request of a restarted server gets toward the client when the id is still that
+/// of an unanswered request of an earlier process of that server.
+inline constexpr std::string_view g_RENAMED_REQUEST_PREFIX = "mcp-cpp-sdk-restart-";
+
+}  // namespace stdio_restart
 
 }  // namespace mcp::detail::constants

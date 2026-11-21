@@ -35,25 +35,13 @@ extremely easy to deploy as a subprocess.
 Server Side
 ~~~~~~~~~~~
 
-The simplest way to start a stdio-based server is using the high-level `run_stdio()`
-method, which blocks the main thread until the connection is closed.
+The simplest way to start a stdio-based server is the ``run_stdio()`` method,
+which blocks until the connection is closed, as the server of
+:doc:`/getting-started` does:
 
-.. code-block:: cpp
-
-   #include <mcp/mcp.hpp>
-
-   // Define server information and capabilities
-   mcp::Implementation info{"my-server", "1.0.0"};
-   mcp::ServerCapabilities caps;
-   caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-
-   mcp::Server server(info, caps);
-
-   // Add your tools, resources, and prompts here with add_tool(), add_resource()
-   // and add_prompt().
-
-   // Run the server on stdin/stdout
-   server.run_stdio();
+.. literalinclude:: ../../examples/sync/server_base.cpp
+   :language: cpp
+   :start-at: #include
 
 ``run_stdio()`` returns when the client closes standard input, once the requests
 already read have ended and their answers are written, and when standard output
@@ -67,12 +55,18 @@ call ``set_max_message_bytes()`` and pass it to ``Server::run()``.
 Client Side
 ~~~~~~~~~~~
 
-``StdioClientTransport`` launches the server as a child process and owns it:
+The client of :doc:`/getting-started` launches its server with
+``mcp::Endpoint::stdio()`` and talks to it on an event loop of its own.
+``Endpoint::stdio()`` also takes the ``StdioProcessOptions`` below, for the
+server's environment, working directory and standard error handling. On the
+application's own event loop, ``StdioClientTransport`` launches the server as a
+child process and owns it:
 the server's standard input and output carry the messages, and the transport
 ends the process when the client is done.
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/client.hpp>
    #include <mcp/transport/stdio_client.hpp>
 
@@ -154,11 +148,29 @@ with ``g_CONNECTION_CLOSED`` and its subscriptions end as
 ``SubscriptionEnd::eDropped``), and ``on_exit`` runs with ``requested`` false.
 
 The specification asks a client to restart a server that exits unexpectedly,
-and to establish active ``subscriptions/listen`` streams again.
-``StdioClientSession`` does both:
+and to establish active ``subscriptions/listen`` streams again. A ``Client``
+built from ``Endpoint::stdio()`` with a ``StdioRestartPolicy`` starts the server
+again itself, and goes on with the new process, keeping its handlers, callbacks
+and ``sync()`` view:
+
+.. literalinclude:: /_generated/progression/client_add_restart.diff
+   :language: diff
+
+The requests waiting for an answer when the process ended fail with
+``g_CONNECTION_CLOSED``; requests made while it starts again wait for it, within
+their own timeouts. A legacy session sends its ``initialize`` request to the new
+process again. What the old process kept for the session, such as a log level,
+resource subscriptions or tasks, is gone, and ``subscriptions/listen`` streams
+end. A start that fails uses one of the restarts the policy allows; when it
+allows no more, the client closes as it does without a restart.
+
+With a ``StdioClientSession`` the application opens the streams again: the
+session makes a new ``Client`` for each process and runs the application's
+``on_connected`` after each connect:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/stdio_session.hpp>
 
    mcp::StdioSessionOptions options;
@@ -180,7 +192,8 @@ and to establish active ``subscriptions/listen`` streams again.
    co_await session.client()->call_tool("add", args);
 
 When the process ends without the session or the transport having asked it to,
-the session waits ``restart.delay`` and starts the server again, up to
+the session, like the ``Client`` above, waits ``restart.delay`` and starts the
+server again, up to
 ``restart.max_restarts`` times over its life (the default is not to restart).
 By default only an abnormal end restarts the server (a non-zero status or a
 signal): one that exits with status 0 is shutting down by choice. Set
@@ -249,26 +262,20 @@ HTTP Server Convenience
 For developers who want a quick way to host an MCP server over HTTP without
 worrying about the underlying networking boilerplate, the SDK provides `run_http()`.
 
-``Server::run_http()`` owns its ``HttpServerTransport`` internally and does not
-currently expose Origin allowlist or bearer-token validator configuration. Use
-it only on a suitable trusted boundary, such as the loopback example below. For
-a configurable deployment, construct ``HttpServerTransport`` or
-``StreamableHttpSessionManager`` directly, apply the security settings, and
-then start the listener.
+``Server::run_http()`` owns its ``StreamableHttpSessionManager`` internally,
+which gives each client of protocol revision 2025-11-25 or earlier a session of
+its own. Its optional third argument is a callback that receives the manager
+before it listens, where the Origin allowlist, bearer-token validation and the
+other manager settings are set. Without one, the manager keeps its default
+settings: use it that way only on a suitable trusted boundary, such as
+loopback. This server sets a bearer token validator and an allowed origin:
 
-.. literalinclude:: ../../examples/features/http_server_convenience.cpp
+.. literalinclude:: ../../examples/sync/server_add_auth.cpp
    :language: cpp
-   :start-after: // This convenience method handles everything:
-   :end-before: server.run_http("127.0.0.1", http_port);
-   :dedent: 16
+   :start-at: #include
 
-The following example shows how to use the convenience method:
-
-.. literalinclude:: ../../examples/features/http_server_convenience.cpp
-   :language: cpp
-   :start-after: // ========== CONVENIENCE SETUP (this example) ==========
-   :end-before: constexpr auto startup_delay
-   :dedent: 8
+A client talks to it with ``mcp::Endpoint::http(url)``, sending the token as
+:doc:`/guides/growing-a-client` shows.
 
 Manual HTTP Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -360,18 +367,18 @@ see :doc:`/guides/older-protocols`.
 
 For more information on writing effective tests, see the :doc:`/guides/testing` guide.
 
-TransportFactory and Runtime
-----------------------------
+Runtime
+-------
 
-The `Runtime` class is a high-level wrapper around the Boost.Asio event loop,
-providing a simple `run()` and `stop()` interface. The `TransportFactory`
-further simplifies transport creation by binding them to a specific runtime.
+``mcp::Runtime`` is an event loop that a program uses without Boost:
+``executor()`` binds a transport, a ``Client`` or ``Server::run()`` to it, such
+as ``std::make_shared<mcp::StdioTransport>(runtime.executor())``, ``spawn()``
+starts a coroutine on it, ``run()`` runs the loop on the calling thread until
+its work is done, and ``start(threads)`` runs it on threads of its own until
+``stop()``. :doc:`/guides/growing-a-server` serves a server on one this way:
 
-.. literalinclude:: ../../examples/features/transport_memory.cpp
-   :language: cpp
-   :start-after: void demo_transport_factory() {
-   :end-before: std::cout << "[Main] Demo 2 completed
-   :dedent: 4
+.. literalinclude:: /_generated/progression/server_add_own_loop.diff
+   :language: diff
 
 Choosing the Right Transport
 ----------------------------
@@ -410,6 +417,7 @@ All you need to do is inherit from `mcp::ITransport` and implement three methods
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/transport/transport.hpp>
 
    class MyCustomTransport : public mcp::ITransport {

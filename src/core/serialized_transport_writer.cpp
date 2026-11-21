@@ -1,3 +1,4 @@
+#include <mcp/core/async.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 
 #include "../detail/strand_executor.hpp"

@@ -7,13 +7,13 @@
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <iterator>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -45,11 +45,12 @@ struct HttpServerBinding {
     /// serves them, when the transport hands them to whoever reads it. The server it belongs to is
     /// held weakly: once that server is gone it answers with an error.
     std::function<Task<std::string>(nlohmann::json, RequestContext)> modern_dispatch;
-    /// Where modern_dispatch runs.
-    boost::asio::any_io_executor dispatch_executor;
+    /// Where modern_dispatch runs; required when modern_dispatch is set.
+    Executor dispatch_executor;
 };
 
 /// Installed by Server::run().
+/// @throws std::invalid_argument When the binding has a modern_dispatch but no dispatch_executor.
 void bind_server(HttpServerTransport& transport, HttpServerBinding binding);
 }  // namespace detail
 
@@ -235,7 +236,7 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @param event_store_capacity Maximum number of replayable SSE events to retain.
      */
     HttpServerTransport(
-        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
+        const Executor& executor, std::string host, unsigned short port,
         std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~HttpServerTransport() override;

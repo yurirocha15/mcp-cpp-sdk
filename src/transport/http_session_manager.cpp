@@ -10,11 +10,14 @@
 #include "../detail/principal.hpp"
 #include "../detail/scope_challenge.hpp"
 #include "../detail/strand_executor.hpp"
+#include "../server/run_control.hpp"
 #include "modern_exchange.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
+#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 
@@ -294,7 +297,7 @@ struct StreamableHttpSessionManager::Impl {
     boost::asio::ip::tcp::acceptor acceptor;
 
     StreamableHttpSessionManager::ServerFactory factory;
-    StreamableHttpSessionManager::CustomRequestHandler custom_handler;
+    CustomRequestHandler custom_handler;
     std::size_t event_store_capacity;
     std::shared_ptr<std::atomic<bool>> json_only_mode_ = std::make_shared<std::atomic<bool>>(false);
     bool stateless_json_mode_{false};
@@ -331,6 +334,13 @@ struct StreamableHttpSessionManager::Impl {
     std::mutex modern_server_mutex_;
     std::shared_ptr<Server> modern_server_;
     std::optional<ServerProtocolPolicy> protocol_policy_;
+    // Set by the constructor that takes a Server. The session servers then share that server's
+    // registrations and settings, so the protocol policy and the tool executor are set on it once
+    // instead of on each server the manager builds.
+    Server* served_server_{nullptr};
+    // The served server's runs, which listen() joins so that Server::stop() closes this manager and
+    // Server::sync() knows the server is served through coroutines.
+    std::shared_ptr<detail::RunControl> served_run_control_;
     std::atomic<std::uint64_t> header_mismatch_rejections_{0};
     StreamOptions stream_options_;
     std::shared_ptr<detail::StreamCounters> stream_counters_ =
@@ -377,6 +387,12 @@ struct StreamableHttpSessionManager::Impl {
         if (ec) {
             throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
         }
+
+        const auto bound = acceptor.local_endpoint(ec);
+        if (ec) {
+            throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+        }
+        port = bound.port();
     }
 
     void ensure_configurable() const {
@@ -398,6 +414,13 @@ struct StreamableHttpSessionManager::Impl {
             throw std::logic_error(
                 "StreamableHttpSessionManager::set_scope_requirements() needs a token validator: "
                 "call set_bearer_token_validator() or set_async_bearer_token_validator()");
+        }
+        // A policy set on the served server itself holds for the HTTP side too, as one set here.
+        if (served_server_ != nullptr && !protocol_policy_) {
+            auto policy = served_server_->protocol_policy();
+            if (policy != ServerProtocolPolicy{}) {
+                protocol_policy_ = std::move(policy);
+            }
         }
         listening_started_ = true;
         return true;
@@ -447,6 +470,10 @@ struct StreamableHttpSessionManager::Impl {
     /// A Server from the factory, with the protocol policy applied when one is set.
     std::unique_ptr<Server> build_server(const boost::asio::any_io_executor& server_executor) const {
         auto server = factory(server_executor);
+        if (served_server_ != nullptr) {
+            // Shares the served server's settings, which the setters changed already.
+            return server;
+        }
         if (server && protocol_policy_) {
             server->set_protocol_policy(*protocol_policy_);
         }
@@ -517,7 +544,7 @@ struct StreamableHttpSessionManager::Impl {
         boost::asio::co_spawn(
             conn_strand,
             [srv = std::move(server), transport = std::move(server_transport),
-             exec = server_exec]() mutable -> Task<void> {
+             exec = server_exec]() mutable -> boost::asio::awaitable<void> {
                 co_await srv->run(std::move(transport), exec);
             },
             boost::asio::detached);
@@ -1808,12 +1835,25 @@ struct StreamableHttpSessionManager::Impl {
 // StreamableHttpSessionManager public methods
 // ============================================================================
 
-StreamableHttpSessionManager::StreamableHttpSessionManager(const boost::asio::any_io_executor& executor,
-                                                           std::string host, unsigned short port,
-                                                           ServerFactory factory,
+StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& executor, std::string host,
+                                                           unsigned short port, ServerFactory factory,
                                                            std::size_t event_store_capacity)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), port, std::move(factory),
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), port, std::move(factory),
                                    event_store_capacity)) {}
+
+StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& executor, std::string host,
+                                                           unsigned short port, Server& server,
+                                                           std::size_t event_store_capacity)
+    : StreamableHttpSessionManager(
+          executor, std::move(host), port,
+          [&server](const Executor&) { return server.session_server(); }, event_store_capacity) {
+    // The manager does not own the server, which the application keeps alive. The deleter does
+    // nothing, and the pointer still has a control block, so copies and weak pointers of it behave
+    // as those of any other server.
+    set_modern_server(std::shared_ptr<Server>(&server, [](Server*) {}));
+    impl_->served_server_ = &server;
+    impl_->served_run_control_ = server.run_control();
+}
 
 StreamableHttpSessionManager::~StreamableHttpSessionManager() {
     try {
@@ -1824,11 +1864,24 @@ StreamableHttpSessionManager::~StreamableHttpSessionManager() {
     }
 }
 
-void StreamableHttpSessionManager::set_custom_request_handler(CustomRequestHandler handler) {
-    std::lock_guard lock(impl_->configuration_mutex_);
-    impl_->ensure_configurable();
-    impl_->custom_handler = std::move(handler);
+namespace detail {
+
+struct CustomRouteAccess {
+    static void set(StreamableHttpSessionManager& manager, CustomRequestHandler handler) {
+        auto& impl = *manager.impl_;
+        std::lock_guard lock(impl.configuration_mutex_);
+        impl.ensure_configurable();
+        impl.custom_handler = std::move(handler);
+    }
+};
+
+}  // namespace detail
+
+void set_custom_request_handler(StreamableHttpSessionManager& manager, CustomRequestHandler handler) {
+    detail::CustomRouteAccess::set(manager, std::move(handler));
 }
+
+unsigned short StreamableHttpSessionManager::port() const { return impl_->port; }
 
 void StreamableHttpSessionManager::set_allowed_origins(std::vector<std::string> origins) {
     std::lock_guard lock(impl_->configuration_mutex_);
@@ -1957,16 +2010,23 @@ void StreamableHttpSessionManager::set_stateless_json_mode(bool enabled) {
     }
 }
 
-void StreamableHttpSessionManager::set_tool_executor(const boost::asio::any_io_executor& exec) {
+void StreamableHttpSessionManager::set_tool_executor(const Executor& exec) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
-    impl_->tool_executor_ = exec;
+    if (impl_->served_server_ != nullptr) {
+        impl_->served_server_->set_handler_executor(exec);
+        return;
+    }
+    impl_->tool_executor_ = exec.get();
 }
 
 void StreamableHttpSessionManager::set_protocol_policy(ServerProtocolPolicy policy) {
     policy.validate();
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
+    if (impl_->served_server_ != nullptr) {
+        impl_->served_server_->set_protocol_policy(policy);
+    }
     impl_->protocol_policy_ = std::move(policy);
 }
 
@@ -1997,8 +2057,9 @@ StreamStats StreamableHttpSessionManager::stream_stats() const {
     return impl_->stream_counters_->snapshot();
 }
 
-void StreamableHttpSessionManager::close() {
-    auto impl = impl_;
+void StreamableHttpSessionManager::close() { close_impl(impl_); }
+
+void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl) {
     {
         std::lock_guard lock(impl->configuration_mutex_);
         if (impl->closed.exchange(true, std::memory_order_acq_rel)) {
@@ -2060,7 +2121,24 @@ Task<void> StreamableHttpSessionManager::listen() {
     (void)impl->begin_listening();
     boost::asio::co_spawn(impl->listener_strand, Impl::expire_idle_sessions(impl),
                           boost::asio::detached);
-    return boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
+    auto listening =
+        boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
+    if (!impl->served_run_control_) {
+        return listening;
+    }
+    return listen_as_run(std::move(impl), std::move(listening));
+}
+
+Task<void> StreamableHttpSessionManager::listen_as_run(std::shared_ptr<Impl> impl,
+                                                       Task<void> listening) {
+    // A run of the served server while it listens: Server::stop() closes the manager, on its own
+    // executor and without waiting, as RunControl asks.
+    const auto registration = impl->served_run_control_->add([weak = std::weak_ptr<Impl>(impl)] {
+        if (auto alive = weak.lock()) {
+            boost::asio::post(alive->executor, [alive] { close_impl(alive); });
+        }
+    });
+    co_await std::move(listening);
 }
 
 Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl) {
@@ -2112,7 +2190,7 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
         }
         boost::asio::co_spawn(
             conn_strand,
-            [impl, connection, conn_strand]() mutable -> Task<void> {
+            [impl, connection, conn_strand]() mutable -> boost::asio::awaitable<void> {
                 try {
                     co_await impl->handle_connection(connection, conn_strand);
                 } catch (...) {

@@ -12,6 +12,19 @@ The server decides, call by call, whether a call becomes a task. A client only
 declares that it understands the extension, and the server never returns a task
 to a client that did not declare it.
 
+Adding this to a sync-mode program
+----------------------------------
+
+The tool of the server of :doc:`/getting-started` may run as a task once tasks are
+enabled, with its handler on a handler pool, and the client starts it with
+``start_tool()`` and waits for its result through the handle.
+
+.. literalinclude:: /_generated/progression/server_add_tasks.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_tasks.diff
+   :language: diff
+
 Serving tasks
 -------------
 
@@ -19,8 +32,11 @@ Enable tasks on the server, then choose which tools may become tasks:
 
 .. code-block:: cpp
 
+   mcp::Runtime pool;
+   pool.start(4);  // the threads that run the handlers, and so the tasks
+
    mcp::Server server({"reports", "1.0"}, capabilities);
-   server.set_handler_executor(pool.get_executor());
+   server.set_handler_executor(pool.executor());
 
    server.add_tool<json, json>("build_report", "Builds a report", schema, handler);
 
@@ -214,8 +230,9 @@ gives up with ``g_REQUEST_TIMEOUT`` after ``ClientOptions::task_timeout``. A
 call that gives up, for the timeout or because a handler for an input request
 failed, first sends a best-effort ``tasks/cancel`` for the task, since nothing
 else holds it; ``TaskHandle::wait()`` leaves the task running when it gives up.
-``call_tool()`` takes no per-request options, so its requests and its follow use
-the ``ClientOptions`` defaults. A task that failed throws the ``McpError`` it failed with, and one that was cancelled
+The ``RequestOptions`` given to ``call_tool()`` apply to each request of the call,
+the polls included, and ``ClientOptions::task_timeout`` limits how long it
+follows the task. A task that failed throws the ``McpError`` it failed with, and one that was cancelled
 throws an ``McpError``. The result is checked against the tool's output schema as
 for any call. A legacy session ignores the option.
 

@@ -95,6 +95,7 @@ configure_file(
 
 set(MCP_CPP_SDK_SOURCES
     src/core/version.cpp
+    src/core/context.cpp
     src/core/runtime.cpp
     src/core/regex.cpp
     src/core/secure_random.cpp
@@ -127,11 +128,14 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/client_credentials.cpp
     src/auth/enterprise_authorization.cpp
     src/client/client.cpp
+    src/client/endpoint.cpp
+    src/client/restarting_stdio_transport.cpp
     src/detail/sealed_state.cpp
     src/client/stdio_session.cpp
     src/client/apps.cpp
     src/client/skills.cpp
     src/server/server_stdio.cpp
+    src/server/run_control.cpp
     src/server/server_http.cpp
     src/server/server_tool.cpp
     src/server/apps.cpp
@@ -141,6 +145,7 @@ set(MCP_CPP_SDK_SOURCES
     src/server/task_store.cpp
     src/server/server.cpp
     src/transport/stdio.cpp
+    src/transport/transport.cpp
     src/transport/stdio_client.cpp
     src/transport/memory.cpp
     src/transport/http_types.cpp
@@ -413,6 +418,7 @@ if(BUILD_TESTING)
       test/auth/auth_oauth_test.cpp
       test/auth/auth_token_endpoint_auth_test.cpp
       test/client/client_core_test.cpp
+      test/client/client_endpoint_test.cpp
       test/client/client_listen_test.cpp
       test/client/client_modern_test.cpp
       test/client/client_mrtr_test.cpp
@@ -420,9 +426,11 @@ if(BUILD_TESTING)
       test/client/client_elicitation_test.cpp
       test/client/client_features_test.cpp
       test/client/client_notifications_test.cpp
+      test/client/client_sync_test.cpp
       test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
       test/core/elicitation_schema_test.cpp
+      test/core/executor_test.cpp
       test/core/core_test.cpp
       test/core/fifo_test.cpp
       test/core/json_dump_test.cpp
@@ -431,6 +439,7 @@ if(BUILD_TESTING)
       test/core/json_schema_engines_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
+      test/core/task_class_test.cpp
       test/core/tasks_test.cpp
       test/core/regex_test.cpp
       test/core/sealed_state_test.cpp
@@ -455,6 +464,8 @@ if(BUILD_TESTING)
       test/server/server_param_headers_test.cpp
       test/server/server_progress_test.cpp
       test/server/server_subscriptions_test.cpp
+      test/server/server_registration_helpers_test.cpp
+      test/server/server_run_control_test.cpp
       test/transport/transport_stdio_test.cpp
       test/transport/transport_stdio_client_test.cpp
       test/transport/transport_ws_test.cpp
@@ -493,13 +504,20 @@ if(BUILD_TESTING)
   # so its test builds the source itself.
   add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # Compiled apart from the test program, whose unity build would make Task
+  # complete: the sync-mode headers must take synchronous handlers while Task is
+  # only declared.
+  add_library(mcp-sync-mode-headers OBJECT test/headers/sync_server_tu.cpp)
+  target_link_libraries(mcp-sync-mode-headers PRIVATE mcp-cpp-sdk)
+  add_dependencies(mcp-sdk-tests mcp-sync-mode-headers)
   # The server the stdio client tests launch as a child process.
   add_executable(mcp-test-stdio-server test/support/stdio_test_server.cpp)
   target_link_libraries(mcp-test-stdio-server PRIVATE mcp-cpp-sdk)
   add_dependencies(mcp-sdk-tests mcp-test-stdio-server)
   target_compile_definitions(
     mcp-sdk-tests
-    PRIVATE MCP_TEST_STDIO_SERVER="$<TARGET_FILE:mcp-test-stdio-server>")
+    PRIVATE MCP_TEST_STDIO_SERVER="$<TARGET_FILE:mcp-test-stdio-server>"
+            MCP_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   target_compile_definitions(
     mcp-sdk-tests
     PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
@@ -793,6 +811,58 @@ endif()
 # Examples
 option(BUILD_EXAMPLES "Build example programs" ${MCP_CPP_SDK_IS_TOP_LEVEL})
 if(BUILD_EXAMPLES)
+  # The sync-mode programs: server_base and client_base, and the add-ons that
+  # each grow one of them by one feature (examples/sync/progression.json).
+  set(MCP_SYNC_EXAMPLES
+      server_base
+      server_add_resource
+      server_add_prompt
+      server_add_http
+      server_add_auth
+      server_add_context
+      server_add_completions
+      server_add_handler_pool
+      server_add_own_loop
+      server_add_elicitation
+      server_add_sampling
+      server_add_roots
+      server_add_middleware
+      server_add_pagination
+      server_add_tasks
+      server_add_subscriptions
+      server_add_apps
+      server_add_skills
+      server_all
+      client_base
+      client_add_resource
+      client_add_prompt
+      client_add_http
+      client_add_auth
+      client_add_progress
+      client_add_logging
+      client_add_coroutine
+      client_add_restart
+      client_add_own_loop
+      client_add_elicitation
+      client_add_sampling
+      client_add_roots
+      client_add_tasks
+      client_add_subscriptions
+      client_add_errors
+      client_add_legacy
+      client_all)
+  foreach(example IN LISTS MCP_SYNC_EXAMPLES)
+    string(REPLACE "_" "-" example_target "example-sync-${example}")
+    add_executable(${example_target} examples/sync/${example}.cpp)
+    target_link_libraries(${example_target} PRIVATE mcp-cpp-sdk)
+  endforeach()
+
+  # The async-mode server and client, with every feature.
+  foreach(example IN ITEMS server client)
+    add_executable(example-async-${example} examples/async/${example}.cpp)
+    target_link_libraries(example-async-${example} PRIVATE mcp-cpp-sdk)
+  endforeach()
+
   add_executable(example-server-stdio examples/servers/stdio/server_stdio.cpp)
   target_link_libraries(example-server-stdio PRIVATE mcp-cpp-sdk)
 

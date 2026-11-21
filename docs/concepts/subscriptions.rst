@@ -26,6 +26,19 @@ The server side is the same in both: the server calls ``notify_resource_updated(
 and the ``notify_*_list_changed()`` methods, and the SDK sends each
 notification to the clients that asked for it.
 
+Adding This to a Sync-Mode Program
+----------------------------------
+
+The server of :doc:`/getting-started` gets a resource that changes and a tool that changes
+it and tells the subscribers; the client subscribes with ``listen()`` and
+waits for the update.
+
+.. literalinclude:: /_generated/progression/server_add_subscriptions.diff
+   :language: diff
+
+.. literalinclude:: /_generated/progression/client_add_subscriptions.diff
+   :language: diff
+
 Listening for Notifications
 ---------------------------
 
@@ -94,11 +107,12 @@ not run for ``subscriptions/listen``.
 Which transports carry the stream:
 
 - stdio, WebSocket and in-memory transports served by ``Server::run()``.
-- ``StreamableHttpSessionManager``, as a server-sent event stream. The client
-  must accept ``text/event-stream``. The stream runs on the manager's shared
-  modern server, see :doc:`/guides/deployment`.
-- ``HttpServerTransport``, and so ``Server::run_http()``, as a server-sent
-  event stream on the server that reads the transport. The client must accept
+- ``StreamableHttpSessionManager``, and so ``Server::run_http()``, as a
+  server-sent event stream. The client must accept ``text/event-stream``. The
+  stream runs on the manager's shared modern server, which is the server
+  itself for ``run_http()``, see :doc:`/guides/deployment`.
+- ``HttpServerTransport``, as a server-sent event stream on the server that
+  reads the transport. The client must accept
   ``text/event-stream``. Closing the stream, or closing the transport, ends the
   subscription.
 

@@ -19,19 +19,27 @@ implements the transport binding. The types follow the beta specification in
 ``ext-skills``, and the extension requires protocol revision 2026-07-28: the
 methods are served to its clients only.
 
+Adding this to a sync-mode program
+----------------------------------
+
+The server of :doc:`/getting-started` serves a skill through a ``SkillsExtension`` made
+for it.
+
+.. literalinclude:: /_generated/progression/server_add_skills.diff
+   :language: diff
+
 Serving skills
 --------------
 
 ``mcp::skills::SkillsExtension`` declares the extension on a server and serves
-the skills added to it. The server needs the ``resources`` capability:
+the skills added to it as resources, declaring the ``resources`` capability when
+the server has not:
 
 .. code-block:: cpp
 
    #include <mcp/server/skills.hpp>
 
-   mcp::ServerCapabilities capabilities;
-   capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
-   mcp::Server server({"docs", "1.0.0"}, capabilities);
+   mcp::Server server("docs", "1.0.0");
 
    mcp::skills::SkillsExtension skills(server);
 
@@ -74,6 +82,7 @@ Using skills from a client
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/skills.hpp>
 
    auto connected = co_await client.connect(info, capabilities);

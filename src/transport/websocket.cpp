@@ -1,3 +1,4 @@
+#include <mcp/core/async.hpp>
 #include <mcp/transport/websocket.hpp>
 
 #include "../detail/constants.hpp"
@@ -597,10 +598,10 @@ struct WebSocketClientTransport::Impl {
     }
 };
 
-WebSocketClientTransport::WebSocketClientTransport(const asio::any_io_executor& executor,
-                                                   std::string host, std::string port, std::string path,
+WebSocketClientTransport::WebSocketClientTransport(const Executor& executor, std::string host,
+                                                   std::string port, std::string path,
                                                    std::chrono::milliseconds connect_timeout)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), std::move(port), std::move(path),
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), std::move(port), std::move(path),
                                    connect_timeout)) {}
 
 WebSocketClientTransport::~WebSocketClientTransport() {
