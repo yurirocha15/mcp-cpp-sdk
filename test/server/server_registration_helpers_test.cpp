@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace server_simple_registration_test {
+namespace server_registration_helpers_test {
 
 namespace jsonrpc = mcp::constants::jsonrpc;
 
@@ -100,7 +100,7 @@ TEST(ToolParamsTest, SchemaChecksTheArgumentsOfTheToolItDescribes) {
     EXPECT_EQ(refused.value("isError", false), true) << refused.dump();
 }
 
-TEST(SimpleToolTest, SyncHandlerWithContextGetsTheRequestsContext) {
+TEST(ToolFormsTest, SyncHandlerWithContextGetsTheRequestsContext) {
     mcp::Server server("simple", "1.0");
     server.add_tool("state", "Reports the request's state", nlohmann::json{{"type", "object"}},
                     [](mcp::Context& ctx, const nlohmann::json& /*args*/) -> nlohmann::json {
@@ -110,7 +110,7 @@ TEST(SimpleToolTest, SyncHandlerWithContextGetsTheRequestsContext) {
     EXPECT_EQ(first_text(call(server, "state")), "running");
 }
 
-TEST(SimpleToolTest, CoroutineHandlersRunWithAndWithoutTheContext) {
+TEST(ToolFormsTest, CoroutineHandlersRunWithAndWithoutTheContext) {
     mcp::Server server("simple", "1.0");
     const nlohmann::json schema{{"type", "object"}};
     server.add_tool("plain", "No context", schema,
@@ -127,7 +127,7 @@ TEST(SimpleToolTest, CoroutineHandlersRunWithAndWithoutTheContext) {
 }
 
 // A Tool definition keeps everything it describes, whichever handler form registers it.
-TEST(SimpleToolTest, ToolDefinitionFormListsItsTitleAndAnnotations) {
+TEST(ToolFormsTest, ToolDefinitionFormListsItsTitleAndAnnotations) {
     mcp::Server server("simple", "1.0");
     mcp::Tool sync_tool;
     sync_tool.name = "sync_tool";
@@ -162,7 +162,7 @@ TEST(SimpleToolTest, ToolDefinitionFormListsItsTitleAndAnnotations) {
                  std::invalid_argument);
 }
 
-TEST(SimpleToolTest, ToolDefinitionWithAnOutputSchemaReturnsStructuredContent) {
+TEST(ToolFormsTest, ToolDefinitionWithAnOutputSchemaReturnsStructuredContent) {
     mcp::Server server("simple", "1.0");
     mcp::Tool tool;
     tool.name = "count";
@@ -180,7 +180,7 @@ TEST(SimpleToolTest, ToolDefinitionWithAnOutputSchemaReturnsStructuredContent) {
               *tool.outputSchema);
 }
 
-TEST(SimpleToolTest, RawToolTakesACoroutineWithOrWithoutTheContext) {
+TEST(ToolFormsTest, RawToolTakesACoroutineWithOrWithoutTheContext) {
     mcp::Server server("simple", "1.0");
     mcp::Tool tool;
     tool.name = "raw";
@@ -205,7 +205,7 @@ TEST(SimpleToolTest, RawToolTakesACoroutineWithOrWithoutTheContext) {
     EXPECT_EQ(refused.value("isError", false), true);
 }
 
-TEST(SimpleResourceTest, TextResourceIsReadAsTextOfItsMimeType) {
+TEST(TextResourceTest, TextResourceIsReadAsTextOfItsMimeType) {
     mcp::Server server("simple", "1.0");
     int reads = 0;
     server.add_text_resource("config://motd", "Message of the day", [&reads] {
@@ -235,7 +235,7 @@ TEST(SimpleResourceTest, TextResourceIsReadAsTextOfItsMimeType) {
     EXPECT_EQ(entry.value("mimeType", ""), "text/markdown");
 }
 
-TEST(SimpleResourceTest, ResourceFormKeepsItsDescriptionAndDefaultsToPlainText) {
+TEST(TextResourceTest, ResourceFormKeepsItsDescriptionAndDefaultsToPlainText) {
     mcp::Server server("simple", "1.0");
     mcp::Resource resource;
     resource.uri = "notes://today";
@@ -263,7 +263,7 @@ TEST(SimpleResourceTest, ResourceFormKeepsItsDescriptionAndDefaultsToPlainText) 
         << tomorrow.dump();
 }
 
-TEST(SimpleResourceTest, CoroutineFormByUriAndASecondRegistrationOfAUri) {
+TEST(TextResourceTest, CoroutineFormByUriAndASecondRegistrationOfAUri) {
     mcp::Server server("simple", "1.0");
     server.add_text_resource("live://clock", "Clock",
                              []() -> mcp::Task<std::string> { co_return std::string("noon"); });
@@ -294,7 +294,7 @@ std::vector<mcp::PromptArgument> review_arguments() {
 
 }  // namespace
 
-TEST(SimplePromptTest, RendersOneUserMessageFromTheArguments) {
+TEST(TextPromptTest, RendersOneUserMessageFromTheArguments) {
     mcp::Server server("simple", "1.0");
     server.add_text_prompt(
         "review", "Review code", review_arguments(), [](const mcp::Server::PromptArguments& args) {
@@ -319,7 +319,7 @@ TEST(SimplePromptTest, RendersOneUserMessageFromTheArguments) {
 }
 
 // A request without a required argument is refused before the prompt renders, in both eras.
-TEST(SimplePromptTest, MissingRequiredArgumentIsInvalidParams) {
+TEST(TextPromptTest, MissingRequiredArgumentIsInvalidParams) {
     mcp::Server server("simple", "1.0");
     int renders = 0;
     server.add_text_prompt("review", "Review code", review_arguments(),
@@ -340,7 +340,7 @@ TEST(SimplePromptTest, MissingRequiredArgumentIsInvalidParams) {
     EXPECT_EQ(renders, 0);
 }
 
-TEST(SimplePromptTest, AbsentArgumentsReachTheHandlerAsAnEmptyMap) {
+TEST(TextPromptTest, AbsentArgumentsReachTheHandlerAsAnEmptyMap) {
     mcp::Server server("simple", "1.0");
     server.add_text_prompt("hello", "Says hello", {}, [](const mcp::Server::PromptArguments& args) {
         return "arguments: " + std::to_string(args.size());
@@ -351,7 +351,7 @@ TEST(SimplePromptTest, AbsentArgumentsReachTheHandlerAsAnEmptyMap) {
     EXPECT_EQ(response["result"]["messages"][0]["content"]["text"], "arguments: 0") << response.dump();
 }
 
-TEST(SimplePromptTest, CoroutineAndPromptFormsRenderAndKeepTheirTitle) {
+TEST(TextPromptTest, CoroutineAndPromptFormsRenderAndKeepTheirTitle) {
     mcp::Server server("simple", "1.0");
     mcp::Prompt prompt;
     prompt.name = "summary";
@@ -399,4 +399,4 @@ TEST(ResultTextTest, JoinsTheTextBlocksAndSkipsTheRest) {
     EXPECT_EQ(mcp::result_text(mcp::make_tool_text_result("only")), "only");
 }
 
-}  // namespace server_simple_registration_test
+}  // namespace server_registration_helpers_test
