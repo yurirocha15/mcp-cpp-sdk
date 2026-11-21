@@ -20,6 +20,15 @@
 #include <utility>
 #include <vector>
 
+// The evaluation recurses through a few functions for every subschema it enters. Message building
+// stays out of them, in functions that are not inlined, so that their frames stay small in every
+// build and the deepest evaluation fits a small thread stack.
+#if defined(_MSC_VER)
+#define MCP_SCHEMA_NOINLINE __declspec(noinline)
+#else
+#define MCP_SCHEMA_NOINLINE __attribute__((noinline))
+#endif
+
 namespace mcp::detail {
 
 struct NativeSchema::Resource {
@@ -1024,13 +1033,31 @@ class Evaluation {
    private:
     /// Checks every keyword of @p node but `unevaluatedProperties` and `unevaluatedItems`.
     bool check_keywords(const Node& node, const nlohmann::json& value) {
+        if (!check_value_keywords(node, value)) {
+            return false;
+        }
+        if (value.is_array()) {
+            if (!check_array(node, value)) {
+                return false;
+            }
+        } else if (value.is_object()) {
+            if (!check_object(node, value)) {
+                return false;
+            }
+        }
+        return !node.has_applicators || check_applicators(node, value);
+    }
+
+    /// The keywords that read only the value itself, kept out of check_keywords(), which the
+    /// evaluation recurses through.
+    MCP_SCHEMA_NOINLINE bool check_value_keywords(const Node& node, const nlohmann::json& value) {
         if (node.reject_all) {
             return report("No value is allowed here");
         }
         if (!node.types.empty() &&
             std::none_of(node.types.begin(), node.types.end(),
                          [&](const std::string& type) { return has_type(value, type); })) {
-            if (!report(type_message(node.types, value))) {
+            if (!report_type(node.types, value)) {
                 return false;
             }
         }
@@ -1047,17 +1074,13 @@ class Evaluation {
                 return false;
             }
         }
-        bool more = true;
         if (value.is_number()) {
-            more = check_number(node, value);
-        } else if (value.is_string()) {
-            more = check_string(node, value.get_ref<const std::string&>());
-        } else if (value.is_array()) {
-            more = check_array(node, value);
-        } else if (value.is_object()) {
-            more = check_object(node, value);
+            return check_number(node, value);
         }
-        return more && (!node.has_applicators || check_applicators(node, value));
+        if (value.is_string()) {
+            return check_string(node, value.get_ref<const std::string&>());
+        }
+        return true;
     }
 
    private:
@@ -1212,7 +1235,7 @@ class Evaluation {
                     charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
                     if (node.unevaluated_properties->reject_all) {
                         const LocationScope location(*this, Location{&name, 0});
-                        more = report("Unevaluated property '" + name + "' is not allowed");
+                        more = report_concat("Unevaluated property '", name, "' is not allowed");
                     } else {
                         more = check_member(*node.unevaluated_properties, name, member);
                     }
@@ -1230,7 +1253,7 @@ class Evaluation {
                     charge(work_, 1);
                     if (node.unevaluated_items->reject_all) {
                         const LocationScope location(*this, Location{{}, index});
-                        more = report("Unevaluated item " + std::to_string(index) + " is not allowed");
+                        more = report_size("Unevaluated item ", index, " is not allowed");
                     } else {
                         more = check_item(*node.unevaluated_items, value[index], index);
                     }
@@ -1312,23 +1335,23 @@ class Evaluation {
 
     bool check_number(const Node& node, const nlohmann::json& value) {
         if (node.minimum && compare_numbers(value, *node.minimum) < 0 &&
-            !report("Value must be at least " + node.minimum->dump())) {
+            !report_number("Value must be at least ", *node.minimum)) {
             return false;
         }
         if (node.maximum && compare_numbers(value, *node.maximum) > 0 &&
-            !report("Value must be at most " + node.maximum->dump())) {
+            !report_number("Value must be at most ", *node.maximum)) {
             return false;
         }
         if (node.exclusive_minimum && compare_numbers(value, *node.exclusive_minimum) <= 0 &&
-            !report("Value must be greater than " + node.exclusive_minimum->dump())) {
+            !report_number("Value must be greater than ", *node.exclusive_minimum)) {
             return false;
         }
         if (node.exclusive_maximum && compare_numbers(value, *node.exclusive_maximum) >= 0 &&
-            !report("Value must be less than " + node.exclusive_maximum->dump())) {
+            !report_number("Value must be less than ", *node.exclusive_maximum)) {
             return false;
         }
         if (node.multiple_of && !is_multiple_of(value.get<double>(), *node.multiple_of) &&
-            !report("Value is not a multiple of " + nlohmann::json(*node.multiple_of).dump())) {
+            !report_number("Value is not a multiple of ", nlohmann::json(*node.multiple_of))) {
             return false;
         }
         return true;
@@ -1347,16 +1370,16 @@ class Evaluation {
             charge(work_, 1 + text.size() / g_STRING_BYTES_PER_UNIT);
             const auto length = code_point_count(text);
             if (node.min_length && length < *node.min_length &&
-                !report("Number of characters must be at least " + std::to_string(*node.min_length))) {
+                !report_size("Number of characters must be at least ", *node.min_length)) {
                 return false;
             }
             if (node.max_length && length > *node.max_length &&
-                !report("Number of characters must be at most " + std::to_string(*node.max_length))) {
+                !report_size("Number of characters must be at most ", *node.max_length)) {
                 return false;
             }
         }
         if (node.pattern && !matches(*node.pattern, text) &&
-            !report("String does not match the pattern " + node.pattern->pattern())) {
+            !report_concat("String does not match the pattern ", node.pattern->pattern())) {
             return false;
         }
         return true;
@@ -1420,38 +1443,48 @@ class Evaluation {
             annotations_->items =
                 std::max(annotations_->items, node.items != nullptr ? array.size() : prefix);
         }
-        if (node.contains) {
-            std::size_t matching = 0;
-            for (std::size_t index = 0; index < array.size(); ++index) {
-                if (passes(*node.contains, array[index])) {
-                    ++matching;
-                    if (annotations_ != nullptr) {
-                        annotations_->item(index, array.size());
-                    }
+        if (node.contains && !check_contains(node, array)) {
+            return false;
+        }
+        return (!node.unique_items && !node.min_items && !node.max_items) ||
+               check_array_size(node, array);
+    }
+
+    MCP_SCHEMA_NOINLINE bool check_contains(const Node& node, const nlohmann::json& array) {
+        std::size_t matching = 0;
+        for (std::size_t index = 0; index < array.size(); ++index) {
+            if (passes(*node.contains, array[index])) {
+                ++matching;
+                if (annotations_ != nullptr) {
+                    annotations_->item(index, array.size());
                 }
             }
-            const auto least = node.min_contains.value_or(1);
-            if (matching < least && !report("Array must contain at least " + std::to_string(least) +
-                                            " matching items, found " + std::to_string(matching))) {
-                return false;
-            }
-            if (node.max_contains && matching > *node.max_contains &&
-                !report("Array must contain at most " + std::to_string(*node.max_contains) +
-                        " matching items, found " + std::to_string(matching))) {
-                return false;
-            }
         }
+        const auto least = node.min_contains.value_or(1);
+        if (matching < least &&
+            !report_count("Array must contain at least ", least, " matching items, found ", matching)) {
+            return false;
+        }
+        if (node.max_contains && matching > *node.max_contains &&
+            !report_count("Array must contain at most ", *node.max_contains, " matching items, found ",
+                          matching)) {
+            return false;
+        }
+        return true;
+    }
+
+    MCP_SCHEMA_NOINLINE bool check_array_size(const Node& node, const nlohmann::json& array) {
         if (node.unique_items && !unique(array) && !report("Array items are not unique")) {
             return false;
         }
         if (node.min_items && array.size() < *node.min_items &&
-            !report("Array must have at least " + std::to_string(*node.min_items) + " items, found " +
-                    std::to_string(array.size()))) {
+            !report_count("Array must have at least ", *node.min_items, " items, found ",
+                          array.size())) {
             return false;
         }
         if (node.max_items && array.size() > *node.max_items &&
-            !report("Array must have at most " + std::to_string(*node.max_items) + " items, found " +
-                    std::to_string(array.size()))) {
+            !report_count("Array must have at most ", *node.max_items, " items, found ",
+                          array.size())) {
             return false;
         }
         return true;
@@ -1473,34 +1506,24 @@ class Evaluation {
             charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
             const auto here = position++;
             bool evaluated = false;
-            const auto found =
-                std::lower_bound(node.property_names.begin(), node.property_names.end(), name);
-            if (found != node.property_names.end() && *found == name) {
+            if (const Node* property = find_property(node, name)) {
                 evaluated = true;
-                const auto index = static_cast<std::size_t>(found - node.property_names.begin());
-                if (!check_member(*node.property_schemas[index], name, member)) {
+                if (!check_member(*property, name, member)) {
                     return false;
                 }
             }
-            for (std::size_t i = 0; i < node.pattern_regexes.size(); ++i) {
-                if (matches(node.pattern_regexes[i], name)) {
-                    evaluated = true;
-                    if (!check_member(*node.pattern_schemas[i], name, member)) {
-                        return false;
-                    }
-                }
+            if (!node.pattern_regexes.empty() &&
+                !check_pattern_members(node, name, member, evaluated)) {
+                return false;
             }
-            if (evaluated || node.additional_properties != nullptr) {
-                if (annotations_ != nullptr) {
-                    annotations_->member(here, object.size());
-                }
+            if ((evaluated || node.additional_properties != nullptr) && annotations_ != nullptr) {
+                annotations_->member(here, object.size());
             }
             if (evaluated || !node.additional_properties) {
                 continue;
             }
             if (node.additional_properties->reject_all) {
-                const LocationScope scope(*this, Location{&name, 0});
-                if (!report("Additional property '" + name + "' is not allowed")) {
+                if (!report_additional(name)) {
                     return false;
                 }
             } else if (!check_member(*node.additional_properties, name, member)) {
@@ -1510,9 +1533,62 @@ class Evaluation {
         return true;
     }
 
+    /// The `properties` schema of the member @p name, or null.
+    MCP_SCHEMA_NOINLINE static const Node* find_property(const Node& node, const std::string& name) {
+        const auto found =
+            std::lower_bound(node.property_names.begin(), node.property_names.end(), name);
+        if (found == node.property_names.end() || *found != name) {
+            return nullptr;
+        }
+        return node.property_schemas[static_cast<std::size_t>(found - node.property_names.begin())];
+    }
+
+    /// Checks the member @p name against every `patternProperties` schema whose pattern matches it,
+    /// setting @p evaluated when one does.
+    MCP_SCHEMA_NOINLINE bool check_pattern_members(const Node& node, const std::string& name,
+                                                   const nlohmann::json& member, bool& evaluated) {
+        for (std::size_t i = 0; i < node.pattern_regexes.size(); ++i) {
+            if (matches(node.pattern_regexes[i], name)) {
+                evaluated = true;
+                if (!check_member(*node.pattern_schemas[i], name, member)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    MCP_SCHEMA_NOINLINE bool report_additional(const std::string& name) {
+        const LocationScope scope(*this, Location{&name, 0});
+        return report_concat("Additional property '", name, "' is not allowed");
+    }
+
     bool check_object(const Node& node, const nlohmann::json& object) {
+        if ((!node.required.empty() || !node.dependent_required_names.empty()) &&
+            !check_required(node, object)) {
+            return false;
+        }
+        if (!node.property_names.empty() || !node.pattern_regexes.empty() ||
+            node.additional_properties) {
+            if (!check_members(node, object)) {
+                return false;
+            }
+        }
+        if (node.property_names_schema && !check_property_names(node, object)) {
+            return false;
+        }
+        for (std::size_t i = 0; i < node.dependent_schema_names.size(); ++i) {
+            if (object.contains(node.dependent_schema_names[i]) &&
+                !check(*node.dependent_schemas[i], object)) {
+                return false;
+            }
+        }
+        return (!node.min_properties && !node.max_properties) || check_property_count(node, object);
+    }
+
+    MCP_SCHEMA_NOINLINE bool check_required(const Node& node, const nlohmann::json& object) {
         for (const auto& name : node.required) {
-            if (!object.contains(name) && !report("Required property '" + name + "' is missing")) {
+            if (!object.contains(name) && !report_concat("Required property '", name, "' is missing")) {
                 return false;
             }
         }
@@ -1523,48 +1599,43 @@ class Evaluation {
             }
             for (const auto& name : node.dependent_required_lists[i]) {
                 charge(work_, 1);
-                if (!object.contains(name) &&
-                    !report("Property '" + name + "' is required when '" + present + "' is present")) {
+                if (!object.contains(name) && !report_concat("Property '", name, "' is required when '",
+                                                             present, "' is present")) {
                     return false;
                 }
             }
         }
-        if (!node.property_names.empty() || !node.pattern_regexes.empty() ||
-            node.additional_properties) {
-            if (!check_members(node, object)) {
+        return true;
+    }
+
+    MCP_SCHEMA_NOINLINE bool check_property_names(const Node& node, const nlohmann::json& object) {
+        for (const auto& [name, member] : object.get_ref<const nlohmann::json::object_t&>()) {
+            charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
+            const AnnotationScope annotations(*this, nullptr);
+            if (!check(*node.property_names_schema, nlohmann::json(name))) {
                 return false;
             }
         }
-        if (node.property_names_schema) {
-            for (const auto& [name, member] : object.get_ref<const nlohmann::json::object_t&>()) {
-                charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
-                const AnnotationScope annotations(*this, nullptr);
-                if (!check(*node.property_names_schema, nlohmann::json(name))) {
-                    return false;
-                }
-            }
-        }
-        for (std::size_t i = 0; i < node.dependent_schema_names.size(); ++i) {
-            if (object.contains(node.dependent_schema_names[i]) &&
-                !check(*node.dependent_schemas[i], object)) {
-                return false;
-            }
-        }
+        return true;
+    }
+
+    MCP_SCHEMA_NOINLINE bool check_property_count(const Node& node, const nlohmann::json& object) {
         if (node.min_properties && object.size() < *node.min_properties &&
-            !report("Object must have at least " + std::to_string(*node.min_properties) +
-                    " properties, found " + std::to_string(object.size()))) {
+            !report_count("Object must have at least ", *node.min_properties, " properties, found ",
+                          object.size())) {
             return false;
         }
         if (node.max_properties && object.size() > *node.max_properties &&
-            !report("Object must have at most " + std::to_string(*node.max_properties) +
-                    " properties, found " + std::to_string(object.size()))) {
+            !report_count("Object must have at most ", *node.max_properties, " properties, found ",
+                          object.size())) {
             return false;
         }
         return true;
     }
 
     /// Reports @p message, then as many of @p violations as the current sink takes.
-    bool report_with(const std::string& message, const std::vector<SchemaViolation>& violations) {
+    MCP_SCHEMA_NOINLINE bool report_with(std::string_view message,
+                                         const std::vector<SchemaViolation>& violations) {
         if (!report(message)) {
             return false;
         }
@@ -1577,46 +1648,60 @@ class Evaluation {
         return sink_->violations == nullptr || sink_->violations->size() < sink_->limit;
     }
 
+    /// `anyOf`: kept out of check_applicators() so that the branch buffer is not on the stack of
+    /// every applicator.
+    MCP_SCHEMA_NOINLINE bool check_any_of(const Node& node, const nlohmann::json& value) {
+        const auto buffer_size =
+            std::min(mcp::detail::constants::schema::g_MAX_BRANCH_VIOLATIONS, sink_->limit);
+        std::vector<SchemaViolation> first;
+        bool matched = false;
+        // Only the first branch's violations are ever reported, so the others are evaluated
+        // for their validity alone.
+        matched = passes_annotated(*node.any_of[0], value, &first, buffer_size);
+        // What every passing branch evaluated counts, so all of them are evaluated then.
+        for (std::size_t i = 1; i < node.any_of.size() && (!matched || annotations_ != nullptr); ++i) {
+            matched = passes_annotated(*node.any_of[i], value) || matched;
+        }
+        if (!matched && !report_with("Value does not match any of the anyOf schemas", first)) {
+            return false;
+        }
+        return true;
+    }
+
+    /// `oneOf`, kept out of check_applicators() like check_any_of().
+    MCP_SCHEMA_NOINLINE bool check_one_of(const Node& node, const nlohmann::json& value) {
+        const auto buffer_size =
+            std::min(mcp::detail::constants::schema::g_MAX_BRANCH_VIOLATIONS, sink_->limit);
+        std::vector<SchemaViolation> first;
+        std::size_t matched = 0;
+        if (passes_annotated(*node.one_of[0], value, &first, buffer_size)) {
+            ++matched;
+        }
+        for (std::size_t i = 1; i < node.one_of.size() && matched < 2; ++i) {
+            if (passes_annotated(*node.one_of[i], value)) {
+                ++matched;
+            }
+        }
+        if (matched == 0 && !report_with("Value does not match any of the oneOf schemas", first)) {
+            return false;
+        }
+        if (matched > 1 && !report("Value matches more than one of the oneOf schemas")) {
+            return false;
+        }
+        return true;
+    }
+
     bool check_applicators(const Node& node, const nlohmann::json& value) {
         for (const Node* branch : node.all_of) {
             if (!check(*branch, value)) {
                 return false;
             }
         }
-        const auto buffer_size =
-            std::min(mcp::detail::constants::schema::g_MAX_BRANCH_VIOLATIONS, sink_->limit);
-        if (!node.any_of.empty()) {
-            std::vector<SchemaViolation> first;
-            bool matched = false;
-            // Only the first branch's violations are ever reported, so the others are evaluated
-            // for their validity alone.
-            matched = passes_annotated(*node.any_of[0], value, &first, buffer_size);
-            // What every passing branch evaluated counts, so all of them are evaluated then.
-            for (std::size_t i = 1; i < node.any_of.size() && (!matched || annotations_ != nullptr);
-                 ++i) {
-                matched = passes_annotated(*node.any_of[i], value) || matched;
-            }
-            if (!matched && !report_with("Value does not match any of the anyOf schemas", first)) {
-                return false;
-            }
+        if (!node.any_of.empty() && !check_any_of(node, value)) {
+            return false;
         }
-        if (!node.one_of.empty()) {
-            std::vector<SchemaViolation> first;
-            std::size_t matched = 0;
-            if (passes_annotated(*node.one_of[0], value, &first, buffer_size)) {
-                ++matched;
-            }
-            for (std::size_t i = 1; i < node.one_of.size() && matched < 2; ++i) {
-                if (passes_annotated(*node.one_of[i], value)) {
-                    ++matched;
-                }
-            }
-            if (matched == 0 && !report_with("Value does not match any of the oneOf schemas", first)) {
-                return false;
-            }
-            if (matched > 1 && !report("Value matches more than one of the oneOf schemas")) {
-                return false;
-            }
+        if (!node.one_of.empty() && !check_one_of(node, value)) {
+            return false;
         }
         if (node.not_schema && passes(*node.not_schema, value) &&
             !report("Value must not be valid against the not schema")) {
@@ -1662,7 +1747,39 @@ class Evaluation {
         return path;
     }
 
-    bool report(const std::string& message) {
+    MCP_SCHEMA_NOINLINE bool report_type(const std::vector<std::string>& types,
+                                         const nlohmann::json& value) {
+        return report(type_message(types, value));
+    }
+
+    /// Reports the concatenation of the parts.
+    MCP_SCHEMA_NOINLINE bool report_concat(std::string_view first, std::string_view second,
+                                           std::string_view third = {}, std::string_view fourth = {},
+                                           std::string_view fifth = {}) {
+        std::string message;
+        message.reserve(first.size() + second.size() + third.size() + fourth.size() + fifth.size());
+        message.append(first).append(second).append(third).append(fourth).append(fifth);
+        return report(message);
+    }
+
+    /// Reports @p before, @p size and @p after.
+    MCP_SCHEMA_NOINLINE bool report_size(std::string_view before, std::size_t size,
+                                         std::string_view after = {}) {
+        return report_concat(before, std::to_string(size), after);
+    }
+
+    /// Reports @p before, @p bound, @p middle and @p found.
+    MCP_SCHEMA_NOINLINE bool report_count(std::string_view before, std::size_t bound,
+                                          std::string_view middle, std::size_t found) {
+        return report_concat(before, std::to_string(bound), middle, std::to_string(found));
+    }
+
+    MCP_SCHEMA_NOINLINE bool report_number(std::string_view before, const nlohmann::json& bound) {
+        return report(std::string(before) + bound.dump());
+    }
+
+    /// Reports @p message at the current location; false once the current sink takes no more.
+    MCP_SCHEMA_NOINLINE bool report(std::string_view message) {
         sink_->valid = false;
         if (sink_->violations == nullptr) {
             return false;
