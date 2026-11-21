@@ -642,7 +642,7 @@ TEST_F(ServerHandlersTest, AMiddlewareMayReturnTheNextHandlerUnawaited) {
     EXPECT_NE(responses[1].dump().find("hello from the tool"), std::string::npos) << responses[1];
 }
 
-// When the handler executor ends while a tool handler runs on it and the server's loop goes on,
+// When the handler executor ends while a tool handler waits on it and the server's loop goes on,
 // the call ends with a tool error on that loop.
 TEST_F(ServerHandlersTest, AToolCallFailsWhenTheHandlerExecutorEndsFirst) {
     mcp::ServerCapabilities caps;
@@ -651,29 +651,24 @@ TEST_F(ServerHandlersTest, AToolCallFailsWhenTheHandlerExecutorEndsFirst) {
     auto pool = std::make_unique<mcp::Runtime>();
     pool->start(1);
     setup.server.set_handler_executor(pool->executor());
-    std::promise<void> started;
-    std::promise<void> release;
-    const std::shared_future<void> released = release.get_future().share();
-    setup.server.add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
-                          [&started, released](const nlohmann::json&) -> nlohmann::json {
-                              started.set_value();
-                              released.wait();
-                              return "done";
+    const auto loop = io_ctx_.get_executor();
+    setup.server.add_tool("wait", "Waits on the handler executor", nlohmann::json{{"type", "object"}},
+                          [&pool, loop](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                              const auto executor = co_await boost::asio::this_coro::executor;
+                              boost::asio::steady_timer never(executor, std::chrono::hours(1));
+                              // The loop destroys the handler executor, whose Runtime waits for this
+                              // thread to leave the handler, so the wait below is under way when its
+                              // context goes.
+                              boost::asio::post(loop, [&pool] { pool.reset(); });
+                              co_await never.async_wait(boost::asio::use_awaitable);
+                              co_return "done";
                           });
-    std::thread ender([&] {
-        started.get_future().wait();
-        pool->stop();
-        release.set_value();
-        pool.reset();
-    });
 
     auto responses = run_request(
-        setup,
-        nlohmann::json{{"jsonrpc", "2.0"},
-                       {"id", "2"},
-                       {"method", "tools/call"},
-                       {"params", {{"name", "block"}, {"arguments", nlohmann::json::object()}}}});
-    ender.join();
+        setup, nlohmann::json{{"jsonrpc", "2.0"},
+                              {"id", "2"},
+                              {"method", "tools/call"},
+                              {"params", {{"name", "wait"}, {"arguments", nlohmann::json::object()}}}});
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_TRUE(responses[1]["result"].value("isError", false)) << responses[1];
