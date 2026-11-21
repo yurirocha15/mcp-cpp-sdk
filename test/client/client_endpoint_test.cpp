@@ -250,8 +250,9 @@ TEST(ClientEndpointTest, ACleanExitRestartsOnlyWhenThePolicySaysSo) {
     }
 }
 
-// A subscriptions/listen stream does not carry over to the new process.
-TEST(ClientEndpointTest, AListenStreamEndsWhenTheServerIsRestarted) {
+// stdio.mdx: "Active subscriptions/listen streams must also be re-established after restart."
+// The open listen request goes to the new process again, and the same subscription goes on.
+TEST(ClientEndpointTest, AListenStreamGoesOnWithTheRestartedServer) {
     mcp::Client client(mcp::Endpoint::stdio(
         test_server(), {.max_restarts = 1, .delay = std::chrono::milliseconds(10)}));
     client.sync().connect("endpoint-test", "1.0");
@@ -260,10 +261,23 @@ TEST(ClientEndpointTest, AListenStreamEndsWhenTheServerIsRestarted) {
     auto subscription = client.sync().listen(filter);
     EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
               mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
-    EXPECT_FALSE(subscription.sync().next().has_value());
-    ASSERT_TRUE(subscription.end_error().has_value());
-    EXPECT_EQ(subscription.end_error()->code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
-    EXPECT_FALSE(client.sync().list_tools().tools.empty());
+    // The listen request reached the new process before this call did.
+    client.sync().call_tool("notify_tools_changed", json::object());
+    const auto event = subscription.sync().next();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(event->method, "notifications/tools/list_changed");
+    EXPECT_FALSE(subscription.end_reason().has_value());
+}
+
+// Restarts are opt-in: without a policy, a server that fails closes the client.
+TEST(ClientEndpointTest, AServerThatFailsIsNotRestartedWithoutAPolicy) {
+    mcp::Client client(mcp::Endpoint::stdio(test_server()));
+    client.sync().connect("endpoint-test", "1.0");
+    EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_EQ(failure_code([&] { static_cast<void>(client.sync().list_tools()); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_EQ(mcp::StdioRestartPolicy{}.max_restarts, 0U);
 }
 
 // A subscription and a task handle may outlive their client: their blocking calls then fail as a

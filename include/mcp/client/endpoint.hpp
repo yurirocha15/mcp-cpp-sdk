@@ -73,10 +73,10 @@ class MCP_API Endpoint {
      * sync() view. The requests waiting for an answer when the process ended fail with McpError
      * (mcp::constants::jsonrpc::g_CONNECTION_CLOSED); requests made while it starts again wait for
      * it, within their own timeouts. A legacy session sends its initialize request to the new
-     * process again. What the old process kept for the session, such as a log level, resource
-     * subscriptions or tasks, is gone, and `subscriptions/listen` streams end. A start that fails
-     * uses one of the restarts the policy allows; when it allows no more, the client closes as it
-     * does without a restart.
+     * process again. Each open `subscriptions/listen` request is sent to the new process again, so
+     * its Subscription goes on. What the old process kept for a legacy session, such as a log
+     * level, resource subscriptions or tasks, is gone. A start that fails uses one of the restarts
+     * the policy allows; when it allows no more, the client closes as it does without a restart.
      * StdioProcessOptions::on_exit runs for each process that ends.
      */
     static Endpoint stdio(std::vector<std::string> command, StdioRestartPolicy restart);

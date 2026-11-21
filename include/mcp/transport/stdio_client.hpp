@@ -88,6 +88,9 @@ struct StdioProcessOptions {
 /**
  * @brief When a stdio server is started again after it ends on its own, by a StdioClientSession or
  *        a Client built from Endpoint::stdio().
+ *
+ * @details The specification asks a client to restart a server that exits unexpectedly. Restarts
+ * are off by default; max_restarts turns them on.
  */
 struct StdioRestartPolicy {
     /// How many times the server is restarted over the life of the session or client; zero never

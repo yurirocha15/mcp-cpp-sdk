@@ -143,6 +143,12 @@ void add_tools(mcp::Server& server, int argc, char** argv) {
                         return "sent";
                     });
     server.add_tool<json, json>(
+        "notify_tools_changed", "Tells open subscriptions that the tool list changed",
+        json{{"type", "object"}}, [&server](mcp::Context&, json) -> mcp::Task<json> {
+            co_await server.notify_tools_list_changed();
+            co_return json{{"notified", true}};
+        });
+    server.add_tool<json, json>(
         "ask",
         "Asks the client for a value and answers with it; ends the process crash_after_ms after asking",
         json{{"type", "object"}}, [](mcp::Context& ctx, json args) -> mcp::Task<json> {
@@ -222,7 +228,8 @@ int main(int argc, char** argv) {
     }
 #endif
     mcp::ServerCapabilities capabilities;
-    capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+    // listChanged lets a subscriptions/listen stream take notify_tools_changed's notification.
+    capabilities.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
     capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
     capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
     capabilities.completions = json::object();

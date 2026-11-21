@@ -25,6 +25,7 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace mcp::detail {
 
@@ -143,6 +144,9 @@ struct RestartingStdioTransport::State {
         if (const auto found = outstanding.find(id); found != outstanding.end()) {
             outstanding.erase(found);
         }
+        if (const auto found = listening.find(id); found != listening.end()) {
+            listening.erase(found);
+        }
         if (initialize_request && id == initialize_id && !scanned->has_result) {
             // A server that refuses initialize is not a legacy one, and the next process is not
             // initialized either.
@@ -180,14 +184,20 @@ struct RestartingStdioTransport::State {
                 initialized_notification = std::string(message);
             } else if (scanned->method == R"("notifications/cancelled")") {
                 // A cancelled request may never be answered; it no longer waits.
-                if (const auto found = outstanding.find(cancelled_id(message));
-                    found != outstanding.end()) {
+                const auto cancelled = cancelled_id(message);
+                if (const auto found = outstanding.find(cancelled); found != outstanding.end()) {
                     outstanding.erase(found);
+                }
+                if (const auto found = listening.find(cancelled); found != listening.end()) {
+                    listening.erase(found);
                 }
             }
             return true;
         }
         outstanding.insert(id);
+        if (scanned->method == R"("subscriptions/listen")") {
+            listening.insert_or_assign(id, std::string(message));
+        }
         if (scanned->method == R"("initialize")") {
             initialize_request = std::string(message);
             initialize_id = id;
@@ -199,9 +209,12 @@ struct RestartingStdioTransport::State {
     void forget_request(std::string_view message) {
         const auto scanned = scan_jsonrpc_envelope(message);
         if (scanned && !scanned->method.empty()) {
-            if (const auto found = outstanding.find(canonical_id(scanned->id));
-                found != outstanding.end()) {
+            const auto id = canonical_id(scanned->id);
+            if (const auto found = outstanding.find(id); found != outstanding.end()) {
                 outstanding.erase(found);
+            }
+            if (const auto found = listening.find(id); found != listening.end()) {
+                listening.erase(found);
             }
         }
     }
@@ -266,8 +279,12 @@ struct RestartingStdioTransport::State {
         self->ready = false;
         self->restart_due = true;
         self->ended_with = failure;
+        // An open subscriptions/listen stream is asked for again from the next process, so the
+        // client's subscription goes on; every other request is answered now.
         for (const auto& id : self->outstanding) {
-            self->queued.push_back(closed_answer(id));
+            if (!self->listening.contains(id)) {
+                self->queued.push_back(closed_answer(id));
+            }
         }
         self->outstanding.clear();
     }
@@ -294,6 +311,21 @@ struct RestartingStdioTransport::State {
         }
     }
 
+    /// Sends the client's open subscriptions/listen requests to a new process, as the
+    /// specification asks of a client that restarts its server. Each is a whole 2026-07-28
+    /// request, so the new process serves it as it is.
+    static Task<void> resubscribe(std::shared_ptr<State> self) {
+        // [gcc11-sso: string-in-frame] The requests are copied to the heap before the first
+        // suspension.
+        auto requests = std::make_shared<std::vector<std::pair<std::string, std::string>>>(
+            self->listening.begin(), self->listening.end());
+        auto transport = self->current;
+        for (const auto& [id, message] : *requests) {
+            co_await transport->write_message(message);
+            self->outstanding.insert(id);
+        }
+    }
+
     /// Starts processes, each after the policy's delay, until one is ready or the policy allows no
     /// more. Rethrows what ended the last process when none starts.
     static Task<void> start_again(std::shared_ptr<State> self) {
@@ -312,6 +344,7 @@ struct RestartingStdioTransport::State {
             try {
                 self->launch();
                 co_await replay_initialize(self);
+                co_await resubscribe(self);
                 started = true;
             } catch (...) {
                 failure = std::current_exception();
@@ -388,6 +421,9 @@ struct RestartingStdioTransport::State {
     std::optional<std::string> initialize_request;
     std::string initialize_id;
     std::optional<std::string> initialized_notification;
+    /// The client's subscriptions/listen requests the current process holds open, by id, as
+    /// written; each is sent again to the next process.
+    std::map<std::string, std::string, std::less<>> listening;
     /// Messages for the client before the next read: the answers made for an ended process, and
     /// what arrived while initialize was sent again.
     std::deque<std::string> queued;
