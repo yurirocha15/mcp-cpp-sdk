@@ -220,12 +220,11 @@ Catch it the same way as any other ``McpError``.
    A timeout is a local decision. A request whose bytes
    have not been written yet is dropped before transmission, but once transport
    I/O has started the server may still run the call to completion after the
-   client has given up. In a 2026-07-28 session the client sends
-   ``notifications/cancelled`` for a request that times out, which a handler
-   sees as ``ctx.is_cancelled()``, but that cannot undo work the handler has
-   already done; in a session of an older revision it sends nothing. Treat a
-   timed-out non-idempotent request as having an unknown outcome, and see the
-   retry guidance below before repeating it.
+   client has given up. The client sends ``notifications/cancelled`` for a
+   request that times out, other than ``initialize``, which a handler sees as
+   ``ctx.is_cancelled()``, but that cannot undo work the handler has already
+   done. Treat a timed-out non-idempotent request as having an unknown outcome,
+   and see the retry guidance below before repeating it.
 
 A non-positive timeout is rejected rather than treated as "no deadline":
 constructing a ``Client`` with one, or passing one in ``RequestOptions``,

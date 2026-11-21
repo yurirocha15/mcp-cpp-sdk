@@ -1012,9 +1012,9 @@ TEST(ClientEra, CancelStopsWaitingForAModernRequestOnly) {
     }
 }
 
-// A modern request that times out is cancelled with notifications/cancelled, so the server stops
-// working on it. A legacy request and the era probe are left as they were.
-TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
+// A request that times out is cancelled with notifications/cancelled in either era, so the server
+// stops working on it. An era probe that gets no answer is left as it was.
+TEST(ClientEra, TimeoutCancelsTheRequestButNotTheProbe) {
     struct Case {
         std::string name;
         mcp::ClientProtocol protocol;
@@ -1023,8 +1023,9 @@ TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
     };
     const std::vector<Case> cases = {
         {"modern", mcp::ClientProtocol::pinned("2026-07-28"), false, 1},
-        {"legacy", mcp::ClientProtocol::pinned("2025-11-25"), false, 0},
-        {"auto, silent probe", mcp::ClientProtocol::automatic(), true, 0},
+        {"legacy", mcp::ClientProtocol::pinned("2025-11-25"), false, 1},
+        // The one cancellation names the tools/call made after the probe gave up, not the probe.
+        {"auto, silent probe", mcp::ClientProtocol::automatic(), true, 1},
     };
     for (const auto& item : cases) {
         SCOPED_TRACE(item.name);
@@ -1069,6 +1070,32 @@ TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
             EXPECT_EQ(params.value("reason", ""), "Request timed out");
         }
     }
+}
+
+// An initialize request that times out is not cancelled: a client must not cancel one.
+TEST(ClientEra, ATimedOutInitializeIsNotCancelled) {
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::pinned("2025-11-25");
+    options.request_timeout = std::chrono::milliseconds(100);
+    Harness harness(options);
+    harness.peer.reply = [](const json&) -> std::optional<json> { return std::nullopt; };
+
+    int code = 0;
+    harness.run([&]() -> mcp::Task<void> {
+        try {
+            co_await harness.client->connect("test-client", "1.0");
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+        // A notification would be written after the request fails; give it time to reach the peer.
+        boost::asio::steady_timer settle(harness.io);
+        settle.expires_after(std::chrono::milliseconds(20));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(harness.peer.with_method("initialize").size(), 1u);
+    EXPECT_TRUE(harness.peer.with_method("notifications/cancelled").empty());
 }
 
 // A CancellationToken ends every call given it at once, in either era: each fails with

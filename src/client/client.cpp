@@ -964,10 +964,13 @@ struct Client::Impl {
         auto strand = state->strand;
         // Awaiting post(strand) would not rebind a caller-owned coroutine's continuation.
         // Spawn the complete pending-request lifecycle on the client strand instead.
-        return boost::asio::co_spawn(strand,
-                                     send_request_wire(std::move(state), std::move(wire), id, timeout,
-                                                       probe, request_options.cancellation),
-                                     boost::asio::use_awaitable);
+        // A client must not cancel an initialize request.
+        const bool cancellable = method != "initialize";
+        return boost::asio::co_spawn(
+            strand,
+            send_request_wire(std::move(state), std::move(wire), id, timeout, probe, cancellable,
+                              request_options.cancellation),
+            boost::asio::use_awaitable);
     }
 
     /// The methods 2026-07-28 removed. The server answers none of them, so the request is refused
@@ -2027,6 +2030,7 @@ struct Client::Impl {
     static Task<nlohmann::json> send_request_wire(std::shared_ptr<Impl> state,
                                                   std::shared_ptr<const std::string> wire, int64_t id,
                                                   std::chrono::milliseconds timeout, bool probe,
+                                                  bool cancellable,
                                                   std::optional<CancellationToken> cancellation) {
         if (state->closed.load(std::memory_order_acquire)) {
             throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed");
@@ -2119,11 +2123,12 @@ struct Client::Impl {
             state->pending_requests.erase(iter);
         }
 
-        // A 2026-07-28 request the client stops waiting for is cancelled, so the server stops
-        // working on it and an HTTP transport closes its response stream. An era probe is given up
-        // the same way where that closes a connection; elsewhere the server may predate the era.
+        // A request the client stops waiting for is cancelled, as the specification asks of a
+        // timeout, so the server stops working on it and an HTTP transport closes its response
+        // stream. An era probe is given up the same way where that closes a connection; elsewhere
+        // the server may predate the era.
         const bool cancels =
-            state->modern_version().has_value() || (probe && state->overlapping_writes);
+            probe ? state->modern_version().has_value() || state->overlapping_writes : cancellable;
         if (timed_out && cancels) {
             send_cancelled(state, id, std::string("Request timed out"));
         }
