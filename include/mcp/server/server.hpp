@@ -849,8 +849,9 @@ class MCP_API Server {
      * @details The server's own work (reading, parsing and answering protocol messages) stays on
      * the executor passed to run(), and so do middleware and the completion provider; only the
      * call of one of those handlers moves to @p executor, and the server resumes on its own
-     * executor when it returns. A handler that blocks then ties up a thread of @p executor rather
-     * than one the transport needs. Read unsynchronized by request handlers; must be called before
+     * executor when it returns. A tool call made as a task runs on @p executor whole, its
+     * middleware included. A handler that blocks then ties up a thread of @p executor rather than
+     * one the transport needs. Read unsynchronized by request handlers; must be called before
      * run().
      *
      * The execution context of @p executor must be destroyed after the one the server runs on: a
