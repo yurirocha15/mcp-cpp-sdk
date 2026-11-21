@@ -851,6 +851,10 @@ class MCP_API Server {
      * thread of @p executor rather than one the transport needs. Read unsynchronized by request
      * handlers; must be called before run().
      *
+     * The execution context of @p executor must be destroyed after the one the server runs on: a
+     * program that runs its own event loop constructs the Runtime that gives @p executor before
+     * that loop's io_context.
+     *
      * A handler still running on @p executor when run_stdio() or run_http() stop waiting for it
      * (see stop()) can no longer reach the client: its Context calls throw std::runtime_error.
      * What it returns goes nowhere, and the server state it holds, with what the registered
