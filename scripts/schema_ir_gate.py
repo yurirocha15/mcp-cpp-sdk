@@ -5,7 +5,8 @@ Runs the mcp-schema-workload executable of each build (test/perf/schema_workload
 Callgrind with two iteration counts. The difference, divided by the difference in iterations, is
 the instruction count of one iteration without the start-up, and does not depend on the host's
 load. The base build is measured twice; when the two measurements disagree by more than 0.5% the
-run is invalid. Then each group's head/base ratio is held to its limit in LIMITS. The groups:
+run is invalid. Then each group's head/base ratio is held to its limit in LIMITS, which also says
+why the limits differ. The groups:
 
   tools        tool schemas
   native       schemas of single keywords
@@ -35,11 +36,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+# The most instructions head may take per iteration, as a fraction of base's: 1.03 lets head take
+# up to 3% more than base, 1.00 allows no increase.
 LIMITS = {
+    # Evaluation every tool call runs: a 3% margin for changes to the shared evaluation code.
     "tools": 1.03,
     "native": 1.03,
+    # Applicator and reference schemas evaluate subschemas many times over, so a small cost per
+    # subschema adds up; a stopped validation's instructions are the most work an input can cause.
+    # Neither may grow.
     "applicators": 1.00,
     "stops": 1.00,
+    # A schema is compiled once and cached, while validation runs on every call, so compiling may
+    # take up to 20% more.
     "compile": 1.20,
 }
 FEW = 1
