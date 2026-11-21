@@ -378,6 +378,15 @@ inline constexpr std::size_t g_WORK_PER_UNIT = 256;
 /// the value with a schema value, such as an `enum` member, costs 8.
 inline constexpr std::size_t g_WORK_PER_UNIT_AND_SCHEMA_NODE = 8;
 
+/// Deepest nesting of schema evaluations in one native validation: every keyword that evaluates a
+/// subschema, in place or on a member or item, is one level. The same number as the evaluation
+/// path bound of the vendored jsoncons.
+inline constexpr std::size_t g_MAX_EVAL_DEPTH = 192;
+
+/// Branch violations the native evaluation keeps while an `anyOf` or `oneOf` branch is evaluated, to
+/// report the first branch's when no branch matches.
+inline constexpr std::size_t g_MAX_BRANCH_VIOLATIONS = 4;
+
 /// Memory the messages kept for failed branches may hold at once during one validation.
 inline constexpr std::size_t g_MAX_KEPT_MESSAGE_BYTES = 32 * 1024 * 1024;
 

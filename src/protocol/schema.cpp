@@ -327,7 +327,8 @@ struct CompiledSchemaImpl {
     nlohmann::json source;
     SchemaOptions options;
     std::size_t schema_nodes;  ///< Values in the schema document, itself included.
-    jcs::json_schema<jc::json> compiled;
+    /// The jsoncons evaluation, for a schema NativeSchema does not implement.
+    std::optional<jcs::json_schema<jc::json>> compiled;
     /// Set when the schema uses only the keywords NativeSchema implements; validation then walks
     /// the value directly instead of converting it for jsoncons.
     std::optional<detail::NativeSchema> native;
@@ -565,6 +566,70 @@ CompiledSchemaCache& compiled_schema_cache() {
 /// detail::ScopedSchemaEngine.
 thread_local detail::SchemaEngine g_schema_engine = detail::SchemaEngine::eAutomatic;
 
+/// @p schema (converted to @p converted) compiled by jsoncons, with every reference it cannot
+/// resolve refused, and probed for reference cycles that never descend into the value.
+jcs::json_schema<jc::json> compile_with_jsoncons(const nlohmann::json& schema, jc::json converted,
+                                                 const ValueShape& schema_shape,
+                                                 const SchemaOptions& options) {
+    std::optional<jcs::json_schema<jc::json>> compiled;
+    // jsoncons asks this resolver for every $ref target it cannot find in the document or the
+    // bundled metaschemas. It refuses all of them, so nothing is ever fetched, and records what it
+    // refused so the error can say so.
+    std::vector<std::string> refused;
+    auto refuse = [&refused](const jc::uri& uri) {
+        if (find_dialect(uri.base().string()).empty()) {
+            refused.push_back(uri.string());
+        }
+        return jc::json::null();
+    };
+    // Patterns that cannot be used are collected instead of ending the compile, so that any other
+    // problem the schema has is found and reported first.
+    detail::PatternBudget patterns(options.max_pattern_instructions);
+    try {
+        auto evaluation =
+            jcs::evaluation_options{}.default_version(std::string(supported_dialects()[0]));
+        compiled.emplace(jcs::make_json_schema(std::move(converted), refuse, evaluation));
+    } catch (const detail::RegexError& error) {
+        throw pattern_error(error);
+    } catch (const std::exception& error) {
+        if (!refused.empty()) {
+            // jsoncons also asks for the metaschema of an embedded resource's `$schema`.
+            if (declares_dialect(schema, refused.front())) {
+                throw SchemaError(SchemaError::Category::eUnsupportedDialect,
+                                  describe("unsupported JSON Schema dialect: ", refused.front()));
+            }
+            throw SchemaError(SchemaError::Category::eUnresolvedRef,
+                              describe("JSON Schema reference cannot be resolved in the document: ",
+                                       without_default_base(refused.front())));
+        }
+        throw SchemaError(SchemaError::Category::eInvalidSchema,
+                          describe("JSON Schema cannot be compiled: ", error.what()));
+    }
+    // A reference cycle that never descends into the value exceeds the evaluation limits whatever
+    // the value is. Trying a few trivial values finds it now instead of on every validation. A
+    // pattern that could not be compiled stands in as one that matches nothing until then.
+    ValueShape trivial;
+    trivial.nodes = 1;
+    trivial.levels = 1;
+    for (const auto& probe :
+         {jc::json::null(), jc::json(jc::json_object_arg), jc::json(jc::json_array_arg), jc::json(""),
+          jc::json(0), jc::json(true)}) {
+        try {
+            const WorkBudget budget(trivial, schema_shape.nodes, options);
+            (void)compiled->is_valid(probe);
+        } catch (const jcs::evaluation_limit_error& error) {
+            throw SchemaError(
+                SchemaError::Category::eInvalidSchema,
+                describe("evaluating the JSON Schema against a trivial value: ", error.what()));
+        }
+    }
+    if (patterns.problem()) {
+        throw pattern_error(*patterns.problem());
+    }
+
+    return std::move(*compiled);
+}
+
 }  // namespace
 
 SchemaError::SchemaError(Category category, const std::string& message)
@@ -645,64 +710,9 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
                      first_problem.message));
     }
 
-    // jsoncons asks this resolver for every $ref target it cannot find in the document or the
-    // bundled metaschemas. It refuses all of them, so nothing is ever fetched, and records what it
-    // refused so the error can say so.
-    std::vector<std::string> refused;
-    auto refuse = [&refused](const jc::uri& uri) {
-        if (find_dialect(uri.base().string()).empty()) {
-            refused.push_back(uri.string());
-        }
-        return jc::json::null();
-    };
-    std::optional<jcs::json_schema<jc::json>> compiled;
-    // Patterns that cannot be used are collected instead of ending the compile, so that any other
-    // problem the schema has is found and reported first.
-    detail::PatternBudget patterns(options.max_pattern_instructions);
-    try {
-        auto evaluation =
-            jcs::evaluation_options{}.default_version(std::string(supported_dialects()[0]));
-        compiled.emplace(jcs::make_json_schema(std::move(converted), refuse, evaluation));
-    } catch (const detail::RegexError& error) {
-        throw pattern_error(error);
-    } catch (const std::exception& error) {
-        if (!refused.empty()) {
-            // jsoncons also asks for the metaschema of an embedded resource's `$schema`.
-            if (declares_dialect(schema, refused.front())) {
-                throw SchemaError(SchemaError::Category::eUnsupportedDialect,
-                                  describe("unsupported JSON Schema dialect: ", refused.front()));
-            }
-            throw SchemaError(SchemaError::Category::eUnresolvedRef,
-                              describe("JSON Schema reference cannot be resolved in the document: ",
-                                       without_default_base(refused.front())));
-        }
-        throw SchemaError(SchemaError::Category::eInvalidSchema,
-                          describe("JSON Schema cannot be compiled: ", error.what()));
-    }
-    // A reference cycle that never descends into the value exceeds the evaluation limits whatever
-    // the value is. Trying a few trivial values finds it now instead of on every validation. A
-    // pattern that could not be compiled stands in as one that matches nothing until then.
-    ValueShape trivial;
-    trivial.nodes = 1;
-    trivial.levels = 1;
-    for (const auto& probe :
-         {jc::json::null(), jc::json(jc::json_object_arg), jc::json(jc::json_array_arg), jc::json(""),
-          jc::json(0), jc::json(true)}) {
-        try {
-            const WorkBudget budget(trivial, schema_shape.nodes, options);
-            (void)compiled->is_valid(probe);
-        } catch (const jcs::evaluation_limit_error& error) {
-            throw SchemaError(
-                SchemaError::Category::eInvalidSchema,
-                describe("evaluating the JSON Schema against a trivial value: ", error.what()));
-        }
-    }
-    if (patterns.problem()) {
-        throw pattern_error(*patterns.problem());
-    }
-
-    // NativeSchema compiles the patterns again, within a budget of its own; one it cannot compile
-    // leaves the schema to jsoncons.
+    // A schema the native evaluation implements needs nothing from jsoncons beyond the metaschema
+    // check above: it has no references, so no cycle to probe for, and its patterns compiled. A
+    // pattern NativeSchema cannot compile leaves the schema to jsoncons, which reports it.
     auto native = [&schema, &options, engine]() -> std::optional<detail::NativeSchema> {
         if (engine == detail::SchemaEngine::eJsoncons) {
             return std::nullopt;
@@ -713,8 +723,12 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     if (engine == detail::SchemaEngine::eNative && !native) {
         throw std::domain_error("the native schema evaluation does not implement this schema");
     }
+    std::optional<jcs::json_schema<jc::json>> compiled;
+    if (!native) {
+        compiled = compile_with_jsoncons(schema, std::move(converted), schema_shape, options);
+    }
     auto result = std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
-        schema, options, schema_shape.nodes, std::move(*compiled), std::move(native)});
+        schema, options, schema_shape.nodes, std::move(compiled), std::move(native)});
     if (use_cache) {
         compiled_schema_cache().insert(*hash, result);
     }
@@ -742,7 +756,7 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
     const auto converted = to_jsoncons(instance);
     try {
         const WorkBudget budget(shape, impl_->schema_nodes, options);
-        impl_->compiled.validate(converted, [&](const jcs::validation_message& message) {
+        impl_->compiled->validate(converted, [&](const jcs::validation_message& message) {
             result.valid = false;
             if (result.violations.size() < options.max_reported_violations) {
                 result.violations.push_back(
