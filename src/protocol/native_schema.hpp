@@ -18,10 +18,12 @@ namespace mcp::detail {
  * copies its evaluation path for every keyword it evaluates, which makes checking typical tool
  * arguments several times slower than walking them once.
  *
- * Implemented: every 2020-12 assertion and applicator keyword, and the reference keywords `$ref`,
- * `$dynamicRef`, `$defs`, `$id`, `$anchor` and `$dynamicAnchor`, except `unevaluatedProperties`
- * and `unevaluatedItems`, which leave the schema to jsoncons, as do `additionalItems` and
- * `dependencies`. Annotations and keywords jsoncons ignores are ignored too (`format`, `examples`,
+ * Implemented: every 2020-12 assertion and applicator keyword, `unevaluatedProperties` and
+ * `unevaluatedItems`, and the reference keywords `$ref`, `$dynamicRef`, `$defs`, `$id`, `$anchor`
+ * and `$dynamicAnchor`. `additionalItems` and `dependencies`, which jsoncons also implements for
+ * 2020-12, leave the schema to jsoncons. The schemas evaluated in place at a value's location
+ * record which of its members and items they evaluated only when an `unevaluated*` keyword reads
+ * it. Annotations and keywords jsoncons ignores are ignored too (`format`, `examples`,
  * `contentEncoding`, `contentMediaType`, `$comment`, `x-...`). `$schema` may appear only at the
  * root of a document and only naming 2020-12.
  *

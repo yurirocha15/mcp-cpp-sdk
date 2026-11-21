@@ -84,7 +84,9 @@ TEST(SchemaEngines, ForcedEngineBypassesTheCache) {
 // The native evaluation refuses a schema it does not implement instead of handing it to jsoncons.
 TEST(SchemaEngines, ForcedNativeRefusesWhatItDoesNotImplement) {
     const ScopedSchemaEngine native(SchemaEngine::eNative);
-    EXPECT_THROW((void)CompiledSchema::compile({{"unevaluatedProperties", false}}), std::domain_error);
+    EXPECT_THROW(
+        (void)CompiledSchema::compile({{"$schema", "http://json-schema.org/draft-07/schema#"}}),
+        std::domain_error);
     // The checks every schema gets still come first.
     EXPECT_THROW((void)CompiledSchema::compile({{"type", 1}}), mcp::SchemaError);
 }

@@ -126,8 +126,8 @@ using SchemaDocuments = std::map<std::string, nlohmann::json>;
  * A value whose validation exceeds a bound is reported as invalid. A recursive schema takes one
  * level of nesting for each subschema on its way down one level of the value: one that passes
  * through `anyOf`, `items`, `allOf` and `$ref` at every level reaches the bound at 48 levels of the
- * value. A schema that uses `unevaluatedProperties` or `unevaluatedItems`, or a dialect other than
- * 2020-12, is bounded by the length of its evaluation path instead (192 keywords and array
+ * value. A schema of a dialect other than 2020-12, or one that refers to a metaschema, is bounded
+ * by the length of its evaluation path instead (192 keywords and array
  * indexes), which a schema passing through `anyOf` and `$ref` at every level reaches at about 48
  * levels. The same bounds apply when the schema is checked against its metaschema, which a 2020-12
  * schema nesting `properties` 27 levels deep exceeds. A schema that exceeds a bound even for a

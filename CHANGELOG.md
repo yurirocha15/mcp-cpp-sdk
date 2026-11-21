@@ -13,9 +13,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
-- Most 2020-12 schemas with `$ref`, `$dynamicRef` or anchors are validated by
-  the SDK's own evaluation, which accepts an empty `$ref` or `$id` as RFC 3986
-  allows.
+- 2020-12 schemas, `$ref`, `$dynamicRef` and `unevaluated*` included, are
+  validated by the SDK's own evaluation unless they refer to a metaschema; an
+  empty `$ref` or `$id` is accepted.
 
 ### Fixed
 

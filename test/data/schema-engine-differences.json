@@ -675,6 +675,30 @@
                 "jsoncons refuses an empty URI reference in $ref, $dynamicRef or $id as an invalid URI; RFC 3986 allows it, and it names the current base URI, so the schema compiles"
         },
         {
+            "corpus": "mutants",
+            "dialect": "draft2020-12",
+            "file": "unevaluatedItems.json",
+            "index": 1403,
+            "reason":
+                "jsoncons refuses an empty URI reference in $ref, $dynamicRef or $id as an invalid URI; RFC 3986 allows it, and it names the current base URI, so the schema compiles"
+        },
+        {
+            "corpus": "mutants",
+            "dialect": "draft2020-12",
+            "file": "unevaluatedProperties.json",
+            "index": 2294,
+            "reason":
+                "jsoncons refuses an empty URI reference in $ref, $dynamicRef or $id as an invalid URI; RFC 3986 allows it, and it names the current base URI, so the schema compiles"
+        },
+        {
+            "corpus": "mutants",
+            "dialect": "draft2020-12",
+            "file": "unevaluatedProperties.json",
+            "index": 3251,
+            "reason":
+                "jsoncons refuses an empty URI reference in $ref, $dynamicRef or $id as an invalid URI; RFC 3986 allows it, and it names the current base URI, so the schema compiles"
+        },
+        {
             "corpus": "suite",
             "dialect": "draft2020-12",
             "file": "dynamicRef.json",

@@ -75,6 +75,8 @@ struct NativeSchema::Node {
     /// The `$dynamicAnchor` name `$dynamicRef` looks for in the dynamic scope; empty when its
     /// target declares no such anchor, so that it works as `$ref`.
     std::string dynamic_name;
+    const Node* unevaluated_properties = nullptr;
+    const Node* unevaluated_items = nullptr;
     const Resource* resource = nullptr;  ///< The schema resource the schema belongs to.
     bool has_applicators = false;        ///< Any of all_of to dynamic_ref is set.
 };
@@ -98,11 +100,9 @@ using Document = NativeSchema::Document;
 /// one is left to jsoncons; any keyword in neither list is one jsoncons ignores, and so is ignored
 /// here.
 bool is_unsupported_keyword(std::string_view keyword) {
-    static constexpr std::array<std::string_view, 4> s_unsupported = {
+    static constexpr std::array<std::string_view, 2> s_unsupported = {
         "additionalItems",
         "dependencies",
-        "unevaluatedItems",
-        "unevaluatedProperties",
     };
     return std::find(s_unsupported.begin(), s_unsupported.end(), keyword) != s_unsupported.end();
 }
@@ -552,6 +552,12 @@ class Compiler {
         if (keyword == "else") {
             return compile_schema(value, resource, here, node.else_schema);
         }
+        if (keyword == "unevaluatedProperties") {
+            return compile_schema(value, resource, here, node.unevaluated_properties);
+        }
+        if (keyword == "unevaluatedItems") {
+            return compile_schema(value, resource, here, node.unevaluated_items);
+        }
         // Anything else is an annotation or a keyword jsoncons ignores, such as `format` and, in
         // 2020-12, `contentEncoding` and `contentMediaType`.
         return true;
@@ -931,6 +937,52 @@ std::size_t equality_hash(const nlohmann::json& value) {
     return mix(eOther, 0);  // null, NaN and Infinity
 }
 
+/// The members and items of a value that schemas evaluated at its location, which
+/// `unevaluatedProperties` and `unevaluatedItems` leave alone.
+struct Annotations {
+    std::vector<char> members;     ///< By member index, in the object's order; empty when none.
+    std::size_t items = 0;         ///< Items [0, items) were evaluated.
+    std::vector<char> item_flags;  ///< By item index, items `contains` matched; empty when none.
+
+    void member(std::size_t index, std::size_t count) {
+        if (members.empty()) {
+            members.assign(count, 0);
+        }
+        members[index] = 1;
+    }
+
+    void item(std::size_t index, std::size_t count) {
+        if (item_flags.empty()) {
+            item_flags.assign(count, 0);
+        }
+        item_flags[index] = 1;
+    }
+
+    [[nodiscard]] bool has_member(std::size_t index) const {
+        return index < members.size() && members[index] != 0;
+    }
+
+    [[nodiscard]] bool has_item(std::size_t index) const {
+        return index < items || (index < item_flags.size() && item_flags[index] != 0);
+    }
+
+    void merge(const Annotations& other) {
+        if (members.size() < other.members.size()) {
+            members.resize(other.members.size(), 0);
+        }
+        for (std::size_t i = 0; i < other.members.size(); ++i) {
+            members[i] = static_cast<char>(members[i] | other.members[i]);
+        }
+        items = std::max(items, other.items);
+        if (item_flags.size() < other.item_flags.size()) {
+            item_flags.resize(other.item_flags.size(), 0);
+        }
+        for (std::size_t i = 0; i < other.item_flags.size(); ++i) {
+            item_flags[i] = static_cast<char>(item_flags[i] | other.item_flags[i]);
+        }
+    }
+};
+
 /// Where an evaluation records its violations: the validation's result, a bounded buffer for an
 /// `anyOf` or `oneOf` branch, or nowhere when only validity counts.
 struct Sink {
@@ -963,6 +1015,15 @@ class Evaluation {
         }
         const Frame frame(*this);
         const ScopeEntry scope(*this, node.resource);
+        if (node.unevaluated_properties != nullptr || node.unevaluated_items != nullptr) {
+            return check_unevaluated(node, value);
+        }
+        return check_keywords(node, value);
+    }
+
+   private:
+    /// Checks every keyword of @p node but `unevaluatedProperties` and `unevaluatedItems`.
+    bool check_keywords(const Node& node, const nlohmann::json& value) {
         if (node.reject_all) {
             return report("No value is allowed here");
         }
@@ -1134,14 +1195,102 @@ class Evaluation {
         Sink* outer_;
     };
 
+    /// Checks @p node, then its `unevaluatedProperties` and `unevaluatedItems` against what the
+    /// other keywords and the subschemas evaluated in place left unevaluated.
+    bool check_unevaluated(const Node& node, const nlohmann::json& value) {
+        Annotations local;
+        Annotations* outer = annotations_;
+        bool more = false;
+        {
+            const AnnotationScope scope(*this, &local);
+            more = check_keywords(node, value);
+        }
+        if (more && node.unevaluated_properties != nullptr && value.is_object()) {
+            std::size_t index = 0;
+            for (const auto& [name, member] : value.get_ref<const nlohmann::json::object_t&>()) {
+                if (!local.has_member(index)) {
+                    charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
+                    if (node.unevaluated_properties->reject_all) {
+                        const LocationScope location(*this, Location{&name, 0});
+                        more = report("Unevaluated property '" + name + "' is not allowed");
+                    } else {
+                        more = check_member(*node.unevaluated_properties, name, member);
+                    }
+                    if (!more) {
+                        break;
+                    }
+                    local.member(index, value.size());
+                }
+                ++index;
+            }
+        }
+        if (more && node.unevaluated_items != nullptr && value.is_array()) {
+            for (std::size_t index = 0; index < value.size(); ++index) {
+                if (!local.has_item(index)) {
+                    charge(work_, 1);
+                    if (node.unevaluated_items->reject_all) {
+                        const LocationScope location(*this, Location{{}, index});
+                        more = report("Unevaluated item " + std::to_string(index) + " is not allowed");
+                    } else {
+                        more = check_item(*node.unevaluated_items, value[index], index);
+                    }
+                    if (!more) {
+                        break;
+                    }
+                }
+            }
+            local.items = value.size();
+        }
+        if (outer != nullptr) {
+            outer->merge(local);
+        }
+        return more;
+    }
+
+    /// Makes @p annotations where the schemas evaluated at the current location record what they
+    /// evaluated, until destroyed; null records nothing.
+    class AnnotationScope {
+       public:
+        AnnotationScope(Evaluation& evaluation, Annotations* annotations)
+            : evaluation_(evaluation), outer_(evaluation.annotations_) {
+            evaluation_.annotations_ = annotations;
+        }
+        ~AnnotationScope() { evaluation_.annotations_ = outer_; }
+        AnnotationScope(const AnnotationScope&) = delete;
+        AnnotationScope& operator=(const AnnotationScope&) = delete;
+        AnnotationScope(AnnotationScope&&) = delete;
+        AnnotationScope& operator=(AnnotationScope&&) = delete;
+
+       private:
+        Evaluation& evaluation_;
+        Annotations* outer_;
+    };
+
     /// Whether @p value passes @p node, its violations going to @p buffer (up to @p limit) or, when
-    /// @p buffer is null, nowhere. The evaluation stops at the first violation it cannot keep.
+    /// @p buffer is null, nowhere, and what it evaluated to @p annotations when not null. The
+    /// evaluation stops at the first violation it cannot keep.
     bool passes(const Node& node, const nlohmann::json& value,
-                std::vector<SchemaViolation>* buffer = nullptr, std::size_t limit = 0) {
+                std::vector<SchemaViolation>* buffer = nullptr, std::size_t limit = 0,
+                Annotations* annotations = nullptr) {
         Sink sink{buffer, limit};
         const SinkScope scope(*this, sink);
+        const AnnotationScope annotation_scope(*this, annotations);
         (void)check(node, value);
         return sink.valid;
+    }
+
+    /// passes(), merging what @p node evaluated into the current annotations when it passes.
+    bool passes_annotated(const Node& node, const nlohmann::json& value,
+                          std::vector<SchemaViolation>* buffer = nullptr, std::size_t limit = 0) {
+        if (annotations_ == nullptr) {
+            return passes(node, value, buffer, limit);
+        }
+        Annotations branch;
+        const bool passed = passes(node, value, buffer, limit, &branch);
+        if (passed) {
+            annotations_->merge(branch);
+        }
+        return passed;
     }
 
     static std::string type_message(const std::vector<std::string>& types,
@@ -1216,6 +1365,10 @@ class Evaluation {
     /// Checks @p item, element @p index of the array being checked, against @p node.
     bool check_item(const Node& node, const nlohmann::json& item, std::size_t index) {
         const LocationScope scope(*this, Location{{}, index});
+        if (annotations_ == nullptr) {
+            return check(node, item);
+        }
+        const AnnotationScope annotations(*this, nullptr);
         return check(node, item);
     }
 
@@ -1263,11 +1416,18 @@ class Evaluation {
                 }
             }
         }
+        if (annotations_ != nullptr) {
+            annotations_->items =
+                std::max(annotations_->items, node.items != nullptr ? array.size() : prefix);
+        }
         if (node.contains) {
             std::size_t matching = 0;
-            for (const auto& item : array) {
-                if (passes(*node.contains, item)) {
+            for (std::size_t index = 0; index < array.size(); ++index) {
+                if (passes(*node.contains, array[index])) {
                     ++matching;
+                    if (annotations_ != nullptr) {
+                        annotations_->item(index, array.size());
+                    }
                 }
             }
             const auto least = node.min_contains.value_or(1);
@@ -1300,12 +1460,18 @@ class Evaluation {
     /// Checks @p member, named @p name, against @p node, at its own location.
     bool check_member(const Node& node, const std::string& name, const nlohmann::json& member) {
         const LocationScope scope(*this, Location{&name, 0});
+        if (annotations_ == nullptr) {
+            return check(node, member);
+        }
+        const AnnotationScope annotations(*this, nullptr);
         return check(node, member);
     }
 
     bool check_members(const Node& node, const nlohmann::json& object) {
-        for (const auto& [name, member] : object.items()) {
+        std::size_t position = 0;
+        for (const auto& [name, member] : object.get_ref<const nlohmann::json::object_t&>()) {
             charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
+            const auto here = position++;
             bool evaluated = false;
             const auto found =
                 std::lower_bound(node.property_names.begin(), node.property_names.end(), name);
@@ -1322,6 +1488,11 @@ class Evaluation {
                     if (!check_member(*node.pattern_schemas[i], name, member)) {
                         return false;
                     }
+                }
+            }
+            if (evaluated || node.additional_properties != nullptr) {
+                if (annotations_ != nullptr) {
+                    annotations_->member(here, object.size());
                 }
             }
             if (evaluated || !node.additional_properties) {
@@ -1365,8 +1536,9 @@ class Evaluation {
             }
         }
         if (node.property_names_schema) {
-            for (const auto& [name, member] : object.items()) {
+            for (const auto& [name, member] : object.get_ref<const nlohmann::json::object_t&>()) {
                 charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
+                const AnnotationScope annotations(*this, nullptr);
                 if (!check(*node.property_names_schema, nlohmann::json(name))) {
                     return false;
                 }
@@ -1418,9 +1590,11 @@ class Evaluation {
             bool matched = false;
             // Only the first branch's violations are ever reported, so the others are evaluated
             // for their validity alone.
-            matched = passes(*node.any_of[0], value, &first, buffer_size);
-            for (std::size_t i = 1; i < node.any_of.size() && !matched; ++i) {
-                matched = passes(*node.any_of[i], value);
+            matched = passes_annotated(*node.any_of[0], value, &first, buffer_size);
+            // What every passing branch evaluated counts, so all of them are evaluated then.
+            for (std::size_t i = 1; i < node.any_of.size() && (!matched || annotations_ != nullptr);
+                 ++i) {
+                matched = passes_annotated(*node.any_of[i], value) || matched;
             }
             if (!matched && !report_with("Value does not match any of the anyOf schemas", first)) {
                 return false;
@@ -1429,11 +1603,11 @@ class Evaluation {
         if (!node.one_of.empty()) {
             std::vector<SchemaViolation> first;
             std::size_t matched = 0;
-            if (passes(*node.one_of[0], value, &first, buffer_size)) {
+            if (passes_annotated(*node.one_of[0], value, &first, buffer_size)) {
                 ++matched;
             }
             for (std::size_t i = 1; i < node.one_of.size() && matched < 2; ++i) {
-                if (passes(*node.one_of[i], value)) {
+                if (passes_annotated(*node.one_of[i], value)) {
                     ++matched;
                 }
             }
@@ -1449,7 +1623,8 @@ class Evaluation {
             return false;
         }
         if (node.if_schema) {
-            const Node* branch = passes(*node.if_schema, value) ? node.then_schema : node.else_schema;
+            const Node* branch =
+                passes_annotated(*node.if_schema, value) ? node.then_schema : node.else_schema;
             if (branch != nullptr && !check(*branch, value)) {
                 return false;
             }
@@ -1466,6 +1641,7 @@ class Evaluation {
     /// The JSON Pointer of the current location, escaped as RFC 6901 requires.
     [[nodiscard]] std::string path() const {
         std::string path;
+        path.reserve(locations_.size() * 8);
         for (std::size_t step = 0; step < locations_.size(); ++step) {
             const auto& location = locations_[step];
             path += '/';
@@ -1505,7 +1681,10 @@ class Evaluation {
     std::size_t depth_ = 0;
     bool dynamic_scope_;
     std::vector<const Resource*> scope_;  ///< The dynamic scope, outermost first.
-    Locations locations_;                 ///< The path to the value being checked; a report builds it.
+    /// Where the schemas evaluated at the current location record what they evaluated; null when
+    /// nothing reads it.
+    Annotations* annotations_ = nullptr;
+    Locations locations_;  ///< The path to the value being checked; a report builds it.
 };
 
 }  // namespace
