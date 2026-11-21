@@ -843,13 +843,15 @@ class MCP_API Server {
     void set_tool_validation(const ToolValidationOptions& options);
 
     /**
-     * @brief Run tool handlers on @p executor instead of the executor the server runs on.
+     * @brief Run tool, resource, prompt and extension method handlers on @p executor instead of
+     *        the executor the server runs on.
      *
      * @details The server's own work (reading, parsing and answering protocol messages) stays on
-     * the executor passed to run(); only the call of a tool handler moves to @p executor, and the
-     * server resumes on its own executor when it returns. A handler that blocks then ties up a
-     * thread of @p executor rather than one the transport needs. Read unsynchronized by request
-     * handlers; must be called before run().
+     * the executor passed to run(), and so do middleware and the completion provider; only the
+     * call of one of those handlers moves to @p executor, and the server resumes on its own
+     * executor when it returns. A handler that blocks then ties up a thread of @p executor rather
+     * than one the transport needs. Read unsynchronized by request handlers; must be called before
+     * run().
      *
      * The execution context of @p executor must be destroyed after the one the server runs on: a
      * program that runs its own event loop constructs the Runtime that gives @p executor before
@@ -1511,8 +1513,8 @@ class MCP_API Server {
  * running there is no client to notify, and the member returns at once; a run that ends before the
  * notification is sent ends the wait as well.
  * @throws std::logic_error From each member when called on that event loop's thread, where
- *         synchronous handlers run (tool handlers excepted when set_handler_executor() moves
- *         them) and waiting would never end; and when the server runs only through
+ *         synchronous handlers run (except those set_handler_executor() moves) and waiting
+ *         would never end; and when the server runs only through
  *         Server::run() or a StreamableHttpSessionManager, whose coroutines are awaited instead.
  */
 class MCP_API SyncServer {

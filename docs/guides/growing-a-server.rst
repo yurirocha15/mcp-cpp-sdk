@@ -154,8 +154,8 @@ the clients subscribed to that URI. The tool that changes the resource here is a
 coroutine because it awaits that notification. The server offers subscriptions
 only when ``capabilities().resources->subscribe`` is true: registering a
 resource declares the resources capability, but leaves that flag to the
-program. The mutex keeps the name safe once tool handlers run on a pool of
-their own, as in the next step. See :doc:`/concepts/subscriptions`.
+program. The mutex keeps the name safe once handlers run on a pool of their
+own, as in the next step. See :doc:`/concepts/subscriptions`.
 
 .. literalinclude:: /_generated/progression/server_add_subscriptions.diff
    :language: diff
@@ -165,9 +165,9 @@ Run Handlers on a Thread Pool
 
 A synchronous handler runs on the server's event loop, so a slow one holds up
 the others. ``start(4)`` on an ``mcp::Runtime`` starts four threads that wait for work,
-and ``set_handler_executor()`` runs the tool handlers on them, while the server
-reads and answers messages on its own loop. Tool handlers that share state then
-synchronize it themselves.
+and ``set_handler_executor()`` runs the tool, resource and prompt handlers on
+them, while the server reads and answers messages on its own loop. Handlers
+that share state then synchronize it themselves.
 
 .. literalinclude:: /_generated/progression/server_add_handler_pool.diff
    :language: diff
@@ -283,6 +283,6 @@ A few calls on the same ``Server`` control it while it runs, from any thread:
   ``notify_resource_updated(uri)`` block until the notification has been sent
   from the event loop of ``run_stdio()`` or ``run_http()``. They throw
   ``std::logic_error`` when called on that loop's thread, where synchronous
-  handlers run (tool handlers excepted when a handler executor is set); there,
+  handlers run (except those a handler executor runs); there,
   and in coroutines, the ``notify_`` coroutines of the ``Server`` itself are
   awaited instead.

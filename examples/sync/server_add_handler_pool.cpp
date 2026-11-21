@@ -1,5 +1,5 @@
-// server_base.cpp whose tool handlers run on a pool of four threads, so that a slow one does not
-// hold up the others.
+// server_base.cpp whose tool, resource and prompt handlers run on a pool of four threads, so
+// that a slow one does not hold up the others.
 
 #include <mcp/mcp.hpp>
 

@@ -64,28 +64,30 @@ Middleware, Pages, Tasks, Apps and Skills
 .. literalinclude:: ../../examples/async/server.cpp
    :language: cpp
    :start-at: // Middleware, lists in pages
-   :end-before: // Tool handlers run on a pool
+   :end-before: // Tool, resource and prompt handlers run on a pool
    :dedent: 4
 
 See :doc:`../concepts/middleware`, :doc:`../concepts/pagination`,
 :doc:`../concepts/tasks`, :doc:`../concepts/apps` and
 :doc:`../concepts/skills`.
 
-A Pool for Tool Handlers
-^^^^^^^^^^^^^^^^^^^^^^^^
+A Pool for Handlers
+^^^^^^^^^^^^^^^^^^^
 
 .. literalinclude:: ../../examples/async/server.cpp
    :language: cpp
-   :start-at: // Tool handlers run on a pool
+   :start-at: // Tool, resource and prompt handlers run on a pool
    :end-before: // The event loop:
    :dedent: 4
 
-``set_handler_executor()`` moves the call of each tool handler to the pool's
-threads, and the server goes back to its own executor when the handler returns.
-Reading, parsing and answering messages stay on the event loop, so a tool
-handler that blocks or computes for long does not hold it up. A handler that
-only awaits needs no pool. Tool handlers that run on the pool share state
-through a mutex, as ``remember`` does.
+``set_handler_executor()`` moves the call of each tool, resource and prompt
+handler to the pool's threads, and the server goes back to its own executor when
+the handler returns. Reading, parsing and answering messages stay on the event
+loop, so a handler that blocks or computes for long does not hold it up. A
+handler that only awaits needs no pool. Handlers that run on the pool share
+state through a mutex, as ``remember`` does. The pool's ``Runtime`` is
+constructed before the ``io_context``, so that it is destroyed after it, as
+``set_handler_executor()`` requires.
 
 The Event Loop
 ^^^^^^^^^^^^^^

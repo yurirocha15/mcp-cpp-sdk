@@ -159,7 +159,8 @@ int main(int argc, char** argv) {
                               {}});
     skills.add_skill(std::move(greeting));
 
-    // Tool handlers run on a pool of four threads; the server's own work stays on the event loop.
+    // Tool, resource and prompt handlers run on a pool of four threads; the server's own work
+    // stays on the event loop.
     mcp::Runtime pool;
     pool.start(4);
     server.set_handler_executor(pool.executor());
