@@ -23,6 +23,10 @@ A ``Context`` is valid only for the duration of the request handler. It should n
 Logging
 -------
 
+.. note::
+
+   Protocol revision 2026-07-28 deprecates logging; the SDK keeps it for peers
+   that use it. See :ref:`spec-deprecated`.
 
 You can send log messages to the client using various log levels. The SDK respects the server's current log level, automatically filtering messages that are less severe than the configured threshold. For a request of protocol revision 2026-07-28 the threshold is the ``io.modelcontextprotocol/logLevel`` in the request's ``_meta``; without one nothing is sent.
 
@@ -211,6 +215,11 @@ such a handler sees it only when it runs on the handler executor (see
 
 Sampling (Reverse RPC)
 ----------------------
+
+.. note::
+
+   Protocol revision 2026-07-28 deprecates sampling; the SDK keeps it for peers
+   that use it. See :ref:`spec-deprecated`.
 
 Sampling allows the server to request a completion from the LLM via the client. This "Reverse RPC" capability enables servers to build complex, multi-step workflows where the server uses the client's LLM to process data or make decisions.
 

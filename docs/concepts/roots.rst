@@ -1,6 +1,11 @@
 Roots
 =====
 
+.. note::
+
+   Protocol revision 2026-07-28 deprecates roots; the SDK keeps them for peers
+   that use them. See :ref:`spec-deprecated`.
+
 Roots allow a client to declare specific URI prefixes that it has access to. Servers can then discover these roots to understand the boundaries of the client environment, which is particularly useful for tools that need to perform file system operations or access specific resources.
 
 Roots Overview

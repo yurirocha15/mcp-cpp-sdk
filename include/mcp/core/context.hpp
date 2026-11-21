@@ -166,6 +166,10 @@ class Context {
     /**
      * @brief Sends an informational log message to the client.
      *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
+     *
      * @param msg The log message to send.
      * @return A task that completes when the message is sent.
      */
@@ -173,6 +177,10 @@ class Context {
 
     /**
      * @brief Send a log message at a specific level.
+     *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
      *
      * @details Respects the server's current log level. Messages with a level
      * higher (less severe) than the current threshold are silently dropped.

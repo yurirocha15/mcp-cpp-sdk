@@ -32,6 +32,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `HttpServerTransport` and `StreamableHttpSessionManager` serve TLS with `set_tls()` and can require client certificates; the WebSocket transports speak wss on both sides.
 - `ClientOptions::response_cache` lets a `Client` answer list and `read_resource()` calls from earlier results while their `ttlMs` lasts; `RequestOptions::cache_mode` refreshes or bypasses it.
 - `Server::set_notification_rate_limit()` and `ClientOptions::notification_rate_limit` cap the progress and log notifications each request sends or delivers; there is no limit by default.
+- The documentation lists which parts of the specification the SDK implements and marks the features protocol revision 2026-07-28 deprecates.
 
 ### Changed
 

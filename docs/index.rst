@@ -29,6 +29,7 @@ Quick Links
 * :doc:`api/index` - Complete API reference
 * :doc:`examples` - Example programs and code snippets
 * :doc:`concepts/protocol` - How protocol revision 2026-07-28 works in the SDK
+* :doc:`spec-support` - Which parts of the specification the SDK implements
 * :doc:`architecture` - Design overview and architectural decisions
 
 .. toctree::
@@ -46,6 +47,7 @@ Quick Links
 
    concepts/index
    guides/index
+   spec-support
    integrations/client-apps
    api/index
 
