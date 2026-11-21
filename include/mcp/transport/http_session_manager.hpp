@@ -109,9 +109,9 @@ class MCP_API StreamableHttpSessionManager {
      * is served by a server that shares its tools, resources, prompts, handlers and settings, so
      * the members of @p server that belong to one session, such as Server::send_request(), stand
      * for none of them. set_protocol_policy() and set_tool_executor() set them on @p server
-     * itself. While
-     * listen() runs, Server::stop() closes the manager. @p server must outlive the manager and the
-     * task listen() returns.
+     * itself, and a policy set with Server::set_protocol_policy() before listen() holds for the
+     * endpoint as one set here does. While listen() runs, Server::stop() closes the manager.
+     * @p server must outlive the manager and the task listen() returns.
      *
      * @param executor Executor for async operations.
      * @param host Local bind address.

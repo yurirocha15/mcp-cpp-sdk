@@ -415,6 +415,13 @@ struct StreamableHttpSessionManager::Impl {
                 "StreamableHttpSessionManager::set_scope_requirements() needs a token validator: "
                 "call set_bearer_token_validator() or set_async_bearer_token_validator()");
         }
+        // A policy set on the served server itself holds for the HTTP side too, as one set here.
+        if (served_server_ != nullptr && !protocol_policy_) {
+            auto policy = served_server_->protocol_policy();
+            if (policy != ServerProtocolPolicy{}) {
+                protocol_policy_ = std::move(policy);
+            }
+        }
         listening_started_ = true;
         return true;
     }

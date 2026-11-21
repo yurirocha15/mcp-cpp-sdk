@@ -1556,6 +1556,8 @@ std::unique_ptr<Server> Server::session_server() const {
 
 std::shared_ptr<detail::RunControl> Server::run_control() const { return impl_->run_control; }
 
+ServerProtocolPolicy Server::protocol_policy() const { return impl_->protocol_policy; }
+
 void Server::stop() { impl_->run_control->stop_all(); }
 
 std::uint16_t Server::bound_port() const { return impl_->run_control->port(); }

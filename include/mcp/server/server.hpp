@@ -1495,6 +1495,9 @@ class MCP_API Server {
     /// The runs of this server in progress, which the run forms register with.
     [[nodiscard]] std::shared_ptr<detail::RunControl> run_control() const;
 
+    /// The protocol policy in effect (see set_protocol_policy()).
+    [[nodiscard]] ServerProtocolPolicy protocol_policy() const;
+
     /// Shared rather than owned outright: work already in flight when this Server is destroyed
     /// keeps the implementation alive until it finishes, so it never runs against freed state.
     std::shared_ptr<Impl> impl_;

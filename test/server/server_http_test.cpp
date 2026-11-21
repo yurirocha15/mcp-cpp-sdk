@@ -595,6 +595,40 @@ TEST_F(ServerHttpTest, ManagerServesTheServerItIsGiven) {
     EXPECT_EQ(greetings[1].value("greeting", ""), "Hello, Ada");
 }
 
+// A policy set on the Server before run_http() holds for its HTTP endpoint, as one set through
+// configure does: without legacy clients, initialize is answered 404 and GET 405.
+TEST_F(ServerHttpTest, APolicySetOnTheServerHoldsForTheEndpointOfRunHttp) {
+    mcp::ServerProtocolPolicy policy;
+    policy.serve_legacy = false;
+    server_->set_protocol_policy(policy);
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0);
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto port = wait_for_port(*server_);
+
+    asio::io_context io;
+    beast::tcp_stream initializing(io);
+    connect_when_listening(initializing, port);
+    const auto initialized = send_json_rpc(initializing, make_initialize_request("1"));
+    beast::tcp_stream listening(io);
+    connect_when_listening(listening, port);
+    http::request<http::string_body> listen{http::verb::get, "/mcp", 11};
+    listen.set(http::field::host, "127.0.0.1");
+    listen.set(http::field::accept, "text/event-stream");
+    http::write(listening, listen);
+    beast::flat_buffer buffer;
+    http::response<http::string_body> listened;
+    http::read(listening, buffer, listened);
+    server_->stop();
+    server_thread.join();
+
+    EXPECT_EQ(initialized.result(), http::status::not_found) << initialized.body();
+    EXPECT_EQ(listened.result(), http::status::method_not_allowed) << listened.body();
+}
+
 // The manager's setters configure the server it serves, which its session servers share, so a
 // policy given to run_http() holds for every session and every run.
 TEST_F(ServerHttpTest, APolicyFromConfigureHoldsForEverySessionAndRun) {
