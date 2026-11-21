@@ -73,6 +73,8 @@ These changes in behavior need no change to compile:
 - The AUR package's build no longer prints a gpg warning that the release key
   is not certified when it checks the source signature.
 - A middleware may return `next(ctx, params)` without awaiting it.
+- Closing a client ends a wait for a task at once, instead of after the pause
+  before the next poll.
 
 ## [0.3.0] - 2026-11-17
 

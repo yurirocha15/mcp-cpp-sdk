@@ -2011,6 +2011,12 @@ struct Client::Impl {
                                                std::move(message), std::nullopt});
             state->transport->close();
             state->incoming_requests_wake.cancel();
+            for (const auto& pause : state->poll_pauses) {
+                if (auto timer = pause.lock()) {
+                    timer->cancel();
+                }
+            }
+            state->poll_pauses.clear();
         });
     }
 
@@ -2175,11 +2181,17 @@ struct Client::Impl {
         send_cancelled(state, id, reason);
     }
 
-    /// Waits @p time on the strand, ending early when @p cancellation is cancelled.
+    /// Waits @p time on the strand, ending early when @p cancellation is cancelled or the client
+    /// closes.
     static Task<void> pause_unless_cancelled(std::shared_ptr<Impl> state,
                                              std::chrono::milliseconds time,
                                              std::optional<CancellationToken> cancellation) {
+        if (state->closed.load(std::memory_order_acquire)) {
+            co_return;
+        }
         auto timer = std::make_shared<boost::asio::steady_timer>(state->strand, time);
+        std::erase_if(state->poll_pauses, [](const auto& pause) { return pause.expired(); });
+        state->poll_pauses.push_back(timer);
         CancellationRegistration cancellation_registration;
         if (cancellation) {
             const auto& token_state = detail::CancellationAccess::state(*cancellation);
@@ -2622,6 +2634,9 @@ struct Client::Impl {
     /// Memory those requests take, as json_memory_cost() estimates it. Touched on the strand only.
     std::size_t incoming_request_bytes{0};
     boost::asio::steady_timer incoming_requests_wake{strand};
+    /// The pauses between the polls of the tasks being waited for, which closing ends. Touched on
+    /// the strand only.
+    std::vector<std::weak_ptr<boost::asio::steady_timer>> poll_pauses;
     ClientOptions options;
     detail::SerializedTransportWriter writer;
     /// What the transport said of itself; see writes_beside_queue().

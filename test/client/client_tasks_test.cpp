@@ -587,6 +587,39 @@ TEST(ClientTasksScripted, TheTaskMethodsDeclareTheExtensionWhateverTheOption) {
     }
 }
 
+// Closing the client ends a wait for a task at once, rather than at the next poll.
+TEST(ClientTasksScripted, ClosingTheClientEndsAWaitForATask) {
+    mcp::ClientOptions options;
+    options.task_poll_interval = std::chrono::hours(1);
+    ScriptedServer server(options);
+    server.reply = [](const json&, std::size_t) -> json {
+        return task_fields("working", {{"resultType", "complete"}});
+    };
+    std::string ended;
+    server.run([&]() -> mcp::Task<void> {
+        const auto handle = server.client->task_handle("task-1");
+        // Closes the client once the first poll has been answered and the wait pauses.
+        mcp_test::spawn_detached(server.io, [&server]() -> mcp::Task<void> {
+            while (server.requests("tasks/get").empty()) {
+                asio::steady_timer timer(server.io, std::chrono::milliseconds(1));
+                co_await timer.async_wait(asio::use_awaitable);
+            }
+            for (int tick = 0; tick < 10; ++tick) {
+                asio::steady_timer timer(server.io, std::chrono::milliseconds(1));
+                co_await timer.async_wait(asio::use_awaitable);
+            }
+            server.client->close();
+        });
+        try {
+            co_await handle.wait();
+            ended = "finished";
+        } catch (const std::exception& error) {
+            ended = error.what();
+        }
+    });
+    EXPECT_NE(ended.find("Client transport"), std::string::npos) << ended;
+}
+
 TEST(ClientTasksScripted, PollsAsOftenAsTheServerSuggests) {
     mcp::ClientOptions options;
     options.task_poll_interval = std::chrono::hours(1);
