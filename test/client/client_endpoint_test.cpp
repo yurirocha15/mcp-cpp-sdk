@@ -65,6 +65,20 @@ TEST(ClientEndpointTest, RefusesAnEmptyCommandOrFactory) {
     EXPECT_THROW(mcp::Client client(null_transport), std::invalid_argument);
 }
 
+// The options are checked before the endpoint makes its transport, which may start a process.
+TEST(ClientEndpointTest, OptionsAreCheckedBeforeTheTransportIsMade) {
+    bool made = false;
+    const auto endpoint =
+        mcp::Endpoint::custom([&made](const mcp::Executor&) -> std::shared_ptr<mcp::ITransport> {
+            made = true;
+            return nullptr;
+        });
+    mcp::ClientOptions options;
+    options.request_timeout = std::chrono::milliseconds(0);
+    EXPECT_THROW(mcp::Client client(endpoint, options), std::invalid_argument);
+    EXPECT_FALSE(made);
+}
+
 TEST(ClientEndpointTest, LaunchesTheServerAndCallsATool) {
     mcp::Client client(mcp::Endpoint::stdio(test_server({"serve", "first-argument"})));
     const auto result = boost::asio::co_spawn(

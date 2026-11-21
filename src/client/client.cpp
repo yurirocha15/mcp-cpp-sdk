@@ -2867,6 +2867,30 @@ struct Client::OwnedLoop {
     ~OwnedLoop() = default;
 };
 
+namespace {
+
+/// @throws std::invalid_argument When @p options holds a value a client cannot work with.
+void check_options(const ClientOptions& options) {
+    if (options.request_timeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("Client request timeout must be positive");
+    }
+    if (options.probe_timeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("Client probe timeout must be positive");
+    }
+    if (options.subscription_queue_limit == 0) {
+        throw std::invalid_argument("Client subscription queue limit must be positive");
+    }
+    if (options.task_poll_interval <= std::chrono::milliseconds::zero() ||
+        options.task_timeout <= std::chrono::milliseconds::zero()) {
+        throw std::invalid_argument("Client task poll interval and task timeout must be positive");
+    }
+    if (options.max_incoming_request_bytes == 0) {
+        throw std::invalid_argument("Client incoming request memory limit must be positive");
+    }
+}
+
+}  // namespace
+
 Client::Client(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options) {
     start(std::move(transport), executor, std::move(options));
 }
@@ -2877,6 +2901,8 @@ Client::Client(const Endpoint& endpoint, ClientOptions options) : loop_(std::mak
             loop_->close_wait, endpoint.close_wait_ + detail::constants::stdio_client::g_KILL_WAIT);
     }
     try {
+        // Before the transport, which may start the server's process.
+        check_options(options);
         const Executor executor = loop_->io.get_executor();
         start(endpoint.make_transport(executor), executor, std::move(options));
         impl_->blocking_loop = std::make_shared<const detail::BlockingLoop>(
@@ -2894,22 +2920,7 @@ void Client::start(std::shared_ptr<ITransport> transport, const Executor& execut
     if (!transport) {
         throw std::invalid_argument("Client transport must not be null");
     }
-    if (options.request_timeout <= std::chrono::milliseconds::zero()) {
-        throw std::invalid_argument("Client request timeout must be positive");
-    }
-    if (options.probe_timeout <= std::chrono::milliseconds::zero()) {
-        throw std::invalid_argument("Client probe timeout must be positive");
-    }
-    if (options.subscription_queue_limit == 0) {
-        throw std::invalid_argument("Client subscription queue limit must be positive");
-    }
-    if (options.task_poll_interval <= std::chrono::milliseconds::zero() ||
-        options.task_timeout <= std::chrono::milliseconds::zero()) {
-        throw std::invalid_argument("Client task poll interval and task timeout must be positive");
-    }
-    if (options.max_incoming_request_bytes == 0) {
-        throw std::invalid_argument("Client incoming request memory limit must be positive");
-    }
+    check_options(options);
     impl_ = std::make_shared<Impl>(std::move(transport), executor.get(), std::move(options));
     impl_->executor = executor;
     impl_->transport->set_interaction_observer(
