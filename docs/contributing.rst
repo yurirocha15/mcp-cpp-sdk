@@ -385,7 +385,7 @@ written for the last release needs a change to compile.
   concerns. The documentation and the commit message hold the details.
 * Keep each entry to 200 characters. The release tests check this.
 * Before a release, a ``Highlights`` part lists the few changes the release
-  page shows; ``release/README.md`` describes the release steps.
+  page shows.
 
 Reporting Bugs
 --------------

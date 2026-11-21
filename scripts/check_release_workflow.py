@@ -167,9 +167,7 @@ PUBLICATION_CONDITION = (
 
 # The environments of these two jobs are the release's reviews: one before any job reads a
 # release secret or signs, and one before anything is published. They hold no secrets.
-RUN_APPROVAL_NEEDS = frozenset(
-    {"contract", "repository-readiness", "immutability-gate", "existing-anchor-policy"}
-)
+RUN_APPROVAL_NEEDS = frozenset({"contract", "repository-readiness", "existing-anchor-policy"})
 RUN_APPROVED_JOBS = (*PREFLIGHT_CONDITIONS, "candidate")
 PUBLICATION_APPROVAL_CONDITION = (
     "${{ !cancelled() && needs.contract.outputs.mode == 'publish' && "
@@ -253,6 +251,27 @@ def scalar(block: list[str], key: str) -> str | None:
     return values[0] if values else None
 
 
+def environment(block: list[str]) -> str | None:
+    """Return the job's environment, written as ``environment: name`` or as a mapping."""
+
+    indexes = [index for index, line in enumerate(block) if re.match(r"    environment:( |$)", line)]
+    if not indexes:
+        return None
+    if len(indexes) > 1:
+        raise PolicyError("job contains multiple 'environment' values")
+    if block[indexes[0]] != "    environment:":
+        return block[indexes[0]][len("    environment: ") :]
+    names = []
+    for line in block[indexes[0] + 1 :]:
+        if not line.startswith("      "):
+            break
+        if line.startswith("      name: "):
+            names.append(line[len("      name: ") :])
+    if len(names) != 1:
+        raise PolicyError("job environment mapping does not name one environment")
+    return names[0]
+
+
 def expression(block: list[str], key: str) -> str | None:
     """Return a scalar or folded job-level expression with normalized whitespace."""
 
@@ -287,6 +306,19 @@ def sequence(block: list[str], key: str) -> tuple[str, ...]:
             break
         values.append(match.group(1))
     return tuple(values)
+
+
+def dependencies(blocks: dict[str, list[str]], job: str) -> set[str]:
+    """Return the jobs that ``job`` waits for, directly or through other jobs."""
+
+    found: set[str] = set()
+    pending = list(sequence(blocks[job], "needs"))
+    while pending:
+        need = pending.pop()
+        if need not in found:
+            found.add(need)
+            pending.extend(sequence(blocks.get(need, []), "needs"))
+    return found
 
 
 def require_fragments(text: str, fragments: tuple[str, ...], label: str) -> None:
@@ -382,7 +414,7 @@ def check_job_security(
         if mapping(block, "permissions") != expected_permissions[job]:
             raise PolicyError(f"job {job!r} permissions differ from reviewed policy")
         expected_environment = expected_environments.get(job)
-        if scalar(block, "environment") != expected_environment:
+        if environment(block) != expected_environment:
             raise PolicyError(f"job {job!r} has the wrong protected environment")
         forwarded, forwarding_lines = forwarded_secrets(block)
         if forwarded != expected_forwarded.get(job, frozenset()):
@@ -438,6 +470,16 @@ def check_job_graph(
     for job in RUN_APPROVED_JOBS:
         if "run-approval" not in sequence(blocks[job], "needs"):
             raise PolicyError(f"job {job!r} can start before the run is approved")
+    for job, block in blocks.items():
+        privileged = (
+            environment(block) is not None
+            or any("secrets." in line or line.startswith("    uses: ") for line in block)
+        )
+        if privileged and job != "run-approval" and "run-approval" not in dependencies(blocks, job):
+            raise PolicyError(
+                f"job {job!r} uses a protected environment, a secret or a workflow "
+                "before the run is approved"
+            )
     if expression(blocks["publication-approval"], "if") != PUBLICATION_APPROVAL_CONDITION or (
         "candidate" not in sequence(blocks["publication-approval"], "needs")
     ):

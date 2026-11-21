@@ -9,7 +9,7 @@ from conan.tools.files import copy
 class McpCppSdkConan(ConanFile):
     name = "mcp-cpp-sdk"
     package_type = "library"
-    license = ("Apache-2.0", "BSL-1.0")
+    license = "Apache-2.0"
     url = "https://github.com/yurirocha15/mcp-cpp-sdk"
     homepage = "https://github.com/yurirocha15/mcp-cpp-sdk"
     description = "C++20 Model Context Protocol SDK"
@@ -51,7 +51,6 @@ class McpCppSdkConan(ConanFile):
         "cmake/*",
         "include/*",
         "src/*",
-        "third_party/*",
     )
 
     def set_version(self):
@@ -116,12 +115,6 @@ class McpCppSdkConan(ConanFile):
             "LICENSE",
             src=self.source_folder,
             dst=Path(self.package_folder) / "licenses",
-        )
-        copy(
-            self,
-            "LICENSE",
-            src=Path(self.source_folder) / "third_party" / "jsoncons",
-            dst=Path(self.package_folder) / "licenses" / "jsoncons",
         )
 
     def package_info(self):

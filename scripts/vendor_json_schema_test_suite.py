@@ -2,9 +2,11 @@
 """Produce ``test/data/json-schema`` from a pinned JSON-Schema-Test-Suite commit.
 
 The SDK's schema tests run the suite's required cases (``tests/<dialect>/*.json``,
-not ``optional/``) for the dialects listed in DIALECTS. The files are copied
-unchanged with the suite's LICENSE; this script downloads the pinned commit's
-tarball and verifies its SHA-256 first.
+not ``optional/``) for the dialects listed in DIALECTS, and hand the evaluation the
+suite's remote documents (``remotes/``, which the suite serves at
+``http://localhost:1234/``) for every dialect but those in SKIPPED_REMOTES. The
+files are copied unchanged with the suite's LICENSE; this script downloads the
+pinned commit's tarball and verifies its SHA-256 first.
 
 Usage:
   python3 scripts/vendor_json_schema_test_suite.py            regenerate the data
@@ -30,7 +32,9 @@ OUTPUT_DIR = REPO_ROOT / "test" / "data" / "json-schema"
 COMMIT = "245a45abc90190c0bff04d97e6d2b541b4bb9f12"
 TARBALL_URL = f"https://github.com/json-schema-org/JSON-Schema-Test-Suite/archive/{COMMIT}.tar.gz"
 TARBALL_SHA256 = "b60bdf58fd414e9b86c8be70b03e3b2d596b8bc3bc822a2083d86041cea4b20e"
-DIALECTS = ("draft2020-12", "draft7")
+DIALECTS = ("draft2020-12", "draft2019-09", "draft7", "draft6", "draft4")
+# Remote documents of dialects the SDK does not implement.
+SKIPPED_REMOTES = ("draft3", "v1")
 
 
 def fetch_tarball(path: Path | None) -> bytes:
@@ -68,6 +72,13 @@ def read_suite(data: bytes) -> dict[str, bytes]:
                 and relative[2].endswith(".json")
             ):
                 files[f"{relative[1]}/{relative[2]}"] = extracted.read()
+            elif (
+                len(relative) >= 2
+                and relative[0] == "remotes"
+                and relative[-1].endswith(".json")
+                and not (len(relative) > 2 and relative[1] in SKIPPED_REMOTES)
+            ):
+                files["/".join(relative)] = extracted.read()
     if "LICENSE" not in files:
         raise SystemExit("test suite tarball has no LICENSE file")
     return files
@@ -78,7 +89,8 @@ def provenance() -> bytes:
         f"JSON-Schema-Test-Suite {COMMIT}\n"
         f"source: {TARBALL_URL}\n"
         f"sha256: {TARBALL_SHA256}\n"
-        f"files: tests/{{{','.join(DIALECTS)}}}/*.json (required cases only), LICENSE; copied unchanged\n"
+        f"files: tests/{{{','.join(DIALECTS)}}}/*.json (required cases only), "
+        f"remotes/**/*.json except remotes/{{{','.join(SKIPPED_REMOTES)}}}/, LICENSE; copied unchanged\n"
     ).encode()
 
 

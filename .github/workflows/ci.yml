@@ -448,16 +448,17 @@ jobs:
           scripts.test_release_dispatch_contract \
           scripts.test_release_workflow_policy \
           scripts.test_check_json_matrix \
-          scripts.test_ci_changes
+          scripts.test_ci_changes \
+          scripts.test_schema_ir_gate
 
     - name: Validate release artifacts and package templates
       run: |
         python3 -m unittest discover -s test/release -p 'test_*.py' -v
 
-    - name: Check the vendored jsoncons tree and JSON Schema test data
+    - name: Check the JSON Schema test data
       run: |
-        python3 scripts/vendor_jsoncons.py --check
         python3 scripts/vendor_json_schema_test_suite.py --check
+        python3 scripts/vendor_json_schema_metaschemas.py --check
 
     - name: Compile release Python without executing it
       run: >-

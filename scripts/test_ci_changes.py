@@ -156,6 +156,8 @@ class ClassifierTests(unittest.TestCase):
             "test/core/protocol_test.cpp": {"code"},
             "test/data/json-schema/suite.json": {"code", "release"},
             "test/pipe_stream.hpp": {"code"},
+            "test/perf/schema_workload.cpp": {"code"},
+            "scripts/schema_ir_gate.py": {"release"},
             "examples/features/pagination.cpp": {"code", "naming"},
             "scripts/run_examples.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
@@ -183,7 +185,6 @@ class ClassifierTests(unittest.TestCase):
             "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core"},
             "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release", "package_core"},
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
-            "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release", "package_core"},
             ".github/workflows/ci.yml": PULL_REQUEST_JOBS,
         }
         for path, jobs in expected.items():
@@ -211,7 +212,6 @@ class ClassifierTests(unittest.TestCase):
             "cmake/config.cmake.in": LIBRARY_JOBS | PACKAGES,
             "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release"} | PACKAGES,
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
-            "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
         }
         for path, jobs in expected.items():

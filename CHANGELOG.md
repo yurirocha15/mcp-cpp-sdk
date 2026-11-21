@@ -25,6 +25,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `SyncTypeErasedHandler`, the synchronous form of `TypeErasedHandler`, and `Client::executor()`.
 - `StreamableHttpSessionManager` takes a `Server` in place of a factory and serves it as `run_http()` does, on the application's event loop.
 - `examples/sync/` and `examples/async/` hold a notes server and client, which the guide "Converting to Async Mode" converts, and a server and client with every feature, in each mode.
+- `CompiledSchema::compile()` takes `SchemaDocuments`: schema documents, by
+  absolute URI, that references may reach. Nothing is fetched.
 
 ### Changed
 
@@ -43,6 +45,15 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Runtime::run()` runs the loop again after an earlier run ended; a `stop()` made while nothing runs the loop ends the next run instead.
 - A closing `StdioClientTransport` keeps its event loop from running out of work until the process has ended and `on_exit` has run.
 - On every platform, destroying the context a `Server` runs on waits for its handlers on the `set_handler_executor()` executor; `run_stdio()` and `run_http()` still return at the shutdown deadline.
+- Every JSON Schema is validated by the SDK's own evaluation. jsoncons is no
+  longer compiled into the library, and packages carry only the SDK's license.
+- Schemas are checked against the published metaschemas: a draft-06 `enum` must
+  be non-empty with unique values, and a draft-07 `writeOnly` must be a boolean.
+- An empty `$ref` or `$id` is accepted. A draft-04 `$ref` that is not a string,
+  and an anchor declared twice in one resource, make a schema invalid.
+- `properties` may nest 31 levels deep in a schema, up from 26.
+- A `$ref` to a location inside a metaschema, such as draft-07's
+  `#/definitions/nonNegativeInteger`, is refused as unresolved.
 
 ### Removed
 

@@ -530,7 +530,7 @@ def build_sboms(
                 "filesAnalyzed": True,
                 "packageVerificationCode": {"packageVerificationCodeValue": _verification_code(verification_hashes)},
                 "licenseConcluded": "NOASSERTION",
-                "licenseDeclared": "Apache-2.0 AND BSL-1.0",
+                "licenseDeclared": "Apache-2.0",
                 "copyrightText": "NOASSERTION",
             }
         ],
@@ -554,7 +554,7 @@ def build_sboms(
                 "type": "library",
                 "name": "mcp-cpp-sdk",
                 "version": str(version),
-                "licenses": [{"expression": "Apache-2.0 AND BSL-1.0"}],
+                "licenses": [{"license": {"id": "Apache-2.0"}}],
             },
         },
         "components": components,

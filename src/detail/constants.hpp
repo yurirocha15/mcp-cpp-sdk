@@ -355,24 +355,21 @@ inline constexpr std::size_t g_DEFAULT_MAX_TOKEN_CHARS = 64 * 1024;
 
 }  // namespace sealed_token
 
-/// JSON Schema dialect handled by the native validator.
-namespace native_schema {
-
-inline constexpr std::string_view g_DIALECT = "https://json-schema.org/draft/2020-12/schema";
-
-}  // namespace native_schema
-
 /// Work and size bounds of schema compilation and validation.
 namespace schema {
 
-/// Deepest nesting accepted in a schema document. Checking a schema against its metaschema and
+/// Deepest nesting accepted in a schema document. Checking a schema against its dialect's rules and
 /// compiling it both recurse with the schema, so this bounds the stack they use.
 inline constexpr std::size_t g_MAX_DEPTH = 64;
 
-/// Evaluation work every validation may do. The vendored jsoncons charges a step one more than the
-/// length of its evaluation path, which is what the step costs, and charges copies of locations
-/// and whole-string keywords by their length (see scripts/vendor_jsoncons.py).
+/// Evaluation work every validation may do. A subschema evaluation is charged one more than the
+/// evaluations it is nested in, and property names and whole-string keywords are charged by their
+/// length.
 inline constexpr std::size_t g_BASE_WORK = 1'000'000;
+
+/// Bytes of a property name that count towards the size of a value's paths (see
+/// ValueShape::path_bytes).
+inline constexpr std::size_t g_MAX_COUNTED_NAME_BYTES = 1024;
 
 /// Work allowed per unit of the value (see ValueShape::units), before the allowance for each node
 /// of the schema below.
@@ -382,11 +379,20 @@ inline constexpr std::size_t g_WORK_PER_UNIT = 256;
 /// the value with a schema value, such as an `enum` member, costs 8.
 inline constexpr std::size_t g_WORK_PER_UNIT_AND_SCHEMA_NODE = 8;
 
-/// Memory the messages kept for failed branches may hold at once during one validation.
-inline constexpr std::size_t g_MAX_KEPT_MESSAGE_BYTES = 32 * 1024 * 1024;
+/// Deepest nesting of schema evaluations in one native validation: every keyword that evaluates a
+/// subschema, in place or on a member or item, is one level.
+inline constexpr std::size_t g_MAX_EVAL_DEPTH = 192;
 
-/// Base URI jsoncons gives a schema without `$id`; references are reported relative to it.
-inline constexpr std::string_view g_DEFAULT_BASE_URI = "https://jsoncons.com";
+/// Most documents CompiledSchema::compile() accepts besides the schema.
+inline constexpr std::size_t g_MAX_SCHEMA_DOCUMENTS = 64;
+
+/// Branch violations the native evaluation keeps while an `anyOf` or `oneOf` branch is evaluated, to
+/// report the first branch's when no branch matches.
+inline constexpr std::size_t g_MAX_BRANCH_VIOLATIONS = 4;
+
+/// Base URI of a schema without `$id`; references are reported relative to it. The `.invalid`
+/// domain is reserved (RFC 2606), so no registered document has this URI.
+inline constexpr std::string_view g_DEFAULT_BASE_URI = "https://schema.invalid";
 
 }  // namespace schema
 
