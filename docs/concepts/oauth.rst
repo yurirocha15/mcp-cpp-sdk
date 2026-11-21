@@ -20,13 +20,6 @@ A protected MCP server answers an unauthenticated request with ``401`` and a
 ``WWW-Authenticate`` header naming its protected-resource metadata (RFC 9728).
 Hand that header to the manager and it runs the whole exchange:
 
-.. note::
-
-   The ``https://`` origins below are what a production deployment should
-   use. This build has no TLS support of its own — see
-   :ref:`oauth-security-boundary` before contacting anything but a loopback
-   or internally-trusted ``http://`` target.
-
 .. code-block:: cpp
 
    #include <mcp/core/async.hpp>
@@ -75,9 +68,8 @@ executor the client runs on. The client then talks to the server through an
 
 A manager serves the one server its ``server_url`` names. The transport sends
 the manager's tokens to whatever server ``inner`` talks to, and does not compare
-that with ``server_url``, which may use ``https`` while an ``HttpClientTransport``
-speaks plain HTTP. Give each server its own manager, and wrap only transports
-that talk to that server with it.
+that with ``server_url``. Give each server its own manager, and wrap only
+transports that talk to that server with it.
 
 .. _oauth-authorization-server-change:
 
@@ -683,16 +675,16 @@ streaming path — and base64 inflates by 4/3, so a 1 MB cap admits only about
 Security boundary
 -----------------
 
-``OAuthHttpClient`` and the built-in MCP HTTP transports speak plain
-``http://`` only; the SDK has no TLS support yet. The metadata-fetch policy that
-every ``OAuthHttpClient`` request passes admits ``https://`` targets, and plain
-``http://`` only to a loopback address when ``allow_plain_http_loopback`` is
-set; private, link-local and other internal addresses are always refused.
-Together these mean the built-in OAuth client can reach only an authorization
-server on the same machine, so in this release it serves loopback development
-and testing. An authorization server elsewhere, including one on a trusted
-internal network, cannot be reached through it. Never log access tokens,
-refresh tokens, authorization codes, client secrets, or PKCE verifiers.
+``OAuthHttpClient`` reaches ``https://`` servers over TLS, checking their
+certificates as :doc:`/guides/tls` describes; the ``tls`` and ``proxy`` fields of
+each authenticator configuration change what it trusts and how it connects. The
+metadata-fetch policy that every ``OAuthHttpClient`` request passes admits
+``https://`` targets, and plain ``http://`` only to a loopback address when
+``allow_plain_http_loopback`` is set. Private, link-local and other internal
+addresses are always refused, so an authorization server on an internal network
+cannot be reached directly; through a proxy, the proxy resolves names and the
+policy checks only addresses written in a URL. Never log access tokens, refresh tokens,
+authorization codes, client secrets, or PKCE verifiers.
 
 .. _oauth-low-level-building-blocks:
 

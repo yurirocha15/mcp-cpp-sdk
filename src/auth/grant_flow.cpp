@@ -112,12 +112,15 @@ struct GrantFlow::Operation {
 
 GrantFlow::GrantFlow(const net::any_io_executor& executor, std::shared_ptr<TokenStore> token_store,
                      std::string server_url, MetadataFetchPolicy policy, HostResolver host_resolver,
+                     std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy,
                      std::optional<std::string> scope)
     : executor_(executor),
       token_store_(std::move(token_store)),
       server_url_(std::move(server_url)),
       policy_(std::move(policy)),
       host_resolver_(std::move(host_resolver)),
+      tls_(std::move(tls)),
+      proxy_(std::move(proxy)),
       scope_(std::move(scope)) {
     http_client_ = make_client();
     discovery_ = std::make_shared<OAuthDiscoveryClient>(http_client_);
@@ -125,7 +128,7 @@ GrantFlow::GrantFlow(const net::any_io_executor& executor, std::shared_ptr<Token
 
 std::shared_ptr<OAuthHttpClient> GrantFlow::make_client() const {
     auto client = std::make_shared<OAuthHttpClient>(executor_);
-    client->configure(policy_, host_resolver_);
+    client->configure(policy_, host_resolver_, tls_, proxy_);
     return client;
 }
 

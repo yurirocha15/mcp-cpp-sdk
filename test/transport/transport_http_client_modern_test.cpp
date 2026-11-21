@@ -559,6 +559,42 @@ TEST(HttpClientModern, Base64NameAndParam) {
     }
 }
 
+// A bearer token over plain http:// to another host is readable on the path: the transport warns
+// once, before its first request leaves. A loopback server gets no warning.
+TEST(HttpClientModern, WarnsOnceAboutBearerTokensOverPlainHttpToAnotherHost) {
+    asio::io_context io;
+    const auto warnings_for = [&io](const std::string& url, bool with_token) {
+        std::vector<std::string> warnings;
+        auto transport = make_transport(io, url);
+        transport->set_warning_handler(
+            [&warnings](const std::string& text) { warnings.push_back(text); });
+        if (with_token) {
+            transport->set_bearer_token_provider([] { return std::string("secret"); });
+        }
+        // The provider is read where a request starts, so creating the task is enough; nothing is
+        // sent, as the task never runs.
+        {
+            auto first = transport->write_message("{}");
+        }
+        {
+            auto second = transport->write_message("{}");
+        }
+        return warnings;
+    };
+
+    const auto remote = warnings_for("http://mcp.example.test/mcp", true);
+    ASSERT_EQ(remote.size(), 1U);
+    EXPECT_NE(remote[0].find("mcp.example.test"), std::string::npos) << remote[0];
+    EXPECT_NE(remote[0].find("https://"), std::string::npos) << remote[0];
+    EXPECT_EQ(remote[0].find("secret"), std::string::npos) << remote[0];
+
+    EXPECT_TRUE(warnings_for("http://mcp.example.test/mcp", false).empty());
+    EXPECT_TRUE(warnings_for("http://localhost:8080/mcp", true).empty());
+    EXPECT_TRUE(warnings_for("http://127.0.0.1:8080/mcp", true).empty());
+    EXPECT_TRUE(warnings_for("http://[::1]:8080/mcp", true).empty());
+    EXPECT_TRUE(warnings_for("https://mcp.example.test/mcp", true).empty());
+}
+
 TEST(HttpClientModern, InvalidXMcpHeaderToolsExcluded) {
     const auto tool = [](const std::string& name, const json& properties) {
         return json{{"name", name}, {"inputSchema", {{"type", "object"}, {"properties", properties}}}};

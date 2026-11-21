@@ -13,5 +13,6 @@ error handling, OAuth, deployment, and older protocol revisions.
    testing
    error-handling
    oauth-security
+   tls
    deployment
    older-protocols

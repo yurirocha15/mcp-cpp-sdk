@@ -30,7 +30,7 @@ class EnterpriseFlow final : public detail::GrantFlow {
     EnterpriseFlow(const boost::asio::any_io_executor& executor, std::shared_ptr<TokenStore> store,
                    EnterpriseAuthorizationConfig config, IdentityAssertionProvider provider)
         : GrantFlow(executor, std::move(store), config.server_url, config.policy, config.host_resolver,
-                    config.scope),
+                    config.tls, config.proxy, config.scope),
           idp_token_endpoint_(std::move(config.idp_token_endpoint)),
           idp_client_(std::move(config.idp_client)),
           client_(std::move(config.client)),

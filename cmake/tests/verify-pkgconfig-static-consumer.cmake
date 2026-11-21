@@ -124,7 +124,7 @@ endfunction()
 # way to use it, and what needs nothing beyond the -dev packages.
 _mcp_pkg_config(_plain_flags --cflags --libs mcp-cpp-sdk-static)
 _mcp_require_flags("pkg-config" "${_plain_flags}" "-lmcp-cpp-sdk-static"
-                   "-lcrypto")
+                   "-lssl" "-lcrypto")
 _mcp_link_and_run("pkg-config" "${_plain_flags}" "${_test_executable}")
 
 # --static also asks for OpenSSL's own static dependencies. Several
@@ -144,7 +144,7 @@ endif()
 
 _mcp_pkg_config(_static_flags --cflags --libs --static mcp-cpp-sdk-static)
 _mcp_require_flags("pkg-config --static" "${_static_flags}"
-                   "-lmcp-cpp-sdk-static" "-lcrypto")
+                   "-lmcp-cpp-sdk-static" "-lssl" "-lcrypto")
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
   _mcp_require_flags("Linux static link" "${_static_flags}" "-ldl" "-pthread")
 endif()

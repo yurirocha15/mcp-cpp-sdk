@@ -255,8 +255,9 @@ resumes a stream from there: one still going on continues live, and one that
 ended is replayed. A client leaving a stream does not cancel its request.
 Managed sessions also support session IDs and DELETE teardown.
 
-``HttpClientTransport`` sends each message on an exchange of its own, so
-requests overlap, and reads an SSE answer as it arrives: a request the server
+``HttpClientTransport`` reaches an ``https://`` URL over TLS, directly or through
+an HTTP proxy (see :doc:`/guides/tls`). It sends each message on an exchange of
+its own, so requests overlap, and reads an SSE answer as it arrives: a request the server
 sends while it handles one of the client's reaches the client at once. After
 notifications/initialized it opens the session's GET stream, and opens it again
 from its last event when it ends; a server that answers that GET with 405 is
@@ -274,7 +275,7 @@ them), and no ``Mcp-Session-Id``. ``StreamableHttpSessionManager`` and
 sessions. See :doc:`/guides/deployment` for the headers and the error statuses,
 and :doc:`protocol` for the protocol itself.
 
-The built-in HTTP transports are plaintext. Bind local development servers to
+The HTTP server transports are plaintext. Bind local development servers to
 loopback. For remote deployments, place them behind a TLS-terminating proxy or
 provide a custom TLS transport. Requests carrying an ``Origin`` header are
 denied by default; configure an exact allowlist (or explicitly opt into all

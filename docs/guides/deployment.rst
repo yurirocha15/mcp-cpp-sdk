@@ -231,7 +231,7 @@ Port Binding and Security
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Binding**: Use ``127.0.0.1`` if the server only needs to be accessed by a local proxy (like Nginx) or ``0.0.0.0`` to listen on all interfaces.
-- **TLS/SSL**: The built-in HTTP transport does not handle TLS. In production, always place your MCP server behind a reverse proxy like Nginx, Apache, or a cloud load balancer that handles SSL termination.
+- **TLS/SSL**: The HTTP server transports do not terminate TLS. In production, place your MCP server behind a reverse proxy like Nginx, Apache, or a cloud load balancer that does. Clients connect over TLS themselves; see :doc:`tls`.
 - **Authentication**: For sensitive tools, implement authentication middleware or use the OAuth flow patterns demonstrated in the ``oauth_flow.cpp`` example.
 
 Unix Daemon / Service Setup

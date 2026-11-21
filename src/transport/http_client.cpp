@@ -1,10 +1,14 @@
 #include "../detail/constants.hpp"
+#include "../detail/diagnostic_text.hpp"
 #include "../detail/header_value.hpp"
+#include "../detail/http_connect.hpp"
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/param_headers.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/proxy.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/socket_deadline.hpp"
+#include "../detail/tls.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
@@ -192,7 +196,9 @@ struct ModernCall {
     bool in_session{false};
 
     // The current attempt.
-    std::shared_ptr<beast::tcp_stream> stream;
+    std::shared_ptr<detail::Connection> stream;
+    /// How the current attempt's connection was made.
+    std::shared_ptr<const detail::ConnectPlan> plan;
     std::optional<detail::SocketDeadline> deadline;
     std::optional<std::string> final_message;
     std::string content_type;
@@ -211,9 +217,10 @@ struct ModernCall {
 
 struct HttpClientTransport::Impl {
     struct ParsedUrl {
-        std::string host;
+        std::string host;  ///< An IPv6 literal without its brackets.
         std::string port;
-        std::string path;
+        std::string path;  ///< The request target: the path and query, never empty.
+        bool https{false};
     };
 
     struct SharedState {
@@ -227,7 +234,9 @@ struct HttpClientTransport::Impl {
         /// The pause before the session's GET stream is opened again.
         net::steady_timer listen_timer;
         net::ip::tcp::resolver resolver;
-        std::optional<beast::tcp_stream> stream;
+        /// The connection initialize and the session's DELETE reuse, and how it was made.
+        std::shared_ptr<detail::Connection> stream;
+        std::shared_ptr<const detail::ConnectPlan> stream_plan;
         std::queue<std::string> queue;
         std::atomic<bool> closed{false};
         mutable std::mutex metadata_mutex;
@@ -293,9 +302,9 @@ struct HttpClientTransport::Impl {
     };
 
     struct CloseTarget {
-        std::string host;
-        std::string port;
         std::string path;
+        std::string authority;
+        std::shared_ptr<const detail::ConnectPlan> plan;
         std::function<std::string()> bearer_token_provider;
     };
 
@@ -305,98 +314,152 @@ struct HttpClientTransport::Impl {
         host = std::move(parsed.host);
         port = std::move(parsed.port);
         path = std::move(parsed.path);
+        https = parsed.https;
+        authority = detail::authority_of(host, port, https);
+        server_name = detail::tls_server_name(host);
+        rebuild_plan();
         state->timer.expires_at(std::chrono::steady_clock::time_point::max());
     }
 
     static ParsedUrl parse_url(const std::string& url) {
-        constexpr std::string_view scheme = "http://";
-        if (!url.starts_with(std::string(scheme))) {
-            throw std::invalid_argument("HttpClientTransport URL must start with http://");
-        }
-
-        const std::string authority_and_path = url.substr(scheme.size());
-        if (authority_and_path.empty()) {
-            throw std::invalid_argument("HttpClientTransport URL is missing host");
-        }
-
-        const std::size_t path_separator = authority_and_path.find('/');
-        std::string authority = authority_and_path.substr(0, path_separator);
-        std::string path =
-            path_separator == std::string::npos ? "/" : authority_and_path.substr(path_separator);
-
-        if (authority.empty()) {
-            throw std::invalid_argument("HttpClientTransport URL is missing host");
-        }
-
-        std::string host;
-        std::string port = "80";
-
-        const std::size_t colon_position = authority.find(':');
-        if (colon_position == std::string::npos) {
-            host = std::move(authority);
+        ParsedUrl parsed;
+        std::size_t prefix_length = 0;
+        if (url.starts_with(mcp::detail::constants::url::g_HTTP_PREFIX)) {
+            prefix_length = mcp::detail::constants::url::g_HTTP_PREFIX.size();
+        } else if (url.starts_with(mcp::detail::constants::url::g_HTTPS_PREFIX)) {
+            prefix_length = mcp::detail::constants::url::g_HTTPS_PREFIX.size();
+            parsed.https = true;
         } else {
-            host = authority.substr(0, colon_position);
-            port = authority.substr(colon_position + 1);
-            if (port.empty()) {
-                throw std::invalid_argument("HttpClientTransport URL contains empty port");
+            throw std::invalid_argument("HttpClientTransport URL must start with http:// or https://");
+        }
+
+        // The authority ends where the path, query or fragment begins. The fragment is never
+        // sent, and a query needs the root path.
+        const auto rest = url.substr(prefix_length);
+        const auto authority_end = rest.find_first_of("/?#");
+        auto authority = rest.substr(0, authority_end);
+        parsed.path = authority_end == std::string::npos ? "" : rest.substr(authority_end);
+        if (const auto fragment = parsed.path.find('#'); fragment != std::string::npos) {
+            parsed.path.erase(fragment);
+        }
+        if (parsed.path.empty() || parsed.path.front() != '/') {
+            parsed.path.insert(0, "/");
+        }
+        if (authority.find('@') != std::string::npos) {
+            throw std::invalid_argument(
+                "HttpClientTransport URL must not carry credentials; use "
+                "set_bearer_token_provider()");
+        }
+
+        parsed.port = parsed.https ? "443" : "80";
+        if (!authority.empty() && authority.front() == '[') {
+            const auto closing = authority.find(']');
+            if (closing == std::string::npos ||
+                (closing + 1 < authority.size() && authority[closing + 1] != ':')) {
+                throw std::invalid_argument("HttpClientTransport URL has a malformed IPv6 host");
+            }
+            parsed.host = authority.substr(1, closing - 1);
+            if (closing + 1 < authority.size()) {
+                parsed.port = authority.substr(closing + 2);
+                if (parsed.port.empty()) {
+                    throw std::invalid_argument("HttpClientTransport URL contains empty port");
+                }
+            }
+        } else {
+            const std::size_t colon_position = authority.find(':');
+            if (colon_position == std::string::npos) {
+                parsed.host = std::move(authority);
+            } else {
+                parsed.host = authority.substr(0, colon_position);
+                parsed.port = authority.substr(colon_position + 1);
+                if (parsed.port.empty()) {
+                    throw std::invalid_argument("HttpClientTransport URL contains empty port");
+                }
             }
         }
 
-        if (host.empty()) {
+        if (parsed.host.empty()) {
             throw std::invalid_argument("HttpClientTransport URL is missing host");
         }
-
-        return ParsedUrl{std::move(host), std::move(port), std::move(path)};
+        return parsed;
     }
 
-    /// Whether the peer has closed @p stream, or sent something no request asked for. A server
-    /// closes a connection that sits idle between requests; a request written into it is never
-    /// read, so the connection is not used again.
-    static bool closed_by_peer(beast::tcp_stream& stream) {
-        auto& socket = stream.socket();
-        if (!socket.is_open()) {
-            return true;
+    /// Builds how the next connections are made from the current settings. Callers hold
+    /// settings_mutex, or run before the transport is shared.
+    void rebuild_plan() {
+        auto next = std::make_shared<detail::ConnectPlan>();
+        next->host = host;
+        next->port = port;
+        next->https = https;
+        next->server_name = server_name;
+        next->tls = tls_context;
+        next->proxy = detail::select_proxy(proxy, https, host, port);
+        plan = std::move(next);
+    }
+
+    [[nodiscard]] std::string connection_server_name() const {
+        std::lock_guard lock(settings_mutex);
+        return server_name;
+    }
+
+    /// How a connection opened now is made.
+    [[nodiscard]] std::shared_ptr<const detail::ConnectPlan> current_plan() const {
+        std::lock_guard lock(settings_mutex);
+        return plan;
+    }
+
+    static std::vector<net::ip::tcp::endpoint> endpoints_of(
+        const net::ip::tcp::resolver::results_type& results) {
+        std::vector<net::ip::tcp::endpoint> endpoints;
+        for (const auto& entry : results) {
+            endpoints.push_back(entry.endpoint());
         }
-        beast::error_code error;
-        const bool was_non_blocking = socket.non_blocking();
-        (void)socket.non_blocking(true, error);
-        if (error) {
-            return false;
+        return endpoints;
+    }
+
+    /// Sets the headers that say where a request goes: Host, and the proxy's credentials when the
+    /// request goes to the proxy itself.
+    template <typename Request>
+    static void set_routing_headers(Request& request, const detail::ConnectPlan& connection_plan,
+                                    const std::string& authority) {
+        request.set(http::field::host, authority);
+        if (connection_plan.forwards_requests() && !connection_plan.proxy->authorization.empty()) {
+            request.set(http::field::proxy_authorization, connection_plan.proxy->authorization);
         }
-        char byte = 0;
-        const auto read = socket.read_some(net::buffer(&byte, 1), error);
-        beast::error_code restore_error;
-        (void)socket.non_blocking(was_non_blocking, restore_error);
-        return read != 0 || error != net::error::would_block;
+    }
+
+    /// What a failed read or write on @p connection means: a TlsError for a TLS failure, else the
+    /// error itself.
+    void throw_if_tls_failure(const detail::Connection& connection,
+                              const boost::system::error_code& error) const {
+        if (!connection.is_tls()) {
+            return;
+        }
+        if (auto failure = detail::established_failure(error, connection_server_name())) {
+            throw TlsError(*failure);
+        }
     }
 
     Task<void> ensure_connected() {
-        if (state->stream.has_value()) {
-            if (!closed_by_peer(*state->stream)) {
+        if (state->stream) {
+            if (!detail::closed_by_peer(*state->stream)) {
                 co_return;
             }
             reset_connection();
         }
 
-        auto resolved_endpoints =
-            co_await state->resolver.async_resolve(host, port, net::use_awaitable);
+        const auto connection_plan = current_plan();
+        auto resolved_endpoints = co_await state->resolver.async_resolve(
+            connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
         // A close() that ran while the resolve could no longer be cancelled found no socket to
-        // cancel either. From here to the socket opening inside async_connect() nothing suspends,
-        // so a later close() runs on the strand after it and closes that socket.
+        // cancel either. From here to the socket opening inside the connect nothing suspends, so a
+        // later close() runs on the strand after it and closes that socket.
         if (state->closed.load(std::memory_order_acquire)) {
             throw std::runtime_error("HttpClientTransport is closed");
         }
-        if (!state->stream) {
-            state->stream.emplace(strand);
-        }
-        auto& stream = *state->stream;
-        const detail::SocketDeadline deadline(
-            stream.get_executor(), stream.socket(),
-            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
-        co_await stream.async_connect(resolved_endpoints, net::use_awaitable);
-        // The wait for a response has a long limit, so this is what finds a peer that vanished.
-        beast::error_code keep_alive_error;
-        (void)stream.socket().set_option(net::socket_base::keep_alive(true), keep_alive_error);
+        state->stream = detail::make_connection(strand, *connection_plan);
+        state->stream_plan = connection_plan;
+        co_await detail::establish(state->stream, endpoints_of(resolved_endpoints), connection_plan);
     }
 
     static bool starts_with(std::string_view value, std::string_view prefix) {
@@ -671,17 +734,12 @@ struct HttpClientTransport::Impl {
     }
 
     void reset_connection() {
-        if (!state->stream.has_value()) {
+        if (!state->stream) {
             return;
         }
-
-        if (state->stream) {
-            beast::error_code operation_error;
-            (void)state->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both,
-                                                   operation_error);
-            (void)state->stream->socket().close(operation_error);
-        }
+        detail::close_connection(*state->stream);
         state->stream.reset();
+        state->stream_plan.reset();
     }
 
     static void complete_operation(const std::shared_ptr<SharedState>& shared_state) {
@@ -727,8 +785,19 @@ struct HttpClientTransport::Impl {
     /// that starts a request -- write_message() and close(), both on the application thread -- so
     /// no code path on the strand reads the member itself afterwards.
     std::function<std::string()> pin_bearer_token_provider() const {
-        std::lock_guard lock(provider_mutex);
-        return bearer_token_provider;
+        std::function<std::string()> provider;
+        {
+            std::lock_guard lock(provider_mutex);
+            provider = bearer_token_provider;
+        }
+        // A bearer token in clear text can be read and replayed by anyone on the path. A loopback
+        // server is spared the warning: the token never leaves the machine.
+        if (provider && !https && !detail::is_loopback_host(host) &&
+            !plain_bearer_warned.exchange(true, std::memory_order_relaxed)) {
+            warn("Bearer tokens are sent to " + detail::sanitize_for_diagnostics(host) +
+                 " over http:// without TLS; use an https:// URL");
+        }
+        return provider;
     }
 
     static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message,
@@ -1138,9 +1207,13 @@ struct HttpClientTransport::Impl {
         try {
             co_await impl->ensure_connected();
 
-            StringRequest request{http::verb::post, impl->path,
+            if (!state.stream) {
+                throw std::runtime_error("HttpClientTransport stream is not initialized");
+            }
+            const auto& connection_plan = *state.stream_plan;
+            StringRequest request{http::verb::post, connection_plan.request_target(impl->path),
                                   mcp::detail::constants::http_client::g_VERSION_11};
-            request.set(http::field::host, impl->host);
+            set_routing_headers(request, connection_plan, impl->authority);
             request.set(http::field::content_type, "application/json");
             request.set(http::field::accept, "application/json, text/event-stream");
             request.set("MCP-Protocol-Version", state.protocol_version);
@@ -1159,14 +1232,17 @@ struct HttpClientTransport::Impl {
             request.body() = std::move(body);
             request.prepare_payload();
 
-            if (!state.stream) {
-                throw std::runtime_error("HttpClientTransport stream is not initialized");
-            }
-            auto& stream = *state.stream;
+            const auto connection = state.stream;
+            auto& stream = *connection;
             deadline.emplace(
                 stream.get_executor(), stream.socket(),
                 std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
-            co_await http::async_write(stream, request, net::use_awaitable);
+            try {
+                co_await http::async_write(stream, request, net::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                impl->throw_if_tls_failure(stream, error.code());
+                throw;
+            }
             // A handler takes as long as it takes, and the caller's timeout decides how long to
             // wait for it. This only frees the connection for the next request in the end.
             deadline.reset();
@@ -1178,7 +1254,12 @@ struct HttpClientTransport::Impl {
 
             beast::flat_buffer response_buffer;
             StringResponse response;
-            co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
+            try {
+                co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                impl->throw_if_tls_failure(stream, error.code());
+                throw;
+            }
             deadline.reset();
             if (!response.keep_alive()) {
                 // The server closes the connection after this response (RFC 9112 section 9.6), so
@@ -1486,22 +1567,24 @@ struct HttpClientTransport::Impl {
         call->response_body.clear();
         throw_if_unavailable(shared, *call);
 
+        const auto connection_plan = impl->current_plan();
+        call->plan = connection_plan;
         net::ip::tcp::resolver resolver(impl->strand);
-        auto endpoints = co_await resolver.async_resolve(impl->host, impl->port, net::use_awaitable);
+        auto endpoints = co_await resolver.async_resolve(
+            connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
         throw_if_unavailable(shared, *call);
-        call->stream = std::make_shared<beast::tcp_stream>(impl->strand);
+        call->stream = detail::make_connection(impl->strand, *connection_plan);
         const auto stream = call->stream;
+        co_await detail::establish(stream, endpoints_of(endpoints), connection_plan);
+        throw_if_unavailable(shared, *call);
 
         call->deadline.emplace(
             stream->get_executor(), stream->socket(),
             std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
-        co_await stream->async_connect(endpoints, net::use_awaitable);
-        beast::error_code keep_alive_error;
-        (void)stream->socket().set_option(net::socket_base::keep_alive(true), keep_alive_error);
-
-        StringRequest request{call->get ? http::verb::get : http::verb::post, impl->path,
+        StringRequest request{call->get ? http::verb::get : http::verb::post,
+                              connection_plan->request_target(impl->path),
                               mcp::detail::constants::http_client::g_VERSION_11};
-        request.set(http::field::host, impl->host);
+        set_routing_headers(request, *connection_plan, impl->authority);
         if (call->get) {
             request.set(http::field::accept, "text/event-stream");
             if (!call->last_event_id.empty()) {
@@ -1529,7 +1612,12 @@ struct HttpClientTransport::Impl {
             request.body() = call->body;
         }
         request.prepare_payload();
-        co_await http::async_write(*stream, request, net::use_awaitable);
+        try {
+            co_await http::async_write(*stream, request, net::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            impl->throw_if_tls_failure(*stream, error.code());
+            throw;
+        }
         // A handler takes as long as it takes. How long to wait for it is the caller's timeout, which
         // ends the call by closing its socket; the socket's keep-alive finds a peer that vanished. A
         // request of a legacy session waits at most set_response_timeout().
@@ -1547,7 +1635,12 @@ struct HttpClientTransport::Impl {
         // No limit: an event stream is as long as the request runs. Not boost::none, which Boost
         // 1.74 compares as smaller than any Content-Length and so refuses every sized body.
         call->parser->body_limit(std::numeric_limits<std::uint64_t>::max());
-        co_await http::async_read_header(*stream, call->buffer, *call->parser, net::use_awaitable);
+        try {
+            co_await http::async_read_header(*stream, call->buffer, *call->parser, net::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            impl->throw_if_tls_failure(*stream, error.code());
+            throw;
+        }
         auto& head = call->parser->get();
         call->status = head.result_int();
         const auto content_type = head.find(http::field::content_type);
@@ -1579,6 +1672,7 @@ struct HttpClientTransport::Impl {
                 co_await http::async_read_some(*stream, call->buffer, parser, net::use_awaitable);
             } catch (const boost::system::system_error& error) {
                 if (error.code() != http::error::need_buffer) {
+                    impl->throw_if_tls_failure(*stream, error.code());
                     throw;
                 }
             }
@@ -1691,7 +1785,10 @@ struct HttpClientTransport::Impl {
     /// Ends an exchange: nothing of it stays open or registered.
     static void end_call(SharedState& shared, ModernCall& call) {
         call.deadline.reset();
-        SharedState::close_call_socket(call);
+        if (call.stream) {
+            // Nothing runs on the connection any more, so a TLS one says goodbye.
+            detail::close_connection(*call.stream);
+        }
         call.stream.reset();
         call.parser.reset();
         shared.modern_calls.erase(call.serial);
@@ -1839,12 +1936,25 @@ struct HttpClientTransport::Impl {
     std::string host;
     std::string port;
     std::string path;
+    bool https{false};
+    /// The server's authority as the Host header carries it.
+    std::string authority;
+    /// Guards the connection settings below and the plan built from them.
+    mutable std::mutex settings_mutex;
+    /// The name the server's certificate must carry: the URL's host unless set_server_name()
+    /// changed it.
+    std::string server_name;
+    std::shared_ptr<const TlsClientContext> tls_context;
+    ProxyOptions proxy;
+    std::shared_ptr<const detail::ConnectPlan> plan;
     mutable std::mutex provider_mutex;
     /// Guarded by provider_mutex: written by set_bearer_token_provider(), read once per request in
     /// pin_bearer_token_provider().
     std::function<std::string()> bearer_token_provider;
     /// Guarded by provider_mutex.
     std::function<void(const std::string&)> warning_handler;
+    /// Set once the warning about bearer tokens over plain http:// has been given.
+    mutable std::atomic<bool> plain_bearer_warned{false};
 };
 
 HttpClientTransport::HttpClientTransport(const Executor& executor, const std::string& url)
@@ -1894,6 +2004,39 @@ void HttpClientTransport::set_warning_handler(std::function<void(const std::stri
     impl_->warning_handler = std::move(handler);
 }
 
+void HttpClientTransport::set_tls(const TlsClientOptions& options) {
+    set_tls(TlsClientContext::create(options));
+}
+
+void HttpClientTransport::set_tls(std::shared_ptr<const TlsClientContext> context) {
+    if (!impl_->https) {
+        throw std::invalid_argument("TLS settings need an https:// URL");
+    }
+    std::lock_guard lock(impl_->settings_mutex);
+    impl_->tls_context = std::move(context);
+    impl_->rebuild_plan();
+}
+
+void HttpClientTransport::set_server_name(std::string name) {
+    if (!impl_->https) {
+        throw std::invalid_argument("A TLS server name needs an https:// URL");
+    }
+    name = detail::tls_server_name(std::move(name));
+    if (name.empty()) {
+        throw std::invalid_argument("The TLS server name is empty");
+    }
+    std::lock_guard lock(impl_->settings_mutex);
+    impl_->server_name = std::move(name);
+    impl_->rebuild_plan();
+}
+
+void HttpClientTransport::set_proxy(ProxyOptions options) {
+    detail::validate_proxy_options(options);
+    std::lock_guard lock(impl_->settings_mutex);
+    impl_->proxy = std::move(options);
+    impl_->rebuild_plan();
+}
+
 Task<std::string> HttpClientTransport::read_message() {
     auto impl = impl_;
     return net::co_spawn(impl->strand, Impl::run_read(impl), net::use_awaitable);
@@ -1917,8 +2060,8 @@ void HttpClientTransport::close() {
     auto shared_state = impl_->state;
     net::post(shared_state->timer.get_executor(), [shared_state]() { shared_state->timer.cancel(); });
 
-    auto close_target = std::make_shared<Impl::CloseTarget>(
-        Impl::CloseTarget{impl_->host, impl_->port, impl_->path, impl_->pin_bearer_token_provider()});
+    auto close_target = std::make_shared<Impl::CloseTarget>(Impl::CloseTarget{
+        impl_->path, impl_->authority, impl_->current_plan(), impl_->pin_bearer_token_provider()});
     net::co_spawn(
         impl_->strand,
         [shared_state, close_target = std::move(close_target)]() -> boost::asio::awaitable<void> {
@@ -1947,6 +2090,7 @@ void HttpClientTransport::close() {
                 // A write that had already finished keeps its stream, now with a closed socket.
                 if (shared_state->stream && !shared_state->stream->socket().is_open()) {
                     shared_state->stream.reset();
+                    shared_state->stream_plan.reset();
                 }
             }
 
@@ -1955,23 +2099,23 @@ void HttpClientTransport::close() {
                 std::make_shared<const std::string>(shared_state->protocol_version);
             if (!active_session_id->empty()) {
                 try {
-                    if (!shared_state->stream.has_value()) {
+                    if (!shared_state->stream) {
+                        const auto& plan = close_target->plan;
                         auto resolved_endpoints = co_await shared_state->resolver.async_resolve(
-                            close_target->host, close_target->port, net::use_awaitable);
+                            plan->connect_host(), plan->connect_port(), net::use_awaitable);
 
-                        shared_state->stream.emplace(shared_state->timer.get_executor());
-                        const detail::SocketDeadline connect_deadline(
-                            shared_state->stream->get_executor(), shared_state->stream->socket(),
-                            std::chrono::seconds(
-                                mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
-                        co_await shared_state->stream->async_connect(resolved_endpoints,
-                                                                     net::use_awaitable);
+                        shared_state->stream =
+                            detail::make_connection(shared_state->timer.get_executor(), *plan);
+                        shared_state->stream_plan = plan;
+                        co_await detail::establish(shared_state->stream,
+                                                   Impl::endpoints_of(resolved_endpoints), plan);
                     }
 
+                    const auto& stream_plan = *shared_state->stream_plan;
                     http::request<http::empty_body> delete_request{
-                        http::verb::delete_, close_target->path,
+                        http::verb::delete_, stream_plan.request_target(close_target->path),
                         mcp::detail::constants::http_client::g_VERSION_11};
-                    delete_request.set(http::field::host, close_target->host);
+                    Impl::set_routing_headers(delete_request, stream_plan, close_target->authority);
                     delete_request.set("MCP-Session-Id", *active_session_id);
                     delete_request.set("MCP-Protocol-Version", *active_protocol_version);
                     if (close_target->bearer_token_provider) {
@@ -1997,12 +2141,10 @@ void HttpClientTransport::close() {
                 }
             }
 
-            if (shared_state->stream.has_value()) {
-                beast::error_code operation_error;
-                shared_state->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both,
-                                                        operation_error);
-                shared_state->stream->socket().close(operation_error);
+            if (shared_state->stream) {
+                detail::close_connection(*shared_state->stream);
                 shared_state->stream.reset();
+                shared_state->stream_plan.reset();
             }
             {
                 std::lock_guard lock(shared_state->metadata_mutex);

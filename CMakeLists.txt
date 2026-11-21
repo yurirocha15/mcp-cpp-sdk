@@ -53,7 +53,7 @@ endif()
 
 find_package(Boost 1.74 REQUIRED)
 find_package(nlohmann_json 3.10.5 CONFIG REQUIRED)
-find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto SSL)
 
 option(MCP_CPP_SDK_BUILD_SHARED "Build the shared SDK library" ON)
 option(MCP_CPP_SDK_BUILD_STATIC "Build the static SDK library" ON)
@@ -154,6 +154,11 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/http_types.cpp
     src/transport/http_server.cpp
     src/transport/http_client.cpp
+    src/transport/http_connect.cpp
+    src/transport/proxy.cpp
+    src/transport/proxy_environment.cpp
+    src/transport/tls.cpp
+    src/transport/tls_roots.cpp
     src/transport/http_session_manager.cpp
     src/transport/modern_exchange.cpp
     src/transport/websocket.cpp
@@ -169,10 +174,22 @@ function(mcp_cpp_sdk_configure_library target)
            $<BUILD_INTERFACE:${MCP_CPP_SDK_GENERATED_INCLUDE_DIR}>
            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
   target_link_libraries(
-    ${target} PUBLIC Boost::headers nlohmann_json::nlohmann_json
+    ${target} PUBLIC Boost::headers nlohmann_json::nlohmann_json OpenSSL::SSL
                      OpenSSL::Crypto)
+  # The system's certificate authorities (src/transport/tls_roots.cpp).
+  if(WIN32)
+    target_link_libraries(${target} PRIVATE crypt32)
+  elseif(APPLE)
+    target_link_libraries(${target} PRIVATE "-framework Security"
+                                            "-framework CoreFoundation")
+  endif()
   if(WIN32)
     target_compile_definitions(${target} PUBLIC _WIN32_WINNT=0x0A00)
+  endif()
+  # The HTTP, WebSocket and OAuth sources hold more sections than an MSVC object
+  # file allows by default.
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /bigobj)
   endif()
 endfunction()
 
@@ -463,6 +480,9 @@ if(BUILD_TESTING)
       test/transport/transport_http_limits_test.cpp
       test/transport/transport_http_version_header_test.cpp
       test/transport/http_response_write_test.cpp
+      test/transport/proxy_rules_test.cpp
+      test/transport/transport_tls_client_test.cpp
+      test/transport/tls_connection_test.cpp
       test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp
@@ -474,11 +494,13 @@ if(BUILD_TESTING)
       test/core/json_peer_input_matrix_test.cpp
       test/support/spawn.cpp
       test/support/test_timeout.cpp)
-  # The sealed-state codec is internal and not exported from the shared library,
-  # so its test builds the source itself.
+  # The sealed-state codec, the schema URI resolver and the proxy rules are
+  # internal and not exported from the shared library, so their tests build the
+  # sources themselves.
   add_executable(
-    mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp
-                  src/protocol/schema_uri.cpp test/support/schema_corpus.cpp)
+    mcp-sdk-tests
+    ${TEST_SRCS} src/detail/sealed_state.cpp src/protocol/schema_uri.cpp
+    src/transport/proxy.cpp test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   # Compiled apart from the test program, whose unity build would make Task
   # complete: the sync-mode headers must take synchronous handlers while Task is
@@ -607,12 +629,13 @@ if(BUILD_TESTING)
       PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE
                                 ${MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE})
     # The support sources are not tests: the gates replace libc functions, and
-    # sealed_state.cpp and schema_uri.cpp are library sources that the test
-    # program rebuilds.
+    # sealed_state.cpp, schema_uri.cpp and proxy.cpp are library sources that
+    # the test program rebuilds.
     set_source_files_properties(
       test/support/test_timeout.cpp test/support/resolve_gate.cpp
       test/support/socket_gate.cpp src/detail/sealed_state.cpp
-      src/protocol/schema_uri.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+      src/protocol/schema_uri.cpp src/transport/proxy.cpp
+      PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     # A fixture in a test file's unnamed namespace is the base of the test
     # classes that gtest defines in the enclosing namespace. GCC reports that as
     # a linkage mismatch when the file is included from the unity source, where
@@ -753,7 +776,7 @@ install(
   DESTINATION "${MCP_CPP_SDK_INSTALL_CMAKEDIR}"
   COMPONENT Development)
 
-set(MCP_CPP_SDK_PC_REQUIRES "nlohmann_json libcrypto")
+set(MCP_CPP_SDK_PC_REQUIRES "nlohmann_json libssl libcrypto")
 set(MCP_CPP_SDK_PC_REQUIRES_PRIVATE "")
 set(MCP_CPP_SDK_PC_LIBS_PRIVATE "")
 mcp_cpp_sdk_pkgconfig_prefix_from_libdir(MCP_CPP_SDK_PC_PREFIX_FROM_PCFILE
@@ -858,6 +881,9 @@ if(BUILD_EXAMPLES)
 
   add_executable(example-feature-roots examples/features/roots.cpp)
   target_link_libraries(example-feature-roots PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-tls-client examples/features/tls_client.cpp)
+  target_link_libraries(example-feature-tls-client PRIVATE mcp-cpp-sdk)
 
   add_executable(example-feature-error-handling
                  examples/features/error_handling.cpp)

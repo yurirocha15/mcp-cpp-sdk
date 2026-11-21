@@ -9,6 +9,8 @@
 #include <mcp/core/export.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/proxy.hpp>
+#include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <array>
@@ -265,6 +267,26 @@ class MCP_API OAuthHttpClient {
      * may already be serving requests.
      */
     void configure(MetadataFetchPolicy policy, HostResolver resolver);
+
+    /**
+     * @brief Install the policy, the resolver, the TLS settings and the proxy as one indivisible
+     * change.
+     *
+     * @param policy As above.
+     * @param resolver As above.
+     * @param tls TLS settings for `https` servers; null checks them against the system's
+     *        certificate authorities.
+     * @param proxy The proxy requests go through. The proxy resolves the names of the servers it
+     *        reaches, so the policy's address checks apply only to addresses written in a URL.
+     *        Connections to loopback hosts never use it.
+     *
+     * @details The two-argument form keeps the TLS settings and proxy the client has. Without
+     * either, `https` servers are checked against the system's certificate authorities and every
+     * request connects directly.
+     * @throws std::invalid_argument If a proxy URL is malformed or not supported.
+     */
+    void configure(MetadataFetchPolicy policy, HostResolver resolver,
+                   std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy = {});
 
     /**
      * @brief Exchange an authorization code for an access token.
@@ -729,6 +751,9 @@ struct OAuthAuthorizationConfig {
     std::shared_ptr<ClientCredentialStore> credential_store;
     MetadataFetchPolicy policy;  ///< Outbound-request policy for every discovery and token request.
     HostResolver host_resolver;  ///< Optional custom resolver; the system resolver is used when unset.
+    /// TLS settings for authorization servers; null uses the system's certificate authorities.
+    std::shared_ptr<const TlsClientContext> tls;
+    ProxyOptions proxy;  ///< Proxy for discovery and token requests; none by default.
 };
 
 /**

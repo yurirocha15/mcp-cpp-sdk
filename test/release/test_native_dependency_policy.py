@@ -23,7 +23,7 @@ class NativeDependencyPolicyTests(unittest.TestCase):
             "function(mcp_cpp_sdk_configure_library target)", 1
         )[1].split("endfunction()", 1)[0]
         self.assertIn(
-            "PUBLIC Boost::headers nlohmann_json::nlohmann_json\n"
+            "PUBLIC Boost::headers nlohmann_json::nlohmann_json OpenSSL::SSL\n"
             "                     OpenSSL::Crypto",
             public_interface,
         )

@@ -121,7 +121,9 @@ JOB_INPUTS = {
         "cmake/*",
         "examples/*",
         "include/*",
+        "scripts/check_tls_verification.py",
         "scripts/ci_changes.py",
+        "scripts/test_check_tls_verification.py",
         "src/*",
     ),
     "code": LIBRARY + TESTS + (

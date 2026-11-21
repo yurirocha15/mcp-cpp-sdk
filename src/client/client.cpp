@@ -9,6 +9,7 @@
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/transport/http_client.hpp>
+#include <mcp/transport/tls.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -82,6 +83,8 @@ std::optional<nlohmann::json> make_paginated_params(const std::optional<std::str
         std::throw_with_nested(
             McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                      "The connection to the server failed: " + error.code().message()));
+    } catch (const TlsError& error) {
+        std::throw_with_nested(McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, error.what()));
     }
 }
 

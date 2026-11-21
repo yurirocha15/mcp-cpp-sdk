@@ -21,7 +21,7 @@ class CredentialsFlow final : public detail::GrantFlow {
     CredentialsFlow(const boost::asio::any_io_executor& executor, std::shared_ptr<TokenStore> store,
                     ClientCredentialsConfig config)
         : GrantFlow(executor, std::move(store), config.server_url, config.policy, config.host_resolver,
-                    config.scope),
+                    config.tls, config.proxy, config.scope),
           client_(std::move(config.client)) {}
 
    protected:

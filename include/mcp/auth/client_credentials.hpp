@@ -37,6 +37,9 @@ struct ClientCredentialsConfig {
     std::optional<std::string> scope;
     MetadataFetchPolicy policy;  ///< Outbound-request policy for discovery and token requests.
     HostResolver host_resolver;  ///< Optional custom resolver; the system resolver when unset.
+    /// TLS settings for authorization servers; null uses the system's certificate authorities.
+    std::shared_ptr<const TlsClientContext> tls;
+    ProxyOptions proxy;  ///< Proxy for discovery and token requests; none by default.
 };
 
 /**

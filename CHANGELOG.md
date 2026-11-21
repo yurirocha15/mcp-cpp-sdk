@@ -27,6 +27,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `examples/sync/` and `examples/async/` hold a notes server and client, which the guide "Converting to Async Mode" converts, and a server and client with every feature, in each mode.
 - `CompiledSchema::compile()` takes `SchemaDocuments`: schema documents, by
   absolute URI, that references may reach. Nothing is fetched.
+- Clients connect to `https://` servers over TLS, checked against the system's certificate authorities, with `TlsClientOptions` for private ones and client certificates; OAuth reaches https servers.
+- `HttpClientTransport::set_proxy()` and the OAuth configurations' `proxy` field send connections through an HTTP proxy; `ProxyOptions::from_environment()` reads `HTTPS_PROXY` and `NO_PROXY`.
 
 ### Changed
 
@@ -54,6 +56,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `properties` may nest 31 levels deep in a schema, up from 26.
 - A `$ref` to a location inside a metaschema, such as draft-07's
   `#/definitions/nonNegativeInteger`, is refused as unresolved.
+- HTTP clients put the port in the `Host` header when it is not the scheme's default, as RFC 9110 requires.
+- `HttpClientTransport` warns once through its warning handler when bearer tokens would go over `http://` to a host other than a loopback one.
 
 ### Removed
 

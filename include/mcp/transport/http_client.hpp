@@ -2,6 +2,8 @@
 
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
+#include <mcp/transport/proxy.hpp>
+#include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <chrono>
@@ -47,6 +49,9 @@ class MCP_API HttpStatusError : public std::runtime_error {
  * Sends JSON-RPC messages via HTTP POST to an MCP Streamable HTTP endpoint.
  * Supports both `application/json` and `text/event-stream` response content types.
  *
+ * An `https://` URL is reached over TLS, with the server's certificate checked against the
+ * system's certificate authorities (see set_tls()).
+ *
  * Each message goes on an exchange of its own, so requests overlap, and an event stream is read
  * as it comes: a request the server sends while it handles one of the client's reaches the client
  * at once. In a session of protocol revision 2025-11-25 or earlier, the transport opens the
@@ -61,10 +66,11 @@ class MCP_API HttpClientTransport final : public ITransport {
      * @brief Construct an HTTP client transport.
      *
      * @param executor Executor used for async operations.
-     * @param url HTTP endpoint URL (e.g. `http://localhost:8080/mcp`).
+     * @param url Endpoint URL, `http://` or `https://` (e.g. `https://example.com/mcp`). An IPv6
+     *        host is written in brackets.
      *
-     * @throws std::invalid_argument If the URL is malformed or does not use
-     *         the `http://` scheme.
+     * @throws std::invalid_argument If the URL is malformed, carries credentials, or uses
+     *         another scheme.
      */
     HttpClientTransport(const Executor& executor, const std::string& url);
 
@@ -112,17 +118,20 @@ class MCP_API HttpClientTransport final : public ITransport {
      *
      * Returning an empty string omits the header. Safe to call at any time, including while
      * requests are in flight: each request pins the provider installed when it started, so a
-     * request already running keeps its provider and the next one picks up the new value.
+     * request already running keeps its provider and the next one picks up the new value. With an
+     * `http://` URL whose host is not a loopback one, the warning handler is told once that tokens
+     * travel without TLS.
      */
     void set_bearer_token_provider(std::function<std::string()> provider);
 
     /**
-     * @brief Configure a receiver for warnings about what the server sent.
+     * @brief Configure a receiver for warnings about the connection and what the server sent.
      *
      * A tool whose `x-mcp-header` annotations break the rules of the Streamable HTTP specification
      * is left out of the result of tools/list when the client speaks protocol revision 2026-07-28;
-     * the handler is told which tool and why. It runs on the transport's executor and must not
-     * block.
+     * the handler is told which tool and why, on the transport's executor. A bearer token provider
+     * on an `http://` URL whose host is not a loopback one gets one warning, on the thread that
+     * starts the first request. The handler must not block.
      */
     void set_warning_handler(std::function<void(const std::string&)> handler);
 
@@ -135,6 +144,39 @@ class MCP_API HttpClientTransport final : public ITransport {
      * revision 2026-07-28 have no such limit.
      */
     void set_response_timeout(std::chrono::milliseconds timeout);
+
+    /**
+     * @brief Use these TLS settings for the connections opened from now on.
+     *
+     * Without a call, an `https://` server's certificate is checked against the system's
+     * certificate authorities.
+     *
+     * @throws std::invalid_argument If the URL is not `https://`.
+     * @throws TlsConfigError If the options cannot be used.
+     */
+    void set_tls(const TlsClientOptions& options);
+
+    /** @brief Use a shared TLS context for the connections opened from now on; see set_tls(). */
+    void set_tls(std::shared_ptr<const TlsClientContext> context);
+
+    /**
+     * @brief Check the server's certificate against @p name instead of the URL's host, and send it
+     * as the TLS server name. For a server reached by an address or an alias its certificate does
+     * not name.
+     *
+     * @throws std::invalid_argument If the URL is not `https://` or @p name is empty.
+     */
+    void set_server_name(std::string name);
+
+    /**
+     * @brief Send the connections opened from now on through an HTTP proxy.
+     *
+     * Without a call the transport connects directly. Pass ProxyOptions::from_environment() to use
+     * the proxy the environment names.
+     *
+     * @throws std::invalid_argument If a proxy URL is malformed or not supported.
+     */
+    void set_proxy(ProxyOptions options);
 
     /**
      * @brief Dequeue the next MCP message received from the server.

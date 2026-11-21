@@ -54,6 +54,7 @@ class GrantFlow : public std::enable_shared_from_this<GrantFlow> {
    public:
     GrantFlow(const net::any_io_executor& executor, std::shared_ptr<TokenStore> token_store,
               std::string server_url, MetadataFetchPolicy policy, HostResolver host_resolver,
+              std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy,
               std::optional<std::string> scope);
     virtual ~GrantFlow() = default;
 
@@ -102,6 +103,8 @@ class GrantFlow : public std::enable_shared_from_this<GrantFlow> {
     std::string server_url_;
     MetadataFetchPolicy policy_;
     HostResolver host_resolver_;
+    std::shared_ptr<const TlsClientContext> tls_;
+    ProxyOptions proxy_;
     std::optional<std::string> scope_;
 
     mutable std::mutex mutex_;
