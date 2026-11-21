@@ -12,7 +12,10 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/asio/thread_pool.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -567,6 +570,47 @@ TEST_F(ServerHandlersTest, AMiddlewareThatCallsNextAgainReachesTheClientWithAHan
     EXPECT_FALSE(answered["2"]["result"].value("isError", false)) << answered["2"];
     EXPECT_EQ(answered["3"]["result"]["contents"][0]["text"], "hello") << answered["3"];
     EXPECT_TRUE(answered["4"].contains("result")) << answered["4"];
+}
+
+// A request a handler makes through its Context after its session ended says so.
+TEST_F(ServerHandlersTest, AContextRequestAfterTheSessionEndedSaysTheSessionEnded) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    std::string outcome;
+    setup.server.add_tool(
+        "late", "Asks for the roots once the client has gone", nlohmann::json{{"type", "object"}},
+        [&setup, &outcome](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+            setup.raw_transport->close();
+            while (!ctx.is_cancelled()) {
+                boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor,
+                                                std::chrono::milliseconds(1));
+                co_await timer.async_wait(boost::asio::use_awaitable);
+            }
+            try {
+                (void)co_await ctx.request_roots();
+                outcome = "answered";
+            } catch (const std::exception& error) {
+                outcome = error.what();
+            }
+            co_return "done";
+        });
+    auto initialize = make_initialize_request("1");
+    initialize["params"]["capabilities"] = nlohmann::json{{"roots", nlohmann::json::object()}};
+    setup.raw_transport->enqueue_message(initialize.dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "late"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+    io_ctx_.run();
+
+    EXPECT_EQ(outcome, "reverse RPC is unavailable: the client's session has ended");
 }
 
 // A middleware may return the next handler's coroutine without awaiting it.

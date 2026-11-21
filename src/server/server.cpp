@@ -2148,6 +2148,10 @@ Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool
     auto session = session_snapshot();
     if (!session || !session->transport || !session->strand ||
         session->stopping.load(std::memory_order_acquire)) {
+        // A handler's Context calls with caller_cancelled; Server::send_request() without.
+        if (caller_cancelled) {
+            throw std::runtime_error("reverse RPC is unavailable: the client's session has ended");
+        }
         throw std::runtime_error(
             "reverse RPC is unavailable: this Server serves no session with a client now; a "
             "handler reaches its client through its Context");
