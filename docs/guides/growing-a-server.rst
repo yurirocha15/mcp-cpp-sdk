@@ -93,7 +93,9 @@ Log and Report Progress from a Handler
 A handler that sends something to the client while it runs takes the request's
 ``mcp::Context`` and becomes a coroutine: it returns ``mcp::Task<nlohmann::json>``
 and awaits each message with ``co_await``. Only that handler changes; the
-``add_tool()`` call keeps its form, and the other handlers stay synchronous.
+``add_tool()`` call keeps its form, and the other handlers stay synchronous. A
+server that logs to the client declares the ``logging`` capability, as the
+protocol requires.
 The next three steps ask the client for something in the same way. See
 :doc:`/concepts/context`.
 

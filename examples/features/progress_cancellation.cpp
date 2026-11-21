@@ -45,6 +45,7 @@ int main() {
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
+        server_caps.logging = nlohmann::json::object();
 
         Implementation server_info;
         server_info.name = "progress-server";

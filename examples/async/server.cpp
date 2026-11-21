@@ -32,7 +32,9 @@
 int main(int argc, char** argv) {
     mcp::Server server("greeter", "1.0.0");
 
-    // A coroutine handler: while it waits, the server answers other requests.
+    // A coroutine handler: while it waits, the server answers other requests. It logs to the
+    // client, so the server declares the logging capability.
+    server.capabilities().logging = nlohmann::json::object();
     server.add_tool("greet", "Greets someone by name after a short pause",
                     mcp::tool_params({{"name", "string", "Who to greet"}}),
                     [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {

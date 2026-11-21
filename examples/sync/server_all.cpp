@@ -23,6 +23,8 @@
 
 int main(int argc, char** argv) {
     mcp::Server server("greeter", "1.0.0");
+    // A server that logs to the client declares the logging capability.
+    server.capabilities().logging = nlohmann::json::object();
 
     server.add_tool("greet", "Greets someone by name",
                     mcp::tool_params({{"name", "string", "Who to greet"}}),
