@@ -569,6 +569,35 @@ TEST_F(ServerHandlersTest, AMiddlewareThatCallsNextAgainReachesTheClientWithAHan
     EXPECT_TRUE(answered["4"].contains("result")) << answered["4"];
 }
 
+// A middleware may return the next handler's coroutine without awaiting it.
+TEST_F(ServerHandlersTest, AMiddlewareMayReturnTheNextHandlerUnawaited) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    const auto pass_on = [](mcp::Context& ctx, const nlohmann::json& params,
+                            mcp::TypeErasedHandler next) -> mcp::Task<nlohmann::json> {
+        return next(ctx, params);
+    };
+    setup.server.use(pass_on);
+    setup.server.use(pass_on);
+    const auto greeting = std::make_shared<const std::string>("hello from the tool");
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "greet", "Greets", nlohmann::json{{"type", "object"}},
+        [greeting](mcp::Context&, nlohmann::json) -> mcp::Task<nlohmann::json> {
+            co_return nlohmann::json(*greeting);
+        });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "greet"}, {"arguments", nlohmann::json::object()}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_NE(responses[1].dump().find("hello from the tool"), std::string::npos) << responses[1];
+}
+
 // When the handler executor ends while a tool handler runs on it and the server's loop goes on,
 // the call ends with a tool error on that loop.
 TEST_F(ServerHandlersTest, AToolCallFailsWhenTheHandlerExecutorEndsFirst) {

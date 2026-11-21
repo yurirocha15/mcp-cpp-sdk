@@ -72,6 +72,7 @@ These changes in behavior need no change to compile:
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key
   is not certified when it checks the source signature.
+- A middleware may return `next(ctx, params)` without awaiting it.
 
 ## [0.3.0] - 2026-11-17
 

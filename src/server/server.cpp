@@ -5331,12 +5331,36 @@ Task<nlohmann::json> Server::Impl::call_through_middleware(const TypeErasedHandl
     co_return co_await handler(ctx, params);
 }
 
+namespace {
+
+// The links of a middleware chain. Each returns a coroutine that owns what it calls, so that a
+// middleware may return next(ctx, params) unawaited, which destroys its copy of next before the
+// coroutine runs.
+Task<nlohmann::json> call_owned_handler(std::shared_ptr<const TypeErasedHandler> handler, Context& ctx,
+                                        const nlohmann::json& params) {
+    co_return co_await (*handler)(ctx, params);
+}
+
+Task<nlohmann::json> call_owned_middleware(std::shared_ptr<const Middleware> middleware,
+                                           TypeErasedHandler next, Context& ctx,
+                                           const nlohmann::json& params) {
+    co_return co_await (*middleware)(ctx, params, std::move(next));
+}
+
+}  // namespace
+
 TypeErasedHandler Server::Impl::build_middleware_chain(TypeErasedHandler final_handler) {
-    auto handler = std::move(final_handler);
+    if (middlewares.empty()) {
+        return final_handler;
+    }
+    TypeErasedHandler handler = [owned = std::make_shared<const TypeErasedHandler>(std::move(
+                                     final_handler))](Context& ctx, const nlohmann::json& params) {
+        return call_owned_handler(owned, ctx, params);
+    };
     for (const auto& mw : std::ranges::reverse_view(middlewares)) {
-        handler = [mw, next = std::move(handler)](
-                      Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
-            co_return co_await mw(ctx, params, next);
+        handler = [owned = std::make_shared<const Middleware>(mw), next = std::move(handler)](
+                      Context& ctx, const nlohmann::json& params) {
+            return call_owned_middleware(owned, next, ctx, params);
         };
     }
     return handler;
