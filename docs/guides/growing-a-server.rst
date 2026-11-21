@@ -153,12 +153,13 @@ Tell Subscribers That a Resource Changed
 A client may subscribe to a resource, and is then told when it changes:
 ``notify_resource_updated(uri)`` sends ``notifications/resources/updated`` to
 the clients subscribed to that URI. The tool that changes the resource here is a
-coroutine because it awaits that notification. The server offers subscriptions
-only when ``capabilities().resources->subscribe`` is true: registering a
-resource declares the resources capability, but leaves that flag to the
-program, which sets it after that registration. The mutex keeps the name safe
-once handlers run on a pool of their own, as in the next step. See
-:doc:`/concepts/subscriptions`.
+coroutine because it awaits that notification. Registering a resource declares
+the resources capability but leaves ``capabilities().resources->subscribe`` to
+the program, which sets it after that registration: the server then advertises
+subscriptions, and a 2026-07-28 client that asks for updates gets them only
+when the flag is set. Clients of older revisions may subscribe either way. The
+mutex keeps the name safe once handlers run on a pool of their own, as in the
+next step. See :doc:`/concepts/subscriptions`.
 
 .. literalinclude:: /_generated/progression/server_add_subscriptions.diff
    :language: diff

@@ -24,7 +24,7 @@ int main() {
         const std::lock_guard lock(*last_mutex);
         return *last;
     });
-    // Registration implies the resources capability, but not that its resources can be subscribed to.
+    // Registration implies the resources capability; this flag advertises subscriptions as well.
     server.capabilities().resources->subscribe = true;
     server.add_tool("remember", "Remembers a name", mcp::tool_params({{"name", "string", "The name"}}),
                     [&server, &last_uri, last,
