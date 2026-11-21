@@ -231,7 +231,8 @@ Port Binding and Security
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Binding**: Use ``127.0.0.1`` if the server only needs to be accessed by a local proxy (like Nginx) or ``0.0.0.0`` to listen on all interfaces.
-- **TLS/SSL**: The HTTP server transports do not terminate TLS. In production, place your MCP server behind a reverse proxy like Nginx, Apache, or a cloud load balancer that does. Clients connect over TLS themselves; see :doc:`tls`.
+- **TLS/SSL**: The HTTP server transports end TLS themselves once ``set_tls()`` gives them a certificate, and can require client certificates; see :doc:`tls`. They can also sit behind a reverse proxy like Nginx, Apache, or a cloud load balancer that ends TLS for them.
+- **Host check**: A request that reaches a server through a loopback address must name a loopback host (``localhost`` or a loopback address) in its ``Host`` header, or it is answered 403. This defends a local server against DNS rebinding, where a web page whose name points at ``127.0.0.1`` reaches it from the browser. A reverse proxy on the same machine that passes on the public name, as Nginx does with ``proxy_set_header Host $host``, needs that name listed with ``set_allowed_hosts({"mcp.example.com"})``. Once there is a list, every request must name a host on it, whatever address it reached.
 - **Authentication**: For sensitive tools, implement authentication middleware or use the OAuth flow patterns demonstrated in the ``oauth_flow.cpp`` example.
 
 Unix Daemon / Service Setup

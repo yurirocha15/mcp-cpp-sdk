@@ -3,6 +3,8 @@
 #include <boost/asio/ssl/context.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <mcp/transport/tls.hpp>
 #include <memory>
@@ -19,6 +21,14 @@ struct TlsContextAccess {
     /// The context a stream is built on. Asio's stream takes it by non-const reference; OpenSSL
     /// takes a reference on it for every stream, and nothing changes it after create().
     static boost::asio::ssl::context& native(const TlsClientContext& context);
+    static boost::asio::ssl::context& native(const TlsServerContext& context);
+
+    /// What a listener needs of a server context besides the context itself.
+    struct ServerLimits {
+        std::chrono::milliseconds handshake_timeout;
+        std::size_t max_pending_handshakes;
+    };
+    static ServerLimits limits(const TlsServerContext& context);
 };
 
 /// The context of a client given no TLS options: the system's authorities, TLS 1.2 or later.
@@ -55,6 +65,10 @@ void prepare_client_ssl(SSL* ssl, const std::string& server_name);
 /// What a failed client handshake with @p host means, as the TlsError the caller throws.
 TlsError handshake_failure(const boost::system::error_code& error, SSL* ssl, const std::string& host,
                            bool timed_out);
+
+/// What a failed server handshake with the client at @p client means, as a TlsError.
+TlsError server_handshake_failure(const boost::system::error_code& error, SSL* ssl,
+                                  const std::string& client, bool timed_out);
 
 /// Whether @p error says the peer ended a TLS connection without its close_notify.
 bool is_tls_truncation(const boost::system::error_code& error);

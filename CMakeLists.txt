@@ -158,6 +158,7 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/proxy.cpp
     src/transport/proxy_environment.cpp
     src/transport/tls.cpp
+    src/transport/tls_accept.cpp
     src/transport/tls_roots.cpp
     src/transport/http_session_manager.cpp
     src/transport/modern_exchange.cpp
@@ -483,6 +484,9 @@ if(BUILD_TESTING)
       test/transport/proxy_rules_test.cpp
       test/transport/transport_tls_client_test.cpp
       test/transport/tls_connection_test.cpp
+      test/transport/transport_tls_server_test.cpp
+      test/transport/transport_ws_tls_test.cpp
+      test/transport/host_validation_test.cpp
       test/e2e/e2e_matrix_test.cpp
       test/e2e/e2e_features_test.cpp
       test/server/runtime_test.cpp
@@ -884,6 +888,9 @@ if(BUILD_EXAMPLES)
 
   add_executable(example-feature-tls-client examples/features/tls_client.cpp)
   target_link_libraries(example-feature-tls-client PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-tls-server examples/features/tls_server.cpp)
+  target_link_libraries(example-feature-tls-server PRIVATE mcp-cpp-sdk)
 
   add_executable(example-feature-error-handling
                  examples/features/error_handling.cpp)

@@ -26,8 +26,6 @@
 
 namespace mcp::detail {
 
-using StreamConnection = boost::beast::tcp_stream;
-
 /// What the streams of one HTTP server transport have done, as StreamStats reports it.
 struct StreamCounters {
     std::atomic<std::uint64_t> streams_opened{0};
@@ -186,7 +184,7 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& reque
 /// @p client_finished_sending is set once the watch has read the client's end of the stream.
 ///
 /// @return Whether the connection may carry another request.
-Task<bool> serve_modern_exchange(StreamConnection& stream, boost::beast::flat_buffer& buffer,
+Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& buffer,
                                  const StringRequest& request, std::shared_ptr<ModernExchange> exchange,
                                  bool& client_finished_sending, const ModernServing& serving,
                                  std::vector<char>& response_head);

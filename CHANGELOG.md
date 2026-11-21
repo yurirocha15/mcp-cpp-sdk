@@ -29,6 +29,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
   absolute URI, that references may reach. Nothing is fetched.
 - Clients connect to `https://` servers over TLS, checked against the system's certificate authorities, with `TlsClientOptions` for private ones and client certificates; OAuth reaches https servers.
 - `HttpClientTransport::set_proxy()` and the OAuth configurations' `proxy` field send connections through an HTTP proxy; `ProxyOptions::from_environment()` reads `HTTPS_PROXY` and `NO_PROXY`.
+- `HttpServerTransport` and `StreamableHttpSessionManager` serve TLS with `set_tls()` and can require client certificates; the WebSocket transports speak wss on both sides.
 
 ### Changed
 
@@ -58,6 +59,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `#/definitions/nonNegativeInteger`, is refused as unresolved.
 - HTTP clients put the port in the `Host` header when it is not the scheme's default, as RFC 9110 requires.
 - `HttpClientTransport` warns once through its warning handler when bearer tokens would go over `http://` to a host other than a loopback one.
+- HTTP and WebSocket servers answer 403 to a request on a loopback connection whose `Host` names no loopback host; `set_allowed_hosts()` lists other names, as a same-host proxy needs.
 
 ### Removed
 

@@ -3,8 +3,9 @@ TLS and Proxies
 
 Clients reach ``https://`` servers over TLS, with the server's certificate
 checked against the system's certificate authorities, and can send their
-connections through an HTTP proxy. This guide covers the settings for both, for
-the MCP HTTP client and for the OAuth client.
+connections through an HTTP proxy. The HTTP and WebSocket servers end TLS
+themselves when given a certificate. This guide covers the settings of the MCP
+HTTP client, the OAuth client, the servers and WebSocket.
 
 Connecting over TLS
 -------------------
@@ -152,5 +153,56 @@ policy's address checks apply only to an address written in a URL.
 Servers
 -------
 
-The HTTP server transports do not terminate TLS themselves; put them behind a
-reverse proxy that does, as :doc:`deployment` describes.
+``HttpServerTransport`` and ``StreamableHttpSessionManager`` serve TLS once
+``set_tls()`` gives them ``mcp::TlsServerOptions``, before they listen.
+``run_http()`` hands its manager to the configure callback, where the example
+sets them:
+
+.. literalinclude:: ../../examples/features/tls_server.cpp
+   :language: cpp
+   :start-after: // ========== TLS SETTINGS ==========
+   :end-before: // ========== END TLS SETTINGS ==========
+   :dedent: 4
+
+.. literalinclude:: ../../examples/features/tls_server.cpp
+   :language: cpp
+   :start-after: // ========== SERVE ==========
+   :end-before: // ========== END SERVE ==========
+   :dedent: 8
+
+The certificate chain and the key come from PEM files or from PEM text
+(``certificate_chain_pem``, ``private_key_pem``), and ``key_password`` returns
+the passphrase of an encrypted key. ``mcp::TlsServerContext::create()`` builds
+the settings once for servers that share them; it, and ``set_tls()`` with
+options, throw ``TlsConfigError`` for a certificate or key that cannot be
+loaded or a key that does not match the certificate.
+
+A client must finish its handshake within ``handshake_timeout``, five seconds
+by default, before a request is read. ``max_pending_handshakes`` handshakes run
+at once, a quarter of the connection limit by default, and a connection past
+that is closed as soon as it is accepted, so clients that connect and say
+nothing cannot hold every connection. A connection the server ends gets its
+``close_notify``.
+
+With ``client_auth = TlsServerOptions::ClientAuth::eRequired``, every client
+must show a certificate that chains to one of ``client_ca_files`` or
+``client_ca_pem`` (mutual TLS), or its handshake fails. Naming client
+authorities without requiring a certificate is refused, so that no server
+believes it checks clients when it does not.
+
+A server can also stay behind a reverse proxy that ends TLS for it, as
+:doc:`deployment` describes.
+
+WebSocket
+---------
+
+``WebSocketClientTransport::set_tls()`` connects over TLS (wss), with the
+options and checks of the HTTP client; ``set_server_name()`` works as it does
+there. A ``WebSocketServerTransport`` made with a ``TlsServerContext`` runs the
+TLS handshake on its accepted socket together with the WebSocket upgrade,
+within its handshake timeout:
+
+.. code-block:: cpp
+
+   const auto tls = mcp::TlsServerContext::create(options);  // once
+   mcp::WebSocketServerTransport transport(std::move(socket), tls);  // per connection

@@ -5,6 +5,7 @@
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/request_context.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <chrono>
@@ -303,6 +304,42 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
     void set_allow_all_origins(bool allow_all);
+
+    /**
+     * @brief Serve only requests whose Host header names one of @p hosts.
+     *
+     * Without a list, a request that reaches the transport through a loopback address must name
+     * a loopback host in its Host header, `localhost` or a loopback address, or it is answered
+     * 403; through other addresses Host is not checked. This defends a local server against DNS
+     * rebinding. A reverse proxy on the same machine that passes on the public name in Host needs
+     * that name listed. With a list, every request must name a host on it, whatever address it
+     * reached, so list `localhost` too if local clients use it. Names compare without the port
+     * and regardless of case. An empty list restores the loopback rule.
+     *
+     * @throws std::invalid_argument If an entry names no host.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_allowed_hosts(const std::vector<std::string>& hosts);
+
+    /**
+     * @brief Accept connections over TLS with these settings.
+     *
+     * Every connection must then complete a TLS handshake, within the options' handshake_timeout,
+     * before a request is read; one that does not is closed. With ClientAuth::eRequired, a client
+     * must show a certificate from one of the named client authorities.
+     *
+     * @throws TlsConfigError If the options cannot be used.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_tls(const TlsServerOptions& options);
+
+    /**
+     * @brief Accept connections over TLS with a context created before; see set_tls(). A null
+     * context serves plain TCP again.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_tls(std::shared_ptr<const TlsServerContext> context);
 
     /**
      * @brief Require and validate an HTTP Authorization: Bearer header.

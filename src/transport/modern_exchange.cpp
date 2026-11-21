@@ -134,8 +134,7 @@ StringResponse json_response(const StringRequest& request, http::status status, 
 }
 
 /// Writes @p text as one chunk within the time the limits give the peer to take it.
-Task<bool> write_chunk(StreamConnection& stream, std::string_view text,
-                       const HttpConnectionLimits& limits) {
+Task<bool> write_chunk(Connection& stream, std::string_view text, const HttpConnectionLimits& limits) {
     arm_request_read_deadline(stream, limits);
     boost::system::error_code error;
     co_await boost::asio::async_write(stream, http::make_chunk(boost::asio::buffer(text)),
@@ -144,7 +143,7 @@ Task<bool> write_chunk(StreamConnection& stream, std::string_view text,
     co_return !error;
 }
 
-Task<bool> write_last_chunk(StreamConnection& stream, const HttpConnectionLimits& limits) {
+Task<bool> write_last_chunk(Connection& stream, const HttpConnectionLimits& limits) {
     arm_request_read_deadline(stream, limits);
     boost::system::error_code error;
     co_await boost::asio::async_write(stream, http::make_chunk_last(),
@@ -153,7 +152,7 @@ Task<bool> write_last_chunk(StreamConnection& stream, const HttpConnectionLimits
     co_return !error;
 }
 
-Task<bool> open_stream(StreamConnection& stream, const StringRequest& request,
+Task<bool> open_stream(Connection& stream, const StringRequest& request,
                        const HttpConnectionLimits& limits) {
     http::response<http::empty_body> header{http::status::ok, request.version()};
     header.set(http::field::server, "mcp-cpp-sdk");
@@ -172,7 +171,7 @@ Task<bool> open_stream(StreamConnection& stream, const StringRequest& request,
 }
 
 /// Opens the SSE stream unless it is open, and counts it; returns false when the client is gone.
-Task<bool> ensure_stream_open(StreamConnection& stream, const StringRequest& request,
+Task<bool> ensure_stream_open(Connection& stream, const StringRequest& request,
                               const HttpConnectionLimits& limits, StreamCounters& counters,
                               bool& stream_open) {
     if (!stream_open) {
@@ -209,7 +208,7 @@ Task<bool> wait_for_signal(ModernExchange& exchange, std::optional<std::chrono::
 /// wait for a socket error on a reset, but kqueue and the Windows reactor end it only for
 /// out-of-band data, so the socket is asked instead: for an error it has recorded, and with a
 /// peek, which past the client's end of stream reads end of file until a reset.
-bool peer_reset(StreamConnection& stream) { return probe_peer(stream.socket()) == PeerState::eReset; }
+bool peer_reset(Connection& stream) { return probe_peer(stream.socket()) == PeerState::eReset; }
 
 }  // namespace
 
@@ -271,7 +270,7 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& reque
     return exchange;
 }
 
-Task<bool> serve_modern_exchange(StreamConnection& stream, boost::beast::flat_buffer& buffer,
+Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& buffer,
                                  const StringRequest& request, std::shared_ptr<ModernExchange> exchange,
                                  bool& client_finished_sending, const ModernServing& serving,
                                  std::vector<char>& response_head) {

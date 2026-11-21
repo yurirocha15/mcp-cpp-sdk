@@ -154,6 +154,35 @@ class MCP_API StreamableHttpSessionManager {
     void set_allow_all_origins(bool allow_all);
 
     /**
+     * @brief Serve only requests whose Host header names one of @p hosts, before listen() starts.
+     *
+     * The rule is HttpServerTransport::set_allowed_hosts()'s: without a list, a request that
+     * reaches the manager through a loopback address must name a loopback host or is answered
+     * 403, against DNS rebinding; with one, every request must name a listed host.
+     *
+     * @throws std::invalid_argument If an entry names no host.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_allowed_hosts(const std::vector<std::string>& hosts);
+
+    /**
+     * @brief Accept connections over TLS with these settings, before listen() starts; see
+     * HttpServerTransport::set_tls().
+     *
+     * @throws TlsConfigError If the options cannot be used.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_tls(const TlsServerOptions& options);
+
+    /**
+     * @brief Accept connections over TLS with a context created before. A null context serves
+     * plain TCP again.
+     *
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_tls(std::shared_ptr<const TlsServerContext> context);
+
+    /**
      * @brief Require and validate an HTTP Authorization: Bearer header.
      *
      * Passing an empty validator disables HTTP authentication.

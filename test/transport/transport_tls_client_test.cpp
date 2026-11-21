@@ -4,6 +4,7 @@
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
+#include "mcp/transport/http_session_manager.hpp"
 #include "mcp/transport/proxy.hpp"
 #include "mcp/transport/tls.hpp"
 
@@ -117,10 +118,11 @@ std::string tls_text(const std::exception& error) {
     return {};
 }
 
-/// An MCP server over plain HTTP on a loopback port, with a greet tool.
+/// An MCP server over plain HTTP on a loopback port, with a greet tool. A proxy in front of it passes
+/// on the name the client used in Host, which the server accepts once @p allowed_hosts lists it.
 class PlainServer {
    public:
-    PlainServer() {
+    explicit PlainServer(std::vector<std::string> allowed_hosts = {}) {
         mcp::Implementation info;
         info.name = "tls-test-server";
         info.version = "1.0";
@@ -132,8 +134,13 @@ class PlainServer {
             [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
                 co_return nlohmann::json{{"greeting", "hello"}};
             });
-        thread_ = std::thread([this] {
-            server_->run_http("127.0.0.1", 0);
+        thread_ = std::thread([this, allowed_hosts = std::move(allowed_hosts)] {
+            server_->run_http("127.0.0.1", 0,
+                              [&allowed_hosts](mcp::StreamableHttpSessionManager& http) {
+                                  if (!allowed_hosts.empty()) {
+                                      http.set_allowed_hosts(allowed_hosts);
+                                  }
+                              });
             finished_ = true;
         });
         while (server_->bound_port() == 0) {
@@ -311,7 +318,7 @@ TEST(TlsClientTest, RefusesACertificateFromAnUntrustedAuthority) {
     } catch (const std::exception& error) {
         EXPECT_EQ(tls_kind(error), TlsError::Kind::eUntrustedCertificate);
         const auto text = tls_text(error);
-        EXPECT_NE(text.find("TLS to localhost failed: the certificate is not trusted"),
+        EXPECT_NE(text.find("TLS to localhost failed: the server certificate is not trusted"),
                   std::string::npos)
             << text;
     }
@@ -433,7 +440,7 @@ TEST(TlsClientTest, SettingsThatCannotBeUsed) {
 // Proxies
 
 TEST(TlsClientTest, ReachesAnHttpsServerThroughAProxyTunnel) {
-    const PlainServer server;
+    const PlainServer server({"mcp.example.test"});
     const TlsFront front(front_for(certs().server), server.port());
     const TestProxy proxy(front.port());
     mcp::ProxyOptions proxy_options;
@@ -462,7 +469,7 @@ TEST(TlsClientTest, ReachesAnHttpsServerThroughAProxyTunnel) {
 }
 
 TEST(TlsClientTest, SendsPlainRequestsToTheProxyWithTheFullUrl) {
-    const PlainServer server;
+    const PlainServer server({"mcp.example.test"});
     const TestProxy proxy(server.port());
     mcp::ProxyOptions proxy_options;
     proxy_options.http_proxy = "127.0.0.1:" + std::to_string(proxy.port());

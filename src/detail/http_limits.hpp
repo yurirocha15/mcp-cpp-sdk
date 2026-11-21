@@ -1,5 +1,6 @@
 #pragma once
 
+#include "connection.hpp"
 #include "http_response_write.hpp"
 
 #include <mcp/core/async.hpp>
@@ -7,11 +8,12 @@
 #include <mcp/transport/http_types.hpp>
 
 #include <boost/asio/buffer.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/ssl/error.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/string.hpp>
-#include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http.hpp>
 
 #include <algorithm>
@@ -162,7 +164,7 @@ inline StringRequest take_request(RequestParser& parser) {
 /// Starts the deadline for reading one request and returns it, or clears it and returns nothing when
 /// @p limits sets none. A timeout too long to add to the current time sets none.
 inline std::optional<std::chrono::steady_clock::time_point> arm_request_read_deadline(
-    boost::beast::tcp_stream& stream, const HttpConnectionLimits& limits) {
+    Connection& stream, const HttpConnectionLimits& limits) {
     const auto now = std::chrono::steady_clock::now();
     const auto room = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::time_point::max() - now);
@@ -186,8 +188,7 @@ inline bool deadline_passed(const std::optional<std::chrono::steady_clock::time_
 /// take its answer cannot keep what its request holds. The write goes through
 /// async_write_response(), which builds the head in @p head. False when the peer is gone or too
 /// slow, and the connection is to end.
-inline Task<bool> write_response_within_limits(boost::beast::tcp_stream& stream,
-                                               StringResponse& response,
+inline Task<bool> write_response_within_limits(Connection& stream, StringResponse& response,
                                                const HttpConnectionLimits& limits,
                                                std::vector<char>& head) {
     arm_request_read_deadline(stream, limits);
@@ -201,7 +202,7 @@ inline Task<bool> write_response_within_limits(boost::beast::tcp_stream& stream,
 }
 
 /// Writes @p response and ends the exchange on this connection, ignoring a peer that is gone.
-inline Task<void> write_final_response(boost::beast::tcp_stream& stream, StringResponse response) {
+inline Task<void> write_final_response(Connection& stream, StringResponse response) {
     response.keep_alive(false);
     response.prepare_payload();
     try {
@@ -232,7 +233,7 @@ inline bool is_unreadable_request(const boost::system::error_code& code) {
 
 /// Answers a request the HTTP parser could not read: 431 for headers past the parser's limit, 400
 /// for anything else. The parser cannot find the next request after it, so the exchange ends here.
-inline Task<void> refuse_unreadable_request(boost::beast::tcp_stream& stream,
+inline Task<void> refuse_unreadable_request(Connection& stream,
                                             const boost::system::error_code& parse_error) {
     namespace http = boost::beast::http;
     const bool headers_too_large = parse_error == http::error::header_limit;
@@ -256,16 +257,19 @@ using RefuseBeforeBody = std::function<Task<std::optional<StringResponse>>(const
 /// body is charged to @p bytes as it arrives. A request that is not refused and sent
 /// "Expect: 100-continue" is answered 100 Continue before its body is read.
 /// Returns false when the connection is to end, after writing whatever answer is due.
-inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
-                                             boost::beast::flat_buffer& buffer, RequestParser& parser,
-                                             HttpConnectionLimits limits, std::size_t body_limit,
-                                             BudgetLease& bytes,
+inline Task<bool> read_request_within_limits(Connection& stream, boost::beast::flat_buffer& buffer,
+                                             RequestParser& parser, HttpConnectionLimits limits,
+                                             std::size_t body_limit, BudgetLease& bytes,
                                              const RefuseBeforeBody& refuse_before_body) {
     namespace http = boost::beast::http;
+    // A TLS peer that leaves without its close_notify, or sends what is not a valid record,
+    // ends the connection the same way.
     const auto ends_quietly = [](const boost::system::error_code& code) {
         return code == boost::asio::error::eof || code == boost::asio::error::connection_reset ||
                code == boost::asio::error::operation_aborted || code == boost::beast::error::timeout ||
-               code == http::error::end_of_stream;
+               code == http::error::end_of_stream ||
+               code == boost::asio::ssl::error::stream_truncated ||
+               code.category() == boost::asio::error::get_ssl_category();
     };
     const auto deadline = arm_request_read_deadline(stream, limits);
     bool declared_too_large = false;
@@ -375,9 +379,8 @@ inline Task<bool> read_request_within_limits(boost::beast::tcp_stream& stream,
 /// first that is not. Checks @p refuse_before_body and charges the body to @p bytes as
 /// read_request_within_limits() does. Returns false when the connection is to end, after writing
 /// whatever answer is due.
-inline Task<bool> read_buffered_request(boost::beast::tcp_stream& stream,
-                                        boost::beast::flat_buffer& buffer, RequestParser& parser,
-                                        BudgetLease& bytes,
+inline Task<bool> read_buffered_request(Connection& stream, boost::beast::flat_buffer& buffer,
+                                        RequestParser& parser, BudgetLease& bytes,
                                         const RefuseBeforeBody& refuse_before_body) {
     namespace http = boost::beast::http;
     boost::system::error_code parse_error;

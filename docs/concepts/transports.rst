@@ -275,11 +275,14 @@ them), and no ``Mcp-Session-Id``. ``StreamableHttpSessionManager`` and
 sessions. See :doc:`/guides/deployment` for the headers and the error statuses,
 and :doc:`protocol` for the protocol itself.
 
-The HTTP server transports are plaintext. Bind local development servers to
-loopback. For remote deployments, place them behind a TLS-terminating proxy or
-provide a custom TLS transport. Requests carrying an ``Origin`` header are
-denied by default; configure an exact allowlist (or explicitly opt into all
-origins) before starting the listener. Bearer-token validators must likewise be
+The HTTP server transports serve plain HTTP unless ``set_tls()`` gives them a
+certificate (see :doc:`/guides/tls`). Bind local development servers to
+loopback, and serve remote clients over TLS, the transport's own or a reverse
+proxy's. A request that reaches a server through a loopback address must name a
+loopback host in ``Host`` unless ``set_allowed_hosts()`` lists others (see
+:doc:`/guides/deployment`). Requests carrying an ``Origin`` header are denied
+by default; configure an exact allowlist (or explicitly opt into all origins)
+before starting the listener. Bearer-token validators must likewise be
 installed before ``listen()`` or ``run()``.
 
 HTTP Server Convenience
@@ -367,8 +370,10 @@ required.
 ``Origin`` header with ``403`` unless that origin was added with
 ``set_allowed_origins()`` or ``set_allow_all_origins(true)`` was called, as
 the HTTP transports do. An upgrade without an ``Origin`` header is accepted.
-Configure origins before the first ``read_message()`` or ``write_message()``,
-which perform the handshake.
+Its ``Host`` header is checked as the HTTP servers check it, with
+``set_allowed_hosts()``. Configure both before the first ``read_message()`` or
+``write_message()``, which perform the handshake. Both transports also speak
+TLS (wss); see :doc:`/guides/tls`.
 
 Three limits protect a server from a peer that stops cooperating, and take
 effect when set before that first read or write:
@@ -446,7 +451,7 @@ integration. Use the table below as a guide:
 +----------------------+--------------------------+------------------------------------------------+
 | **HTTP**             | MCP remote endpoints     | - Standard Streamable HTTP request model       |
 |                      |                          | - Managed sessions and bounded event replay    |
-|                      |                          | - Deploy behind TLS for non-loopback use       |
+|                      |                          | - TLS of its own or from a reverse proxy       |
 +----------------------+--------------------------+------------------------------------------------+
 | **WebSocket**        | Agreed custom integration| - Full-duplex persistent channel               |
 |                      |                          | - Separate client and server transport types   |

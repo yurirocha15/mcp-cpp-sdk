@@ -2,6 +2,8 @@
 
 #include <mcp/core/export.hpp>
 
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -79,6 +81,75 @@ class MCP_API TlsClientContext {
    private:
     struct Impl;
     explicit TlsClientContext(std::unique_ptr<Impl> impl);
+
+    std::unique_ptr<Impl> impl_;
+    friend struct detail::TlsContextAccess;
+};
+
+/**
+ * @brief The certificate a server shows its clients over TLS, and whether clients must show one.
+ *
+ * The certificate chain and the key are each given as a file or as PEM text, not both.
+ */
+struct TlsServerOptions {
+    /** @brief Whether the server asks each client for a certificate. */
+    enum class ClientAuth : std::uint8_t {
+        eNone,      ///< Clients show no certificate.
+        eRequired,  ///< A client must show a certificate from one of the client authorities below.
+    };
+
+    /// PEM file of the server certificate, followed by its intermediates.
+    std::filesystem::path certificate_chain_file;
+    /// The server certificate and its intermediates as PEM text.
+    std::string certificate_chain_pem;
+    /// PEM file of the server certificate's private key.
+    std::filesystem::path private_key_file;
+    /// The private key as PEM text.
+    std::string private_key_pem;
+    /// Returns the passphrase of an encrypted key. Called while the context is created.
+    std::function<std::string()> key_password;
+    /// Whether clients must show a certificate (mutual TLS).
+    ClientAuth client_auth{ClientAuth::eNone};
+    /// PEM files of the authorities client certificates must chain to. Needs ClientAuth::eRequired.
+    std::vector<std::filesystem::path> client_ca_files;
+    /// The authorities client certificates must chain to, as PEM text. Needs
+    /// ClientAuth::eRequired.
+    std::vector<std::string> client_ca_pem;
+    /// The lowest TLS version accepted.
+    TlsVersion min_version{TlsVersion::eTls12};
+    /// How long an HTTP server transport waits for a client to finish the handshake. Zero or less
+    /// means no limit. A WebSocketServerTransport uses its own handshake timeout instead.
+    std::chrono::milliseconds handshake_timeout{std::chrono::seconds(5)};
+    /// Handshakes an HTTP server transport runs at once; a connection past it is closed as soon as
+    /// it is accepted. Zero takes a quarter of HttpConnectionLimits::max_connections as resolved,
+    /// and at least one.
+    std::size_t max_pending_handshakes{0};
+};
+
+/**
+ * @brief Server TLS settings ready for connections: certificate and key loaded and checked.
+ *
+ * Immutable once created and safe to share between transports and threads.
+ */
+class MCP_API TlsServerContext {
+   public:
+    /**
+     * @brief Read what the options name and build a context.
+     * @throws TlsConfigError When a certificate or key is missing or cannot be read, the key does
+     *         not match the certificate, or the client authorities do not fit client_auth.
+     */
+    [[nodiscard]] static std::shared_ptr<const TlsServerContext> create(
+        const TlsServerOptions& options);
+
+    ~TlsServerContext();
+    TlsServerContext(const TlsServerContext&) = delete;
+    TlsServerContext& operator=(const TlsServerContext&) = delete;
+    TlsServerContext(TlsServerContext&&) = delete;
+    TlsServerContext& operator=(TlsServerContext&&) = delete;
+
+   private:
+    struct Impl;
+    explicit TlsServerContext(std::unique_ptr<Impl> impl);
 
     std::unique_ptr<Impl> impl_;
     friend struct detail::TlsContextAccess;
