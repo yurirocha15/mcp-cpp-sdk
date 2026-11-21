@@ -2,7 +2,10 @@
 
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "schema_checker.hpp"
+#include "schema_dialect.hpp"
 #include "schema_uri.hpp"
+#include "schema_values.hpp"
 
 #include <mcp/detail/regex.hpp>
 
@@ -33,6 +36,9 @@ namespace mcp::detail {
 
 struct NativeSchema::Resource {
     std::string uri;  ///< Absolute, without a fragment.
+    SchemaDialect dialect = SchemaDialect::eDraft202012;
+    /// The resource's root when it sets `$recursiveAnchor` to true (2019-09).
+    const Node* recursive_root = nullptr;
     /// `$dynamicAnchor` names of the resource and the schemas that declare them.
     std::map<std::string, const Node*, std::less<>> dynamic_anchors;
 };
@@ -86,6 +92,14 @@ struct NativeSchema::Node {
     std::string dynamic_name;
     const Node* unevaluated_properties = nullptr;
     const Node* unevaluated_items = nullptr;
+    /// `$recursiveRef`'s target before the dynamic scope is consulted (2019-09).
+    const Node* recursive_ref = nullptr;
+    /// `contentEncoding` and `contentMediaType`, asserted in draft-07 and earlier.
+    std::optional<std::string> content_encoding;
+    std::optional<std::string> content_media_type;
+    /// Set for the target of a reference to a dialect's metaschema: the value must be a schema of
+    /// that dialect.
+    std::optional<SchemaDialect> metaschema;
     const Resource* resource = nullptr;  ///< The schema resource the schema belongs to.
     bool has_applicators = false;        ///< Any of all_of to dynamic_ref is set.
 };
@@ -105,15 +119,49 @@ using Node = NativeSchema::Node;
 using Resource = NativeSchema::Resource;
 using Document = NativeSchema::Document;
 
-/// Keywords jsoncons implements for 2020-12 that the native evaluation does not. A schema using
-/// one is left to jsoncons; any keyword in neither list is one jsoncons ignores, and so is ignored
-/// here.
-bool is_unsupported_keyword(std::string_view keyword) {
-    static constexpr std::array<std::string_view, 2> s_unsupported = {
-        "additionalItems",
-        "dependencies",
+/// Whether @p keyword is a keyword of @p dialect; any other is ignored there, as an annotation or
+/// an unknown keyword. `$schema` and the identifier keywords are read before the others.
+bool has_keyword(std::string_view keyword, SchemaDialect dialect) {
+    struct Span {
+        std::string_view keyword;
+        SchemaDialect first;
+        SchemaDialect last;
     };
-    return std::find(s_unsupported.begin(), s_unsupported.end(), keyword) != s_unsupported.end();
+    using D = SchemaDialect;
+    static constexpr std::array<Span, 20> s_spans = {{
+        {"$anchor", D::eDraft201909, D::eDraft202012},
+        {"$defs", D::eDraft201909, D::eDraft202012},
+        {"$dynamicAnchor", D::eDraft202012, D::eDraft202012},
+        {"$dynamicRef", D::eDraft202012, D::eDraft202012},
+        {"$recursiveAnchor", D::eDraft201909, D::eDraft201909},
+        {"$recursiveRef", D::eDraft201909, D::eDraft201909},
+        {"additionalItems", D::eDraft4, D::eDraft201909},
+        {"const", D::eDraft6, D::eDraft202012},
+        {"contains", D::eDraft6, D::eDraft202012},
+        {"contentEncoding", D::eDraft4, D::eDraft7},
+        {"contentMediaType", D::eDraft4, D::eDraft7},
+        {"dependencies", D::eDraft4, D::eDraft7},
+        {"dependentRequired", D::eDraft201909, D::eDraft202012},
+        {"dependentSchemas", D::eDraft201909, D::eDraft202012},
+        {"if", D::eDraft7, D::eDraft202012},
+        {"maxContains", D::eDraft201909, D::eDraft202012},
+        {"minContains", D::eDraft201909, D::eDraft202012},
+        {"prefixItems", D::eDraft202012, D::eDraft202012},
+        {"propertyNames", D::eDraft6, D::eDraft202012},
+        {"unevaluatedItems", D::eDraft201909, D::eDraft202012},
+    }};
+    if (keyword == "then" || keyword == "else") {
+        return dialect >= D::eDraft7;
+    }
+    if (keyword == "unevaluatedProperties") {
+        return dialect >= D::eDraft201909;
+    }
+    for (const auto& span : s_spans) {
+        if (span.keyword == keyword) {
+            return dialect >= span.first && dialect <= span.last;
+        }
+    }
+    return true;
 }
 
 /// Whether @p value has a `$ref` or `$dynamicRef` member at any depth.
@@ -126,18 +174,12 @@ bool mentions_reference(const nlohmann::json& value) {
         return false;
     }
     for (const auto& [name, member] : value.items()) {
-        if (name == "$ref" || name == "$dynamicRef" || mentions_reference(member)) {
+        if (name == "$ref" || name == "$dynamicRef" || name == "$recursiveRef" ||
+            mentions_reference(member)) {
             return true;
         }
     }
     return false;
-}
-
-bool is_dialect_uri(std::string_view uri) {
-    if (!uri.empty() && uri.back() == '#') {
-        uri.remove_suffix(1);
-    }
-    return uri == mcp::detail::constants::native_schema::g_DIALECT;
 }
 
 /// A size keyword's value, or nothing when it is not a non-negative number. One beyond std::size_t
@@ -184,10 +226,20 @@ std::optional<std::vector<std::string>> string_list(const nlohmann::json& value)
     return strings;
 }
 
+/// @p uri as the schema author wrote it when it is relative to the document without `$id`.
+std::string_view without_default_base(std::string_view uri) {
+    const auto base = mcp::detail::constants::schema::g_DEFAULT_BASE_URI;
+    if (uri.substr(0, base.size()) == base) {
+        uri.remove_prefix(base.size());
+        if (!uri.empty() && uri.front() == '/') {
+            uri.remove_prefix(1);
+        }
+    }
+    return uri;
+}
+
 /// Compiles a schema document, and the registered documents its references reach, into a
-/// Document. Never throws for a malformed schema: a value of the wrong shape, or anything the
-/// native evaluation does not implement, makes compile() return false and leaves the schema to
-/// jsoncons, which reports it.
+/// Document. compile() returns false for a schema it cannot compile, and problem() says why.
 class Compiler {
    public:
     Compiler(Document& document, const SchemaDocuments& documents)
@@ -197,14 +249,21 @@ class Compiler {
         // Locations and anchors matter only to references; a document without any skips them.
         track_ = mentions_reference(schema);
         document_.references = track_;
-        Resource* resource =
-            add_resource(std::string(mcp::detail::constants::schema::g_DEFAULT_BASE_URI), schema);
+        root_dialect_ = declared_dialect(schema).value_or(SchemaDialect::eDraft202012);
+        Resource* resource = add_resource(
+            std::string(mcp::detail::constants::schema::g_DEFAULT_BASE_URI), schema, root_dialect_);
         const Node* root = compile_node(schema, *resource, std::string(), true);
         if (root == nullptr) {
             return false;
         }
         document_.root = root;
         return resolve_references();
+    }
+
+    /// Why compile() returned false: the first problem recorded, or a generic one.
+    [[nodiscard]] SchemaError problem() const {
+        return problem_.value_or(
+            SchemaError(SchemaError::Category::eInvalidSchema, "JSON Schema cannot be compiled"));
     }
 
    private:
@@ -219,19 +278,46 @@ class Compiler {
         Resource* resource;
     };
 
+    enum class ReferenceKind : unsigned char {
+        eRef,
+        eDynamic,
+        eRecursive
+    };
+
     struct PendingReference {
         Node* node;
         std::string target;  ///< Absolute, with the fragment as written.
-        bool dynamic;
+        ReferenceKind kind;
     };
 
+    /// What compile_into() reads after the other keywords of a schema.
+    struct Deferred {
+        const nlohmann::json* items = nullptr;
+        const nlohmann::json* additional_items = nullptr;
+        bool exclusive_minimum = false;  ///< draft-04's boolean form.
+        bool exclusive_maximum = false;
+    };
+
+    /// The dialect @p schema's `$schema` names: nothing when it has none or names none.
+    static std::optional<SchemaDialect> declared_dialect(const nlohmann::json& schema) {
+        if (!schema.is_object()) {
+            return std::nullopt;
+        }
+        const auto declared = schema.find("$schema");
+        if (declared == schema.end() || !declared->is_string()) {
+            return std::nullopt;
+        }
+        return find_schema_dialect(declared->get_ref<const std::string&>());
+    }
+
     /// A new resource at @p uri whose root is @p value; null when another has that URI.
-    Resource* add_resource(std::string uri, const nlohmann::json& value) {
+    Resource* add_resource(std::string uri, const nlohmann::json& value, SchemaDialect dialect) {
         if (roots_.count(uri) != 0) {
             return nullptr;
         }
         auto& resource = document_.resources.emplace_back();
         resource.uri = uri;
+        resource.dialect = dialect;
         roots_.emplace(std::move(uri), ResourceRoot{&value, &resource});
         return &resource;
     }
@@ -319,27 +405,58 @@ class Compiler {
     bool compile_into(const nlohmann::json& schema, Resource& outer, std::string pointer,
                       bool document_root, Node& node) {
         Resource* resource = &outer;
+        bool reference_only = false;
         if (schema.is_object()) {
-            const auto id = schema.find("$id");
+            auto dialect = outer.dialect;
+            const auto declared = schema.find("$schema");
+            if (declared != schema.end()) {
+                const auto named = declared_dialect(schema);
+                if (!named) {
+                    return fail(SchemaError::Category::eUnsupportedDialect,
+                                "unsupported JSON Schema dialect: " +
+                                    sanitize_for_diagnostics(
+                                        declared->is_string() ? declared->get_ref<const std::string&>()
+                                                              : declared->dump()));
+                }
+                dialect = *named;
+            }
+            // In draft-07 and earlier a schema with $ref is that reference alone.
+            reference_only = dialect <= SchemaDialect::eDraft7 && schema.contains("$ref");
+            const auto id = reference_only
+                                ? schema.end()
+                                : schema.find(dialect == SchemaDialect::eDraft4 ? "id" : "$id");
             if (id != schema.end()) {
                 if (!id->is_string()) {
                     return false;
                 }
                 auto [uri, fragment] =
                     split_fragment(resolve_uri(outer.uri, id->get_ref<const std::string&>()));
-                if (!fragment.empty()) {
+                if (!fragment.empty() && dialect >= SchemaDialect::eDraft201909) {
                     return false;
                 }
                 if (uri != outer.uri) {
                     if (track_) {
                         locations_.emplace(outer.uri + "#" + pointer, &node);
                     }
-                    resource = add_resource(std::move(uri), schema);
+                    resource = add_resource(uri, schema, dialect);
                     if (resource == nullptr) {
-                        return false;
+                        return fail(SchemaError::Category::eInvalidSchema,
+                                    "JSON Schema declares the resource " +
+                                        sanitize_for_diagnostics(without_default_base(uri)) + " twice");
                     }
                     pointer.clear();
                 }
+                // Before 2019-09, "$id": "#name" names the schema, as $anchor does since.
+                if (!fragment.empty() &&
+                    !anchors_.emplace(resource->uri + "#" + fragment, &node).second) {
+                    return duplicate_anchor(fragment);
+                }
+            }
+            // $schema changes the dialect only at the root of a resource.
+            if (declared != schema.end() && resource == &outer && !document_root &&
+                dialect != outer.dialect) {
+                return fail(SchemaError::Category::eInvalidSchema,
+                            "JSON Schema changes its dialect outside the root of a resource");
             }
         }
         node.resource = resource;
@@ -353,9 +470,29 @@ class Compiler {
         if (!schema.is_object()) {
             return false;
         }
+        Deferred deferred;
         for (const auto& [keyword, value] : schema.items()) {
-            if (!compile_keyword(keyword, value, *resource, pointer, document_root, node)) {
-                return false;
+            if (reference_only && keyword != "$ref" && keyword != "definitions") {
+                continue;
+            }
+            if (!compile_keyword(keyword, value, *resource, pointer, node, deferred)) {
+                return fail(SchemaError::Category::eInvalidSchema,
+                            "JSON Schema keyword '" + sanitize_for_diagnostics(keyword) +
+                                "' cannot be compiled");
+            }
+        }
+        if (!compile_deferred(deferred, *resource, pointer, node)) {
+            return false;
+        }
+        if (resource != &outer || document_root) {
+            const auto recursive = schema.find("$recursiveAnchor");
+            if (recursive != schema.end() && resource->dialect == SchemaDialect::eDraft201909) {
+                if (!recursive->is_boolean()) {
+                    return false;
+                }
+                if (recursive->get<bool>()) {
+                    resource->recursive_root = &node;
+                }
             }
         }
         node.has_applicators = !node.all_of.empty() || !node.any_of.empty() || !node.one_of.empty() ||
@@ -363,24 +500,55 @@ class Compiler {
         return true;
     }
 
-    bool compile_keyword(const std::string& keyword, const nlohmann::json& value, Resource& resource,
-                         const std::string& pointer, bool document_root, Node& node) {
-        if (keyword == "$schema") {
-            return document_root && value.is_string() &&
-                   is_dialect_uri(value.get_ref<const std::string&>());
+    /// The keywords that depend on others of the schema: draft-04's boolean exclusive bounds, and
+    /// `items` with `additionalItems` before 2020-12.
+    bool compile_deferred(const Deferred& deferred, Resource& resource, const std::string& pointer,
+                          Node& node) {
+        if (deferred.exclusive_minimum && node.minimum) {
+            node.exclusive_minimum = std::move(node.minimum);
+            node.minimum.reset();
         }
-        if (keyword == "$id") {
-            return true;  // compile_into() reads it first
+        if (deferred.exclusive_maximum && node.maximum) {
+            node.exclusive_maximum = std::move(node.maximum);
+            node.maximum.reset();
         }
-        if (is_unsupported_keyword(keyword)) {
+        if (deferred.items == nullptr) {
+            // additionalItems without an array of items applies to nothing.
+            return deferred.additional_items == nullptr ||
+                   compile_node(*deferred.additional_items, resource, child(pointer, "additionalItems"),
+                                false) != nullptr;
+        }
+        if (!deferred.items->is_array()) {
+            return compile_schema(*deferred.items, resource, child(pointer, "items"), node.items) &&
+                   (deferred.additional_items == nullptr ||
+                    compile_node(*deferred.additional_items, resource,
+                                 child(pointer, "additionalItems"), false) != nullptr);
+        }
+        if (resource.dialect >= SchemaDialect::eDraft202012 ||
+            !compile_list(*deferred.items, resource, child(pointer, "items"), node.prefix_items)) {
             return false;
         }
-        if (keyword == "$ref" || keyword == "$dynamicRef") {
+        // An array of items is 2020-12's prefixItems, and additionalItems its items.
+        return deferred.additional_items == nullptr ||
+               compile_schema(*deferred.additional_items, resource, child(pointer, "additionalItems"),
+                              node.items);
+    }
+
+    bool compile_keyword(const std::string& keyword, const nlohmann::json& value, Resource& resource,
+                         const std::string& pointer, Node& node, Deferred& deferred) {
+        if (keyword == "$schema" || keyword == "$id" || keyword == "id" ||
+            keyword == "$recursiveAnchor" || !has_keyword(keyword, resource.dialect)) {
+            return true;  // compile_into() reads the first ones; the others are not keywords here
+        }
+        if (keyword == "$ref" || keyword == "$dynamicRef" || keyword == "$recursiveRef") {
             if (!value.is_string()) {
                 return false;
             }
-            pending_.push_back({&node, resolve_uri(resource.uri, value.get_ref<const std::string&>()),
-                                keyword == "$dynamicRef"});
+            const auto kind = keyword == "$ref"          ? ReferenceKind::eRef
+                              : keyword == "$dynamicRef" ? ReferenceKind::eDynamic
+                                                         : ReferenceKind::eRecursive;
+            pending_.push_back(
+                {&node, resolve_uri(resource.uri, value.get_ref<const std::string&>()), kind});
             return true;
         }
         if (keyword == "$anchor" || keyword == "$dynamicAnchor") {
@@ -389,11 +557,11 @@ class Compiler {
             }
             const auto& name = value.get_ref<const std::string&>();
             if (keyword == "$dynamicAnchor" && !resource.dynamic_anchors.emplace(name, &node).second) {
-                return false;
+                return duplicate_anchor(name);
             }
-            return anchors_.emplace(resource.uri + "#" + name, &node).second;
+            return anchors_.emplace(resource.uri + "#" + name, &node).second || duplicate_anchor(name);
         }
-        if (keyword == "$defs") {
+        if (keyword == "$defs" || keyword == "definitions") {
             if (!value.is_object()) {
                 return false;
             }
@@ -430,11 +598,50 @@ class Compiler {
         if (keyword == "maximum") {
             return compile_number(value, node.maximum);
         }
-        if (keyword == "exclusiveMinimum") {
-            return compile_number(value, node.exclusive_minimum);
+        if (keyword == "exclusiveMinimum" || keyword == "exclusiveMaximum") {
+            if (resource.dialect == SchemaDialect::eDraft4) {
+                // A boolean that makes minimum or maximum exclusive.
+                if (!value.is_boolean()) {
+                    return false;
+                }
+                (keyword == "exclusiveMinimum" ? deferred.exclusive_minimum
+                                               : deferred.exclusive_maximum) = value.get<bool>();
+                return true;
+            }
+            return compile_number(
+                value, keyword == "exclusiveMinimum" ? node.exclusive_minimum : node.exclusive_maximum);
         }
-        if (keyword == "exclusiveMaximum") {
-            return compile_number(value, node.exclusive_maximum);
+        if (keyword == "contentEncoding" || keyword == "contentMediaType") {
+            if (!value.is_string()) {
+                return false;
+            }
+            (keyword == "contentEncoding" ? node.content_encoding : node.content_media_type) =
+                value.get<std::string>();
+            return true;
+        }
+        if (keyword == "dependencies") {
+            if (!value.is_object()) {
+                return false;
+            }
+            const auto here = child(pointer, keyword);
+            for (const auto& [name, dependency] : value.items()) {
+                if (dependency.is_array()) {
+                    auto names = string_list(dependency);
+                    if (!names) {
+                        return false;
+                    }
+                    node.dependent_required_names.push_back(name);
+                    node.dependent_required_lists.push_back(std::move(*names));
+                    continue;
+                }
+                const Node* schema = compile_node(dependency, resource, child(here, name), false);
+                if (schema == nullptr) {
+                    return false;
+                }
+                node.dependent_schema_names.push_back(name);
+                node.dependent_schemas.push_back(schema);
+            }
+            return true;
         }
         if (keyword == "multipleOf") {
             if (!value.is_number() || !(value.get<double>() > 0)) {
@@ -454,9 +661,9 @@ class Compiler {
                 return false;
             }
             try {
-                node.pattern.emplace(value.get_ref<const std::string&>());
-            } catch (const RegexError&) {
-                return false;
+                node.pattern.emplace(PatternBudget::compile(value.get_ref<const std::string&>()));
+            } catch (const RegexError& error) {
+                return pattern_failure(error);
             }
             return true;
         }
@@ -464,7 +671,12 @@ class Compiler {
             return compile_list(value, resource, here, node.prefix_items);
         }
         if (keyword == "items") {
-            return compile_schema(value, resource, here, node.items);
+            deferred.items = &value;
+            return true;
+        }
+        if (keyword == "additionalItems") {
+            deferred.additional_items = &value;
+            return true;
         }
         if (keyword == "contains") {
             return compile_schema(value, resource, here, node.contains);
@@ -495,9 +707,9 @@ class Compiler {
             }
             for (const auto& pattern : patterns) {
                 try {
-                    node.pattern_regexes.emplace_back(pattern);
-                } catch (const RegexError&) {
-                    return false;
+                    node.pattern_regexes.push_back(PatternBudget::compile(pattern));
+                } catch (const RegexError& error) {
+                    return pattern_failure(error);
                 }
             }
             return true;
@@ -567,8 +779,8 @@ class Compiler {
         if (keyword == "unevaluatedItems") {
             return compile_schema(value, resource, here, node.unevaluated_items);
         }
-        // Anything else is an annotation or a keyword jsoncons ignores, such as `format` and, in
-        // 2020-12, `contentEncoding` and `contentMediaType`.
+        // Anything else is an annotation, such as `format` and, from 2019-09 on,
+        // `contentEncoding` and `contentMediaType`.
         return true;
     }
 
@@ -580,17 +792,23 @@ class Compiler {
             pending_.pop_back();
             const auto [base, written] = split_fragment(reference.target);
             const auto fragment = percent_decode(written);
-            if (!fragment) {
-                return false;
-            }
-            const Node* target = locate(base, *fragment);
+            const Node* target = fragment ? locate(base, *fragment) : nullptr;
             if (target == nullptr) {
-                return false;
+                return fail(SchemaError::Category::eUnresolvedRef,
+                            "JSON Schema reference cannot be resolved in the document: " +
+                                sanitize_for_diagnostics(without_default_base(reference.target)));
             }
             Node& node = *reference.node;
             node.has_applicators = true;
-            if (!reference.dynamic) {
+            if (reference.kind == ReferenceKind::eRef) {
                 node.ref = target;
+                continue;
+            }
+            if (reference.kind == ReferenceKind::eRecursive) {
+                node.recursive_ref = target;
+                if (target->resource->recursive_root == target) {
+                    document_.dynamic_scope = true;
+                }
                 continue;
             }
             node.dynamic_ref = target;
@@ -615,9 +833,11 @@ class Compiler {
         if (root == roots_.end()) {
             const auto registered = documents_.find(base);
             if (registered == documents_.end()) {
-                return nullptr;
+                const auto dialect = find_schema_dialect(base);
+                return dialect && fragment.empty() ? metaschema_node(*dialect) : nullptr;
             }
-            Resource* resource = add_resource(base, registered->second);
+            Resource* resource = add_resource(
+                base, registered->second, declared_dialect(registered->second).value_or(root_dialect_));
             if (resource == nullptr ||
                 compile_node(registered->second, *resource, std::string(), true) == nullptr) {
                 return nullptr;
@@ -679,6 +899,44 @@ class Compiler {
         return node;
     }
 
+    /// The schema a reference to the metaschema of @p dialect reaches, made once per dialect.
+    const Node* metaschema_node(SchemaDialect dialect) {
+        auto& node = metaschemas_[static_cast<std::size_t>(dialect)];
+        if (node == nullptr) {
+            auto& resource = document_.resources.emplace_back();
+            resource.uri = std::string(dialect_uri(dialect));
+            resource.dialect = dialect;
+            node = &document_.nodes.emplace_back();
+            node->metaschema = dialect;
+            node->resource = &resource;
+        }
+        return node;
+    }
+
+    /// Records @p category and @p message as the problem unless one is recorded; returns false.
+    bool fail(SchemaError::Category category, const std::string& message) {
+        if (!problem_) {
+            problem_.emplace(category, message);
+        }
+        return false;
+    }
+
+    bool duplicate_anchor(const std::string& name) {
+        return fail(SchemaError::Category::eInvalidSchema,
+                    "JSON Schema declares the anchor '" + sanitize_for_diagnostics(name) + "' twice");
+    }
+
+    /// Records a pattern that cannot be compiled outside a PatternBudget.
+    bool pattern_failure(const RegexError& error) {
+        if (error.kind() == RegexError::Kind::eInvalid) {
+            return fail(SchemaError::Category::eInvalidSchema,
+                        "JSON Schema pattern is not a regular expression: " +
+                            sanitize_for_diagnostics(error.what()));
+        }
+        return fail(SchemaError::Category::eUnsupportedPattern,
+                    "JSON Schema pattern cannot be used: " + sanitize_for_diagnostics(error.what()));
+    }
+
     /// The array index @p token names: decimal digits without a leading zero.
     static std::optional<std::size_t> array_index(const std::string& token) {
         constexpr std::size_t g_most_digits = 18;
@@ -694,130 +952,18 @@ class Compiler {
     Document& document_;
     const SchemaDocuments& documents_;
     bool track_ = false;
+    SchemaDialect root_dialect_ = SchemaDialect::eDraft202012;
     std::map<std::string, ResourceRoot, std::less<>> roots_;
     std::unordered_map<std::string, Node*> locations_;
     std::unordered_map<const Node*, Place> places_;
     std::unordered_map<std::string, const Node*> anchors_;
     std::vector<PendingReference> pending_;
+    std::array<Node*, 5> metaschemas_{};  ///< By SchemaDialect.
+    std::optional<SchemaError> problem_;
 };
 
-/// The JSON Schema type name of @p value, as jsoncons reports it.
-std::string_view type_name(const nlohmann::json& value) {
-    switch (value.type()) {
-        case nlohmann::json::value_t::null:
-            return "null";
-        case nlohmann::json::value_t::boolean:
-            return "boolean";
-        case nlohmann::json::value_t::number_integer:
-        case nlohmann::json::value_t::number_unsigned:
-            return "integer";
-        case nlohmann::json::value_t::number_float:
-            return "number";
-        case nlohmann::json::value_t::string:
-            return "string";
-        case nlohmann::json::value_t::array:
-            return "array";
-        case nlohmann::json::value_t::object:
-            return "object";
-        case nlohmann::json::value_t::binary:
-        case nlohmann::json::value_t::discarded:
-            break;
-    }
-    return "unknown";
-}
-
-bool has_type(const nlohmann::json& value, std::string_view type) {
-    if (type == "number") {
-        return value.is_number();
-    }
-    if (type == "integer") {
-        if (value.is_number_integer()) {
-            return true;
-        }
-        if (!value.is_number_float()) {
-            return false;
-        }
-        const double number = value.get<double>();
-        return std::isfinite(number) && std::trunc(number) == number;
-    }
-    return type_name(value) == type;
-}
-
-/// Compares the integer @p integer with the finite double @p number exactly: negative, zero or
-/// positive as @p integer is less than, equal to or greater than @p number. Converting the integer
-/// to a double instead would round integers beyond 2^53.
-int compare_integer_with_double(const nlohmann::json& integer, double number) {
-    constexpr double two_pow_63 = 9223372036854775808.0;
-    constexpr double two_pow_64 = 18446744073709551616.0;
-    if (integer.is_number_unsigned()) {
-        if (number < 0) {
-            return 1;
-        }
-        if (number >= two_pow_64) {
-            return -1;
-        }
-        const double whole = std::floor(number);
-        const auto truncated = static_cast<std::uint64_t>(whole);
-        const auto value = integer.get<std::uint64_t>();
-        if (value != truncated) {
-            return value < truncated ? -1 : 1;
-        }
-        return number > whole ? -1 : 0;
-    }
-    if (number >= two_pow_63) {
-        return -1;
-    }
-    if (number < -two_pow_63) {
-        return 1;
-    }
-    const double whole = std::floor(number);
-    const auto truncated = static_cast<std::int64_t>(whole);
-    const auto value = integer.get<std::int64_t>();
-    if (value != truncated) {
-        return value < truncated ? -1 : 1;
-    }
-    return number > whole ? -1 : 0;
-}
-
-/// Compares two numbers exactly: negative, zero or positive as @p left is less than, equal to or
-/// greater than @p right.
-int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
-    if (left.is_number_integer() && right.is_number_integer()) {
-        const bool left_unsigned = left.is_number_unsigned();
-        const bool right_unsigned = right.is_number_unsigned();
-        if (left_unsigned && right_unsigned) {
-            const auto a = left.get<std::uint64_t>();
-            const auto b = right.get<std::uint64_t>();
-            return a < b ? -1 : (a > b ? 1 : 0);
-        }
-        if (!left_unsigned && !right_unsigned) {
-            const auto a = left.get<std::int64_t>();
-            const auto b = right.get<std::int64_t>();
-            return a < b ? -1 : (a > b ? 1 : 0);
-        }
-        if (left_unsigned) {
-            const auto b = right.get<std::int64_t>();
-            if (b < 0) {
-                return 1;
-            }
-            const auto a = left.get<std::uint64_t>();
-            return a < static_cast<std::uint64_t>(b) ? -1 : (a > static_cast<std::uint64_t>(b) ? 1 : 0);
-        }
-        return -compare_numbers(right, left);
-    }
-    if (left.is_number_integer()) {
-        return compare_integer_with_double(left, right.get<double>());
-    }
-    if (right.is_number_integer()) {
-        return -compare_integer_with_double(right, left.get<double>());
-    }
-    const double a = left.get<double>();
-    const double b = right.get<double>();
-    return a < b ? -1 : (a > b ? 1 : 0);
-}
-
-/// Whether @p value is a multiple of @p divisor, decided as jsoncons decides it: in doubles, with
-/// zero a multiple of everything and a quotient that overflows a multiple of nothing.
+/// Whether @p value is a multiple of @p divisor, decided in doubles, with zero a multiple of
+/// everything and a quotient that overflows a multiple of nothing.
 bool is_multiple_of(double value, double divisor) {
     if (value == 0) {
         return true;
@@ -830,120 +976,54 @@ bool is_multiple_of(double value, double divisor) {
     return std::fabs(remainder) < std::fabs(epsilon);
 }
 
-/// Thrown when an evaluation needs more work than the validation's budget holds.
-struct WorkBudgetExceeded {};
-
-/// Thrown when evaluations nest deeper than g_MAX_EVAL_DEPTH.
-struct EvaluationTooDeep {};
-
 /// Thrown when pattern matching needs more steps than the validation's budget holds.
 struct PatternBudgetExceeded {};
 
-bool is_non_finite(const nlohmann::json& value) {
-    return value.is_number_float() && !std::isfinite(value.get<double>());
-}
-
-/// Work charged for reading a whole string: one unit per this many bytes, as jsoncons charges its
-/// whole-string keywords.
+/// Work charged for reading a whole string: one unit per this many bytes.
 constexpr std::size_t g_STRING_BYTES_PER_UNIT = 16;
 
 /// Work charged for a property name looked up or added to a location: one unit, and one more per
-/// this many bytes of the name, as jsoncons charges its location copies.
+/// this many bytes of the name.
 constexpr std::size_t g_NAME_BYTES_PER_UNIT = 64;
 
-/// Takes @p cost units from @p work, or throws when it holds fewer.
-void charge(std::size_t& work, std::size_t cost) {
-    if (work < cost) {
-        throw WorkBudgetExceeded{};
-    }
-    work -= cost;
-}
+/// Work charged for checking `contentEncoding` or `contentMediaType`: one unit, and one more per
+/// this many bytes of the string.
+constexpr std::size_t g_CONTENT_BYTES_PER_UNIT = 4;
 
-/// JSON Schema equality: numbers are equal when their values are, whatever their representation.
-/// nlohmann's operator== converts an unsigned integer to a signed one when comparing the two, so
-/// it finds -1 equal to 18446744073709551615.
-///
-/// A comparison costs @p work, which pays for values as large as the schema and the instance
-/// together: an enum of many long values compared with a long value is quadratic otherwise.
-bool json_equal(const nlohmann::json& left, const nlohmann::json& right, std::size_t& work) {
-    constexpr std::size_t g_comparison_units = 8;  // What the vendored validator charges for one.
-    constexpr std::size_t g_string_bytes_per_unit = 64;
-    charge(work, g_comparison_units + (left.is_string() ? left.get_ref<const std::string&>().size() /
-                                                              g_string_bytes_per_unit
-                                                        : 0));
-    // JSON cannot carry NaN or Infinity; nlohmann writes them as null, which is what the peer
-    // receives, so one nested in the value compares as null, as check() treats one at the top.
-    if (is_non_finite(left) || is_non_finite(right)) {
-        return (is_non_finite(left) || left.is_null()) && (is_non_finite(right) || right.is_null());
-    }
-    if (left.is_number() && right.is_number()) {
-        return compare_numbers(left, right) == 0;
-    }
-    if (left.type() != right.type()) {
-        return false;
-    }
-    if (left.is_array()) {
-        return std::equal(left.begin(), left.end(), right.begin(), right.end(),
-                          [&work](const nlohmann::json& one, const nlohmann::json& other) {
-                              return json_equal(one, other, work);
-                          });
-    }
-    if (left.is_object()) {
-        if (left.size() != right.size()) {
-            return false;
+/// @p text decoded as base64: the characters before the first '=' must all be base64 characters,
+/// and what follows it is ignored. Nothing when one is not.
+std::optional<std::string> base64_decode(std::string_view text) {
+    const auto value = [](char character) -> int {
+        if (character >= 'A' && character <= 'Z') {
+            return character - 'A';
         }
-        for (const auto& [name, member] : left.items()) {
-            const auto other = right.find(name);
-            if (other == right.end() || !json_equal(member, *other, work)) {
-                return false;
-            }
+        if (character >= 'a' && character <= 'z') {
+            return character - 'a' + 26;
         }
-        return true;
-    }
-    return left == right;
-}
-
-/// A hash under which values json_equal() finds equal hash alike: numbers hash by their value as a
-/// double, NaN and Infinity as null, and object members without regard to order.
-std::size_t equality_hash(const nlohmann::json& value) {
-    const auto mix = [](std::size_t seed, std::size_t part) {
-        constexpr std::size_t g_golden = static_cast<std::size_t>(0x9e3779b97f4a7c15ULL);
-        constexpr unsigned g_left = 6;
-        constexpr unsigned g_right = 2;
-        return seed ^ (part + g_golden + (seed << g_left) + (seed >> g_right));
+        if (character >= '0' && character <= '9') {
+            return character - '0' + 52;
+        }
+        if (character == '+') {
+            return 62;
+        }
+        return character == '/' ? 63 : -1;
     };
-    enum Kind : std::size_t {
-        eNumber = 1,
-        eString,
-        eArray,
-        eObject,
-        eOther
-    };
-    if (value.is_number() && !is_non_finite(value)) {
-        const double number = value.get<double>();
-        return mix(eNumber, number == 0 ? 0 : std::hash<double>()(number));
-    }
-    if (value.is_string()) {
-        return mix(eString, std::hash<std::string>()(value.get_ref<const std::string&>()));
-    }
-    if (value.is_array()) {
-        std::size_t seed = eArray;
-        for (const auto& element : value) {
-            seed = mix(seed, equality_hash(element));
+    std::string decoded;
+    unsigned buffer = 0;
+    int bits = 0;
+    for (const char character : text.substr(0, text.find('='))) {
+        const int digit = value(character);
+        if (digit < 0) {
+            return std::nullopt;
         }
-        return seed;
-    }
-    if (value.is_object()) {
-        std::size_t sum = 0;
-        for (const auto& [name, member] : value.items()) {
-            sum += mix(std::hash<std::string>()(name), equality_hash(member));
+        buffer = (buffer << 6U) | static_cast<unsigned>(digit);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            decoded.push_back(static_cast<char>((buffer >> static_cast<unsigned>(bits)) & 0xFFU));
         }
-        return mix(eObject, sum);
     }
-    if (value.is_boolean()) {
-        return mix(eOther, value.get<bool>() ? 1 : 2);
-    }
-    return mix(eOther, 0);  // null, NaN and Infinity
+    return decoded;
 }
 
 /// The members and items of a value that schemas evaluated at its location, which
@@ -1033,6 +1113,9 @@ class Evaluation {
    private:
     /// Checks every keyword of @p node but `unevaluatedProperties` and `unevaluatedItems`.
     bool check_keywords(const Node& node, const nlohmann::json& value) {
+        if (node.metaschema) {
+            return check_metaschema(*node.metaschema, value);
+        }
         if (!check_value_keywords(node, value)) {
             return false;
         }
@@ -1046,6 +1129,47 @@ class Evaluation {
             }
         }
         return !node.has_applicators || check_applicators(node, value);
+    }
+
+    /// `contentEncoding` and `contentMediaType` in draft-07 and earlier: base64 is checked and any
+    /// other encoding fails; JSON content must parse, after base64 decoding when the content is
+    /// base64.
+    MCP_SCHEMA_NOINLINE bool check_content(const Node& node, const std::string& text) {
+        const bool base64 = node.content_encoding && *node.content_encoding == "base64";
+        if (node.content_encoding) {
+            charge(work_, 1 + text.size() / g_CONTENT_BYTES_PER_UNIT);
+            if (base64 && !base64_decode(text) && !report("Content is not a base64 string")) {
+                return false;
+            }
+            if (!base64 && !node.content_encoding->empty() &&
+                !report_concat("Content encoding '", *node.content_encoding, "' cannot be checked")) {
+                return false;
+            }
+        }
+        if (node.content_media_type) {
+            charge(work_, 1 + text.size() / g_CONTENT_BYTES_PER_UNIT);
+            std::optional<std::string> decoded;
+            if (base64) {
+                decoded = base64_decode(text);
+                if (!decoded) {
+                    return true;
+                }
+            }
+            if (*node.content_media_type == "application/json" &&
+                !nlohmann::json::accept(decoded ? *decoded : text) && !report("Content is not JSON")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// A reference to a dialect's metaschema: @p value must be a schema of @p dialect. The check
+    /// nests within the evaluation's depth bound.
+    MCP_SCHEMA_NOINLINE bool check_metaschema(SchemaDialect dialect, const nlohmann::json& value) {
+        const auto problem = check_schema(value, dialect, work_,
+                                          mcp::detail::constants::schema::g_MAX_EVAL_DEPTH - depth_);
+        return !problem || report_concat("Value is not a schema of its dialect: ", problem->message,
+                                         " at '", problem->path, "'");
     }
 
     /// The keywords that read only the value itself, kept out of check_keywords(), which the
@@ -1126,6 +1250,20 @@ class Evaluation {
         return *node.dynamic_ref;
     }
 
+    /// `$recursiveRef`'s target: when its static target sets `$recursiveAnchor`, the root of the
+    /// outermost resource in the dynamic scope that sets it too.
+    const Node& recursive_target(const Node& node) {
+        if (node.recursive_ref->resource->recursive_root == node.recursive_ref) {
+            for (const Resource* resource : scope_) {
+                charge(work_, 1);
+                if (resource->recursive_root != nullptr) {
+                    return *resource->recursive_root;
+                }
+            }
+        }
+        return *node.recursive_ref;
+    }
+
     /// One step of the path to the value being checked: a member's name, or an element's index
     /// when name is null. The name is the instance's own key, which outlives the step.
     struct Location {
@@ -1180,8 +1318,8 @@ class Evaluation {
     };
 
     /// One level of evaluation nesting, charged one unit of work more than the levels it is
-    /// nested in, as jsoncons charges a step its evaluation path's length: a deep recursion that
-    /// branches is stopped after as many steps as there.
+    /// nested in, so that a deep recursion that branches is stopped after a number of steps that
+    /// grows with its depth.
     class Frame {
        public:
         explicit Frame(Evaluation& evaluation) : evaluation_(evaluation) {
@@ -1366,6 +1504,9 @@ class Evaluation {
     }
 
     bool check_string(const Node& node, const std::string& text) {
+        if ((node.content_encoding || node.content_media_type) && !check_content(node, text)) {
+            return false;
+        }
         if (node.min_length || node.max_length) {
             charge(work_, 1 + text.size() / g_STRING_BYTES_PER_UNIT);
             const auto length = code_point_count(text);
@@ -1395,35 +1536,7 @@ class Evaluation {
         return check(node, item);
     }
 
-    bool unique(const nlohmann::json& array) {
-        constexpr std::size_t g_pairwise_size = 8;
-        if (array.size() <= g_pairwise_size) {
-            for (std::size_t i = 0; i < array.size(); ++i) {
-                for (std::size_t j = i + 1; j < array.size(); ++j) {
-                    if (json_equal(array[i], array[j], work_)) {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        }
-        std::vector<std::pair<std::size_t, std::size_t>> hashed;  // hash, index
-        hashed.reserve(array.size());
-        for (std::size_t index = 0; index < array.size(); ++index) {
-            charge(work_, 1);
-            hashed.emplace_back(equality_hash(array[index]), index);
-        }
-        std::sort(hashed.begin(), hashed.end());
-        for (std::size_t i = 0; i < hashed.size(); ++i) {
-            // Hashes a peer chose can all collide; each comparison is charged.
-            for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j) {
-                if (json_equal(array[hashed[i].second], array[hashed[j].second], work_)) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
+    bool unique(const nlohmann::json& array) { return all_unique(array, work_); }
 
     bool check_array(const Node& node, const nlohmann::json& array) {
         const auto prefix = std::min(node.prefix_items.size(), array.size());
@@ -1592,6 +1705,8 @@ class Evaluation {
                 return false;
             }
         }
+        // Each entry is a lookup, whether or not its name is present.
+        charge(work_, node.dependent_required_names.size());
         for (std::size_t i = 0; i < node.dependent_required_names.size(); ++i) {
             const auto& present = node.dependent_required_names[i];
             if (!object.contains(present)) {
@@ -1720,6 +1835,9 @@ class Evaluation {
         if (node.dynamic_ref != nullptr && !check(dynamic_target(node), value)) {
             return false;
         }
+        if (node.recursive_ref != nullptr && !check(recursive_target(node), value)) {
+            return false;
+        }
         return true;
     }
 
@@ -1808,12 +1926,11 @@ class Evaluation {
 
 NativeSchema::NativeSchema(std::shared_ptr<const Document> document) : document_(std::move(document)) {}
 
-std::optional<NativeSchema> NativeSchema::compile(const nlohmann::json& schema,
-                                                  const SchemaDocuments& documents) {
+NativeSchema NativeSchema::compile(const nlohmann::json& schema, const SchemaDocuments& documents) {
     auto document = std::make_shared<Document>();
     Compiler compiler(*document, documents);
     if (!compiler.compile(schema)) {
-        return std::nullopt;
+        throw compiler.problem();
     }
     return NativeSchema(std::move(document));
 }

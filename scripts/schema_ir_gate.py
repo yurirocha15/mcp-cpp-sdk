@@ -7,8 +7,8 @@ the instruction count of one iteration without the start-up, and does not depend
 load. The base build is measured twice; when the two measurements disagree by more than 0.5% the
 run is invalid. Then each group's head/base ratio is held to its limit:
 
-  tools, native   at most 103%: schemas the native evaluation already implemented
-  applicators     at most 100%: schemas jsoncons evaluated on main
+  tools, native   at most 103%: tool schemas and schemas of single keywords
+  applicators     at most 100%: schemas built on applicators and references
   stops           at most 100%: validations the work budget stops
   compile         at most 120%: compiling the schemas of the other groups
 

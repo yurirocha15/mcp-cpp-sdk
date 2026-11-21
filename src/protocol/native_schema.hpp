@@ -12,38 +12,37 @@
 namespace mcp::detail {
 
 /**
- * @brief A JSON Schema 2020-12 document, evaluated directly on nlohmann::json.
+ * @brief A JSON Schema document of any supported dialect, evaluated directly on nlohmann::json.
  *
- * CompiledSchema evaluates a schema this way when it can and with jsoncons otherwise. jsoncons
- * copies its evaluation path for every keyword it evaluates, which makes checking typical tool
- * arguments several times slower than walking them once.
+ * Implemented: every assertion and applicator keyword of draft-04, draft-06, draft-07, 2019-09 and
+ * 2020-12, `unevaluatedProperties` and `unevaluatedItems`, and the reference keywords `$ref`,
+ * `$dynamicRef`, `$recursiveRef`, `$defs`, `definitions`, `$id` (`id` in draft-04), `$anchor`,
+ * `$dynamicAnchor` and `$recursiveAnchor`. `format`, `examples`, `$comment` and unknown keywords
+ * are annotations. `contentEncoding` and `contentMediaType` are asserted in draft-07 and earlier
+ * only. In draft-07 and earlier a schema with `$ref` is that reference alone. `$schema` changes the
+ * dialect at the root of a schema resource.
  *
- * Implemented: every 2020-12 assertion and applicator keyword, `unevaluatedProperties` and
- * `unevaluatedItems`, and the reference keywords `$ref`, `$dynamicRef`, `$defs`, `$id`, `$anchor`
- * and `$dynamicAnchor`. `additionalItems` and `dependencies`, which jsoncons also implements for
- * 2020-12, leave the schema to jsoncons. The schemas evaluated in place at a value's location
- * record which of its members and items they evaluated only when an `unevaluated*` keyword reads
- * it. Annotations and keywords jsoncons ignores are ignored too (`format`, `examples`,
- * `contentEncoding`, `contentMediaType`, `$comment`, `x-...`). `$schema` may appear only at the
- * root of a document and only naming 2020-12.
+ * A reference resolves within the document, to a registered document, compiled when a reference
+ * first reaches it, or to the whole metaschema of a supported dialect, which check_schema()
+ * stands in for. Nothing else is ever looked for. Each location of a document compiles once,
+ * however many references reach it, and references are resolved after the walk, so a chain of
+ * references does not deepen compilation.
  *
- * A reference resolves within the document or to a registered document, compiled when a reference
- * first reaches it; a reference to anything else, a metaschema included, leaves the schema to
- * jsoncons. Each location of a document compiles once, however many references reach it, and
- * references are resolved after the walk, so a chain of references does not deepen compilation.
- *
- * Every subschema evaluation is one frame, charged one unit of work; frames nest at most
- * constants::schema::g_MAX_EVAL_DEPTH deep, which also stops a reference cycle. An `anyOf` or
- * `oneOf` branch is evaluated once, keeping a few of its violations to report when no branch
- * matches; `not`, `if` and `contains` keep none.
+ * Every subschema evaluation is one frame, charged one unit of work more than the frames it is
+ * nested in; frames nest at most constants::schema::g_MAX_EVAL_DEPTH deep, which also stops a
+ * reference cycle. An `anyOf` or `oneOf` branch is evaluated once, keeping a few of its violations
+ * to report when no branch matches; `not`, `if` and `contains` keep none. The schemas evaluated in
+ * place at a value's location record which of its members and items they evaluated only when an
+ * `unevaluated*` keyword reads it.
  */
 class NativeSchema {
    public:
-    /// @p schema as a NativeSchema, or nothing when it uses a keyword or dialect this does not
-    /// implement, holds a value of the wrong shape or has a reference it cannot resolve within
-    /// itself and @p documents. Never throws for a malformed schema.
-    static std::optional<NativeSchema> compile(const nlohmann::json& schema,
-                                               const SchemaDocuments& documents);
+    /// @p schema, already checked against its dialect's rules, as a NativeSchema. Patterns are
+    /// compiled with PatternBudget::compile(), so a budget the caller holds collects the ones that
+    /// cannot be compiled.
+    /// @throws SchemaError when a `$schema` names an unsupported dialect, a reference cannot be
+    /// resolved within @p schema and @p documents, or the schema cannot be compiled otherwise.
+    static NativeSchema compile(const nlohmann::json& schema, const SchemaDocuments& documents);
 
     /// Whether the document uses `$ref` or `$dynamicRef`.
     [[nodiscard]] bool has_references() const;
@@ -51,7 +50,7 @@ class NativeSchema {
     /// Records in @p result how @p instance fails the schema, stopping after @p max_violations.
     /// Pattern matching may take @p pattern_steps steps (see Regex::search) and the evaluation
     /// @p work units; a validation that needs more, or nests deeper than the frame bound, reports
-    /// the value invalid, as jsoncons does when it reaches a limit.
+    /// the value invalid.
     void validate(const nlohmann::json& instance, std::size_t max_violations, std::size_t pattern_steps,
                   std::size_t work, ValidationResult& result) const;
 

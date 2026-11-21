@@ -1,5 +1,5 @@
 {
- "about": "Verdicts of the jsoncons evaluation on the corpora of test/support/schema_corpus.hpp, recorded by mcp-schema-goldens (test/support/record_schema_goldens.cpp). A verdict string is the compile outcome ('o' compiles; 'i', 'd', 'r', 'p' a SchemaError category) followed, when the schema compiles, by '1' or '0' per value.",
+ "about": "Verdicts of the jsoncons evaluation on the corpora of test/support/schema_corpus.hpp, recorded while the SDK used jsoncons (up to version 0.3.0). A verdict string is the compile outcome ('o' compiles; 'i', 'd', 'r', 'p' a SchemaError category) followed, when the schema compiles, by '1' or '0' per value.",
  "generated": {
   "draft2019-09": [
    "o11011111",

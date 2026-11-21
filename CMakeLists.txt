@@ -102,7 +102,9 @@ set(MCP_CPP_SDK_SOURCES
     src/core/json_parse.cpp
     src/core/serialized_transport_writer.cpp
     src/protocol/native_schema.cpp
+    src/protocol/schema_checker.cpp
     src/protocol/schema_uri.cpp
+    src/protocol/schema_values.cpp
     src/protocol/schema.cpp
     src/protocol/base.cpp
     src/protocol/capabilities.cpp
@@ -429,7 +431,8 @@ if(BUILD_TESTING)
       test/core/json_dump_test.cpp
       test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
-      test/core/json_schema_engines_test.cpp
+      test/core/json_schema_stack_test.cpp
+      test/core/json_schema_checker_test.cpp
       test/core/schema_uri_test.cpp
       test/core/json_schema_goldens_test.cpp
       test/core/json_schema_test.cpp
@@ -498,14 +501,6 @@ if(BUILD_TESTING)
     mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp
                   src/protocol/schema_uri.cpp test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
-  # Records the schema verdicts that json_schema_goldens_test compares with; run
-  # only to record them again (see test/support/record_schema_goldens.cpp).
-  add_executable(mcp-schema-goldens test/support/record_schema_goldens.cpp
-                                    test/support/schema_corpus.cpp)
-  target_link_libraries(mcp-schema-goldens PRIVATE mcp-cpp-sdk)
-  target_compile_definitions(
-    mcp-schema-goldens
-    PRIVATE MCP_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/data")
   # The workload scripts/schema_ir_gate.py counts the instructions of.
   add_executable(mcp-schema-workload test/perf/schema_workload.cpp)
   target_link_libraries(mcp-schema-workload PRIVATE mcp-cpp-sdk)
