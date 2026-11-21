@@ -24,6 +24,7 @@ int main() {
 
         ServerCapabilities caps;
         caps.tools = ServerCapabilities::ToolsCapability{.listChanged = true};
+        caps.logging = nlohmann::json::object();
 
         Implementation info;
         info.name = "sampling-server";

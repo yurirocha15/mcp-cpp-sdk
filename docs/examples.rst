@@ -169,7 +169,8 @@ server_with_sampling
 
 Demonstrates **reverse RPC** (server-to-client calls) via ``Context::sample_llm()``:
 
-* **Server capabilities**: Declares tool support with change notifications
+* **Server capabilities**: Declares tool support with change notifications, and logging
+  because the tool logs to the client
 * **Sampling tool**: Tool handler that calls back to the client via ``ctx.sample_llm()``
 * **Async context handlers**: Using ``Context&`` parameter for reverse RPC
 
