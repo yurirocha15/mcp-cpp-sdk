@@ -15,6 +15,7 @@
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/use_future.hpp>
 #include <boost/beast/core.hpp>
@@ -487,6 +488,62 @@ TEST_F(ServerHttpTest, StopEndsRunHttpWhileAHandlerStillRuns) {
     EXPECT_FALSE(release.load());
     release = true;
     client_thread.join();
+}
+
+// stop() ends run_http() after the shutdown timeout while a handler on the handler executor still
+// runs too; released afterwards, that handler can no longer reach the client.
+TEST_F(ServerHttpTest, StopEndsRunHttpWhileAHandlerOnTheHandlerExecutorStillRuns) {
+    asio::thread_pool pool(1);
+    server_->set_handler_executor(pool.get_executor());
+    std::promise<void> started;
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    std::promise<std::string> outcome;
+    server_->add_tool("stuck", "Runs until released", nlohmann::json{{"type", "object"}},
+                      [&started, released, &outcome](
+                          mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                          started.set_value();
+                          released.wait();
+                          try {
+                              co_await ctx.log_info("after the run ended");
+                              outcome.set_value("sent");
+                          } catch (const std::runtime_error& error) {
+                              outcome.set_value(error.what());
+                          }
+                          co_return nlohmann::json("released");
+                      });
+
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0);
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto port = wait_for_port(*server_);
+
+    std::thread client_thread([port] {
+        asio::io_context client_ctx;
+        beast::tcp_stream stream(client_ctx);
+        connect_when_listening(stream, port);
+        try {
+            const auto init_resp = send_json_rpc(stream, make_initialize_request("1"));
+            const std::string session_id(init_resp["MCP-Session-Id"]);
+            static_cast<void>(send_json_rpc(stream, make_initialized_notification(), session_id));
+            static_cast<void>(send_json_rpc(
+                stream, make_tool_call_request("2", "stuck", nlohmann::json::object()), session_id));
+        } catch (const std::exception&) {
+            // The server closes the connection before it answers the call.
+        }
+    });
+
+    started.get_future().wait();
+    server_->stop();
+    server_thread.join();
+    EXPECT_TRUE(finished.load());
+    release.set_value();
+    EXPECT_EQ(outcome.get_future().get(), "The server has stopped");
+    client_thread.join();
+    pool.join();
 }
 
 TEST_F(ServerHttpTest, ConfigureThatThrowsEndsRunHttpBeforeItListens) {

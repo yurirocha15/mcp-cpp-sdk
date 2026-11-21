@@ -130,4 +130,15 @@ class ShutdownDeadline {
     std::thread thread_;
 };
 
+/**
+ * @brief Destroys @p io_ctx, whose run has ended, without waiting for handlers on another
+ *        executor.
+ *
+ * @details Destroying an execution context waits for the handlers on other contexts that its
+ * coroutines still wait for (see LoopGate in handler_pool.hpp), and those remain only when a
+ * deadline stopped the run. @p io_ctx is then destroyed on a thread of its own, so that
+ * run_stdio() and run_http() return at the deadline, and otherwise here.
+ */
+void destroy_loop(std::unique_ptr<boost::asio::io_context> io_ctx);
+
 }  // namespace mcp::detail

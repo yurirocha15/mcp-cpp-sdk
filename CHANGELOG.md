@@ -43,6 +43,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
 - `Runtime::run()` runs the loop again after an earlier run ended; a `stop()` made while nothing runs the loop ends the next run instead.
 - A closing `StdioClientTransport` keeps its event loop from running out of work until the process has ended and `on_exit` has run.
+- On every platform, destroying the context a `Server` runs on waits for its handlers on the `set_handler_executor()` executor; `run_stdio()` and `run_http()` still return at the shutdown deadline.
 
 ### Removed
 

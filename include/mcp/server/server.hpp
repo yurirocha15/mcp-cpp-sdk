@@ -856,12 +856,11 @@ class MCP_API Server {
      *
      * The execution context of @p executor must be destroyed after the one the server runs on: a
      * program that runs its own event loop constructs the Runtime that gives @p executor before
-     * that loop's io_context.
-     *
-     * A handler still running on @p executor when run_stdio() or run_http() stop waiting for it
-     * (see stop()) can no longer reach the client: its Context calls throw std::runtime_error.
-     * What it returns goes nowhere, and the server state it holds, with what the registered
-     * handlers capture, is never destroyed.
+     * that loop's io_context. Destroying the server's execution context waits for the handlers on
+     * @p executor that its requests still wait for; from the start of that destruction their
+     * Context calls throw std::runtime_error, and what they return goes nowhere. run_stdio() and
+     * run_http() return at the shutdown deadline all the same (see stop()), and destroy their
+     * event loop on a thread of its own once those handlers have returned.
      * @throws std::invalid_argument If @p executor holds none.
      */
     void set_handler_executor(const Executor& executor);
@@ -1206,6 +1205,10 @@ class MCP_API Server {
      *
      * Same as run_stdio() but reads from / writes to the given streams
      * instead of stdin / stdout.
+     *
+     * @p input and @p output are used until the run's handlers have finished: when the shutdown
+     * deadline ends the run while a handler on the set_handler_executor() executor still runs,
+     * that is after this returns.
      *
      * @param input  Stream to read JSON-RPC messages from.
      * @param output Stream to write JSON-RPC responses to.

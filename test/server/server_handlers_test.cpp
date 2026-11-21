@@ -210,20 +210,21 @@ TEST_F(ServerHandlersTest, SyncToolRunsOnTheHandlerExecutor) {
     EXPECT_EQ(handler_thread, pool_thread_id);
 }
 
-// run_stdio() and run_http() destroy their event loop once the shutdown deadline passes, and a
-// tool handler on the handler executor may still be running then. When it returns, its answer
-// cannot go to that loop, and the server is destroyed afterwards without reaching it either.
-TEST(ServerHandlerPoolTest, AHandlerThatOutlivesItsEventLoopEndsWithoutIt) {
+// Destroying the event loop's context while a tool handler runs on the handler executor waits for
+// the handler, whose answer then goes nowhere; the server is destroyed afterwards.
+TEST(ServerHandlerPoolTest, DestroyingTheEventLoopWaitsForAHandlerOnThePool) {
     boost::asio::thread_pool pool(1);
     std::promise<void> started;
     std::promise<void> release;
     const std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> returned{false};
     auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
     server->set_handler_executor(pool.get_executor());
     server->add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
-                     [&started, released](const nlohmann::json&) -> nlohmann::json {
+                     [&started, released, &returned](const nlohmann::json&) -> nlohmann::json {
                          started.set_value();
                          released.wait();
+                         returned = true;
                          return "done";
                      });
 
@@ -244,27 +245,35 @@ TEST(ServerHandlerPoolTest, AHandlerThatOutlivesItsEventLoopEndsWithoutIt) {
     io_ctx->stop();
     loop.join();
     transport.reset();
+    // Destroying the loop's context waits for the handler its coroutine waits for, which returns
+    // meanwhile; released a little later, it returns while that destruction is under way.
+    std::thread releaser([&release] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        release.set_value();
+    });
     io_ctx.reset();
+    EXPECT_TRUE(returned.load());
+    releaser.join();
 
-    release.set_value();
     pool.join();
     server.reset();
 }
 
-// The same, when the handler executor ends before the handler's result is delivered, as when its
-// Runtime is destroyed after the loop.
-TEST(ServerHandlerPoolTest, AHandlerWhoseExecutorEndsAfterItsEventLoopEndsWithoutIt) {
+// The same with a Runtime as the handler executor, destroyed after the loop.
+TEST(ServerHandlerPoolTest, DestroyingTheEventLoopWaitsForAHandlerOnARuntime) {
     auto pool = std::make_unique<mcp::Runtime>();
     pool->start(1);
     std::promise<void> started;
     std::promise<void> release;
     const std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> returned{false};
     auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
     server->set_handler_executor(pool->executor());
     server->add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
-                     [&started, released](const nlohmann::json&) -> nlohmann::json {
+                     [&started, released, &returned](const nlohmann::json&) -> nlohmann::json {
                          started.set_value();
                          released.wait();
+                         returned = true;
                          return "done";
                      });
 
@@ -285,17 +294,24 @@ TEST(ServerHandlerPoolTest, AHandlerWhoseExecutorEndsAfterItsEventLoopEndsWithou
     io_ctx->stop();
     loop.join();
     transport.reset();
+    // Destroying the loop's context waits for the handler its coroutine waits for, which returns
+    // meanwhile; released a little later, it returns while that destruction is under way.
+    std::thread releaser([&release] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        release.set_value();
+    });
     io_ctx.reset();
+    EXPECT_TRUE(returned.load());
+    releaser.join();
 
     pool->stop();
-    release.set_value();
     pool.reset();
     server.reset();
 }
 
-// A coroutine handler that outlives its event loop and then sends to the client gets an error
-// instead of reaching the loop's destroyed objects.
-TEST(ServerHandlerPoolTest, AHandlerThatOutlivesItsEventLoopCannotReachTheClient) {
+// A coroutine handler on the handler executor that sends to the client once its event loop's
+// context is being destroyed gets an error instead of reaching the loop's objects.
+TEST(ServerHandlerPoolTest, AHandlerWhoseEventLoopIsDestroyedCannotReachTheClient) {
     boost::asio::thread_pool pool(1);
     std::promise<void> started;
     std::promise<void> release;
@@ -309,7 +325,7 @@ TEST(ServerHandlerPoolTest, AHandlerThatOutlivesItsEventLoopCannotReachTheClient
                          started.set_value();
                          released.wait();
                          try {
-                             co_await ctx.log_info("after the loop ended");
+                             co_await ctx.log_info("after the loop stopped");
                              outcome.set_value("sent");
                          } catch (const std::runtime_error& error) {
                              outcome.set_value(error.what());
@@ -334,9 +350,12 @@ TEST(ServerHandlerPoolTest, AHandlerThatOutlivesItsEventLoopCannotReachTheClient
     io_ctx->stop();
     loop.join();
     transport.reset();
+    // Destroying the loop's context waits for the handler its coroutine waits for, which returns
+    // meanwhile.
+    std::thread releaser([&release] { release.set_value(); });
     io_ctx.reset();
+    releaser.join();
 
-    release.set_value();
     EXPECT_EQ(outcome.get_future().get(), "The server has stopped");
     pool.join();
     server.reset();
@@ -440,9 +459,9 @@ TEST(ServerHandlerPoolTest, AContextCallUnderWayWhenItsEventLoopIsDestroyedThrow
     server.reset();
 }
 
-// The same, when the handler executor's context is destroyed before the event loop's: the handler
-// can be neither resumed nor destroyed then, and is left as it is.
-TEST(ServerHandlerPoolTest, AContextCallUnderWayWhenItsHandlerExecutorIsDestroyedFirstIsLeftAlone) {
+// The same, when the handler executor's context is destroyed before the event loop's: it waits for
+// the Context call, and the handler goes with the loop's context.
+TEST(ServerHandlerPoolTest, AContextCallUnderWayWhenItsHandlerExecutorIsDestroyedFirstUnwindsIt) {
     auto pool = std::make_unique<mcp::Runtime>();
     pool->start(1);
     std::promise<std::string> outcome;
@@ -451,10 +470,18 @@ TEST(ServerHandlerPoolTest, AContextCallUnderWayWhenItsHandlerExecutorIsDestroye
     server->set_handler_executor(pool->executor());
     add_unanswered_question(*server, outcome);
 
-    serve_until_asked(*server, [&pool] { pool.reset(); });
+    // Destroying the handler executor's context waits for the Context call under way on the loop,
+    // which ends as the loop's context is destroyed, and the handler is destroyed with it. Stopped
+    // first, the handler executor runs nothing more.
+    std::thread destroyer;
+    serve_until_asked(*server, [&destroyer, &pool] {
+        pool->stop();
+        destroyer = std::thread([&pool] { pool.reset(); });
+    });
+    destroyer.join();
     server.reset();
 
-    EXPECT_EQ(ended.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    EXPECT_EQ(ended.get(), "unwound");
 }
 
 // A coroutine handler on the handler executor reaches the client through the server's loop.

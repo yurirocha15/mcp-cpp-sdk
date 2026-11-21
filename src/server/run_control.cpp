@@ -1,5 +1,7 @@
 #include "run_control.hpp"
 
+#include "../detail/handler_pool.hpp"
+
 #include <mcp/core/async.hpp>
 
 #include <boost/asio/co_spawn.hpp>
@@ -7,6 +9,7 @@
 
 #include <future>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 namespace mcp::detail {
@@ -104,6 +107,12 @@ void ShutdownDeadline::finish() {
     finished_changed_.notify_all();
     if (thread_.joinable() && thread_.get_id() != std::this_thread::get_id()) {
         thread_.join();
+    }
+}
+
+void destroy_loop(std::unique_ptr<boost::asio::io_context> io_ctx) {
+    if (awaits_elsewhere(io_ctx->get_executor())) {
+        std::thread([io_ctx = std::move(io_ctx)]() mutable { io_ctx.reset(); }).detach();
     }
 }
 
