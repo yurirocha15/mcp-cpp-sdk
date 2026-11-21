@@ -410,13 +410,14 @@ class Compiler {
             auto dialect = outer.dialect;
             const auto declared = schema.find("$schema");
             if (declared != schema.end()) {
+                if (!declared->is_string()) {
+                    return invalid_keyword("$schema");
+                }
                 const auto named = declared_dialect(schema);
                 if (!named) {
                     return fail(SchemaError::Category::eUnsupportedDialect,
                                 "unsupported JSON Schema dialect: " +
-                                    sanitize_for_diagnostics(
-                                        declared->is_string() ? declared->get_ref<const std::string&>()
-                                                              : declared->dump()));
+                                    sanitize_for_diagnostics(declared->get_ref<const std::string&>()));
                 }
                 dialect = *named;
             }
@@ -427,12 +428,12 @@ class Compiler {
                                 : schema.find(dialect == SchemaDialect::eDraft4 ? "id" : "$id");
             if (id != schema.end()) {
                 if (!id->is_string()) {
-                    return false;
+                    return invalid_keyword(id.key());
                 }
                 auto [uri, fragment] =
                     split_fragment(resolve_uri(outer.uri, id->get_ref<const std::string&>()));
                 if (!fragment.empty() && dialect >= SchemaDialect::eDraft201909) {
-                    return false;
+                    return invalid_keyword(id.key());
                 }
                 if (uri != outer.uri) {
                     if (track_) {
@@ -476,9 +477,7 @@ class Compiler {
                 continue;
             }
             if (!compile_keyword(keyword, value, *resource, pointer, node, deferred)) {
-                return fail(SchemaError::Category::eInvalidSchema,
-                            "JSON Schema keyword '" + sanitize_for_diagnostics(keyword) +
-                                "' cannot be compiled");
+                return invalid_keyword(keyword);
             }
         }
         if (!compile_deferred(deferred, *resource, pointer, node)) {
@@ -488,7 +487,7 @@ class Compiler {
             const auto recursive = schema.find("$recursiveAnchor");
             if (recursive != schema.end() && resource->dialect == SchemaDialect::eDraft201909) {
                 if (!recursive->is_boolean()) {
-                    return false;
+                    return invalid_keyword("$recursiveAnchor");
                 }
                 if (recursive->get<bool>()) {
                     resource->recursive_root = &node;
@@ -512,26 +511,29 @@ class Compiler {
             node.exclusive_maximum = std::move(node.maximum);
             node.maximum.reset();
         }
-        if (deferred.items == nullptr) {
-            // additionalItems without an array of items applies to nothing.
-            return deferred.additional_items == nullptr ||
-                   compile_node(*deferred.additional_items, resource, child(pointer, "additionalItems"),
-                                false) != nullptr;
+        if (deferred.items != nullptr) {
+            // An array of items is 2020-12's prefixItems; 2020-12 itself has no such form.
+            const bool compiled =
+                deferred.items->is_array()
+                    ? resource.dialect < SchemaDialect::eDraft202012 &&
+                          compile_list(*deferred.items, resource, child(pointer, "items"),
+                                       node.prefix_items)
+                    : compile_schema(*deferred.items, resource, child(pointer, "items"), node.items);
+            if (!compiled) {
+                return invalid_keyword("items");
+            }
         }
-        if (!deferred.items->is_array()) {
-            return compile_schema(*deferred.items, resource, child(pointer, "items"), node.items) &&
-                   (deferred.additional_items == nullptr ||
-                    compile_node(*deferred.additional_items, resource,
-                                 child(pointer, "additionalItems"), false) != nullptr);
+        if (deferred.additional_items == nullptr) {
+            return true;
         }
-        if (resource.dialect >= SchemaDialect::eDraft202012 ||
-            !compile_list(*deferred.items, resource, child(pointer, "items"), node.prefix_items)) {
-            return false;
-        }
-        // An array of items is 2020-12's prefixItems, and additionalItems its items.
-        return deferred.additional_items == nullptr ||
-               compile_schema(*deferred.additional_items, resource, child(pointer, "additionalItems"),
-                              node.items);
+        // After an array of items, additionalItems is 2020-12's items; otherwise it applies to
+        // nothing.
+        const auto here = child(pointer, "additionalItems");
+        const bool compiled =
+            deferred.items != nullptr && deferred.items->is_array()
+                ? compile_schema(*deferred.additional_items, resource, here, node.items)
+                : compile_node(*deferred.additional_items, resource, here, false) != nullptr;
+        return compiled || invalid_keyword("additionalItems");
     }
 
     bool compile_keyword(const std::string& keyword, const nlohmann::json& value, Resource& resource,
@@ -660,11 +662,7 @@ class Compiler {
             if (!value.is_string()) {
                 return false;
             }
-            try {
-                node.pattern.emplace(PatternBudget::compile(value.get_ref<const std::string&>()));
-            } catch (const RegexError& error) {
-                return pattern_failure(error);
-            }
+            node.pattern.emplace(PatternBudget::compile(value.get_ref<const std::string&>()));
             return true;
         }
         if (keyword == "prefixItems") {
@@ -706,11 +704,7 @@ class Compiler {
                 return false;
             }
             for (const auto& pattern : patterns) {
-                try {
-                    node.pattern_regexes.push_back(PatternBudget::compile(pattern));
-                } catch (const RegexError& error) {
-                    return pattern_failure(error);
-                }
+                node.pattern_regexes.push_back(PatternBudget::compile(pattern));
             }
             return true;
         }
@@ -926,15 +920,10 @@ class Compiler {
                     "JSON Schema declares the anchor '" + sanitize_for_diagnostics(name) + "' twice");
     }
 
-    /// Records a pattern that cannot be compiled outside a PatternBudget.
-    bool pattern_failure(const RegexError& error) {
-        if (error.kind() == RegexError::Kind::eInvalid) {
-            return fail(SchemaError::Category::eInvalidSchema,
-                        "JSON Schema pattern is not a regular expression: " +
-                            sanitize_for_diagnostics(error.what()));
-        }
-        return fail(SchemaError::Category::eUnsupportedPattern,
-                    "JSON Schema pattern cannot be used: " + sanitize_for_diagnostics(error.what()));
+    bool invalid_keyword(const std::string& keyword) {
+        return fail(
+            SchemaError::Category::eInvalidSchema,
+            "JSON Schema keyword '" + sanitize_for_diagnostics(keyword) + "' cannot be compiled");
     }
 
     /// The array index @p token names: decimal digits without a leading zero.

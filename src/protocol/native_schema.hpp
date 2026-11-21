@@ -37,9 +37,9 @@ namespace mcp::detail {
  */
 class NativeSchema {
    public:
-    /// @p schema, already checked against its dialect's rules, as a NativeSchema. Patterns are
-    /// compiled with PatternBudget::compile(), so a budget the caller holds collects the ones that
-    /// cannot be compiled.
+    /// @p schema, already checked against its dialect's rules, as a NativeSchema. The caller holds
+    /// a PatternBudget: patterns are compiled with PatternBudget::compile(), so the budget collects
+    /// the ones that cannot be compiled.
     /// @throws SchemaError when a `$schema` names an unsupported dialect, a reference cannot be
     /// resolved within @p schema and @p documents, or the schema cannot be compiled otherwise.
     static NativeSchema compile(const nlohmann::json& schema, const SchemaDocuments& documents);

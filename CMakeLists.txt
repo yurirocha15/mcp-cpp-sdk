@@ -400,6 +400,7 @@ if(BUILD_TESTING)
       test/core/jsonrpc_envelope_test.cpp
       test/core/json_schema_stack_test.cpp
       test/core/json_schema_checker_test.cpp
+      test/core/json_schema_compile_test.cpp
       test/core/schema_uri_test.cpp
       test/core/json_schema_goldens_test.cpp
       test/core/json_schema_test.cpp

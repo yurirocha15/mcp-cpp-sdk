@@ -435,14 +435,11 @@ CheckedDocument check_document(const nlohmann::json& schema, const SchemaOptions
     std::size_t work = checked.shape.evaluation_work(0, options.max_evaluation_work);
     std::optional<detail::SchemaProblem> problem;
     try {
-        problem =
-            detail::check_schema(schema, dialect, work, mcp::detail::constants::schema::g_MAX_DEPTH);
+        // measure() has bounded the nesting, so the check sets no depth bound of its own.
+        problem = detail::check_schema(schema, dialect, work, std::numeric_limits<std::size_t>::max());
     } catch (const detail::WorkBudgetExceeded&) {
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           where + "checking the JSON Schema takes too much work");
-    } catch (const detail::EvaluationTooDeep&) {
-        throw SchemaError(SchemaError::Category::eInvalidSchema,
-                          where + "checking the JSON Schema nests too deeply");
     }
     if (problem) {
         throw SchemaError(SchemaError::Category::eInvalidSchema,

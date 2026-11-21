@@ -146,6 +146,72 @@ TEST(SchemaChecker, ReportsWhereAndWhat) {
               "JSON Schema is invalid at '/$id': must not have a non-empty fragment");
     EXPECT_EQ(message({{"$anchor", "1a"}}),
               "JSON Schema is invalid at '/$anchor': '1a' is not an anchor name");
+    EXPECT_EQ(message({{"multipleOf", -1}}),
+              "JSON Schema is invalid at '/multipleOf': must be greater than 0");
+    EXPECT_EQ(message({{"type", {"string", "integr"}}}),
+              "JSON Schema is invalid at '/type/1': 'integr' is not a JSON Schema type");
+    EXPECT_EQ(message({{"type", {1}}}),
+              "JSON Schema is invalid at '/type/0': expected string, found integer");
+    EXPECT_EQ(message({{"type", true}}),
+              "JSON Schema is invalid at '/type': expected string or array, found boolean");
+    EXPECT_EQ(message({{"type", json::array()}}),
+              "JSON Schema is invalid at '/type': must not be empty");
+    EXPECT_EQ(message({{"type", {"string", "string"}}}),
+              "JSON Schema is invalid at '/type': items must be unique");
+    EXPECT_EQ(message({{"$vocabulary", 1}}),
+              "JSON Schema is invalid at '/$vocabulary': expected object, found integer");
+    EXPECT_EQ(message({{"$vocabulary", {{"https://example.com/v", 1}}}}),
+              "JSON Schema is invalid at '/$vocabulary/https:~1~1example.com~1v': expected boolean, "
+              "found integer");
+    EXPECT_EQ(message({{"prefixItems", json::array()}}),
+              "JSON Schema is invalid at '/prefixItems': must not be empty");
+    EXPECT_EQ(message({{"$dynamicAnchor", "a:b"}}),
+              "JSON Schema is invalid at '/$dynamicAnchor': 'a:b' is not an anchor name");
+    EXPECT_EQ(message({{"$schema", "http://json-schema.org/draft-07/schema#"}, {"examples", 1}}),
+              "JSON Schema is invalid at '/examples': expected array, found integer");
+    EXPECT_EQ(message({{"$schema", "http://json-schema.org/draft-07/schema#"}, {"readOnly", 1}}),
+              "JSON Schema is invalid at '/readOnly': expected boolean, found integer");
+    EXPECT_EQ(
+        message({{"$schema", "http://json-schema.org/draft-04/schema#"}, {"required", json::array()}}),
+        "JSON Schema is invalid at '/required': must not be empty");
+    EXPECT_EQ(
+        message({{"$schema", "http://json-schema.org/draft-04/schema#"}, {"enum", json::array()}}),
+        "JSON Schema is invalid at '/enum': must not be empty");
+    EXPECT_EQ(message({{"$schema", "http://json-schema.org/draft-04/schema#"}, {"id", 1}}),
+              "JSON Schema is invalid at '/id': expected string, found integer");
+    EXPECT_EQ(
+        message({{"$schema", "https://json-schema.org/draft/2019-09/schema"}, {"$recursiveAnchor", 1}}),
+        "JSON Schema is invalid at '/$recursiveAnchor': expected boolean, found integer");
+    EXPECT_EQ(message({{"$schema", "https://json-schema.org/draft/2019-09/schema"}, {"items", {1}}}),
+              "JSON Schema is invalid at '/items/0': expected object or boolean, found integer");
+}
+
+// Anchor names follow each dialect's pattern: 2019-09 allows ':' and 2020-12 a leading '_'.
+TEST(SchemaChecker, AnchorNamesFollowTheDialect) {
+    const auto passes = [](const char* dialect, const char* name) {
+        try {
+            (void)CompiledSchema::compile({{"$schema", dialect}, {"$anchor", name}});
+            return true;
+        } catch (const SchemaError&) {
+            return false;
+        }
+    };
+    constexpr const char* g_2019 = "https://json-schema.org/draft/2019-09/schema";
+    constexpr const char* g_2020 = "https://json-schema.org/draft/2020-12/schema";
+    EXPECT_TRUE(passes(g_2019, "a:b-c.d_9"));
+    EXPECT_FALSE(passes(g_2019, "_a"));
+    EXPECT_TRUE(passes(g_2020, "_a-b.c9"));
+    EXPECT_FALSE(passes(g_2020, "a:b"));
+    EXPECT_FALSE(passes(g_2020, "a b"));
+}
+
+// Keywords a dialect does not define are left alone, whatever their value.
+TEST(SchemaChecker, LeavesUnknownKeywordsAlone) {
+    EXPECT_NO_THROW((void)CompiledSchema::compile({{"x-anything", {{"type", 5}}}}));
+    EXPECT_NO_THROW(
+        (void)CompiledSchema::compile({{"$schema", "http://json-schema.org/draft-04/schema#"},
+                                       {"const", {{"type", 5}}},
+                                       {"$id", 5}}));
 }
 
 // draft-04 allows a boolean for additionalItems and additionalProperties only.

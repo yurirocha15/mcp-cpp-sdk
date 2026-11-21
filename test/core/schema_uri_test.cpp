@@ -87,6 +87,22 @@ TEST(SchemaUri, ResolvesAgainstUrnsAndAuthoritiesWithoutPaths) {
     EXPECT_EQ(resolve_uri("https://example.com", "a.json"), "https://example.com/a.json");
 }
 
+// Against a base without '/' in its path the reference's path is used as it is, so it can start
+// with dot segments, which are removed.
+TEST(SchemaUri, RemovesLeadingDotSegments) {
+    EXPECT_EQ(resolve_uri("urn:abc", "def"), "urn:def");
+    EXPECT_EQ(resolve_uri("urn:abc", "./def"), "urn:def");
+    EXPECT_EQ(resolve_uri("urn:abc", "../def"), "urn:def");
+    EXPECT_EQ(resolve_uri("urn:abc", "."), "urn:");
+    EXPECT_EQ(resolve_uri("urn:abc", ".."), "urn:");
+}
+
+TEST(SchemaUri, ReadsSchemes) {
+    EXPECT_EQ(parse_uri_reference("A1+b-c.d:x").scheme, "A1+b-c.d");
+    EXPECT_FALSE(parse_uri_reference(":x").scheme.has_value());
+    EXPECT_FALSE(parse_uri_reference("a_b:x").scheme.has_value());
+}
+
 TEST(SchemaUri, SplitsComponents) {
     const auto reference = parse_uri_reference("https://user@host:8/p/q?x=1#frag");
     EXPECT_EQ(reference.scheme, "https");
@@ -102,6 +118,7 @@ TEST(SchemaUri, SplitsComponents) {
 
 TEST(SchemaUri, DecodesPercentEscapes) {
     EXPECT_EQ(percent_decode("/%24defs/a%20b%25"), "/$defs/a b%");
+    EXPECT_EQ(percent_decode("%4a%4A%c3%A9"), "JJ\xc3\xa9");
     EXPECT_FALSE(percent_decode("%2").has_value());
     EXPECT_FALSE(percent_decode("%zz").has_value());
     EXPECT_FALSE(percent_decode("abc%").has_value());
