@@ -199,6 +199,37 @@ enum class ClientTaskMode : std::uint8_t {
     eAuto,
 };
 
+/**
+ * @brief How a client keeps the results a server says it may reuse.
+ *
+ * @details A 2026-07-28 server marks the results of `tools/list`, `prompts/list`,
+ * `resources/list`, `resources/templates/list` and `resources/read` with `ttlMs`, how long the
+ * client may treat them as fresh. With the cache on, list_tools(), list_prompts(), list_resources(),
+ * list_resource_templates() and read_resource() keep each result whose `ttlMs` is positive, under
+ * its method and parameters (the cursor of a page, the URI of a resource), and answer the same call
+ * from it while it is fresh, without asking the server. A result without `ttlMs`, as from an older
+ * server, is not kept. A result the client got by answering the server's `input_required`
+ * questions is not kept either. A `list_changed` notification drops the lists it names, and
+ * `notifications/resources/updated` the reads of its URI. The cache belongs to one Client and
+ * serves no other, so a `"private"` result never reaches another authorization context; a client
+ * whose credentials change to another user's should call Client::clear_response_cache().
+ */
+struct ResponseCacheOptions {
+    /// Whether the client keeps results. Off unless set.
+    bool enabled{false};
+    /// Most results kept at once; the one closest to going stale makes room. Must be positive.
+    std::size_t max_entries{512};
+    /// Longest a result is kept, whatever its `ttlMs` says. Must be positive.
+    std::chrono::milliseconds max_ttl{std::chrono::hours(24)};
+};
+
+/** @brief How one cacheable call uses the response cache; see ResponseCacheOptions. */
+enum class CacheMode : std::uint8_t {
+    eUse,      ///< Answer from a fresh result if there is one, else ask the server and keep its answer.
+    eRefresh,  ///< Ask the server and keep its answer.
+    eBypass,   ///< Ask the server and leave the cache as it is.
+};
+
 /** @brief Client-wide runtime behavior. */
 struct ClientOptions {
     /**
@@ -331,6 +362,8 @@ struct ClientOptions {
      * std::invalid_argument otherwise.
      */
     std::size_t subscription_queue_limit{1024};
+    /// @brief Whether and how the client keeps results the server says it may reuse.
+    ResponseCacheOptions response_cache;
 };
 
 namespace detail {
@@ -421,6 +454,11 @@ struct RequestOptions {
      * block on the client. Client::listen() does not use it.
      */
     std::function<void(const ProgressNotificationParams&)> on_progress;
+    /**
+     * @brief How a cacheable call uses the response cache, when ClientOptions::response_cache is
+     * on. Other calls ignore it.
+     */
+    CacheMode cache_mode{CacheMode::eUse};
 };
 
 /**
@@ -828,6 +866,12 @@ class MCP_API Client {
      * @return The count of requests awaiting responses.
      */
     [[nodiscard]] std::size_t pending_request_count() const;
+
+    /**
+     * @brief Drop every result the response cache holds, so each cacheable call asks the server
+     * again. Safe from any thread.
+     */
+    void clear_response_cache();
 
     /// @brief Close the client, stopping the read loop and releasing resources.
     void close();

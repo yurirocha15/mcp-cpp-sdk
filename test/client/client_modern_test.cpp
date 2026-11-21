@@ -674,7 +674,8 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
 
-// A refusal that lists the pinned version itself must not call that version unsupported.
+// A refusal that lists the pinned version itself must not call that version unsupported. The
+// client asks once more before it gives up.
 TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
     Harness harness(pinned_options("2026-07-28"));
     harness.peer.reply = [](const json& request) -> std::optional<json> {
@@ -698,6 +699,54 @@ TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
     EXPECT_NE(message.find("refused protocol version 2026-07-28"), std::string::npos) << message;
     EXPECT_NE(message.find("lists it"), std::string::npos) << message;
     EXPECT_EQ(message.find("does not support"), std::string::npos) << message;
+    EXPECT_EQ(harness.peer.count("server/discover"), 2u);
+}
+
+// basic_index.md: "The client SHOULD select a mutually supported version from the supported list
+// and retry the request". A pinned client retries with its own version when the list holds it.
+TEST(ClientEra, PinnedModernRetriesARefusalThatListsItsVersion) {
+    Harness harness(pinned_options("2026-07-28"));
+    int probes = 0;
+    harness.peer.reply = [&](const json& request) -> std::optional<json> {
+        if (request.at("method") == "server/discover" && probes++ == 0) {
+            return error_to(
+                request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                "Unsupported protocol version",
+                json{{"supported", json::array({"2026-07-28"})}, {"requested", "2026-07-28"}});
+        }
+        return modern_peer(request);
+    };
+
+    mcp::ConnectResult connected;
+    harness.run([&]() -> mcp::Task<void> {
+        connected = co_await harness.client->connect("test-client", "1.0");
+    });
+
+    EXPECT_EQ(connected.era, mcp::ProtocolEra::eModern);
+    EXPECT_EQ(connected.protocolVersion, "2026-07-28");
+    EXPECT_EQ(harness.peer.count("server/discover"), 2u);
+    const auto retry = harness.peer.with_method("server/discover").back();
+    EXPECT_EQ(retry.at("params").at("_meta").at("io.modelcontextprotocol/protocolVersion"),
+              "2026-07-28");
+}
+
+// A refusal that lists only versions other than the pinned one is not retried.
+TEST(ClientEra, PinnedModernDoesNotRetryARefusalThatListsOtherVersions) {
+    Harness harness(pinned_options("2026-07-28"));
+    harness.peer.reply = [](const json& request) -> std::optional<json> {
+        return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                        "Unsupported protocol version",
+                        json{{"supported", json::array({"2025-11-25"})}, {"requested", "2026-07-28"}});
+    };
+
+    harness.run([&]() -> mcp::Task<void> {
+        try {
+            co_await harness.client->connect("test-client", "1.0");
+        } catch (const mcp::McpError&) {
+        }
+    });
+
+    EXPECT_EQ(harness.peer.count("server/discover"), 1u);
 }
 
 // basic_index.md: "A resultType of any value unrecognized by the client MUST be considered invalid."

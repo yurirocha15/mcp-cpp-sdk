@@ -1,6 +1,7 @@
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/response_cache.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/client/client.hpp>
@@ -771,14 +772,17 @@ struct Client::Impl {
     /// the result type of the answer; a legacy session sends @p params as given.
     /// @p declare_tasks makes the request declare the tasks extension, as every request of a
     /// session with ClientOptions::tasks set does, and lets a tools/call be answered with a task.
+    /// @p answered_input, when given, is set when the answer came after the client answered the
+    /// server's `input_required` questions.
     static Task<nlohmann::json> request(std::shared_ptr<Impl> state, std::string_view method,
                                         const std::optional<nlohmann::json>& params,
                                         const RequestOptions& request_options,
-                                        bool declare_tasks = false) {
+                                        bool declare_tasks = false,
+                                        std::shared_ptr<bool> answered_input = nullptr) {
         if (request_options.on_progress) {
             return request_with_progress(std::move(state), std::make_shared<const std::string>(method),
                                          params.value_or(nlohmann::json()), request_options,
-                                         declare_tasks);
+                                         declare_tasks, std::move(answered_input));
         }
         const auto modern_version = state->modern_version();
         if (!modern_version) {
@@ -787,14 +791,69 @@ struct Client::Impl {
         reject_removed_method(*modern_version, method);
         declare_tasks = declare_tasks || method.starts_with("tasks/");
         if (supports_input_required(method)) {
-            return resume_input_required(
-                std::move(state), std::make_shared<const std::string>(method), params, request_options,
-                std::make_shared<const std::string>(*modern_version), declare_tasks);
+            return resume_input_required(std::move(state), std::make_shared<const std::string>(method),
+                                         params, request_options,
+                                         std::make_shared<const std::string>(*modern_version),
+                                         declare_tasks, std::move(answered_input));
         }
         auto modern_params =
             state->with_request_meta(*modern_version, params, request_options.log_level, declare_tasks);
         return checked_result(
             request_wire(std::move(state), method, modern_params, request_options, false));
+    }
+
+    /// A request of a cacheable method, answered from the response cache when the cache is on and
+    /// holds a fresh result, as RequestOptions::cache_mode allows; see ResponseCacheOptions.
+    static Task<nlohmann::json> cacheable_request(std::shared_ptr<Impl> state, std::string_view method,
+                                                  std::optional<nlohmann::json> params,
+                                                  const RequestOptions& request_options) {
+        if (!state->read_loop_started.load(std::memory_order_acquire)) {
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                           "Client must connect before sending requests");
+        }
+        // A closed client fails the call as it would without the cache.
+        if (!state->response_cache.enabled() || request_options.cache_mode == CacheMode::eBypass ||
+            state->closed.load(std::memory_order_acquire)) {
+            return request(std::move(state), method, params, request_options);
+        }
+        return cached_request(std::move(state), std::make_shared<const std::string>(method),
+                              std::move(params), request_options);
+    }
+
+    static Task<nlohmann::json> cached_request(std::shared_ptr<Impl> state,
+                                               std::shared_ptr<const std::string> method,
+                                               std::optional<nlohmann::json> params,
+                                               RequestOptions request_options) {
+        auto& cache = state->response_cache;
+        // On the heap: GCC 11 mishandles a std::string that lives across a suspension point.
+        const auto key =
+            std::make_shared<const std::string>(detail::ResponseCache::key(*method, params));
+        if (request_options.cache_mode == CacheMode::eUse) {
+            auto kept = cache.find(*key);
+            if (kept) {
+                co_return std::move(*kept);
+            }
+        }
+        const auto generation = cache.generation();
+        auto answered_input = std::make_shared<bool>(false);
+        nlohmann::json reply;
+        try {
+            reply = co_await request(state, *method, params, request_options, false, answered_input);
+        } catch (const McpError& error) {
+            // A refused cursor means the pages kept so far may not fit together any more; the
+            // next call starts the list again from the first page.
+            if (error.code() == mcp::constants::jsonrpc::g_INVALID_PARAMS && params &&
+                params->is_object() && params->contains("cursor")) {
+                cache.forget(*method);
+            }
+            throw;
+        }
+        // A result that depends on the answers to the server's questions is not one the method and
+        // parameters identify.
+        if (!*answered_input) {
+            cache.store(*key, *method, params, reply, generation);
+        }
+        co_return reply;
     }
 
     /// The RequestOptions::on_progress callback of one request in flight. The read loop calls it
@@ -889,13 +948,12 @@ struct Client::Impl {
 
     /// Sends a request whose RequestOptions::on_progress is set, routing its progress for as long
     /// as the request lasts.
-    static Task<nlohmann::json> request_with_progress(std::shared_ptr<Impl> state,
-                                                      std::shared_ptr<const std::string> method,
-                                                      nlohmann::json params,
-                                                      RequestOptions request_options,
-                                                      bool declare_tasks) {
+    static Task<nlohmann::json> request_with_progress(
+        std::shared_ptr<Impl> state, std::shared_ptr<const std::string> method, nlohmann::json params,
+        RequestOptions request_options, bool declare_tasks, std::shared_ptr<bool> answered_input) {
         const auto route = route_progress(state, params, request_options);
-        auto reply = co_await request(state, *method, params, request_options, declare_tasks);
+        auto reply = co_await request(state, *method, params, request_options, declare_tasks,
+                                      std::move(answered_input));
         co_return reply;
     }
 
@@ -1118,7 +1176,8 @@ struct Client::Impl {
                                                       std::optional<nlohmann::json> params,
                                                       RequestOptions request_options,
                                                       std::shared_ptr<const std::string> version,
-                                                      bool declare_tasks) {
+                                                      bool declare_tasks,
+                                                      std::shared_ptr<bool> answered_input) {
         const auto timeout = request_options.timeout.value_or(state->options.request_timeout);
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         // A tools/call that declared the extension may be answered with a task, which the caller
@@ -1148,6 +1207,9 @@ struct Client::Impl {
                 *type != "input_required") {
                 if (!(task_allowed && is_task_result(reply))) {
                     check_complete(reply);
+                }
+                if (answered_input && round > 0) {
+                    *answered_input = true;
                 }
                 co_return reply;
             }
@@ -1897,11 +1959,27 @@ struct Client::Impl {
                        outcome.error ? outcome.error->data : std::nullopt);
     }
 
-    /// ClientProtocol::pinned("2026-07-28"): discover once for ConnectResult; never initialize.
+    /// Whether @p outcome refuses @p version as unsupported while listing it as supported.
+    static bool refuses_listed_version(const ProbeOutcome& outcome, const std::string& version) {
+        if (outcome.kind != ProbeOutcome::Kind::eModernError ||
+            outcome.error->code != mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION) {
+            return false;
+        }
+        const auto advertised = advertised_versions(*outcome.error);
+        return std::find(advertised.begin(), advertised.end(), version) != advertised.end();
+    }
+
+    /// ClientProtocol::pinned("2026-07-28"): discover for ConnectResult; never initialize.
     static Task<ConnectResult> connect_pinned_modern(std::shared_ptr<Impl> state,
                                                      std::chrono::steady_clock::time_point started) {
         auto version = std::make_shared<const std::string>(state->options.protocol.version());
         auto outcome = co_await probe(state, version, state->options.request_timeout);
+        // A client whose version is refused retries with a version from the server's list that both
+        // sides support. For a pinned client that can only be the pinned version, so a refusal that
+        // lists it is asked again, once.
+        if (refuses_listed_version(*outcome, *version)) {
+            outcome = co_await probe(state, version, state->options.request_timeout);
+        }
         if (outcome->kind != ProbeOutcome::Kind::eDiscover) {
             throw_probe_failure(*outcome, *version);
         }
@@ -2428,6 +2506,7 @@ struct Client::Impl {
     static void dispatch_notification(const std::shared_ptr<Impl>& state,
                                       const nlohmann::json& json_message) {
         const auto method = json_message.at("method").get<std::string>();
+        state->response_cache.invalidate(method, json_message);
         if (method == "notifications/cancelled" && end_subscription_from_cancel(state, json_message)) {
             return;
         }
@@ -2646,6 +2725,7 @@ struct Client::Impl {
     /// the strand only.
     std::vector<std::weak_ptr<boost::asio::steady_timer>> poll_pauses;
     ClientOptions options;
+    detail::ResponseCache response_cache{options.response_cache};
     detail::SerializedTransportWriter writer;
     /// What the transport said of itself; see writes_beside_queue().
     bool overlapping_writes{false};
@@ -2895,6 +2975,11 @@ void check_options(const ClientOptions& options) {
     if (options.max_incoming_request_bytes == 0) {
         throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
+    if (options.response_cache.enabled &&
+        (options.response_cache.max_entries == 0 ||
+         options.response_cache.max_ttl <= std::chrono::milliseconds::zero())) {
+        throw std::invalid_argument("Client response cache entry limit and lifetime must be positive");
+    }
 }
 
 }  // namespace
@@ -3071,6 +3156,8 @@ Task<void> Client::send_notification(std::string_view method,
     return Impl::notification(impl_, method, params);
 }
 
+void Client::clear_response_cache() { impl_->response_cache.clear(); }
+
 std::size_t Client::pending_request_count() const {
     std::lock_guard lock(impl_->pending_requests_mutex);
     return impl_->pending_requests.size();
@@ -3090,8 +3177,8 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
                                          const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     return Impl::accepted_tools(
-        impl_, parse_result<ListToolsResult>(
-                   send_request("tools/list", make_paginated_params(cursor), request_options)));
+        impl_, parse_result<ListToolsResult>(Impl::cacheable_request(
+                   impl_, "tools/list", make_paginated_params(cursor), request_options)));
 }
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
@@ -3206,8 +3293,8 @@ Task<ListResourcesResult> Client::list_resources(const std::optional<std::string
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor,
                                                  const RequestOptions& request_options) {
-    return parse_result<ListResourcesResult>(
-        send_request("resources/list", make_paginated_params(cursor), request_options));
+    return parse_result<ListResourcesResult>(Impl::cacheable_request(
+        impl_, "resources/list", make_paginated_params(cursor), request_options));
 }
 
 Task<ReadResourceResult> Client::read_resource(const std::string& uri) {
@@ -3218,8 +3305,8 @@ Task<ReadResourceResult> Client::read_resource(const std::string& uri,
                                                const RequestOptions& request_options) {
     ReadResourceRequestParams params;
     params.uri = uri;
-    return parse_result<ReadResourceResult>(
-        send_request("resources/read", nlohmann::json(std::move(params)), request_options));
+    return parse_result<ReadResourceResult>(Impl::cacheable_request(
+        impl_, "resources/read", nlohmann::json(std::move(params)), request_options));
 }
 
 Task<ListResourceTemplatesResult> Client::list_resource_templates(
@@ -3229,8 +3316,8 @@ Task<ListResourceTemplatesResult> Client::list_resource_templates(
 
 Task<ListResourceTemplatesResult> Client::list_resource_templates(
     const std::optional<std::string>& cursor, const RequestOptions& request_options) {
-    return parse_result<ListResourceTemplatesResult>(
-        send_request("resources/templates/list", make_paginated_params(cursor), request_options));
+    return parse_result<ListResourceTemplatesResult>(Impl::cacheable_request(
+        impl_, "resources/templates/list", make_paginated_params(cursor), request_options));
 }
 
 Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor) {
@@ -3240,7 +3327,7 @@ Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& c
 Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor,
                                              const RequestOptions& request_options) {
     return parse_result<ListPromptsResult>(
-        send_request("prompts/list", make_paginated_params(cursor), request_options));
+        Impl::cacheable_request(impl_, "prompts/list", make_paginated_params(cursor), request_options));
 }
 
 Task<GetPromptResult> Client::get_prompt(const std::string& name,

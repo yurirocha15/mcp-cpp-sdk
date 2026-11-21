@@ -139,6 +139,19 @@ that already carries ``ttlMs`` or ``cacheScope`` from the handler keeps its own
 value. Call ``set_cache_hints()`` before the server serves its first request.
 It does not change results of older revisions, which carry no hints.
 
+A ``Client`` reuses these results when ``ClientOptions::response_cache.enabled``
+is set. ``list_tools()``, ``list_prompts()``, ``list_resources()``,
+``list_resource_templates()`` and ``read_resource()`` then keep each result whose
+``ttlMs`` is positive, under the method and its parameters, and answer the same
+call from it until ``ttlMs`` runs out or ``ResponseCacheOptions::max_ttl``
+passes, whichever comes first. A ``list_changed`` notification drops the lists
+it names, and ``notifications/resources/updated`` the reads of its URI. Set
+``RequestOptions::cache_mode`` to ``CacheMode::eRefresh`` to ask the server and
+keep the new answer, or to ``CacheMode::eBypass`` to ask it and leave the cache
+alone. The cache serves one client only, so a ``private`` result stays with
+the client that received it. Call ``Client::clear_response_cache()`` when its
+credentials change to another user's.
+
 Requests that need input
 ------------------------
 

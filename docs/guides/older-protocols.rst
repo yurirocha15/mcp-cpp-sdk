@@ -29,9 +29,10 @@ factory functions:
 ``ClientProtocol::pinned("...")``
    Exactly one version. "2025-11-25", "2025-06-18", "2025-03-26" and "2024-11-05"
    send ``initialize`` naming that version. "2026-07-28" speaks the modern
-   protocol: ``connect()`` sends one ``server/discover`` request to fill in the
-   ``ConnectResult`` and never falls back to ``initialize``. Any other string
-   throws ``std::invalid_argument``.
+   protocol: ``connect()`` sends a ``server/discover`` request to fill in the
+   ``ConnectResult`` and never falls back to ``initialize``. A server that
+   refuses the version while listing it as supported is asked once more. Any
+   other string throws ``std::invalid_argument``.
 
 .. code-block:: cpp
 
