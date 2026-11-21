@@ -5,12 +5,13 @@ Runs the mcp-schema-workload executable of each build (test/perf/schema_workload
 Callgrind with two iteration counts. The difference, divided by the difference in iterations, is
 the instruction count of one iteration without the start-up, and does not depend on the host's
 load. The base build is measured twice; when the two measurements disagree by more than 0.5% the
-run is invalid. Then each group's head/base ratio is held to its limit:
+run is invalid. Then each group's head/base ratio is held to its limit in LIMITS. The groups:
 
-  tools, native   at most 103%: tool schemas and schemas of single keywords
-  applicators     at most 100%: schemas built on applicators and references
-  stops           at most 100%: validations the work budget stops
-  compile         at most 120%: compiling the schemas of the other groups
+  tools        tool schemas
+  native       schemas of single keywords
+  applicators  schemas built on applicators and references
+  stops        validations the work budget stops
+  compile      compiling the schemas of the other groups
 
 Both workloads must print the same fingerprint for a group, so that only the same schemas and
 values are compared.
