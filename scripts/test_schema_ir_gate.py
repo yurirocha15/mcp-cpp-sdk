@@ -64,20 +64,14 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(result["groups"]["native"]["head"], 1000)
         self.assertTrue(result["passed"])
 
-    def test_each_group_has_its_own_limit(self) -> None:
-        # 102% passes where the limit is 103% and fails where it is 100%.
-        for group, passes in (("native", True), ("tools", True), ("applicators", False), ("stops", False)):
+    def test_each_group_is_held_to_its_limit(self) -> None:
+        for group, limit in schema_ir_gate.LIMITS.items():
             with self.subTest(group=group):
-                result = schema_ir_gate.measure(
-                    fake_runner(self.costs(group, 1020, 1000)), HEAD, BASE, [group]
-                )
-                self.assertEqual(result["passed"], passes, result["problems"])
-
-    def test_compile_may_take_a_fifth_more(self) -> None:
-        runner = fake_runner(self.costs("compile", 1190, 1000))
-        self.assertTrue(schema_ir_gate.measure(runner, HEAD, BASE, ["compile"])["passed"])
-        runner = fake_runner(self.costs("compile", 1210, 1000))
-        self.assertFalse(schema_ir_gate.measure(runner, HEAD, BASE, ["compile"])["passed"])
+                at_limit = round(1000 * limit)
+                runner = fake_runner(self.costs(group, at_limit - 1, 1000))
+                self.assertTrue(schema_ir_gate.measure(runner, HEAD, BASE, [group])["passed"])
+                runner = fake_runner(self.costs(group, at_limit + 1, 1000))
+                self.assertFalse(schema_ir_gate.measure(runner, HEAD, BASE, [group])["passed"])
 
     def test_different_workloads_are_not_compared(self) -> None:
         runner = fake_runner(

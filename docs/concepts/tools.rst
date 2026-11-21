@@ -215,8 +215,8 @@ output schemas and throw ``mcp::SchemaError`` (a ``std::invalid_argument``)
 naming the tool and the field when a schema cannot be used.
 ``SchemaError::category()`` says why:
 
-- ``eInvalidSchema``: the schema is not a JSON object, fails its dialect's
-  metaschema, holds NaN or Infinity (which JSON cannot represent), has a
+- ``eInvalidSchema``: the schema is not a JSON object, breaks the rules of its
+  dialect's metaschema, holds NaN or Infinity (which JSON cannot represent), has a
   ``pattern`` that is not a regular expression, or (for ``inputSchema``) does
   not declare ``"type": "object"``, or a tool input schema holds an invalid
   ``x-mcp-header`` annotation.
@@ -233,8 +233,8 @@ the specification sets. ``$schema`` may also name 2019-09, draft-07, draft-06 or
 draft-04.
 
 **References.** ``$ref`` resolves within the document (JSON Pointer fragments,
-anchors, subschemas identified by ``$id``) and to the metaschemas of the
-supported dialects. Anything else, such as an ``http:`` or ``file:`` URI or a
+anchors, subschemas identified by ``$id``). A ``$ref`` to the whole metaschema
+of a supported dialect checks the value as a schema of that dialect. Anything else, such as an ``http:`` or ``file:`` URI or a
 relative file name, is refused; the SDK never fetches a schema.
 
 **Patterns.** ``pattern`` and ``patternProperties`` use a linear-time matcher
@@ -277,16 +277,15 @@ each check refused:
 
 **Limits.** Validation is bounded so that neither a schema nor a value can
 exhaust the stack or take time exponential in its size. A value nested deeper
-than 64 levels is invalid (``SchemaOptions::max_instance_depth``). The
-evaluation path through the schema is limited to 192 keywords and array
-indexes, which a schema recursing through ``anyOf`` and ``$ref`` at every level
-reaches at about 48 levels of the value. The evaluation work allowed grows with
+than 64 levels is invalid (``SchemaOptions::max_instance_depth``). At most 192
+subschemas are evaluated one inside another, ``$ref`` targets included, which a
+schema recursing through ``anyOf``, ``items``, ``allOf`` and ``$ref`` at every
+level reaches at 48 levels of the value. The evaluation work allowed grows with
 the size of the value times the size of the schema, up to 256 million units
 (``SchemaOptions::max_evaluation_work``); a value's size counts its nodes,
 their nesting, the property names above them
-and its text. A keyword such as ``anyOf`` keeps at most 16 of the messages its
-failed branches report, and the messages kept during one validation may hold
-32 MiB at once. Pattern matching runs in time
+and its text. When no branch of ``anyOf`` or ``oneOf`` matches, a few
+violations of the first branch are reported with it. Pattern matching runs in time
 linear in the text, but a pattern that keeps many alternatives open at once,
 such as an unanchored ``.{1,1000}x``, costs thousands of steps per character, so
 matching has its own budget: 16 million steps plus 64 for every byte of string
@@ -295,17 +294,11 @@ and property name in the value (``SchemaOptions`` sets both for a
 byte. A value that exceeds a limit is reported invalid with ``validation
 stopped: ...``. A schema that exceeds a limit even for a trivial value, such as
 ``{"$ref": "#"}``, is refused at registration. Schema documents may nest up to
-64 levels; checking a 2020-12 schema against its metaschema reaches the path
-limit when ``properties`` nest 27 levels deep.
+64 levels.
 
-**Cost.** A 2020-12 schema that uses only ``type``, ``enum``, ``const``, the
-numeric bounds, ``minLength``, ``maxLength``, ``pattern``, ``items``,
-``minItems``, ``maxItems``, ``properties``, ``required``,
-``additionalProperties``, ``minProperties``, ``maxProperties``, boolean
-subschemas and annotations is evaluated directly on the arguments; other
-schemas are evaluated by the bundled jsoncons library, which costs several
-microseconds more per call for typical arguments. Violation messages are
-written for people and their wording may change.
+**Evaluation.** Every schema, in each of the five dialects, is evaluated
+directly on the ``nlohmann::json`` value, without copying it. Violation messages
+are written for people and their wording may change.
 
 **On the client.** ``Client::list_tools()`` lists every tool the server names.
 It compiles each ``outputSchema`` and reports one it cannot use through

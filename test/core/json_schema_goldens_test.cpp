@@ -1,7 +1,7 @@
-// The SDK's schema evaluation against verdicts recorded from the jsoncons evaluation
-// (test/data/schema-goldens.json, written by mcp-schema-goldens). A verdict may differ only where
+// The SDK's schema evaluation against verdicts recorded from the jsoncons library, which validated
+// schemas up to version 0.3.0 (test/data/schema-goldens.json). A verdict may differ only where
 // test/data/schema-engine-differences.json lists the position with a reason, so a change of verdict
-// is always deliberate, also once jsoncons is no longer part of the SDK.
+// is always deliberate.
 
 #include <mcp/protocol/schema.hpp>
 
@@ -130,9 +130,11 @@ TEST(SchemaGoldens, GeneratedVerdicts) {
         const auto cases = schema_corpus::generated_cases(dialect, count);
         ASSERT_EQ(recorded.size(), cases.size()) << dialect.directory;
         for (std::size_t index = 0; index < cases.size(); index += stride()) {
-            differences.check({"generated", dialect.directory, "", index},
-                              recorded[index].get<std::string>(),
-                              schema_corpus::case_verdicts(cases[index]));
+            if (!differences.check({"generated", dialect.directory, "", index},
+                                   recorded[index].get<std::string>(),
+                                   schema_corpus::case_verdicts(cases[index]))) {
+                ADD_FAILURE() << "schema: " << cases[index].schema.dump();
+            }
         }
     }
     if (stride() == 1) {
@@ -140,7 +142,7 @@ TEST(SchemaGoldens, GeneratedVerdicts) {
     }
 }
 
-// Every mutant compiles or is refused with a SchemaError, as jsoncons decided: never another
+// Every mutant compiles or is refused with a SchemaError, as recorded: never another
 // exception or a crash.
 TEST(SchemaGoldens, MutantVerdicts) {
     const auto goldens = load("schema-goldens.json");

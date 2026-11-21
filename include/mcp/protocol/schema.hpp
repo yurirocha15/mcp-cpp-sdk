@@ -33,7 +33,7 @@ struct SchemaOptions {
     /// value. Typical patterns take a handful of steps per byte.
     std::size_t pattern_steps_per_text_byte = 64;
     /// Most evaluation work one `validate()` call may do, and checking a schema against its
-    /// metaschema when it is compiled. The work allowed grows with the size of the value times the
+    /// dialect's rules when it is compiled. The work allowed grows with the size of the value times the
     /// size of the schema, up to this; a validation that needs more is stopped and reported as a
     /// violation.
     std::size_t max_evaluation_work = 256'000'000;
@@ -57,8 +57,9 @@ class MCP_API SchemaError : public std::invalid_argument {
                               ///< any value; or a tool input schema holds an invalid
                               ///< `x-mcp-header` annotation.
         eUnsupportedDialect,  ///< `$schema` names a dialect this SDK does not implement.
-        eUnresolvedRef,       ///< A `$ref` target is neither in the document nor a supported
-                              ///< dialect's metaschema. Nothing is fetched.
+        eUnresolvedRef,       ///< A `$ref` target is neither in the document, nor in a given
+                              ///< document, nor a supported dialect's whole metaschema.
+                              ///< Nothing is fetched.
         eUnsupportedPattern,  ///< A `pattern` or `patternProperties` key is one the linear-time
                               ///< matcher cannot run, such as a lookahead, or the patterns exceed
                               ///< its size limits. Patterns are checked last, so the schema has no
@@ -109,13 +110,14 @@ using SchemaDocuments = std::map<std::string, nlohmann::json>;
  * A schema without `$schema` is read as JSON Schema 2020-12, the default the MCP specification
  * sets. `$schema` may name 2020-12, 2019-09, draft-07, draft-06 or draft-04; any other value is
  * refused with `SchemaError::Category::eUnsupportedDialect`. The schema itself is checked against
- * its dialect's metaschema. `pattern` and `patternProperties` use `mcp::detail::Regex`, which
- * matches in linear time.
+ * the rules its dialect's published metaschema states. `pattern` and `patternProperties` use
+ * `mcp::detail::Regex`, which matches in linear time.
  *
- * References resolve within the document, within the documents given as `SchemaDocuments`, and to
- * the metaschemas of the supported dialects: JSON Pointer fragments, anchors, and subschemas
- * identified by `$id`. A `$ref` to anything else (an `http:` or `file:` URI that was not given, a
- * relative file name, a location missing from the document) is refused with
+ * References resolve within the document and within the documents given as `SchemaDocuments`:
+ * JSON Pointer fragments, anchors, and subschemas identified by `$id`. A reference to the whole
+ * metaschema of a supported dialect checks the value as a schema of that dialect. A `$ref` to
+ * anything else (an `http:` or `file:` URI that was not given, a relative file name, a location
+ * missing from the document, a location inside a metaschema) is refused with
  * `SchemaError::Category::eUnresolvedRef`; no network or file access is ever attempted.
  *
  * Validation is bounded: the value's nesting (`SchemaOptions::max_instance_depth`), the nesting
@@ -126,12 +128,9 @@ using SchemaDocuments = std::map<std::string, nlohmann::json>;
  * A value whose validation exceeds a bound is reported as invalid. A recursive schema takes one
  * level of nesting for each subschema on its way down one level of the value: one that passes
  * through `anyOf`, `items`, `allOf` and `$ref` at every level reaches the bound at 48 levels of the
- * value. A schema of a dialect other than 2020-12, or one that refers to a metaschema, is bounded
- * by the length of its evaluation path instead (192 keywords and array
- * indexes), which a schema passing through `anyOf` and `$ref` at every level reaches at about 48
- * levels. The same bounds apply when the schema is checked against its metaschema, which a 2020-12
- * schema nesting `properties` 27 levels deep exceeds. A schema that exceeds a bound even for a
- * trivial value, such as `{"$ref": "#"}`, is refused when it is compiled.
+ * value. A schema document may nest 64 levels, and is checked and compiled within that depth. A
+ * schema that exceeds a bound even for a trivial value, such as `{"$ref": "#"}`, is refused when it
+ * is compiled.
  *
  * Violation messages are written for people and their wording may change; `valid` and
  * `instance_path` are the stable parts of a result.

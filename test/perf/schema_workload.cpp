@@ -93,7 +93,7 @@ std::vector<Item> native() {
     };
 }
 
-/// Schemas only the jsoncons evaluation implemented when this workload was written.
+/// Schemas built on applicators and references.
 std::vector<Item> applicators() {
     json defs = json::object();
     json branches = json::array();

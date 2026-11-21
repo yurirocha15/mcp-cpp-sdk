@@ -5,8 +5,8 @@
  *
  * Three corpora, each per dialect: the JSON-Schema-Test-Suite groups (test/data/json-schema),
  * schemas generated from a fixed seed, and mutants of the suite schemas. Every corpus is built the
- * same way on every platform, so verdicts recorded once (test/data/schema-goldens.json, written by
- * mcp-schema-goldens) can be compared with the evaluation of any build.
+ * same way on every platform, so verdicts recorded once (test/data/schema-goldens.json) can be
+ * compared with the evaluation of any build.
  */
 #pragma once
 
