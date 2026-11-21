@@ -1258,8 +1258,10 @@ class MCP_API Server {
      * run_http() return once the handlers still running have finished, or after
      * mcp::constants::shutdown::g_TIMEOUT_MS. A synchronous handler that runs on the server's own
      * loop holds that loop, and with it the deadline, until it returns; one on the
-     * set_handler_executor() executor is left running. Does nothing when the server is not
-     * running: a run that starts after the call is not ended by it.
+     * set_handler_executor() executor is left running. The handler of a tool call made as a task
+     * is not waited for either: it goes on, and a question it asks the client afterwards is never
+     * answered. Does nothing when the server is not running: a run that starts after the call is
+     * not ended by it.
      */
     void stop();
 

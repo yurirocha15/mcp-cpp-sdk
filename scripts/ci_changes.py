@@ -4,8 +4,7 @@ Decide which jobs in ci.yml a change needs.
 
 JOB_INPUTS lists the paths each job reads, so a job runs only when something it
 reads changed. The exception is the C++ that the code jobs compile from the
-documentation: a change to README.md counts for them when its C++ blocks differ,
-and a change to an rst file when its complete programs differ.
+documentation: a change to README.md counts for them when its C++ blocks differ.
 
 The package builds take most of a run's runner time, so a pull request runs one
 only when it changes that package's own inputs, such as its packaging files,

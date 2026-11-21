@@ -202,7 +202,8 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                        params.messages.push_back(std::move(msg));
                        params.maxTokens = 100;
 
-                       std::string failure;
+                       // A json, not a std::string, which must not live across co_await on GCC 11.
+                       nlohmann::json failure;
                        try {
                            auto result = co_await ctx.sample_llm(params);
                            std::string summary;
@@ -215,11 +216,10 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                                {"content", nlohmann::json::array(
                                    {nlohmann::json{{"type", "text"}, {"text", summary}}})}};
                        } catch (const std::exception& e) {
-                           failure = e.what();
+                           failure = std::string("Sampling failed: ") + e.what();
                        }
                        // A catch block cannot contain co_await, so the failure is logged after it.
-                       std::string message = "Sampling failed: " + failure;
-                       co_await ctx.log(mcp::LoggingLevel::eError, message);
+                       co_await ctx.log(mcp::LoggingLevel::eError, failure.get_ref<const std::string&>());
                        co_return nlohmann::json{
                            {"content", nlohmann::json::array(
                                {nlohmann::json{{"type", "text"}, {"text", "Sampling failed"}}})}};

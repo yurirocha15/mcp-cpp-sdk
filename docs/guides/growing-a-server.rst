@@ -154,8 +154,9 @@ the clients subscribed to that URI. The tool that changes the resource here is a
 coroutine because it awaits that notification. The server offers subscriptions
 only when ``capabilities().resources->subscribe`` is true: registering a
 resource declares the resources capability, but leaves that flag to the
-program. The mutex keeps the name safe once handlers run on a pool of their
-own, as in the next step. See :doc:`/concepts/subscriptions`.
+program, which sets it after that registration. The mutex keeps the name safe
+once handlers run on a pool of their own, as in the next step. See
+:doc:`/concepts/subscriptions`.
 
 .. literalinclude:: /_generated/progression/server_add_subscriptions.diff
    :language: diff
