@@ -63,7 +63,6 @@ LIBRARY = (
     "conanfile.py",
     "include/*",
     "src/*",
-    "third_party/*",
 )
 TESTS = (
     "test/auth/*",
@@ -103,7 +102,6 @@ PACKAGE_CORE = (
     "scripts/package_build.py",
     "scripts/run_release_tool.py",
     "test_package/*",
-    "third_party/*",
 )
 PACKAGE_VALIDATION = ("release/consumer_validation.py", "release/package_validation.py")
 # The native builder and what it imports. Windows reaches it through collect_build_identity.py.
@@ -126,7 +124,6 @@ JOB_INPUTS = {
         "include/*",
         "scripts/ci_changes.py",
         "src/*",
-        "third_party/*",
     ),
     "code": LIBRARY + TESTS + (
         "examples/*",
@@ -156,7 +153,6 @@ JOB_INPUTS = {
         "scripts/*",
         "test/data/*",
         "test/release/*",
-        "third_party/*",
     ),
     "benchmark": ("benchmark/*",),
     "powershell": ("scripts/release/*.ps1",),
@@ -192,7 +188,6 @@ PULL_REQUEST_UNPACKAGED = (
     "CMakeLists.txt",
     "cmake/*",
     "conanfile.py",
-    "third_party/*",
 )
 # Source a package builds and tests. Events other than pull_request package these as well.
 PACKAGED_SOURCE = LIBRARY + TESTS + (

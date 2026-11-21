@@ -192,7 +192,6 @@ class ClassifierTests(unittest.TestCase):
             "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core"},
             "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release", "package_core"},
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
-            "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release", "package_core"},
             ".github/workflows/ci.yml": PULL_REQUEST_JOBS,
         }
         for path, jobs in expected.items():
@@ -220,7 +219,6 @@ class ClassifierTests(unittest.TestCase):
             "cmake/config.cmake.in": LIBRARY_JOBS | PACKAGES,
             "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release"} | PACKAGES,
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
-            "third_party/jsoncons/PROVENANCE": LIBRARY_JOBS | {"release"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
         }
         for path, jobs in expected.items():
