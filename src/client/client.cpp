@@ -1,5 +1,6 @@
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/notification_budget.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/response_cache.hpp"
 #include "../detail/spawn_awaitable.hpp"
@@ -860,9 +861,13 @@ struct Client::Impl {
     /// holding `mutex`, and the request's end closes it holding `mutex`, so a progress
     /// notification that arrives after the answer never reaches a callback whose caller returned.
     struct ProgressRouteState {
+        explicit ProgressRouteState(const NotificationRateLimit& limit) : bucket(limit) {}
+
         std::recursive_mutex mutex;
         std::function<void(const ProgressNotificationParams&)> callback;
         bool open = true;
+        /// The progress notifications of this request that may still reach the callback.
+        detail::TokenBucket bucket;
     };
 
     /// Ends a request's progress route when the request ends.
@@ -899,7 +904,7 @@ struct Client::Impl {
         if (!request_options.on_progress) {
             return ended;
         }
-        auto route = std::make_shared<ProgressRouteState>();
+        auto route = std::make_shared<ProgressRouteState>(state->options.notification_rate_limit);
         route->callback = std::move(request_options.on_progress);
         request_options.on_progress = nullptr;
         if (params.is_null()) {
@@ -992,6 +997,10 @@ struct Client::Impl {
         // As for any notification callback, a throw is reported and the session carries on.
         std::lock_guard lock(route->mutex);
         if (!route->open) {
+            return true;
+        }
+        if (!route->bucket.take()) {
+            state->dropped_notifications.fetch_add(1, std::memory_order_relaxed);
             return true;
         }
         try {
@@ -2514,6 +2523,13 @@ struct Client::Impl {
         if (method == "notifications/progress" && deliver_request_progress(state, json_message)) {
             return;
         }
+        // Progress no request in flight claims goes to Client::on_progress, through one bucket for
+        // the client; log messages share another.
+        if ((method == "notifications/progress" && !state->progress_bucket.take()) ||
+            (method == "notifications/message" && !state->log_bucket.take())) {
+            state->dropped_notifications.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         if (method == "notifications/cancelled") {
             if (detail::has_json_value(json_message, "params")) {
                 auto params = json_message.at("params").get<CancelledNotificationParams>();
@@ -2726,6 +2742,10 @@ struct Client::Impl {
     std::vector<std::weak_ptr<boost::asio::steady_timer>> poll_pauses;
     ClientOptions options;
     detail::ResponseCache response_cache{options.response_cache};
+    /// See ClientOptions::notification_rate_limit.
+    detail::TokenBucket progress_bucket{options.notification_rate_limit};
+    detail::TokenBucket log_bucket{options.notification_rate_limit};
+    std::atomic<std::uint64_t> dropped_notifications{0};
     detail::SerializedTransportWriter writer;
     /// What the transport said of itself; see writes_beside_queue().
     bool overlapping_writes{false};
@@ -2975,6 +2995,7 @@ void check_options(const ClientOptions& options) {
     if (options.max_incoming_request_bytes == 0) {
         throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
+    detail::check_rate_limit(options.notification_rate_limit);
     if (options.response_cache.enabled &&
         (options.response_cache.max_entries == 0 ||
          options.response_cache.max_ttl <= std::chrono::milliseconds::zero())) {
@@ -3157,6 +3178,10 @@ Task<void> Client::send_notification(std::string_view method,
 }
 
 void Client::clear_response_cache() { impl_->response_cache.clear(); }
+
+std::uint64_t Client::dropped_notifications() const {
+    return impl_->dropped_notifications.load(std::memory_order_relaxed);
+}
 
 std::size_t Client::pending_request_count() const {
     std::lock_guard lock(impl_->pending_requests_mutex);

@@ -57,6 +57,7 @@ using ProgressSink = std::function<void(double progress, std::optional<double> t
 
 namespace detail {
 struct ContextRouting;
+class NotificationBudget;
 }  // namespace detail
 
 /**
@@ -179,7 +180,8 @@ class Context {
      * A message is sent only if its level <= current server log level.
      *
      * A 2026-07-28 request has no session level: its threshold is the
-     * `io.modelcontextprotocol/logLevel` in its `_meta`, and without one nothing is sent.
+     * `io.modelcontextprotocol/logLevel` in its `_meta`, and without one nothing is sent. A
+     * message over the limit of Server::set_notification_rate_limit() is dropped.
      *
      * @param level The severity level of the log message.
      * @param msg The log message to send.
@@ -211,7 +213,8 @@ class Context {
      *
      * @details Sends a notifications/progress notification to the client. Uses the
      * progress token extracted from the request's _meta.progressToken. If no progress
-     * token was provided in the request, this is a no-op.
+     * token was provided in the request, this is a no-op. A notification over the limit of
+     * Server::set_notification_rate_limit() is dropped.
      *
      * @param progress The current progress value.
      * @param total Optional total progress value.
@@ -381,6 +384,8 @@ class Context {
     std::shared_ptr<const std::string> principal_;
     std::shared_ptr<const std::atomic<bool>> replaying_;
     ProgressSink progress_sink_;
+    /// The progress and log notifications this request may still send; null for no limit.
+    std::shared_ptr<detail::NotificationBudget> budget_;
 };
 
 }  // namespace mcp

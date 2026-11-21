@@ -15,6 +15,7 @@
 #include <mcp/core/concepts.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
+#include <mcp/core/notification_rate_limit.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -364,6 +365,16 @@ struct ClientOptions {
     std::size_t subscription_queue_limit{1024};
     /// @brief Whether and how the client keeps results the server says it may reuse.
     ResponseCacheOptions response_cache;
+    /**
+     * @brief Limit on the progress and log notifications the client hands to its callbacks.
+     *
+     * @details The progress of each request with RequestOptions::on_progress has its own bucket;
+     * progress for Client::on_progress shares one, and `notifications/message` another. A
+     * notification over the limit is dropped and counted in Client::dropped_notifications(). By
+     * default there is no limit. The constructor throws std::invalid_argument when `per_second` is
+     * negative or not a number.
+     */
+    NotificationRateLimit notification_rate_limit;
 };
 
 namespace detail {
@@ -872,6 +883,9 @@ class MCP_API Client {
      * again. Safe from any thread.
      */
     void clear_response_cache();
+
+    /// @brief Progress and log notifications dropped by ClientOptions::notification_rate_limit.
+    [[nodiscard]] std::uint64_t dropped_notifications() const;
 
     /// @brief Close the client, stopping the read loop and releasing resources.
     void close();

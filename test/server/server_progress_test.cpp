@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -220,6 +222,68 @@ TEST_F(ServerProgressTest, MultipleProgressNotifications) {
     // Final tool result
     EXPECT_EQ(responses[4]["id"], "2");
     ASSERT_TRUE(responses[4].contains("result"));
+}
+
+// progress.mdx: "Both parties SHOULD implement rate limiting to prevent flooding". Each request
+// gets its own buckets for progress and log notifications; what goes over is dropped and counted.
+TEST_F(ServerProgressTest, TheNotificationRateLimitDropsWhatGoesOverPerRequest) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::Server server("test-server", "1.0");
+    EXPECT_THROW(server.set_notification_rate_limit(mcp::NotificationRateLimit{1, -1.0}),
+                 std::invalid_argument);
+    server.set_notification_rate_limit(mcp::NotificationRateLimit{2, 0.0});
+    server.add_tool<NoopParams, NoopResult>(
+        "chatty", "Logs and reports progress", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& ctx, NoopParams /*params*/) -> mcp::Task<NoopResult> {
+            for (int step = 0; step < 5; ++step) {
+                co_await ctx.log_info("step " + std::to_string(step));
+                co_await ctx.report_progress(step, 5);
+            }
+            co_return NoopResult{true};
+        });
+
+    std::vector<nlohmann::json> written;
+    int answered = 0;
+    raw_transport->set_on_write([&](std::string_view message) {
+        written.push_back(nlohmann::json::parse(message));
+        if (written.back().contains("result") && written.back()["id"] != "1" && ++answered == 2) {
+            raw_transport->close();
+        }
+    });
+    raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    for (const auto* id : {"a", "b"}) {
+        raw_transport->enqueue_message(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", id},
+            {"method", "tools/call"},
+            {"params",
+             {{"name", "chatty"}, {"arguments", {{"dummy", 0}}}, {"_meta", {{"progressToken", id}}}}}}
+                                           .dump());
+    }
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
+    io_ctx_.run();
+
+    ASSERT_EQ(answered, 2);
+    for (const std::string id : {"a", "b"}) {
+        std::vector<double> progress;
+        for (const auto& message : written) {
+            if (message.value("method", "") == "notifications/progress" &&
+                message["params"]["progressToken"] == id) {
+                progress.push_back(message["params"]["progress"].get<double>());
+            }
+        }
+        EXPECT_EQ(progress, (std::vector<double>{0, 1})) << id;
+    }
+    const auto logs = std::count_if(written.begin(), written.end(), [](const nlohmann::json& message) {
+        return message.value("method", "") == "notifications/message";
+    });
+    EXPECT_EQ(logs, 4);
+    // Per request: 3 progress and 3 log notifications over the burst of 2.
+    EXPECT_EQ(server.dropped_notifications(), 12U);
 }
 
 // Each request's log and progress notifications reach the client in the order its handler sent

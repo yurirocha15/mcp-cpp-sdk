@@ -13,6 +13,7 @@
 #include <mcp/core/context.hpp>
 #include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
+#include <mcp/core/notification_rate_limit.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/request_context.hpp>
 #include <mcp/server/task_store.hpp>
@@ -851,6 +852,21 @@ class MCP_API Server {
      * @details Read unsynchronized by request handlers; must be called before run().
      */
     void set_tool_validation(const ToolValidationOptions& options);
+
+    /**
+     * @brief Limit the progress and log notifications each request may send.
+     *
+     * @details Each request gets its own buckets of @p limit, one for Context::report_progress()
+     * and one for Context::log(); a notification over the limit is dropped and counted in
+     * dropped_notifications(). By default there is no limit. Read unsynchronized by request
+     * handlers; must be called before run().
+     * @throws std::invalid_argument If `per_second` is negative or not a number.
+     */
+    void set_notification_rate_limit(const NotificationRateLimit& limit);
+
+    /// Progress and log notifications dropped by set_notification_rate_limit() since this server
+    /// was created.
+    [[nodiscard]] std::uint64_t dropped_notifications() const;
 
     /**
      * @brief Run tool, resource, prompt and extension method handlers on @p executor instead of

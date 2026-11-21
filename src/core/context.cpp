@@ -1,3 +1,5 @@
+#include "../detail/notification_budget.hpp"
+
 #include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>
 
@@ -28,6 +30,9 @@ Task<void> Context::log(LoggingLevel level, std::string_view msg,
             co_return;
         }
     }
+    if (budget_ && !budget_->allow_log()) {
+        co_return;
+    }
 
     // [gcc11-sso: scope-before-await]
     std::shared_ptr<const std::string> wire;
@@ -57,6 +62,9 @@ Task<void> Context::report_progress(double progress, std::optional<double> total
         co_return;
     }
     if (!progress_token_) {
+        co_return;
+    }
+    if (budget_ && !budget_->allow_progress()) {
         co_return;
     }
 

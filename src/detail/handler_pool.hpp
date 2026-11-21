@@ -391,6 +391,11 @@ struct LoopRequestSender {
 
 /// Changes a Context for a handler that runs on the handler executor.
 struct ContextRouting {
+    /// Limits the progress and log notifications @p context sends to @p budget.
+    static void set_notification_budget(Context& context, std::shared_ptr<NotificationBudget> budget) {
+        context.budget_ = std::move(budget);
+    }
+
     /**
      * @brief Sends @p context's notifications and requests to the client from @p loop, the
      *        executor the server serves the request on, while that loop's context exists.

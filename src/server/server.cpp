@@ -4,6 +4,7 @@
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/modern_methods.hpp"
+#include "../detail/notification_budget.hpp"
 #include "../detail/param_headers.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/request_meta.hpp"
@@ -1094,6 +1095,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::optional<boost::asio::any_io_executor>& handler_executor = registry->handler_executor;
     std::atomic<std::uint64_t>& argument_rejections = registry->argument_rejections;
     std::atomic<std::uint64_t>& structured_content_rejections = registry->structured_content_rejections;
+    NotificationRateLimit& notification_rate_limit = registry->notification_rate_limit;
+    std::shared_ptr<std::atomic<std::uint64_t>>& dropped_notifications =
+        registry->dropped_notifications;
 
     ServerProtocolPolicy& protocol_policy = registry->protocol_policy;
     std::atomic_bool& serving = registry->serving;
@@ -1178,6 +1182,11 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::optional<boost::asio::any_io_executor> handler_executor;
         std::atomic<std::uint64_t> argument_rejections{0};
         std::atomic<std::uint64_t> structured_content_rejections{0};
+        /// Read unsynchronized once the server serves; see Server::set_notification_rate_limit().
+        NotificationRateLimit notification_rate_limit;
+        /// Shared with the budget of each request, which may outlive the server.
+        std::shared_ptr<std::atomic<std::uint64_t>> dropped_notifications =
+            std::make_shared<std::atomic<std::uint64_t>>(0);
         ServerProtocolPolicy protocol_policy;
         // Set by the first request and by run(); the policy is read unsynchronized after that.
         std::atomic_bool serving{false};
@@ -1978,6 +1987,15 @@ void Server::set_handler_executor(const Executor& executor) {
 
 void Server::set_tool_validation(const ToolValidationOptions& options) {
     impl_->tool_validation = options;
+}
+
+void Server::set_notification_rate_limit(const NotificationRateLimit& limit) {
+    detail::check_rate_limit(limit);
+    impl_->notification_rate_limit = limit;
+}
+
+std::uint64_t Server::dropped_notifications() const {
+    return impl_->dropped_notifications->load(std::memory_order_relaxed);
 }
 
 ToolValidationStats Server::tool_validation_stats() const {
@@ -2801,6 +2819,11 @@ Context Server::Impl::make_context(
                     std::move(request_meta),
                     std::move(principal),
                     mrtr ? mrtr->replaying : nullptr};
+    if (notification_rate_limit.burst > 0) {
+        detail::ContextRouting::set_notification_budget(
+            context, std::make_shared<detail::NotificationBudget>(notification_rate_limit,
+                                                                  dropped_notifications));
+    }
     if (task_run) {
         context.set_progress_sink([task_run](double progress, std::optional<double> total,
                                              const std::optional<std::string>& message) {

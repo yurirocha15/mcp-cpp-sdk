@@ -409,6 +409,7 @@ if(BUILD_TESTING)
       test/client/client_endpoint_test.cpp
       test/client/client_listen_test.cpp
       test/client/client_response_cache_test.cpp
+      test/client/client_notification_limit_test.cpp
       test/client/client_modern_test.cpp
       test/client/client_mrtr_test.cpp
       test/client/client_tasks_test.cpp
