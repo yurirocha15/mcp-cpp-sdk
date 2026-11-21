@@ -87,6 +87,8 @@ struct Reply {
     std::vector<Step> stream;
     /// When set, nothing of the answer is sent until this holds, as for a handler that stays quiet.
     std::function<bool()> hold_until;
+    /// When true, the connection is closed after the stream's steps instead of ending the stream.
+    bool drop_after_stream{false};
 };
 
 std::string sse_event(const json& message) { return "data: " + message.dump() + "\n\n"; }
@@ -212,6 +214,12 @@ class RawServer {
                 *frame = std::string(size.data()) + "\r\n" + step.chunk + "\r\n";
                 co_await asio::async_write(*socket, asio::buffer(*frame), asio::use_awaitable);
             }
+        }
+        if (reply.drop_after_stream) {
+            beast::error_code ignored;
+            (void)socket->shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+            (void)socket->close(ignored);
+            co_return;
         }
         auto last = std::make_shared<std::string>("0\r\n\r\n");
         co_await asio::async_write(*socket, asio::buffer(*last), asio::use_awaitable);
@@ -1191,6 +1199,53 @@ TEST(HttpClientModern, ResponseWithAnotherIdDoesNotEndTheStream) {
     });
 
     EXPECT_EQ(result["content"][0]["text"], "real") << result;
+}
+
+// A response stream that breaks before the answer ends the call with g_CONNECTION_CLOSED. The message
+// alone describes the connection's failure, without the source location Boost adds to it.
+TEST(HttpClientModern, ABrokenResponseStreamEndsTheCallWithItsReason) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.rpc_method() != "tools/call") {
+            return modern_reply(request, json::array());
+        }
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        const json progress = {{"jsonrpc", "2.0"},
+                               {"method", "notifications/progress"},
+                               {"params", {{"progressToken", "t1"}, {"progress", 1}, {"total", 2}}}};
+        reply.stream.push_back({sse_event(progress), nullptr});
+        reply.drop_after_stream = true;
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+
+    int code = 0;
+    std::string message;
+    bool nested = false;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("drop", "1.0");
+        try {
+            json params = {
+                {"name", "slow"}, {"arguments", json::object()}, {"_meta", {{"progressToken", "t1"}}}};
+            (void)co_await client.send_request("tools/call", params);
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+            message = error.what();
+            try {
+                std::rethrow_if_nested(error);
+            } catch (...) {
+                nested = true;
+            }
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_FALSE(nested);
+    EXPECT_NE(message.find("The connection to the server failed: "), std::string::npos) << message;
+    EXPECT_EQ(message.find('['), std::string::npos) << message;
 }
 
 TEST(HttpClientModern, ListenStreamThatBreaksEndsAsDropped) {

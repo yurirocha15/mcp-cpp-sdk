@@ -39,7 +39,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `set_custom_request_handler()` is a free function in `<mcp/transport/http_beast.hpp>`, where `StringRequest` and `StringResponse` moved from `http_types.hpp`.
 - `ITransport` and `auth::Authenticator` are exported from the library.
 - `Client::get_prompt()` and its blocking twin take the arguments as a `std::map`, empty for none, so `{{"name", "Ada"}}` is accepted.
-- A `Client` call whose transport fails to reach the server throws `McpError` (`g_CONNECTION_CLOSED`), with an HTTP status in `data()` and the transport's exception nested.
+- A `Client` call whose transport fails throws `McpError` (`g_CONNECTION_CLOSED`), with an HTTP status in `data()` and the transport's exception nested unless a response stream broke off.
 - `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
 - `Runtime::run()` runs the loop again after an earlier run ended; a `stop()` made while nothing runs the loop ends the next run instead.
 - A closing `StdioClientTransport` keeps its event loop from running out of work until the process has ended and `on_exit` has run.
@@ -77,6 +77,8 @@ These changes in behavior need no change to compile:
   before the next poll.
 - A client sends `notifications/cancelled` for a request that times out in
   sessions of 2025-11-25 and earlier too, as the specification asks.
+- The error for an HTTP response stream that breaks off names the reason without
+  the source location that Boost adds to it.
 
 ## [0.3.0] - 2026-11-17
 

@@ -48,7 +48,8 @@ Additionally, the SDK defines MCP-specific codes used throughout the library:
   the range JSON-RPC reserves, so it cannot be mistaken for an error the peer sent. A transport
   that fails to reach the server throws it too: a refused or dropped connection, and an HTTP
   error status, which ``data()`` holds as ``httpStatus``. The transport's exception, such as an
-  ``mcp::HttpStatusError``, is nested in it and rethrown by ``std::rethrow_if_nested()``.
+  ``mcp::HttpStatusError``, is nested in it and rethrown by ``std::rethrow_if_nested()``, except
+  when the server answers with an event stream that breaks off: the message alone says why then.
 
 The codes ``-32020`` to ``-32022`` belong to protocol revision 2026-07-28. See `Protocol Errors`_.
 

@@ -1709,9 +1709,14 @@ struct HttpClientTransport::Impl {
         enqueue_message(std::move(text));
     }
 
+    /// The text of the error a reader gets for @p failure. A connection's failure is described by
+    /// its error code, as a failed call's McpError describes it, without the source location that
+    /// Boost puts in what().
     static std::string describe(const std::exception_ptr& failure) {
         try {
             std::rethrow_exception(failure);
+        } catch (const boost::system::system_error& error) {
+            return "The connection to the server failed: " + error.code().message();
         } catch (const std::exception& error) {
             return error.what();
         } catch (...) {

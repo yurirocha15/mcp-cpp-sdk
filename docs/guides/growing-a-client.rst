@@ -168,7 +168,9 @@ does not exist. A request that times out throws ``McpError`` too, with code
 an HTTP server that cannot be reached or drops the connection, or one that
 answers with an HTTP error status, such as 401 for a missing or wrong bearer
 token, which ``data()`` holds as ``httpStatus``. The transport's own exception
-is nested in it, for ``std::rethrow_if_nested()``. See :doc:`error-handling`.
+is nested in it, for ``std::rethrow_if_nested()``, except when the server
+answers with an event stream that breaks off: the message alone says why then.
+See :doc:`error-handling`.
 
 .. literalinclude:: /_generated/progression/client_add_errors.diff
    :language: diff
