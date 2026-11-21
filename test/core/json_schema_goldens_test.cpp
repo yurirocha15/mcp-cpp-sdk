@@ -66,15 +66,17 @@ class Differences {
         }
     }
 
-    /// Compares @p actual with @p expected at @p position; a difference must be listed.
-    void check(const Position& position, const std::string& expected, const std::string& actual) {
+    /// Compares @p actual with @p expected at @p position; a difference must be listed. Returns
+    /// whether the check passed.
+    bool check(const Position& position, const std::string& expected, const std::string& actual) {
         const auto listed = rows_.find(position);
         if (listed != rows_.end()) {
             listed->second = true;
             EXPECT_NE(expected, actual) << describe(position) << ": listed, but the verdicts agree";
-            return;
+            return expected != actual;
         }
         EXPECT_EQ(expected, actual) << describe(position);
+        return expected == actual;
     }
 
     /// Fails for a listed difference of @p corpus that no check reached.
@@ -159,8 +161,10 @@ TEST(SchemaGoldens, MutantVerdicts) {
                         const char verdict = schema_corpus::compile_verdict(mutant);
                         EXPECT_NE(verdict, 'x') << dialect.directory << " " << file.name << " #"
                                                 << index << ": " << mutant.dump();
-                        differences.check({"mutants", dialect.directory, file.name, index},
-                                          at(expected, index), std::string(1, verdict));
+                        if (!differences.check({"mutants", dialect.directory, file.name, index},
+                                               at(expected, index), std::string(1, verdict))) {
+                            ADD_FAILURE() << "mutant: " << mutant.dump();
+                        }
                     }
                     ++index;
                 });

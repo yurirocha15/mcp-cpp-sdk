@@ -1,5 +1,6 @@
 #include <mcp/protocol/schema.hpp>
 
+#include "../../src/detail/constants.hpp"
 #include "../../src/protocol/schema_cache.hpp"
 #include "../support/schema_corpus.hpp"
 
@@ -9,8 +10,10 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -81,7 +84,9 @@ TEST(SchemaEngines, ForcedEngineBypassesTheCache) {
 // The native evaluation refuses a schema it does not implement instead of handing it to jsoncons.
 TEST(SchemaEngines, ForcedNativeRefusesWhatItDoesNotImplement) {
     const ScopedSchemaEngine native(SchemaEngine::eNative);
-    EXPECT_THROW((void)CompiledSchema::compile({{"unevaluatedProperties", false}}), std::domain_error);
+    EXPECT_THROW(
+        (void)CompiledSchema::compile({{"$schema", "http://json-schema.org/draft-07/schema#"}}),
+        std::domain_error);
     // The checks every schema gets still come first.
     EXPECT_THROW((void)CompiledSchema::compile({{"type", 1}}), mcp::SchemaError);
 }
@@ -209,11 +214,103 @@ TEST(SchemaEngines, DeepestNativeSchemasRunOnASmallStack) {
     }
 }
 
+/// A chain of @p links `$defs` entries, each reaching the next through @p wrap, the last checking
+/// for an integer; the root refers to the first.
+json reference_chain(std::size_t links, const std::function<json(const json&)>& wrap) {
+    json defs = json::object();
+    for (std::size_t link = 0; link < links; ++link) {
+        defs["a" + std::to_string(link)] = wrap({{"$ref", "#/$defs/a" + std::to_string(link + 1)}});
+    }
+    defs["a" + std::to_string(links)] = {{"type", "integer"}};
+    return {{"$defs", defs}, {"$ref", "#/$defs/a0"}};
+}
+
+// The longest reference chains that compile reach the bound of nested evaluations. They are
+// evaluated on a 512 KiB stack; one link more is refused when compiled, since it stops for any
+// value.
+TEST(SchemaEngines, DeepestReferenceChainsRunOnASmallStack) {
+    constexpr std::size_t g_small_stack = 512 * 1024;
+    const std::vector<std::pair<const char*, std::function<json(const json&)>>> shapes = {
+        {"$ref", [](const json& reference) { return reference; }},
+        {"allOf", [](const json& reference) { return json{{"allOf", json::array({reference})}}; }},
+    };
+    for (const auto& [name, wrap] : shapes) {
+        const auto compiles = [&wrap = wrap](std::size_t links) {
+            return try_compile(reference_chain(links, wrap), SchemaEngine::eNative).has_value();
+        };
+        std::size_t deepest = 0;
+        std::size_t refused = mcp::detail::constants::schema::g_MAX_EVAL_DEPTH + 1;
+        while (refused - deepest > 1) {
+            const auto middle = deepest + (refused - deepest) / 2;
+            (compiles(middle) ? deepest : refused) = middle;
+        }
+        std::printf("%s chain: %zu links compile natively\n", name, deepest);
+        EXPECT_GE(deepest, 90U) << name;
+        EXPECT_FALSE(compiles(deepest + 1)) << name;
+        const auto schema = try_compile(reference_chain(deepest, wrap), SchemaEngine::eNative);
+        ASSERT_TRUE(schema.has_value()) << name;
+        run_on_small_stack(g_small_stack, [&schema, name = name] {
+            EXPECT_TRUE(schema->validate(1).valid) << name;
+            const auto result = schema->validate("x");
+            ASSERT_EQ(result.violations.size(), 1U) << name;
+            EXPECT_EQ(result.violations[0].message.find("validation stopped"), std::string::npos)
+                << name;
+        });
+    }
+}
+
+// Compiling resolves references after walking the document, so a chain far longer than the bound
+// of nested evaluations does not deepen compilation; it compiles on a 512 KiB stack and is refused,
+// since it stops for any value. The same holds for $dynamicRef through many resources that declare
+// the anchor it looks for.
+TEST(SchemaEngines, LongReferenceChainsCompileOnASmallStack) {
+    constexpr std::size_t g_small_stack = 512 * 1024;
+    const auto chain = reference_chain(5000, [](const json& reference) { return reference; });
+    json resources = json::object();
+    for (int i = 0; i < 1000; ++i) {
+        resources["r" + std::to_string(i)] = {
+            {"$id", "r" + std::to_string(i)}, {"$dynamicAnchor", "x"}, {"$dynamicRef", "#x"}};
+    }
+    const json dynamic = {{"$id", "https://example.com/root"},
+                          {"$dynamicAnchor", "x"},
+                          {"$dynamicRef", "#x"},
+                          {"$defs", resources}};
+    for (const auto* document : {&chain, &dynamic}) {
+        run_on_small_stack(g_small_stack, [document] {
+            const ScopedSchemaEngine native(SchemaEngine::eNative);
+            try {
+                (void)CompiledSchema::compile(*document);
+                ADD_FAILURE() << "a reference cycle or overlong chain compiled";
+            } catch (const mcp::SchemaError& error) {
+                EXPECT_EQ(error.category(), mcp::SchemaError::Category::eInvalidSchema);
+                EXPECT_NE(std::string(error.what()).find("nests too deeply"), std::string::npos)
+                    << error.what();
+            }
+        });
+    }
+}
+
+/// The suite groups test/data/schema-engine-differences.json lists, as "dialect/file group index".
+std::set<std::string> listed_suite_differences() {
+    std::ifstream stream(std::string(MCP_TEST_DATA_DIR) + "/schema-engine-differences.json");
+    const auto table = json::parse(stream);
+    std::set<std::string> listed;
+    for (const auto& row : table.at("differences")) {
+        if (row.at("corpus") == "suite") {
+            listed.insert(row.at("dialect").get<std::string>() + "/" +
+                          row.at("file").get<std::string>() + " group " +
+                          std::to_string(row.at("index").get<std::size_t>()));
+        }
+    }
+    return listed;
+}
+
 // Every case of the JSON-Schema-Test-Suite data of the five dialects, the excluded groups too,
 // through the evaluation a schema gets on its own and through the jsoncons evaluation: both must
 // give the same verdict, so a keyword or dialect moving to the native evaluation cannot change a
-// result.
+// result. A group the difference table lists must differ in at least one case.
 TEST(SchemaEngines, AgreeOnEverySuiteCase) {
+    const auto listed = listed_suite_differences();
     std::size_t compared = 0;
     for (const auto& dialect : schema_corpus::dialects()) {
         for (const auto& file : schema_corpus::suite_files(dialect)) {
@@ -228,11 +325,18 @@ TEST(SchemaEngines, AgreeOnEverySuiteCase) {
                 if (!own || !forced) {
                     continue;
                 }
+                const bool expect_difference = listed.count(name) != 0;
+                bool differs = false;
                 for (std::size_t value = 0; value < group.values.size(); ++value) {
-                    EXPECT_EQ(own->validate(group.values[value]).valid,
-                              forced->validate(group.values[value]).valid)
-                        << name << " value " << value;
+                    const bool own_valid = own->validate(group.values[value]).valid;
+                    const bool forced_valid = forced->validate(group.values[value]).valid;
+                    differs = differs || own_valid != forced_valid;
+                    if (!expect_difference) {
+                        EXPECT_EQ(own_valid, forced_valid) << name << " value " << value;
+                    }
                 }
+                EXPECT_TRUE(!expect_difference || differs)
+                    << name << ": listed, but the evaluations agree";
             }
         }
     }

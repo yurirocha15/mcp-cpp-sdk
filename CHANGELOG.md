@@ -6,6 +6,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Added
+
+- `CompiledSchema::compile()` takes `SchemaDocuments`: schema documents, by
+  absolute URI, that references may reach. Nothing is fetched.
+
+### Changed
+
+- 2020-12 schemas, `$ref`, `$dynamicRef` and `unevaluated*` included, are
+  validated by the SDK's own evaluation unless they refer to a metaschema; an
+  empty `$ref` or `$id` is accepted.
+
 ### Fixed
 
 - The friend declaration of `decode_elicitation_content()` is exported like its

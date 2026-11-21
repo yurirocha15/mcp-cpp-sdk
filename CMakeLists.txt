@@ -102,6 +102,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/json_parse.cpp
     src/core/serialized_transport_writer.cpp
     src/protocol/native_schema.cpp
+    src/protocol/schema_uri.cpp
     src/protocol/schema.cpp
     src/protocol/base.cpp
     src/protocol/capabilities.cpp
@@ -429,6 +430,7 @@ if(BUILD_TESTING)
       test/core/json_parse_test.cpp
       test/core/jsonrpc_envelope_test.cpp
       test/core/json_schema_engines_test.cpp
+      test/core/schema_uri_test.cpp
       test/core/json_schema_goldens_test.cpp
       test/core/json_schema_test.cpp
       test/core/protocol_test.cpp
@@ -492,8 +494,9 @@ if(BUILD_TESTING)
       test/support/test_timeout.cpp)
   # The sealed-state codec is internal and not exported from the shared library,
   # so its test builds the source itself.
-  add_executable(mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp
-                               test/support/schema_corpus.cpp)
+  add_executable(
+    mcp-sdk-tests ${TEST_SRCS} src/detail/sealed_state.cpp
+                  src/protocol/schema_uri.cpp test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   # Records the schema verdicts that json_schema_goldens_test compares with; run
   # only to record them again (see test/support/record_schema_goldens.cpp).
@@ -622,12 +625,13 @@ if(BUILD_TESTING)
       mcp-sdk-tests
       PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE
                                 ${MCP_CPP_SDK_TEST_UNITY_BATCH_SIZE})
-    # The support sources are not tests: the gates replace libc functions and
-    # sealed_state.cpp is a library source that the test program rebuilds.
+    # The support sources are not tests: the gates replace libc functions, and
+    # sealed_state.cpp and schema_uri.cpp are library sources that the test
+    # program rebuilds.
     set_source_files_properties(
       test/support/test_timeout.cpp test/support/resolve_gate.cpp
       test/support/socket_gate.cpp src/detail/sealed_state.cpp
-      PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+      src/protocol/schema_uri.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     # A fixture in a test file's unnamed namespace is the base of the test
     # classes that gtest defines in the enclosing namespace. GCC reports that as
     # a linkage mismatch when the file is included from the unity source, where

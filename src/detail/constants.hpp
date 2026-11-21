@@ -383,6 +383,9 @@ inline constexpr std::size_t g_WORK_PER_UNIT_AND_SCHEMA_NODE = 8;
 /// path bound of the vendored jsoncons.
 inline constexpr std::size_t g_MAX_EVAL_DEPTH = 192;
 
+/// Most documents CompiledSchema::compile() accepts besides the schema.
+inline constexpr std::size_t g_MAX_SCHEMA_DOCUMENTS = 64;
+
 /// Branch violations the native evaluation keeps while an `anyOf` or `oneOf` branch is evaluated, to
 /// report the first branch's when no branch matches.
 inline constexpr std::size_t g_MAX_BRANCH_VIOLATIONS = 4;

@@ -409,6 +409,100 @@ TEST(SchemaRefPolicy, FileAndRelativeReferencesAreUnresolved) {
     EXPECT_EQ(compile_error({{"$ref", "other.json#/$defs/x"}}), SchemaError::Category::eUnresolvedRef);
 }
 
+/// The category of the error compiling @p schema with @p documents raises; eInvalidSchema when it
+/// compiles, which no caller expects.
+SchemaError::Category compile_error_with(const json& schema, const mcp::SchemaDocuments& documents) {
+    try {
+        (void)CompiledSchema::compile(schema, {}, documents);
+    } catch (const SchemaError& error) {
+        return error.category();
+    }
+    ADD_FAILURE() << "compiled: " << schema.dump();
+    return SchemaError::Category::eInvalidSchema;
+}
+
+const mcp::SchemaDocuments& address_documents() {
+    static const mcp::SchemaDocuments s_documents = {
+        {"https://example.com/address.json",
+         json::parse(R"({"type": "object", "properties": {"zip": {"$ref": "#/$defs/zip"}},
+                         "required": ["zip"], "$defs": {"zip": {"type": "string", "pattern": "^[0-9]+$"}}})")},
+        {"https://example.com/legacy.json",
+         json::parse(R"({"$schema": "http://json-schema.org/draft-07/schema#",
+                         "definitions": {"id": {"type": "integer"}}})")},
+    };
+    return s_documents;
+}
+
+// A reference reads a given document: whole, at a pointer within it, relative to an $id, and in a
+// document of another dialect. Both evaluations read the same documents.
+TEST(SchemaDocuments, ReferencesReadGivenDocuments) {
+    const json schema = json::parse(R"({
+        "$id": "https://example.com/order.json",
+        "properties": {
+            "home": {"$ref": "https://example.com/address.json"},
+            "zip": {"$ref": "address.json#/$defs/zip"},
+            "id": {"$ref": "legacy.json#/definitions/id"}
+        }
+    })");
+    for (const auto engine : g_BOTH_ENGINES) {
+        SCOPED_TRACE(engine_name(engine));
+        const ScopedSchemaEngine forced(engine);
+        const auto compiled = CompiledSchema::compile(schema, {}, address_documents());
+        EXPECT_TRUE(compiled.validate({{"home", {{"zip", "123"}}}, {"zip", "9"}, {"id", 4}}).valid);
+        EXPECT_FALSE(compiled.validate({{"home", json::object()}}).valid);
+        EXPECT_FALSE(compiled.validate({{"home", {{"zip", "abc"}}}}).valid);
+        EXPECT_FALSE(compiled.validate({{"zip", 9}}).valid);
+        EXPECT_FALSE(compiled.validate({{"id", "four"}}).valid);
+    }
+    // Without the documents, the same schema has unresolved references.
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnresolvedRef);
+}
+
+// Each document is checked as a schema of its own, and the documents' URIs as keys.
+TEST(SchemaDocuments, DocumentsAreChecked) {
+    const json schema = {{"$ref", "https://example.com/a.json"}};
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", {{"type", "integr"}}}}),
+              SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", json::array()}}),
+              SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error_with(
+                  schema, {{"https://example.com/a.json", {{"$schema", "https://example.com/meta"}}}}),
+              SchemaError::Category::eUnsupportedDialect);
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", true}, {"b.json", true}}),
+              SchemaError::Category::eInvalidSchema);
+    EXPECT_EQ(compile_error_with(schema, {{"https://example.com/a.json", true},
+                                          {"https://example.com/b.json#", true}}),
+              SchemaError::Category::eInvalidSchema);
+    // An unchecked document would be read only when referenced; every document is checked.
+    EXPECT_EQ(compile_error_with({{"type", "string"}},
+                                 {{"https://example.com/unused.json", {{"minLength", -1}}}}),
+              SchemaError::Category::eInvalidSchema);
+    mcp::SchemaDocuments many;
+    for (int i = 0; i < 65; ++i) {
+        many.emplace("https://example.com/" + std::to_string(i) + ".json", true);
+    }
+    EXPECT_EQ(compile_error_with(schema, many), SchemaError::Category::eInvalidSchema);
+    many.erase(many.begin(), std::next(many.begin(), 2));
+    many.emplace("https://example.com/a.json", json::object());
+    ASSERT_EQ(many.size(), 64U);
+    EXPECT_NO_THROW((void)CompiledSchema::compile(schema, {}, many));
+}
+
+// A schema compiled with documents depends on them, so a later compile with other documents reads
+// those, not a cached result.
+TEST(SchemaDocuments, CompilingWithOtherDocumentsReadsThem) {
+    const json schema = {{"$ref", "https://example.com/a.json"}};
+    const auto strings =
+        CompiledSchema::compile(schema, {}, {{"https://example.com/a.json", {{"type", "string"}}}});
+    const auto numbers =
+        CompiledSchema::compile(schema, {}, {{"https://example.com/a.json", {{"type", "number"}}}});
+    EXPECT_TRUE(strings.validate("x").valid);
+    EXPECT_FALSE(strings.validate(1).valid);
+    EXPECT_TRUE(numbers.validate(1).valid);
+    EXPECT_FALSE(numbers.validate("x").valid);
+    EXPECT_EQ(compile_error(schema), SchemaError::Category::eUnresolvedRef);
+}
+
 TEST(SchemaRefPolicy, MissingLocalTargetIsUnresolved) {
     EXPECT_EQ(compile_error({{"$ref", "#/$defs/missing"}}), SchemaError::Category::eUnresolvedRef);
     EXPECT_EQ(compile_error({{"$ref", "#nope"}}), SchemaError::Category::eUnresolvedRef);
@@ -449,8 +543,8 @@ TEST(SchemaLimits, ExponentialEvaluationIsStopped) {
     const auto result = schema.validate(value);
     EXPECT_FALSE(result.valid);
     ASSERT_EQ(result.violations.size(), 1U);
-    EXPECT_NE(result.violations.front().message.find("too many steps"), std::string::npos)
-        << result.violations.front().message;
+    EXPECT_EQ(result.violations.front().message,
+              "validation stopped: schema evaluation takes too much work");
 }
 
 // Each value of the array is compared with each value of the enum. No subschema is entered for a
@@ -633,20 +727,19 @@ TEST(SchemaLimits, PropertyNamesThatShareAHashAreLookedUpQuickly) {
 }
 #endif
 
-// A recursive schema through anyOf adds several keywords to the evaluation path per level of the
-// value, so it reaches the path bound before max_instance_depth; the value is then invalid.
+// A recursive schema through anyOf, items, allOf and $ref takes four nested evaluations per level
+// of the value, so it reaches the bound of 192 before max_instance_depth: 47 levels validate, 48
+// do not.
 TEST(SchemaLimits, EvaluationPathIsBounded) {
     const auto schema = CompiledSchema::compile(json::parse(R"({
-        "anyOf": [{"type": "array", "items": {"$ref": "#"}}, {"type": "null"}]
+        "anyOf": [{"type": "array", "items": {"allOf": [{"$ref": "#"}]}}, {"type": "null"}]
     })"));
     json value = nullptr;
-    for (int i = 0; i < 40; ++i) {
+    for (int i = 0; i < 47; ++i) {
         value = json::array({std::move(value)});
     }
     EXPECT_TRUE(schema.validate(value).valid);
-    for (int i = 40; i < 63; ++i) {
-        value = json::array({std::move(value)});
-    }
+    value = json::array({std::move(value)});
     const auto result = schema.validate(value);
     EXPECT_FALSE(result.valid);
     ASSERT_EQ(result.violations.size(), 1U);
@@ -883,8 +976,9 @@ TEST(SchemaLimits, BranchesKeepAFewOfTheirMessages) {
               "Must be valid against at least one schema, but found no matching schemas");
 }
 
-// Branches that fail by recursing keep messages that hold the messages under them, so the kept
-// messages grow exponentially with the value's depth. What they hold is bounded.
+// Branches that fail by recursing would keep messages that hold the messages under them, growing
+// exponentially with the value's depth. Only the first branch keeps messages, so the evaluation is
+// stopped by the work budget, not by memory.
 TEST(SchemaLimits, MemoryOfKeptMessagesIsBounded) {
     const auto schema = CompiledSchema::compile(json::parse(R"({
         "$defs": {"a": {"anyOf": [{"type": "array", "items": {"$ref": "#/$defs/a"}},
@@ -902,7 +996,7 @@ TEST(SchemaLimits, MemoryOfKeptMessagesIsBounded) {
     EXPECT_FALSE(result.valid);
     ASSERT_EQ(result.violations.size(), 1U);
     EXPECT_EQ(result.violations[0].message,
-              "validation stopped: the messages kept for failed branches take too much memory");
+              "validation stopped: schema evaluation takes too much work");
 }
 
 // A message names the value it rejects. Quoting all of it would make each failed branch cost time in
@@ -1729,9 +1823,57 @@ struct GroupOutcome {
     std::vector<std::string> failures;
 };
 
-/// Runs one suite group. When @p dialect_uri is set it is added as `$schema` to an object schema
-/// that has none, because a schema without `$schema` is read as 2020-12.
-GroupOutcome run_group(const json& group, const std::string& key, const char* dialect_uri) {
+/// The suite's remote documents (test/data/json-schema/remotes), keyed by the URL the suite serves
+/// them at.
+const mcp::SchemaDocuments& suite_remotes() {
+    static const mcp::SchemaDocuments s_remotes = [] {
+        mcp::SchemaDocuments remotes;
+        const auto root = std::filesystem::path(MCP_TEST_DATA_DIR) / "json-schema" / "remotes";
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (entry.path().extension() == ".json") {
+                std::ifstream stream(entry.path());
+                remotes.emplace(
+                    "http://localhost:1234/" + entry.path().lexically_relative(root).generic_string(),
+                    json::parse(stream));
+            }
+        }
+        return remotes;
+    }();
+    return s_remotes;
+}
+
+/// The remote documents @p schema, of the suite directory @p dialect_dir, may reach: those of its
+/// directory or of no dialect's directory whose file name it mentions, then those the picked
+/// documents mention, and so on. Giving only these keeps the number checked per group small.
+mcp::SchemaDocuments remotes_for(const json& schema, const std::string& dialect_dir) {
+    std::string text = schema.dump();
+    mcp::SchemaDocuments picked;
+    if (text.find("localhost:1234") == std::string::npos) {
+        return picked;
+    }
+    const auto candidate = [&dialect_dir](const std::string& uri) {
+        const auto path = uri.substr(std::string("http://localhost:1234/").size());
+        return path.rfind(dialect_dir + "/", 0) == 0 || path.rfind("draft", 0) != 0;
+    };
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const auto& [uri, document] : suite_remotes()) {
+            if (picked.count(uri) == 0 && candidate(uri) &&
+                text.find(uri.substr(uri.rfind('/') + 1)) != std::string::npos) {
+                picked.emplace(uri, document);
+                text += document.dump();
+                grew = true;
+            }
+        }
+    }
+    return picked;
+}
+
+/// Runs one suite group, with the remote documents it references. When @p dialect_uri is set it is
+/// added as `$schema` to an object schema that has none, because a schema without `$schema` is read
+/// as 2020-12.
+GroupOutcome run_group(const json& group, const std::string& key, const std::string& dialect_dir,
+                       const char* dialect_uri) {
     GroupOutcome outcome;
     const auto& tests = group.at("tests");
     json schema_json = group.at("schema");
@@ -1740,7 +1882,7 @@ GroupOutcome run_group(const json& group, const std::string& key, const char* di
     }
     std::optional<CompiledSchema> schema;
     try {
-        schema = CompiledSchema::compile(schema_json);
+        schema = CompiledSchema::compile(schema_json, {}, remotes_for(schema_json, dialect_dir));
     } catch (const std::exception& error) {
         outcome.total += tests.size();
         outcome.failures.push_back(key + " | compile: " + error.what());
@@ -1797,12 +1939,12 @@ SuiteOutcome run_suite(const std::string& dialect_dir, const std::vector<SuiteEx
                 outcome.excluded += tests.size();
                 counts.second += tests.size();
                 if (*category == SuiteGap::eEngineGap &&
-                    run_group(group, key, dialect_uri).failures.empty()) {
+                    run_group(group, key, dialect_dir, dialect_uri).failures.empty()) {
                     outcome.fixed_engine_gaps.push_back(key);
                 }
                 continue;
             }
-            const auto result = run_group(group, key, dialect_uri);
+            const auto result = run_group(group, key, dialect_dir, dialect_uri);
             outcome.total += result.total;
             outcome.passed += result.passed;
             counts.first += result.total;
@@ -1847,25 +1989,12 @@ void expect_suite(const SuiteOutcome& outcome, const std::vector<SuiteFileCount>
     EXPECT_EQ(outcome.passed, outcome.total);
 }
 
-constexpr const char* g_remote_reason =
-    "references a schema served from http://localhost:1234; remote references are refused by design";
 constexpr const char* g_remote_metaschema_reason =
     "declares a custom metaschema served from http://localhost:1234; only the bundled dialects are "
     "supported";
 constexpr const char* g_unicode_property_reason = "mcp::detail::Regex rejects Unicode property escapes";
 
 const std::vector<SuiteExclusion> g_2020_12_exclusions = {
-    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "strict-tree schema, guards against misspelled properties", SuiteGap::eByDesign,
-     g_remote_reason},
-    {"dynamicRef.json", "tests for implementation dynamic anchor and reference link",
-     SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "$ref and $dynamicAnchor are independent of order - $defs first",
-     SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "$ref and $dynamicAnchor are independent of order - $ref first",
-     SuiteGap::eByDesign, g_remote_reason},
-    {"dynamicRef.json", "$ref to $dynamicRef finds detached $dynamicAnchor", SuiteGap::eByDesign,
-     g_remote_reason},
     {"vocabulary.json", "schema that uses custom metaschema with with no validation vocabulary",
      SuiteGap::eByDesign, g_remote_metaschema_reason},
     {"vocabulary.json", "ignore unrecognized optional vocabulary", SuiteGap::eByDesign,
@@ -1874,13 +2003,9 @@ const std::vector<SuiteExclusion> g_2020_12_exclusions = {
      g_unicode_property_reason},
     {"patternProperties.json", "patternProperties with Unicode property escape", SuiteGap::eByDesign,
      g_unicode_property_reason},
-    {"dynamicRef.json", "$dynamicRef avoids the root of each schema, but scopes are still registered",
-     SuiteGap::eEngineGap, "jsoncons resolves this $dynamicRef scope case differently"},
 };
 
-const std::vector<SuiteExclusion> g_draft7_exclusions = {
-    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
-};
+const std::vector<SuiteExclusion> g_draft7_exclusions = {};
 
 const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"additionalProperties.json", 21, 0},
@@ -1895,7 +2020,7 @@ const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"defs.json", 2, 0},
     {"dependentRequired.json", 20, 0},
     {"dependentSchemas.json", 20, 0},
-    {"dynamicRef.json", 29, 15},
+    {"dynamicRef.json", 44, 0},
     {"enum.json", 53, 0},
     {"exclusiveMaximum.json", 4, 0},
     {"exclusiveMinimum.json", 4, 0},
@@ -1922,7 +2047,7 @@ const std::vector<SuiteFileCount> g_2020_12_counts = {
     {"properties.json", 28, 0},
     {"propertyNames.json", 22, 0},
     {"ref.json", 79, 0},
-    {"refRemote.json", 0, 31},
+    {"refRemote.json", 31, 0},
     {"required.json", 18, 0},
     {"type.json", 80, 0},
     {"unevaluatedItems.json", 71, 0},
@@ -1965,27 +2090,22 @@ const std::vector<SuiteFileCount> g_draft7_counts = {
     {"properties.json", 28, 0},
     {"propertyNames.json", 22, 0},
     {"ref.json", 78, 0},
-    {"refRemote.json", 0, 23},
+    {"refRemote.json", 23, 0},
     {"required.json", 18, 0},
     {"type.json", 80, 0},
     {"uniqueItems.json", 65, 0},
 };
 
 const std::vector<SuiteExclusion> g_2019_09_exclusions = {
-    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
     {"vocabulary.json", "schema that uses custom metaschema with with no validation vocabulary",
      SuiteGap::eByDesign, g_remote_metaschema_reason},
     {"vocabulary.json", "ignore unrecognized optional vocabulary", SuiteGap::eByDesign,
      g_remote_metaschema_reason},
 };
 
-const std::vector<SuiteExclusion> g_draft6_exclusions = {
-    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
-};
+const std::vector<SuiteExclusion> g_draft6_exclusions = {};
 
-const std::vector<SuiteExclusion> g_draft4_exclusions = {
-    {"refRemote.json", "*", SuiteGap::eByDesign, g_remote_reason},
-};
+const std::vector<SuiteExclusion> g_draft4_exclusions = {};
 
 const std::vector<SuiteFileCount> g_2019_09_counts = {
     {"additionalItems.json", 19, 0},
@@ -2027,7 +2147,7 @@ const std::vector<SuiteFileCount> g_2019_09_counts = {
     {"propertyNames.json", 22, 0},
     {"recursiveRef.json", 34, 0},
     {"ref.json", 81, 0},
-    {"refRemote.json", 0, 31},
+    {"refRemote.json", 31, 0},
     {"required.json", 18, 0},
     {"type.json", 80, 0},
     {"unevaluatedItems.json", 56, 0},
@@ -2068,7 +2188,7 @@ const std::vector<SuiteFileCount> g_draft6_counts = {
     {"properties.json", 28, 0},
     {"propertyNames.json", 22, 0},
     {"ref.json", 70, 0},
-    {"refRemote.json", 0, 23},
+    {"refRemote.json", 23, 0},
     {"required.json", 18, 0},
     {"type.json", 80, 0},
     {"uniqueItems.json", 65, 0},
@@ -2100,7 +2220,7 @@ const std::vector<SuiteFileCount> g_draft4_counts = {
     {"patternProperties.json", 18, 0},
     {"properties.json", 24, 0},
     {"ref.json", 45, 0},
-    {"refRemote.json", 0, 17},
+    {"refRemote.json", 17, 0},
     {"required.json", 17, 0},
     {"type.json", 79, 0},
     {"uniqueItems.json", 65, 0},
