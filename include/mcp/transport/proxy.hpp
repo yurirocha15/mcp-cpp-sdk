@@ -35,7 +35,8 @@ struct ProxyOptions {
      * their lower-case forms, which win when both are set. `NO_PROXY` is a comma-separated list.
      *
      * `HTTP_PROXY` is ignored when `REQUEST_METHOD` is set, as it is for a CGI program, whose
-     * environment a request header can fill.
+     * environment a request header can fill. On Windows, whose variable names ignore case,
+     * `http_proxy` is then ignored too.
      *
      * @throws std::invalid_argument When a variable names a proxy that is not supported.
      */

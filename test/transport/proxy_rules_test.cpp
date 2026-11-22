@@ -147,6 +147,11 @@ TEST(ProxyRules, ReadsTheEnvironment) {
     options = mcp::ProxyOptions::from_environment();
     EXPECT_TRUE(options.http_proxy.empty());
     EXPECT_EQ(options.https_proxy, "http://lower.test:2");
+#if !defined(_WIN32)
+    // The lower-case name stays, as no request header can set it; on Windows it is HTTP_PROXY.
+    set_variable("http_proxy", "http://lower-plain.test:4");
+    EXPECT_EQ(mcp::ProxyOptions::from_environment().http_proxy, "http://lower-plain.test:4");
+#endif
 
     set_variable("https_proxy", "socks5://lower.test:2");
     EXPECT_THROW((void)mcp::ProxyOptions::from_environment(), std::invalid_argument);

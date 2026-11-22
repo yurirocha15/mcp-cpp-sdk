@@ -42,8 +42,11 @@ ProxyOptions ProxyOptions::from_environment() {
     if (environment("REQUEST_METHOD").empty()) {
         options.http_proxy = environment_either("http_proxy", "HTTP_PROXY");
     } else {
-        // A CGI program: a request's Proxy header arrives as HTTP_PROXY.
+        // A CGI program: a request's Proxy header arrives as HTTP_PROXY. Windows matches variable
+        // names without regard to case, so there http_proxy is that same variable.
+#if !defined(_WIN32)
         options.http_proxy = environment("http_proxy");
+#endif
     }
     const auto bypass = environment_either("no_proxy", "NO_PROXY");
     std::size_t begin = 0;
