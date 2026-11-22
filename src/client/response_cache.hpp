@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/constants.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -99,7 +100,7 @@ class ResponseCache {
     /// Drops what the notification @p method in @p message makes stale: the lists a
     /// `list_changed` names, the reads of the URI `notifications/resources/updated` names.
     void invalidate(std::string_view method, const nlohmann::json& message) {
-        if (method == "notifications/resources/updated") {
+        if (method == mcp::constants::methods::g_NOTIFICATIONS_RESOURCES_UPDATED) {
             const auto params = message.find("params");
             if (params == message.end() || !params->is_object()) {
                 return;
@@ -112,19 +113,20 @@ class ResponseCache {
             std::lock_guard lock(mutex_);
             ++generation_;
             std::erase_if(entries_, [&name](const auto& entry) {
-                return entry.second.method == "resources/read" && entry.second.uri == name;
+                return entry.second.method == mcp::constants::methods::g_RESOURCES_READ &&
+                       entry.second.uri == name;
             });
             return;
         }
         std::string_view first;
         std::string_view second;
-        if (method == "notifications/tools/list_changed") {
-            first = "tools/list";
-        } else if (method == "notifications/prompts/list_changed") {
-            first = "prompts/list";
-        } else if (method == "notifications/resources/list_changed") {
-            first = "resources/list";
-            second = "resources/templates/list";
+        if (method == mcp::constants::methods::g_NOTIFICATIONS_TOOLS_LIST_CHANGED) {
+            first = mcp::constants::methods::g_TOOLS_LIST;
+        } else if (method == mcp::constants::methods::g_NOTIFICATIONS_PROMPTS_LIST_CHANGED) {
+            first = mcp::constants::methods::g_PROMPTS_LIST;
+        } else if (method == mcp::constants::methods::g_NOTIFICATIONS_RESOURCES_LIST_CHANGED) {
+            first = mcp::constants::methods::g_RESOURCES_LIST;
+            second = mcp::constants::methods::g_RESOURCES_TEMPLATES_LIST;
         } else {
             return;
         }

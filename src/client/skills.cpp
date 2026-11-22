@@ -1,5 +1,6 @@
 #include <mcp/client/skills.hpp>
 #include <mcp/core/async.hpp>
+#include <mcp/core/constants.hpp>
 
 #include "../detail/encoding.hpp"
 
@@ -7,6 +8,8 @@
 #include <stdexcept>
 #include <utility>
 #include <variant>
+
+namespace methods = mcp::constants::methods;
 
 namespace mcp::skills {
 
@@ -31,7 +34,7 @@ void require_valid(const Skill& skill) {
 Task<ListSkillsResult> list_skills(Client& client, std::optional<std::string> cursor) {
     // Named: a temporary optional passed into the coroutine call trips GCC 11.
     const std::optional<nlohmann::json> params = paginated_params(cursor);
-    const auto raw = co_await client.send_request("skills/list", params);
+    const auto raw = co_await client.send_request(methods::g_SKILLS_LIST, params);
     auto result = raw.get<ListSkillsResult>();
     for (const auto& skill : result.skills) {
         require_valid(skill);
@@ -41,7 +44,7 @@ Task<ListSkillsResult> list_skills(Client& client, std::optional<std::string> cu
 
 Task<GetSkillResult> get_skill(Client& client, std::string uri) {
     const std::optional<nlohmann::json> params = nlohmann::json{{"uri", uri}};
-    const auto raw = co_await client.send_request("skills/get", params);
+    const auto raw = co_await client.send_request(methods::g_SKILLS_GET, params);
     auto result = raw.get<GetSkillResult>();
     require_valid(result.skill);
     co_return result;
@@ -57,7 +60,7 @@ Task<ReadResourceDirectoryResult> read_directory(Client& client, std::string uri
     auto built = paginated_params(cursor);
     built["uri"] = uri;
     const std::optional<nlohmann::json> params = std::move(built);
-    const auto raw = co_await client.send_request("resources/directory/read", params);
+    const auto raw = co_await client.send_request(methods::g_RESOURCES_DIRECTORY_READ, params);
     co_return raw.get<ReadResourceDirectoryResult>();
 }
 

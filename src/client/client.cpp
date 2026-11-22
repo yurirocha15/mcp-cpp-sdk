@@ -48,6 +48,8 @@
 #include <utility>
 #include <vector>
 
+namespace methods = mcp::constants::methods;
+
 namespace mcp {
 
 namespace {
@@ -1035,7 +1037,7 @@ struct Client::Impl {
         // Awaiting post(strand) would not rebind a caller-owned coroutine's continuation.
         // Spawn the complete pending-request lifecycle on the client strand instead.
         // A client must not cancel an initialize request.
-        const bool cancellable = method != "initialize";
+        const bool cancellable = method != methods::g_INITIALIZE;
         return boost::asio::co_spawn(
             strand,
             send_request_wire(std::move(state), std::move(wire), id, timeout, probe, cancellable,
@@ -1047,7 +1049,8 @@ struct Client::Impl {
     /// here with the reason instead of costing a round trip for a method-not-found.
     static void reject_removed_method(const std::string& version, std::string_view method) {
         static constexpr std::array<std::string_view, 5> s_removed = {
-            "initialize", "ping", "logging/setLevel", "resources/subscribe", "resources/unsubscribe"};
+            methods::g_INITIALIZE, methods::g_PING, methods::g_LOGGING_SET_LEVEL,
+            methods::g_RESOURCES_SUBSCRIBE, methods::g_RESOURCES_UNSUBSCRIBE};
         if (std::find(s_removed.begin(), s_removed.end(), method) != s_removed.end()) {
             throw McpError(
                 mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
@@ -1077,7 +1080,8 @@ struct Client::Impl {
 
     /// The requests whose answer may be an input_required result.
     static bool supports_input_required(std::string_view method) {
-        return method == "tools/call" || method == "prompts/get" || method == "resources/read";
+        return method == methods::g_TOOLS_CALL || method == methods::g_PROMPTS_GET ||
+               method == methods::g_RESOURCES_READ;
     }
 
     /// Answers one input_required result: runs the registered handler of each entry in
@@ -1109,8 +1113,9 @@ struct Client::Impl {
                     handler = found->second;
                 }
             }
-            const bool answerable = *method == "elicitation/create" ||
-                                    *method == "sampling/createMessage" || *method == "roots/list";
+            const bool answerable = *method == methods::g_ELICITATION_CREATE ||
+                                    *method == methods::g_SAMPLING_CREATE_MESSAGE ||
+                                    *method == methods::g_ROOTS_LIST;
             if (!answerable || !handler) {
                 throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                                "The server asked for " + detail::sanitize_for_diagnostics(*method) +
@@ -1191,8 +1196,8 @@ struct Client::Impl {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         // A tools/call that declared the extension may be answered with a task, which the caller
         // takes over.
-        const bool task_allowed =
-            *method == "tools/call" && (declare_tasks || state->options.tasks == ClientTaskMode::eAuto);
+        const bool task_allowed = *method == methods::g_TOOLS_CALL &&
+                                  (declare_tasks || state->options.tasks == ClientTaskMode::eAuto);
         std::shared_ptr<const nlohmann::json> input_responses;
         std::shared_ptr<const nlohmann::json> request_state;
         for (int round = 0;; ++round) {
@@ -1265,8 +1270,8 @@ struct Client::Impl {
     /// Fetches the task's state and checks that it has the shape its status calls for.
     static Task<DetailedTask> task_state(std::shared_ptr<Impl> state, nlohmann::json params,
                                          RequestOptions request_options) {
-        auto reply =
-            co_await task_request(std::move(state), "tasks/get", std::move(params), request_options);
+        auto reply = co_await task_request(std::move(state), methods::g_TASKS_GET, std::move(params),
+                                           request_options);
         co_return decode_task_state(reply);
     }
 
@@ -1285,7 +1290,8 @@ struct Client::Impl {
         // The keys already answered, as an object so that no string is held across a suspension.
         nlohmann::json answered = nlohmann::json::object();
         for (;;) {
-            nlohmann::json current = co_await task_request(state, "tasks/get", params, request_options);
+            nlohmann::json current =
+                co_await task_request(state, methods::g_TASKS_GET, params, request_options);
             TaskStatus status = TaskStatus::eWorking;
             std::int64_t poll_ms = state->options.task_poll_interval.count();
             nlohmann::json pending = nlohmann::json::object();
@@ -1317,7 +1323,8 @@ struct Client::Impl {
                     auto responses = co_await answer_input_requests(state, std::move(questions), limit);
                     nlohmann::json update = {{"taskId", params.at("taskId")},
                                              {"inputResponses", std::move(responses)}};
-                    co_await task_request(state, "tasks/update", std::move(update), request_options);
+                    co_await task_request(state, methods::g_TASKS_UPDATE, std::move(update),
+                                          request_options);
                 }
             }
 
@@ -1344,7 +1351,8 @@ struct Client::Impl {
             throw *check.refusal;
         }
         const auto route = route_progress(state, params, request_options);
-        nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
+        nlohmann::json reply =
+            co_await request(state, methods::g_TOOLS_CALL, params, request_options, true);
         if (is_task_result(reply)) {
             nlohmann::json task_params = {{"taskId", nlohmann::json()}};
             try {
@@ -1366,7 +1374,7 @@ struct Client::Impl {
                 RequestOptions cancel_options = request_options;
                 cancel_options.cancellation.reset();
                 try {
-                    co_await task_request(state, "tasks/cancel", task_params, cancel_options);
+                    co_await task_request(state, methods::g_TASKS_CANCEL, task_params, cancel_options);
                 } catch (...) {
                     // The caller gets the error that ended the wait; a cancel that fails changes
                     // nothing.
@@ -1392,7 +1400,8 @@ struct Client::Impl {
             tool = params["name"].get<std::string>();
         }
         const auto route = route_progress(state, params, request_options);
-        nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
+        nlohmann::json reply =
+            co_await request(state, methods::g_TOOLS_CALL, params, request_options, true);
         if (is_task_result(reply)) {
             try {
                 co_return std::variant<CallToolResult, TaskHandle>(
@@ -1429,7 +1438,7 @@ struct Client::Impl {
         const int64_t id = state->next_request_id.fetch_add(1, std::memory_order_relaxed);
         JSONRPCRequest request;
         request.id = RequestId{std::to_string(id)};
-        request.method = "subscriptions/listen";
+        request.method = methods::g_SUBSCRIPTIONS_LISTEN;
         request.params = wire_params;
         auto wire = std::make_shared<const std::string>(
             mcp::detail::dump_json(nlohmann::json(std::move(request))));
@@ -1455,7 +1464,7 @@ struct Client::Impl {
             CancelledNotificationParams cancelled;
             cancelled.requestId = RequestId{std::to_string(id)};
             const std::optional<nlohmann::json> cancel_params = nlohmann::json(std::move(cancelled));
-            return notification(std::move(active), "notifications/cancelled", cancel_params);
+            return notification(std::move(active), methods::g_NOTIFICATIONS_CANCELLED, cancel_params);
         };
 
         auto strand = state->strand;
@@ -1573,7 +1582,7 @@ struct Client::Impl {
             }
             stream = found->second;
         }
-        if (method == "notifications/subscriptions/acknowledged") {
+        if (method == methods::g_NOTIFICATIONS_SUBSCRIPTIONS_ACKNOWLEDGED) {
             stream->acknowledge(honored_filter(params));
             return;
         }
@@ -1743,7 +1752,7 @@ struct Client::Impl {
             RequestOptions options;
             options.timeout = timeout;
             auto params = state->with_request_meta(*version, std::nullopt, std::nullopt);
-            auto pending = request_wire(state, "server/discover", params, options, true);
+            auto pending = request_wire(state, methods::g_SERVER_DISCOVER, params, options, true);
             reply = co_await std::move(pending);
             answered = true;
         } catch (const McpError& error) {
@@ -1829,7 +1838,7 @@ struct Client::Impl {
         bool answered = false;
         try {
             auto params = initialize_params(state, *version);
-            auto pending = request(state, "initialize", params, {});
+            auto pending = request(state, methods::g_INITIALIZE, params, {});
             result_json = co_await std::move(pending);
             answered = true;
         } catch (const McpError& error) {
@@ -1859,7 +1868,7 @@ struct Client::Impl {
                                detail::sanitize_for_diagnostics(initialize_result->protocolVersion));
         }
 
-        co_await notification(state, "notifications/initialized", std::nullopt);
+        co_await notification(state, methods::g_NOTIFICATIONS_INITIALIZED, std::nullopt);
 
         ConnectResult connected;
         connected.era = ProtocolEra::eLegacy;
@@ -2247,7 +2256,7 @@ struct Client::Impl {
         cancel_params.requestId = RequestId{std::to_string(id)};
         cancel_params.reason = std::move(reason);
         JSONRPCNotification notification;
-        notification.method = "notifications/cancelled";
+        notification.method = methods::g_NOTIFICATIONS_CANCELLED;
         notification.params = nlohmann::json(std::move(cancel_params));
         auto cancel_wire = std::make_shared<const std::string>(
             mcp::detail::dump_json(nlohmann::json(std::move(notification))));
@@ -2516,21 +2525,23 @@ struct Client::Impl {
                                       const nlohmann::json& json_message) {
         const auto method = json_message.at("method").get<std::string>();
         state->response_cache.invalidate(method, json_message);
-        if (method == "notifications/cancelled" && end_subscription_from_cancel(state, json_message)) {
+        if (method == methods::g_NOTIFICATIONS_CANCELLED &&
+            end_subscription_from_cancel(state, json_message)) {
             return;
         }
         route_to_subscription(state, method, json_message);
-        if (method == "notifications/progress" && deliver_request_progress(state, json_message)) {
+        if (method == methods::g_NOTIFICATIONS_PROGRESS &&
+            deliver_request_progress(state, json_message)) {
             return;
         }
         // Progress no request in flight claims goes to Client::on_progress, through one bucket for
         // the client; log messages share another.
-        if ((method == "notifications/progress" && !state->progress_bucket.take()) ||
-            (method == "notifications/message" && !state->log_bucket.take())) {
+        if ((method == methods::g_NOTIFICATIONS_PROGRESS && !state->progress_bucket.take()) ||
+            (method == methods::g_NOTIFICATIONS_MESSAGE && !state->log_bucket.take())) {
             state->dropped_notifications.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        if (method == "notifications/cancelled") {
+        if (method == methods::g_NOTIFICATIONS_CANCELLED) {
             if (detail::has_json_value(json_message, "params")) {
                 auto params = json_message.at("params").get<CancelledNotificationParams>();
                 const auto id_key = params.requestId.correlation_key();
@@ -2617,7 +2628,7 @@ struct Client::Impl {
                                        "The answer could not be encoded as JSON");
             }
             co_await state->writer.write_message(std::move(wire));
-        } else if (method == "ping") {
+        } else if (method == methods::g_PING) {
             co_await state->writer.write_message(
                 make_result_wire(json_message.at("id").get<RequestId>(), nlohmann::json::object()));
         } else {
@@ -2793,13 +2804,13 @@ struct Client::Impl {
     ClientCapabilities effective_capabilities() const {
         std::lock_guard lock(handlers_mutex);
         auto capabilities = client_capabilities;
-        if (request_handlers.contains("roots/list") && !capabilities.roots) {
+        if (request_handlers.contains(methods::g_ROOTS_LIST) && !capabilities.roots) {
             capabilities.roots = ClientCapabilities::RootsCapability{};
         }
-        if (request_handlers.contains("sampling/createMessage") && !capabilities.sampling) {
+        if (request_handlers.contains(methods::g_SAMPLING_CREATE_MESSAGE) && !capabilities.sampling) {
             capabilities.sampling = ClientCapabilities::SamplingCapability{};
         }
-        if (request_handlers.contains("elicitation/create") && !capabilities.elicitation) {
+        if (request_handlers.contains(methods::g_ELICITATION_CREATE) && !capabilities.elicitation) {
             capabilities.elicitation =
                 ClientCapabilities::ElicitationCapability{nlohmann::json::object(), std::nullopt};
         }
@@ -3179,7 +3190,7 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
     // [gcc11-sso: not-a-coroutine]
     return Impl::accepted_tools(
         impl_, parse_result<ListToolsResult>(Impl::cacheable_request(
-                   impl_, "tools/list", make_paginated_params(cursor), request_options)));
+                   impl_, methods::g_TOOLS_LIST, make_paginated_params(cursor), request_options)));
 }
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params,
@@ -3195,7 +3206,7 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params,
                                          request_options);
     }
     return checked_call_result(
-        send_request("tools/call", nlohmann::json(std::move(params)), request_options),
+        send_request(methods::g_TOOLS_CALL, nlohmann::json(std::move(params)), request_options),
         std::move(check));
 }
 
@@ -3253,13 +3264,15 @@ Task<void> TaskHandle::update(const nlohmann::json& input_responses,
                               const RequestOptions& request_options) const {
     auto state = std::static_pointer_cast<Client::Impl>(attached_client(client_));
     nlohmann::json params{{"taskId", created_.taskId}, {"inputResponses", input_responses}};
-    return Client::Impl::task_ack(std::move(state), "tasks/update", std::move(params), request_options);
+    return Client::Impl::task_ack(std::move(state), methods::g_TASKS_UPDATE, std::move(params),
+                                  request_options);
 }
 
 Task<void> TaskHandle::cancel(const RequestOptions& request_options) const {
     auto state = std::static_pointer_cast<Client::Impl>(attached_client(client_));
     nlohmann::json params{{"taskId", created_.taskId}};
-    return Client::Impl::task_ack(std::move(state), "tasks/cancel", std::move(params), request_options);
+    return Client::Impl::task_ack(std::move(state), methods::g_TASKS_CANCEL, std::move(params),
+                                  request_options);
 }
 
 Task<DetailedTask> TaskHandle::wait(const RequestOptions& request_options) const {
@@ -3283,7 +3296,7 @@ Task<CallToolResult> TaskHandle::result(const RequestOptions& request_options) c
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor,
                                                  const RequestOptions& request_options) {
     return parse_result<ListResourcesResult>(Impl::cacheable_request(
-        impl_, "resources/list", make_paginated_params(cursor), request_options));
+        impl_, methods::g_RESOURCES_LIST, make_paginated_params(cursor), request_options));
 }
 
 Task<ReadResourceResult> Client::read_resource(const std::string& uri,
@@ -3291,19 +3304,19 @@ Task<ReadResourceResult> Client::read_resource(const std::string& uri,
     ReadResourceRequestParams params;
     params.uri = uri;
     return parse_result<ReadResourceResult>(Impl::cacheable_request(
-        impl_, "resources/read", nlohmann::json(std::move(params)), request_options));
+        impl_, methods::g_RESOURCES_READ, nlohmann::json(std::move(params)), request_options));
 }
 
 Task<ListResourceTemplatesResult> Client::list_resource_templates(
     const std::optional<std::string>& cursor, const RequestOptions& request_options) {
     return parse_result<ListResourceTemplatesResult>(Impl::cacheable_request(
-        impl_, "resources/templates/list", make_paginated_params(cursor), request_options));
+        impl_, methods::g_RESOURCES_TEMPLATES_LIST, make_paginated_params(cursor), request_options));
 }
 
 Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor,
                                              const RequestOptions& request_options) {
-    return parse_result<ListPromptsResult>(
-        Impl::cacheable_request(impl_, "prompts/list", make_paginated_params(cursor), request_options));
+    return parse_result<ListPromptsResult>(Impl::cacheable_request(
+        impl_, methods::g_PROMPTS_LIST, make_paginated_params(cursor), request_options));
 }
 
 Task<GetPromptResult> Client::get_prompt(const std::string& name,
@@ -3315,13 +3328,13 @@ Task<GetPromptResult> Client::get_prompt(const std::string& name,
         params.arguments = arguments;
     }
     return parse_result<GetPromptResult>(
-        send_request("prompts/get", nlohmann::json(std::move(params)), request_options));
+        send_request(methods::g_PROMPTS_GET, nlohmann::json(std::move(params)), request_options));
 }
 
 Task<CompleteResult> Client::complete(const CompleteParams& params,
                                       const RequestOptions& request_options) {
     return parse_result<CompleteResult>(
-        send_request("completion/complete", nlohmann::json(params), request_options));
+        send_request(methods::g_COMPLETION_COMPLETE, nlohmann::json(params), request_options));
 }
 
 Task<void> Client::ping() {
@@ -3329,7 +3342,7 @@ Task<void> Client::ping() {
         throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "Client must connect before sending requests");
     }
-    return Impl::discard_result(Impl::request(impl_, "ping", std::nullopt, {}));
+    return Impl::discard_result(Impl::request(impl_, methods::g_PING, std::nullopt, {}));
 }
 
 Task<void> Client::cancel(const RequestId& request_id, const std::optional<std::string>& reason) {
@@ -3350,7 +3363,7 @@ Task<void> Client::cancel(const RequestId& request_id, const std::optional<std::
     CancelledNotificationParams params;
     params.requestId = request_id;
     params.reason = reason;
-    return send_notification("notifications/cancelled", nlohmann::json(std::move(params)));
+    return send_notification(methods::g_NOTIFICATIONS_CANCELLED, nlohmann::json(std::move(params)));
 }
 
 void Client::on_notification(const std::string& method, NotificationCallback callback) {
@@ -3359,7 +3372,7 @@ void Client::on_notification(const std::string& method, NotificationCallback cal
 }
 
 void Client::on_progress(ProgressCallback callback) {
-    on_notification("notifications/progress",
+    on_notification(std::string(methods::g_NOTIFICATIONS_PROGRESS),
                     [callback = std::move(callback)](const nlohmann::json& params) {
                         ProgressNotificationParams progress;
                         try {
@@ -3384,7 +3397,7 @@ void Client::on_request(const std::string& method, RequestHandler handler) {
 void Client::on_elicitation(std::function<Task<ElicitResult>(const ElicitRequestParams&)> handler) {
     const bool validate = impl_->options.validate_elicitation_content;
     on_request(
-        "elicitation/create",
+        std::string(methods::g_ELICITATION_CREATE),
         [handler = std::move(handler), validate](const nlohmann::json& params) -> Task<nlohmann::json> {
             auto result = co_await handler(params.get<ElicitRequestParams>());
             if (validate) {
@@ -3396,7 +3409,7 @@ void Client::on_elicitation(std::function<Task<ElicitResult>(const ElicitRequest
 
 void Client::on_sampling(
     std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler) {
-    on_request("sampling/createMessage",
+    on_request(std::string(methods::g_SAMPLING_CREATE_MESSAGE),
                [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
                    auto result = co_await handler(params.get<CreateMessageRequestParams>());
                    co_return nlohmann::json(std::move(result));
@@ -3409,10 +3422,10 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
     {
         std::lock_guard lock(state->handlers_mutex);
         state->roots = roots;
-        if (!state->request_handlers.contains("roots/list")) {
+        if (!state->request_handlers.contains(methods::g_ROOTS_LIST)) {
             std::weak_ptr<Impl> weak_state = state;
             state->request_handlers.emplace(
-                "roots/list", [weak_state](const nlohmann::json&) -> Task<nlohmann::json> {
+                methods::g_ROOTS_LIST, [weak_state](const nlohmann::json&) -> Task<nlohmann::json> {
                     auto active_state = weak_state.lock();
                     if (!active_state) {
                         throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
@@ -3435,13 +3448,14 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
     // A modern session has no roots notification: the server learns the roots from each request.
     if (should_notify && !state->modern_version() && !state->closed.load(std::memory_order_acquire)) {
         boost::asio::co_spawn(
-            state->strand, Impl::notification(state, "notifications/roots/list_changed", std::nullopt),
+            state->strand,
+            Impl::notification(state, methods::g_NOTIFICATIONS_ROOTS_LIST_CHANGED, std::nullopt),
             boost::asio::detached);
     }
 }
 
 void Client::on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler) {
-    on_request("roots/list",
+    on_request(std::string(methods::g_ROOTS_LIST),
                [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
                    auto result = co_await handler(params);
                    co_return nlohmann::json(std::move(result));

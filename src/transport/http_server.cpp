@@ -3,6 +3,7 @@
 #include "../detail/constants.hpp"
 #include "../detail/modern_methods.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/request_meta.hpp"
 #include "../detail/tls.hpp"
 #include "accept_retry.hpp"
 #include "host_policy.hpp"
@@ -52,6 +53,7 @@
 
 namespace mcp {
 
+namespace methods = mcp::constants::methods;
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
@@ -197,7 +199,7 @@ struct HttpServerTransport::Impl {
     static bool is_initialize_request(const nlohmann::json& request_json) {
         return request_json.is_object() && request_json.contains("method") &&
                request_json.at("method").is_string() &&
-               request_json.at("method").get<std::string>() == "initialize";
+               request_json.at("method").get<std::string>() == methods::g_INITIALIZE;
     }
 
     static std::string_view header_value(const StringRequest::const_iterator& header_it) {
@@ -831,7 +833,7 @@ struct HttpServerTransport::Impl {
     /// when its stream closes. 2026-07-28 has no other way to say so over HTTP.
     void cancel_abandoned_request(const std::string& sentinel_id, std::string principal) const {
         nlohmann::json notification = {{"jsonrpc", "2.0"},
-                                       {"method", "notifications/cancelled"},
+                                       {"method", methods::g_NOTIFICATIONS_CANCELLED},
                                        {"params", {{"requestId", sentinel_id}}}};
         enqueue_incoming_message(mcp::detail::dump_json(notification), std::move(principal));
     }
@@ -886,7 +888,7 @@ struct HttpServerTransport::Impl {
             co_return detail::start_modern_exchange(request, std::move(request_json),
                                                     std::move(principal), start, *dispatch);
         }
-        if (request_json.at("method") == "tools/call") {
+        if (detail::method_is(request_json.at("method"), methods::g_TOOLS_CALL)) {
             if (check) {
                 if (auto mismatch = check(request_json, detail::mcp_param_headers(request))) {
                     header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);

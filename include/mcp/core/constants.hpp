@@ -115,6 +115,92 @@ inline constexpr int g_REQUEST_CANCELLED = -32800;
 
 }  // namespace jsonrpc
 
+/// The JSON-RPC methods the SDK sends and handles. Each name spells its method in upper case, with
+/// `/` and each change from lower to upper case written as `_`.
+namespace methods {
+
+inline constexpr std::string_view g_INITIALIZE = "initialize";
+
+inline constexpr std::string_view g_PING = "ping";
+
+inline constexpr std::string_view g_SERVER_DISCOVER = "server/discover";
+
+inline constexpr std::string_view g_TOOLS_LIST = "tools/list";
+
+inline constexpr std::string_view g_TOOLS_CALL = "tools/call";
+
+inline constexpr std::string_view g_RESOURCES_LIST = "resources/list";
+
+inline constexpr std::string_view g_RESOURCES_READ = "resources/read";
+
+inline constexpr std::string_view g_RESOURCES_SUBSCRIBE = "resources/subscribe";
+
+inline constexpr std::string_view g_RESOURCES_UNSUBSCRIBE = "resources/unsubscribe";
+
+inline constexpr std::string_view g_RESOURCES_TEMPLATES_LIST = "resources/templates/list";
+
+inline constexpr std::string_view g_PROMPTS_LIST = "prompts/list";
+
+inline constexpr std::string_view g_PROMPTS_GET = "prompts/get";
+
+inline constexpr std::string_view g_COMPLETION_COMPLETE = "completion/complete";
+
+inline constexpr std::string_view g_LOGGING_SET_LEVEL = "logging/setLevel";
+
+inline constexpr std::string_view g_SAMPLING_CREATE_MESSAGE = "sampling/createMessage";
+
+inline constexpr std::string_view g_ELICITATION_CREATE = "elicitation/create";
+
+inline constexpr std::string_view g_ROOTS_LIST = "roots/list";
+
+inline constexpr std::string_view g_TASKS_GET = "tasks/get";
+
+inline constexpr std::string_view g_TASKS_CANCEL = "tasks/cancel";
+
+inline constexpr std::string_view g_TASKS_UPDATE = "tasks/update";
+
+inline constexpr std::string_view g_SUBSCRIPTIONS_LISTEN = "subscriptions/listen";
+
+inline constexpr std::string_view g_NOTIFICATIONS_INITIALIZED = "notifications/initialized";
+
+inline constexpr std::string_view g_NOTIFICATIONS_CANCELLED = "notifications/cancelled";
+
+inline constexpr std::string_view g_NOTIFICATIONS_PROGRESS = "notifications/progress";
+
+inline constexpr std::string_view g_NOTIFICATIONS_MESSAGE = "notifications/message";
+
+inline constexpr std::string_view g_NOTIFICATIONS_TOOLS_LIST_CHANGED =
+    "notifications/tools/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_RESOURCES_LIST_CHANGED =
+    "notifications/resources/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_RESOURCES_UPDATED = "notifications/resources/updated";
+
+inline constexpr std::string_view g_NOTIFICATIONS_PROMPTS_LIST_CHANGED =
+    "notifications/prompts/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_ROOTS_LIST_CHANGED =
+    "notifications/roots/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_TASKS = "notifications/tasks";
+
+inline constexpr std::string_view g_NOTIFICATIONS_SUBSCRIPTIONS_ACKNOWLEDGED =
+    "notifications/subscriptions/acknowledged";
+
+inline constexpr std::string_view g_NOTIFICATIONS_ELICITATION_COMPLETE =
+    "notifications/elicitation/complete";
+
+// Methods of the skills extension.
+
+inline constexpr std::string_view g_SKILLS_LIST = "skills/list";
+
+inline constexpr std::string_view g_SKILLS_GET = "skills/get";
+
+inline constexpr std::string_view g_RESOURCES_DIRECTORY_READ = "resources/directory/read";
+
+}  // namespace methods
+
 /// Protocol revisions the SDK speaks and the lists that group them.
 namespace protocol {
 

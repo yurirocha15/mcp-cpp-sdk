@@ -6,9 +6,12 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include "../detail/constants.hpp"
 #include "../detail/encoding.hpp"
+
+namespace methods = mcp::constants::methods;
 
 namespace mcp::skills {
 
@@ -140,7 +143,8 @@ SkillsExtension::SkillsExtension(Server& server, SkillsOptions options)
 
     auto state = state_;
     server.add_extension_method(
-        "skills/list", [state](Context&, const nlohmann::json& params) -> Task<nlohmann::json> {
+        std::string(methods::g_SKILLS_LIST),
+        [state](Context&, const nlohmann::json& params) -> Task<nlohmann::json> {
             const auto page = page_of(params, state->entries.size(), state->options.page_size);
             ListSkillsResult result;
             result.skills.assign(state->entries.begin() + static_cast<std::ptrdiff_t>(page.begin),
@@ -151,7 +155,8 @@ SkillsExtension::SkillsExtension(Server& server, SkillsOptions options)
             co_return nlohmann::json(result);
         });
     server.add_extension_method(
-        "skills/get", [state](Context&, const nlohmann::json& params) -> Task<nlohmann::json> {
+        std::string(methods::g_SKILLS_GET),
+        [state](Context&, const nlohmann::json& params) -> Task<nlohmann::json> {
             const auto uri = params.find("uri");
             if (uri == params.end() || !uri->is_string()) {
                 throw std::invalid_argument("skills/get needs a string uri");
@@ -170,7 +175,7 @@ SkillsExtension::SkillsExtension(Server& server, SkillsOptions options)
         });
     if (options.directory_read) {
         server.add_extension_method(
-            "resources/directory/read",
+            std::string(methods::g_RESOURCES_DIRECTORY_READ),
             [state](Context&, const nlohmann::json& params) -> Task<nlohmann::json> {
                 const auto uri = params.find("uri");
                 if (uri == params.end() || !uri->is_string()) {

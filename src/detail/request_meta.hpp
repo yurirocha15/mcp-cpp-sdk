@@ -25,10 +25,16 @@ inline const nlohmann::json* request_meta_object(const nlohmann::json& message) 
     return &*meta;
 }
 
+/// Whether @p method, the `method` member of a message, is the string @p name; false for a member
+/// of another type. A json compared with a std::string_view directly is ambiguous on MSVC.
+inline bool method_is(const nlohmann::json& method, std::string_view name) {
+    return method.is_string() && method.get_ref<const std::string&>() == name;
+}
+
 /// Whether a request uses the per-request protocol of 2026-07-28 and later: its `_meta` names a
 /// protocol version. initialize is always a request of an earlier revision, whatever it carries.
 inline bool is_modern_request(const nlohmann::json& message, std::string_view method) {
-    if (method == "initialize") {
+    if (method == mcp::constants::methods::g_INITIALIZE) {
         return false;
     }
     const auto* meta = request_meta_object(message);

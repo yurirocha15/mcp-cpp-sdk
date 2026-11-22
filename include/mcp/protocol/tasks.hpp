@@ -99,8 +99,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, UpdateTaskRequestParams& 
  * with `notifications.taskIds` on subscriptions/listen.
  */
 struct TaskStatusNotification {
-    std::string method = "notifications/tasks";  ///< The method name.
-    DetailedTask params;                         ///< The task as `tasks/get` would return it.
+    std::string method{mcp::constants::methods::g_NOTIFICATIONS_TASKS};  ///< The method name.
+    DetailedTask params;  ///< The task as `tasks/get` would return it.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const TaskStatusNotification& notification);

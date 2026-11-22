@@ -62,6 +62,7 @@
 #include <variant>
 #include <vector>
 
+namespace methods = mcp::constants::methods;
 namespace http_server = mcp::constants::http_server;
 
 namespace mcp {
@@ -197,7 +198,7 @@ inline std::string generate_session_id() { return detail::generate_secure_sessio
 inline bool is_initialize_request(const nlohmann::json& request_json) {
     return request_json.is_object() && request_json.contains("method") &&
            request_json.at("method").is_string() &&
-           request_json.at("method").get<std::string>() == "initialize";
+           request_json.at("method").get<std::string>() == methods::g_INITIALIZE;
 }
 
 inline std::optional<std::string> initialize_protocol_version(const nlohmann::json& request_json) {

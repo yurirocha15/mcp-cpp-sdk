@@ -71,6 +71,7 @@
 #include <utility>
 #include <vector>
 
+namespace methods = mcp::constants::methods;
 namespace sealed_token = mcp::detail::constants::sealed_token;
 namespace transport_writer = mcp::detail::constants::transport_writer;
 
@@ -2307,7 +2308,7 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
             params.requestId = RequestId{std::to_string(id)};
             params.reason = error->message;
             JSONRPCNotification notification;
-            notification.method = "notifications/cancelled";
+            notification.method = methods::g_NOTIFICATIONS_CANCELLED;
             notification.params = nlohmann::json(std::move(params));
             notice = mcp::detail::dump_json(nlohmann::json(std::move(notification)));
         }
@@ -2790,7 +2791,7 @@ Context Server::Impl::make_context(
             if (session && Impl::session_epoch(*session) != epoch) {
                 throw std::runtime_error("the client ended the session this request belongs to");
             }
-            if (method == "sampling/createMessage" && params &&
+            if (method == methods::g_SAMPLING_CREATE_MESSAGE && params &&
                 detail::asks_for_sampling_context(*params) &&
                 !impl->client_declares_sampling_context()) {
                 throw std::invalid_argument(
@@ -2983,7 +2984,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
 
         if (!protocol_policy.serve_legacy) {
             legacy_shaped_rejections.fetch_add(1, std::memory_order_relaxed);
-            if (method == "initialize") {
+            if (method == methods::g_INITIALIZE) {
                 // initialize does not exist in the revisions this server serves; the error still
                 // names them, as an initialize error should.
                 co_return initialize_not_served_wire(json_msg.at("id").get<RequestId>());
@@ -3006,7 +3007,7 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                        ? LifecycleState::eUninitialized
                                        : lifecycle.load(std::memory_order_relaxed);
 
-        if (method == "initialize") {
+        if (method == methods::g_INITIALIZE) {
             if (enforce_lifecycle && session_state != LifecycleState::eUninitialized) {
                 co_return make_error_wire(json_msg.at("id").get<RequestId>(),
                                           mcp::constants::jsonrpc::g_INVALID_REQUEST,
@@ -3015,11 +3016,11 @@ Task<std::string> Server::Impl::dispatch_request_wire(
             co_return co_await handle_initialize_wire(json_msg, enforce_lifecycle);
         }
 
-        if (method == "ping") {
+        if (method == methods::g_PING) {
             co_return co_await handle_ping_wire(json_msg);
         }
 
-        if (method == "server/discover") {
+        if (method == methods::g_SERVER_DISCOVER) {
             // server/discover belongs to 2026-07-28 and requires its per-request fields.
             legacy_shaped_rejections.fetch_add(1, std::memory_order_relaxed);
             co_return make_error_wire(
@@ -3036,27 +3037,27 @@ Task<std::string> Server::Impl::dispatch_request_wire(
 
         if (method == "shutdown") {
             co_return co_await handle_shutdown_wire(json_msg);
-        } else if (method == "tools/call") {
+        } else if (method == methods::g_TOOLS_CALL) {
             co_return co_await handle_tools_call_wire(json_msg, legacy_scope);
-        } else if (method == "tools/list") {
+        } else if (method == methods::g_TOOLS_LIST) {
             co_return co_await handle_tools_list_wire(json_msg, legacy_scope);
-        } else if (method == "resources/list") {
+        } else if (method == methods::g_RESOURCES_LIST) {
             co_return co_await handle_resources_list_wire(json_msg, legacy_scope);
-        } else if (method == "resources/read") {
+        } else if (method == methods::g_RESOURCES_READ) {
             co_return co_await handle_resources_read_wire(json_msg, legacy_scope);
-        } else if (method == "resources/templates/list") {
+        } else if (method == methods::g_RESOURCES_TEMPLATES_LIST) {
             co_return co_await handle_resource_templates_list_wire(json_msg, legacy_scope);
-        } else if (method == "resources/subscribe") {
+        } else if (method == methods::g_RESOURCES_SUBSCRIBE) {
             co_return co_await handle_subscribe_wire(json_msg);
-        } else if (method == "resources/unsubscribe") {
+        } else if (method == methods::g_RESOURCES_UNSUBSCRIBE) {
             co_return co_await handle_unsubscribe_wire(json_msg);
-        } else if (method == "prompts/list") {
+        } else if (method == methods::g_PROMPTS_LIST) {
             co_return co_await handle_prompts_list_wire(json_msg, legacy_scope);
-        } else if (method == "prompts/get") {
+        } else if (method == methods::g_PROMPTS_GET) {
             co_return co_await handle_prompts_get_wire(json_msg, legacy_scope);
-        } else if (method == "logging/setLevel") {
+        } else if (method == methods::g_LOGGING_SET_LEVEL) {
             co_return co_await handle_set_level_wire(json_msg);
-        } else if (method == "completion/complete") {
+        } else if (method == methods::g_COMPLETION_COMPLETE) {
             co_return co_await handle_complete_wire(json_msg, legacy_scope);
         } else {
             co_return make_error_wire(json_msg.at("id").get<RequestId>(),
@@ -3111,9 +3112,9 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
         unsupported_version_rejections.fetch_add(1, std::memory_order_relaxed);
         co_return unsupported_version_wire(json_msg.at("id").get<RequestId>(), *version);
     }
-    const bool task_method =
-        tasks_enabled.load(std::memory_order_acquire) &&
-        (method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel");
+    const bool task_method = tasks_enabled.load(std::memory_order_acquire) &&
+                             (method == methods::g_TASKS_GET || method == methods::g_TASKS_UPDATE ||
+                              method == methods::g_TASKS_CANCEL);
     const auto extension = extension_methods.find(method);
     if (!task_method && extension == extension_methods.end() && !detail::is_modern_method(method)) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(),
@@ -3138,20 +3139,21 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
     if (extension != extension_methods.end()) {
         co_return co_await handle_extension_wire(json_msg, scope, extension->second);
     }
-    if (method == "tools/call" || method == "resources/read" || method == "prompts/get") {
+    if (method == methods::g_TOOLS_CALL || method == methods::g_RESOURCES_READ ||
+        method == methods::g_PROMPTS_GET) {
         co_return co_await dispatch_mrtr(json_msg, method, std::move(scope));
     }
-    if (method == "server/discover") {
+    if (method == methods::g_SERVER_DISCOVER) {
         co_return co_await handle_discover_wire(json_msg, scope);
-    } else if (method == "tools/list") {
+    } else if (method == methods::g_TOOLS_LIST) {
         co_return co_await handle_tools_list_wire(json_msg, scope);
-    } else if (method == "resources/list") {
+    } else if (method == methods::g_RESOURCES_LIST) {
         co_return co_await handle_resources_list_wire(json_msg, scope);
-    } else if (method == "resources/templates/list") {
+    } else if (method == methods::g_RESOURCES_TEMPLATES_LIST) {
         co_return co_await handle_resource_templates_list_wire(json_msg, scope);
-    } else if (method == "prompts/list") {
+    } else if (method == methods::g_PROMPTS_LIST) {
         co_return co_await handle_prompts_list_wire(json_msg, scope);
-    } else if (method == "subscriptions/listen") {
+    } else if (method == methods::g_SUBSCRIPTIONS_LISTEN) {
         co_return co_await handle_listen_wire(json_msg, scope);
     }
     co_return co_await handle_complete_wire(json_msg, scope);
@@ -3392,10 +3394,10 @@ Task<std::string> Server::Impl::serve_without_parking(const nlohmann::json& json
 Task<std::string> Server::Impl::serve_mrtr_method(const nlohmann::json& json_msg,
                                                   const RequestScope& scope) {
     const auto& method = json_msg.at("method").get_ref<const std::string&>();
-    if (method == "tools/call") {
+    if (method == methods::g_TOOLS_CALL) {
         co_return co_await handle_tools_call_wire(json_msg, scope);
     }
-    if (method == "resources/read") {
+    if (method == methods::g_RESOURCES_READ) {
         co_return co_await handle_resources_read_wire(json_msg, scope);
     }
     co_return co_await handle_prompts_get_wire(json_msg, scope);
@@ -3404,10 +3406,10 @@ Task<std::string> Server::Impl::serve_mrtr_method(const nlohmann::json& json_msg
 std::optional<std::string> Server::Impl::retry_header_mismatch(const nlohmann::json& json_msg,
                                                                std::string_view method,
                                                                const RequestScope& scope) const {
-    if (method != "tools/call" || scope.param_headers == nullptr) {
+    if (method != methods::g_TOOLS_CALL || scope.param_headers == nullptr) {
         return std::nullopt;
     }
-    const auto params = deserialize_request_params<CallToolParams>(json_msg, "tools/call");
+    const auto params = deserialize_request_params<CallToolParams>(json_msg, methods::g_TOOLS_CALL);
     const auto tool = tool_handlers.find(params.name);
     if (tool == tool_handlers.end()) {
         return std::nullopt;
@@ -3783,14 +3785,14 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
     }
     auto method = json_msg.at("method").get<std::string>();
 
-    if (method == "notifications/initialized") {
+    if (method == methods::g_NOTIFICATIONS_INITIALIZED) {
         auto expected = Impl::LifecycleState::eAwaitingInitialized;
         lifecycle.compare_exchange_strong(expected, Impl::LifecycleState::eReady,
                                           std::memory_order_relaxed);
         return;
     }
 
-    if (method == "notifications/cancelled") {
+    if (method == methods::g_NOTIFICATIONS_CANCELLED) {
         // A 2026-07-28 request needs no initialize, so cancellation does not wait for one either.
         // Before initialize a legacy client has nothing in flight to cancel.
         auto session = session_snapshot();
@@ -3863,7 +3865,8 @@ void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
 
 Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& json_msg,
                                                        bool update_lifecycle) {
-    auto initialize_request = deserialize_request_params<InitializeRequest>(json_msg, "initialize");
+    auto initialize_request =
+        deserialize_request_params<InitializeRequest>(json_msg, methods::g_INITIALIZE);
 
     InitializeResult init_result;
     init_result.protocolVersion =
@@ -4332,7 +4335,8 @@ Task<std::string> Server::Impl::handle_resources_list_wire(const nlohmann::json&
 
 Task<std::string> Server::Impl::handle_resources_read_wire(const nlohmann::json& json_msg,
                                                            const RequestScope& scope) {
-    auto params = deserialize_request_params<ReadResourceRequestParams>(json_msg, "resources/read");
+    auto params =
+        deserialize_request_params<ReadResourceRequestParams>(json_msg, methods::g_RESOURCES_READ);
     auto iter = resource_handlers.find(params.uri);
     if (iter != resource_handlers.end()) {
         nlohmann::json params_json = params;
@@ -4539,7 +4543,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         params["notifications"] = std::move(honored);
         nlohmann::json message = nlohmann::json::object();
         message["jsonrpc"] = "2.0";
-        message["method"] = "notifications/subscriptions/acknowledged";
+        message["method"] = methods::g_NOTIFICATIONS_SUBSCRIPTIONS_ACKNOWLEDGED;
         message["params"] = std::move(params);
         acknowledgment = std::make_shared<const std::string>(mcp::detail::dump_json(message));
     }
@@ -4614,7 +4618,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         params["_meta"] = subscription_meta(listener->id);
         nlohmann::json message = nlohmann::json::object();
         message["jsonrpc"] = "2.0";
-        message["method"] = "notifications/cancelled";
+        message["method"] = methods::g_NOTIFICATIONS_CANCELLED;
         message["params"] = std::move(params);
         cancellation = std::make_shared<const std::string>(mcp::detail::dump_json(message));
     }
@@ -4700,16 +4704,16 @@ Task<void> Server::Impl::notify_listeners(ListenTopic topic, std::shared_ptr<con
     std::string_view method;
     switch (topic) {
         case ListenTopic::eToolsListChanged:
-            method = "notifications/tools/list_changed";
+            method = methods::g_NOTIFICATIONS_TOOLS_LIST_CHANGED;
             break;
         case ListenTopic::ePromptsListChanged:
-            method = "notifications/prompts/list_changed";
+            method = methods::g_NOTIFICATIONS_PROMPTS_LIST_CHANGED;
             break;
         case ListenTopic::eResourcesListChanged:
-            method = "notifications/resources/list_changed";
+            method = methods::g_NOTIFICATIONS_RESOURCES_LIST_CHANGED;
             break;
         case ListenTopic::eResourceUpdated:
-            method = "notifications/resources/updated";
+            method = methods::g_NOTIFICATIONS_RESOURCES_UPDATED;
             break;
     }
 
@@ -4786,7 +4790,7 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
         return make_error_wire(id.get<RequestId>(), mcp::constants::jsonrpc::g_INVALID_PARAMS,
                                "Failed to retrieve task: Task not found");
     }
-    if (method == "tasks/get") {
+    if (method == methods::g_TASKS_GET) {
         return make_result_wire(id.get<RequestId>(), scope, nlohmann::json(record->to_detailed()));
     }
 
@@ -4799,7 +4803,7 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
         }
     }
     std::optional<TaskRecord> stored;
-    if (method == "tasks/update") {
+    if (method == methods::g_TASKS_UPDATE) {
         const auto responses = params->find("inputResponses");
         if (responses == params->end() || !responses->is_object()) {
             throw InvalidParamsError("Invalid tasks/update params: inputResponses must be an object");
@@ -4976,7 +4980,7 @@ std::shared_ptr<const std::string> Server::Impl::task_notification_wire(const Ta
     params["_meta"] = subscription_meta(listener.id);
     nlohmann::json message = nlohmann::json::object();
     message["jsonrpc"] = "2.0";
-    message["method"] = "notifications/tasks";
+    message["method"] = methods::g_NOTIFICATIONS_TASKS;
     message["params"] = std::move(params);
     return std::make_shared<const std::string>(mcp::detail::dump_json(message));
 }
@@ -4993,7 +4997,8 @@ void Server::Impl::abandon_tasks() {
 }
 
 Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json_msg) {
-    auto params = deserialize_request_params<ResourceSubscribeParams>(json_msg, "resources/subscribe");
+    auto params =
+        deserialize_request_params<ResourceSubscribeParams>(json_msg, methods::g_RESOURCES_SUBSCRIBE);
     auto handler = build_middleware_chain(
         [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
             auto session = session_snapshot();
@@ -5036,8 +5041,8 @@ Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json
 }
 
 Task<std::string> Server::Impl::handle_unsubscribe_wire(const nlohmann::json& json_msg) {
-    auto params =
-        deserialize_request_params<ResourceUnsubscribeParams>(json_msg, "resources/unsubscribe");
+    auto params = deserialize_request_params<ResourceUnsubscribeParams>(
+        json_msg, methods::g_RESOURCES_UNSUBSCRIBE);
     auto handler = build_middleware_chain(
         [this, uri = std::move(params.uri)](Context&, const nlohmann::json&) -> Task<nlohmann::json> {
             auto session = session_snapshot();
@@ -5075,7 +5080,7 @@ Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& j
 
 Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& json_msg,
                                                         const RequestScope& scope) {
-    auto params = deserialize_request_params<GetPromptRequestParams>(json_msg, "prompts/get");
+    auto params = deserialize_request_params<GetPromptRequestParams>(json_msg, methods::g_PROMPTS_GET);
     auto iter = prompt_handlers.find(params.name);
     if (iter == prompt_handlers.end()) {
         // The prompts spec lists an invalid prompt name as -32602 (Invalid params).
@@ -5093,14 +5098,15 @@ Task<std::string> Server::Impl::handle_prompts_get_wire(const nlohmann::json& js
 }
 
 Task<std::string> Server::Impl::handle_set_level_wire(const nlohmann::json& json_msg) {
-    auto params = deserialize_request_params<SetLevelRequestParams>(json_msg, "logging/setLevel");
+    auto params =
+        deserialize_request_params<SetLevelRequestParams>(json_msg, methods::g_LOGGING_SET_LEVEL);
     log_level.store(params.level, std::memory_order_relaxed);
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), nlohmann::json::object());
 }
 
 Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_msg,
                                                      const RequestScope& scope) {
-    auto params = deserialize_request_params<CompleteParams>(json_msg, "completion/complete");
+    auto params = deserialize_request_params<CompleteParams>(json_msg, methods::g_COMPLETION_COMPLETE);
 
     if (!completion_handler) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(),
@@ -5290,7 +5296,7 @@ Task<void> Server::notify_tools_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
         if (member->legacy_broadcast_wanted()) {
-            co_await member->send_broadcast("notifications/tools/list_changed");
+            co_await member->send_broadcast(std::string(methods::g_NOTIFICATIONS_TOOLS_LIST_CHANGED));
         }
     }
 }
@@ -5299,7 +5305,8 @@ Task<void> Server::notify_resources_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::eResourcesListChanged, nullptr);
         if (member->legacy_broadcast_wanted()) {
-            co_await member->send_broadcast("notifications/resources/list_changed");
+            co_await member->send_broadcast(
+                std::string(methods::g_NOTIFICATIONS_RESOURCES_LIST_CHANGED));
         }
     }
 }
@@ -5308,7 +5315,7 @@ Task<void> Server::notify_prompts_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::ePromptsListChanged, nullptr);
         if (member->legacy_broadcast_wanted()) {
-            co_await member->send_broadcast("notifications/prompts/list_changed");
+            co_await member->send_broadcast(std::string(methods::g_NOTIFICATIONS_PROMPTS_LIST_CHANGED));
         }
     }
 }
@@ -5368,7 +5375,7 @@ Task<void> Server::Impl::notify_resource_updated_on_strand(std::shared_ptr<Sessi
     params.uri = *uri;
 
     JSONRPCNotification notification;
-    notification.method = "notifications/resources/updated";
+    notification.method = methods::g_NOTIFICATIONS_RESOURCES_UPDATED;
     nlohmann::json p = std::move(params);
     notification.params = std::move(p);
 

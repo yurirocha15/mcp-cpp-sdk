@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/capabilities.hpp>
@@ -66,8 +67,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, GetPromptRequestParams& p
  * @brief Used by the client to get a prompt provided by the server.
  */
 struct GetPromptRequest {
-    std::string method = "prompts/get";  ///< The method name.
-    GetPromptRequestParams params;       ///< The request parameters.
+    std::string method{mcp::constants::methods::g_PROMPTS_GET};  ///< The method name.
+    GetPromptRequestParams params;                               ///< The request parameters.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const GetPromptRequest& value);
@@ -90,8 +91,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, GetPromptResult& result);
  * @brief Sent from the client to request a list of prompts.
  */
 struct ListPromptsRequest {
-    std::string method = "prompts/list";           ///< The method name.
-    std::optional<PaginatedRequestParams> params;  ///< The request parameters.
+    std::string method{mcp::constants::methods::g_PROMPTS_LIST};  ///< The method name.
+    std::optional<PaginatedRequestParams> params;                 ///< The request parameters.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const ListPromptsRequest& req);

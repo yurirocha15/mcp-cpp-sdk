@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <mcp/core/constants.hpp>
 #include <string_view>
 
 namespace mcp::detail::constants {
@@ -285,9 +286,16 @@ namespace modern_methods {
 /// resources/unsubscribe) are not among them, and neither is initialize, which always starts a
 /// session of an earlier revision.
 inline constexpr std::array<std::string_view, 10> g_NAMES = {
-    "server/discover",          "tools/list",          "tools/call",  "resources/list",
-    "resources/read",           "prompts/list",        "prompts/get", "completion/complete",
-    "resources/templates/list", "subscriptions/listen"};
+    mcp::constants::methods::g_SERVER_DISCOVER,
+    mcp::constants::methods::g_TOOLS_LIST,
+    mcp::constants::methods::g_TOOLS_CALL,
+    mcp::constants::methods::g_RESOURCES_LIST,
+    mcp::constants::methods::g_RESOURCES_READ,
+    mcp::constants::methods::g_PROMPTS_LIST,
+    mcp::constants::methods::g_PROMPTS_GET,
+    mcp::constants::methods::g_COMPLETION_COMPLETE,
+    mcp::constants::methods::g_RESOURCES_TEMPLATES_LIST,
+    mcp::constants::methods::g_SUBSCRIPTIONS_LISTEN};
 
 }  // namespace modern_methods
 

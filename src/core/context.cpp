@@ -1,3 +1,4 @@
+#include <mcp/core/constants.hpp>
 #include "../detail/notification_budget.hpp"
 
 #include <mcp/core/async.hpp>
@@ -13,6 +14,8 @@
 
 // GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
+
+namespace methods = mcp::constants::methods;
 
 namespace mcp {
 
@@ -44,7 +47,7 @@ Task<void> Context::log(LoggingLevel level, std::string_view msg,
         params.logger = logger;
 
         JSONRPCNotification notification;
-        notification.method = "notifications/message";
+        notification.method = methods::g_NOTIFICATIONS_MESSAGE;
         notification.params = nlohmann::json(std::move(params));
         wire = std::make_shared<const std::string>(
             mcp::detail::dump_json(nlohmann::json(std::move(notification))));
@@ -79,7 +82,7 @@ Task<void> Context::report_progress(double progress, std::optional<double> total
         params.message = message;
 
         JSONRPCNotification notification;
-        notification.method = "notifications/progress";
+        notification.method = methods::g_NOTIFICATIONS_PROGRESS;
         notification.params = nlohmann::json(std::move(params));
         wire = std::make_shared<const std::string>(
             mcp::detail::dump_json(nlohmann::json(std::move(notification))));
@@ -98,8 +101,8 @@ Task<CreateMessageResult> Context::sample_llm(const CreateMessageRequestParams& 
     }
 
     nlohmann::json params = request;
-    auto result_json =
-        co_await sender_("sampling/createMessage", std::move(params), std::move(options.key));
+    auto result_json = co_await sender_(std::string(methods::g_SAMPLING_CREATE_MESSAGE),
+                                        std::move(params), std::move(options.key));
     co_return result_json.get<CreateMessageResult>();
 }
 
@@ -113,8 +116,8 @@ Task<ElicitResult> Context::elicit(const ElicitRequestParams& params, InputOptio
         // Before 2026-07-28 the field is required on the wire.
         json_params["elicitationId"] = generate_elicitation_id();
     }
-    auto result_json =
-        co_await sender_("elicitation/create", std::move(json_params), std::move(options.key));
+    auto result_json = co_await sender_(std::string(methods::g_ELICITATION_CREATE),
+                                        std::move(json_params), std::move(options.key));
     auto result = result_json.get<ElicitResult>();
     if (options.validate_content) {
         check_form_content(params, result);
@@ -127,7 +130,8 @@ Task<ListRootsResult> Context::request_roots(InputOptions options) {
         throw std::runtime_error("Context has no request sender for reverse RPC");
     }
 
-    auto result_json = co_await sender_("roots/list", std::nullopt, std::move(options.key));
+    auto result_json =
+        co_await sender_(std::string(methods::g_ROOTS_LIST), std::nullopt, std::move(options.key));
     co_return result_json.get<ListRootsResult>();
 }
 

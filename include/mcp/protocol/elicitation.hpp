@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/schema.hpp>
@@ -381,8 +382,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, ElicitRequestParams& para
  * @brief A request from the server to elicit additional information from the user.
  */
 struct ElicitRequest {
-    std::string method = "elicitation/create";  ///< The method name.
-    ElicitRequestParams params;                 ///< The request parameters.
+    std::string method{mcp::constants::methods::g_ELICITATION_CREATE};  ///< The method name.
+    ElicitRequestParams params;                                         ///< The request parameters.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const ElicitRequest& value);

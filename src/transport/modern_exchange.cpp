@@ -2,6 +2,7 @@
 
 #include "../detail/beast_string.hpp"
 #include "../detail/constants.hpp"
+#include "../detail/request_meta.hpp"
 #include "http_request_metadata.hpp"
 #include "socket_probe.hpp"
 
@@ -23,6 +24,7 @@
 
 namespace mcp::detail {
 
+namespace methods = mcp::constants::methods;
 namespace http = boost::beast::http;
 
 ModernExchange::ModernExchange(boost::asio::any_io_executor strand_arg, const StreamOptions& options,
@@ -222,7 +224,7 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& reque
         to_std_string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
     auto exchange = std::make_shared<ModernExchange>(start.strand, start.options, streams, start.budget,
                                                      start.budget_limit);
-    const bool listening = request_json.at("method") == "subscriptions/listen";
+    const bool listening = method_is(request_json.at("method"), methods::g_SUBSCRIPTIONS_LISTEN);
 
     RequestContext request_context;
     request_context.cancelled = exchange->cancelled;

@@ -168,4 +168,11 @@ inline std::optional<JsonRpcEnvelope> scan_jsonrpc_envelope(std::string_view tex
     }
 }
 
+/// Whether @p raw_method, the `method` text of a scanned envelope, is the unescaped string
+/// @p name.
+inline bool is_method(std::string_view raw_method, std::string_view name) {
+    return raw_method.size() == name.size() + 2 && raw_method.front() == '"' &&
+           raw_method.back() == '"' && raw_method.substr(1, name.size()) == name;
+}
+
 }  // namespace mcp::detail

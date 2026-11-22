@@ -53,10 +53,10 @@ inline bool is_modern_http_request(const nlohmann::json& body,
         return false;
     }
     const auto& name = method->get_ref<const std::string&>();
-    if (name == "initialize") {
+    if (name == mcp::constants::methods::g_INITIALIZE) {
         return false;
     }
-    if (name == "server/discover" || is_modern_request(body, name)) {
+    if (name == mcp::constants::methods::g_SERVER_DISCOVER || is_modern_request(body, name)) {
         return true;
     }
     return protocol_header.has_value() && !is_legacy_protocol_version(*protocol_header);
@@ -66,11 +66,14 @@ inline bool is_modern_http_request(const nlohmann::json& body,
 /// tool or prompt, the URI of a resource, or the id of a task.
 inline const nlohmann::json* mirrored_name(const nlohmann::json& body, std::string_view method) {
     const char* member = nullptr;
-    if (method == "tools/call" || method == "prompts/get") {
+    if (method == mcp::constants::methods::g_TOOLS_CALL ||
+        method == mcp::constants::methods::g_PROMPTS_GET) {
         member = "name";
-    } else if (method == "resources/read") {
+    } else if (method == mcp::constants::methods::g_RESOURCES_READ) {
         member = "uri";
-    } else if (method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel") {
+    } else if (method == mcp::constants::methods::g_TASKS_GET ||
+               method == mcp::constants::methods::g_TASKS_UPDATE ||
+               method == mcp::constants::methods::g_TASKS_CANCEL) {
         member = "taskId";
     } else {
         return nullptr;

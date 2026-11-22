@@ -27,6 +27,8 @@
 #include <utility>
 #include <vector>
 
+namespace methods = mcp::constants::methods;
+
 namespace mcp::detail {
 
 struct RestartingStdioTransport::State {
@@ -119,7 +121,7 @@ struct RestartingStdioTransport::State {
         }
         const auto id = canonical_id(scanned->id);
         if (id.empty()) {
-            if (scanned->method == R"("notifications/cancelled")") {
+            if (is_method(scanned->method, methods::g_NOTIFICATIONS_CANCELLED)) {
                 if (const auto found = renamed.find(cancelled_id(message)); found != renamed.end()) {
                     message = with_id(message, nlohmann::json::parse(found->second), true);
                 }
@@ -180,9 +182,9 @@ struct RestartingStdioTransport::State {
             return same_process;
         }
         if (id.empty()) {
-            if (scanned->method == R"("notifications/initialized")") {
+            if (is_method(scanned->method, methods::g_NOTIFICATIONS_INITIALIZED)) {
                 initialized_notification = std::string(message);
-            } else if (scanned->method == R"("notifications/cancelled")") {
+            } else if (is_method(scanned->method, methods::g_NOTIFICATIONS_CANCELLED)) {
                 // A cancelled request may never be answered; it no longer waits.
                 const auto cancelled = cancelled_id(message);
                 if (const auto found = outstanding.find(cancelled); found != outstanding.end()) {
@@ -195,10 +197,10 @@ struct RestartingStdioTransport::State {
             return true;
         }
         outstanding.insert(id);
-        if (scanned->method == R"("subscriptions/listen")") {
+        if (is_method(scanned->method, methods::g_SUBSCRIPTIONS_LISTEN)) {
             listening.insert_or_assign(id, std::string(message));
         }
-        if (scanned->method == R"("initialize")") {
+        if (is_method(scanned->method, methods::g_INITIALIZE)) {
             initialize_request = std::string(message);
             initialize_id = id;
         }

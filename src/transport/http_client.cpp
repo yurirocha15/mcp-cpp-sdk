@@ -49,6 +49,7 @@
 
 namespace mcp {
 
+namespace methods = mcp::constants::methods;
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
 namespace net = boost::asio;
@@ -601,7 +602,7 @@ struct HttpClientTransport::Impl {
     bool capture_initialize_request(std::string_view message) {
         try {
             const auto request = nlohmann::json::parse(message);
-            if (request.is_object() && request.value("method", "") == "initialize" &&
+            if (request.is_object() && request.value("method", "") == methods::g_INITIALIZE &&
                 request.contains("id") &&
                 (request.at("id").is_string() || request.at("id").is_number_integer())) {
                 state->initialize_request_key = request.at("id").get<RequestId>().correlation_key();
@@ -974,8 +975,8 @@ struct HttpClientTransport::Impl {
             throw;
         }
         state.initialize_request_key.reset();
-        const auto notification = std::make_shared<const std::string>(
-            R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+        const auto notification = std::make_shared<const std::string>(mcp::detail::dump_json(
+            {{"jsonrpc", "2.0"}, {"method", methods::g_NOTIFICATIONS_INITIALIZED}}));
         const bool in_session = !state.session_id.empty();
         const auto accepted = co_await exchange(impl, *notification, bearer_token_provider);
         impl->deliver_response(accepted, *notification, in_session);
@@ -985,7 +986,7 @@ struct HttpClientTransport::Impl {
     static bool is_initialize(std::string_view message) {
         const auto parsed = nlohmann::json::parse(message, nullptr, false);
         return parsed.is_object() && parsed.contains("id") &&
-               parsed.value("method", "") == "initialize";
+               parsed.value("method", "") == methods::g_INITIALIZE;
     }
 
     /// A message of the legacy session as a call: a request, which waits for its response, or a
@@ -1109,7 +1110,7 @@ struct HttpClientTransport::Impl {
             if (call->final_message) {
                 impl->enqueue_message(std::move(*call->final_message));
             }
-            if (call->method == "notifications/initialized") {
+            if (call->method == methods::g_NOTIFICATIONS_INITIALIZED) {
                 start_listening(impl, call->bearer_token_provider);
             }
             co_return;
@@ -1397,7 +1398,7 @@ struct HttpClientTransport::Impl {
             call->id = *id_it;
             call->id_key = id_it->get<RequestId>().correlation_key();
         } else {
-            if (method == "notifications/cancelled") {
+            if (method == methods::g_NOTIFICATIONS_CANCELLED) {
                 // Closing the response stream is the cancellation; no notification is sent.
                 bool ended_a_call = false;
                 try {
@@ -1466,12 +1467,12 @@ struct HttpClientTransport::Impl {
     /// resources/read, params.taskId for the tasks methods.
     static const nlohmann::json* mirrored_name(const ModernCall& call) {
         const char* member = nullptr;
-        if (call.method == "tools/call" || call.method == "prompts/get") {
+        if (call.method == methods::g_TOOLS_CALL || call.method == methods::g_PROMPTS_GET) {
             member = "name";
-        } else if (call.method == "resources/read") {
+        } else if (call.method == methods::g_RESOURCES_READ) {
             member = "uri";
-        } else if (call.method == "tasks/get" || call.method == "tasks/update" ||
-                   call.method == "tasks/cancel") {
+        } else if (call.method == methods::g_TASKS_GET || call.method == methods::g_TASKS_UPDATE ||
+                   call.method == methods::g_TASKS_CANCEL) {
             member = "taskId";
         } else {
             return nullptr;
@@ -1492,7 +1493,7 @@ struct HttpClientTransport::Impl {
             return;
         }
         request.set("Mcp-Name", detail::encode_header_value(name->get_ref<const std::string&>()));
-        if (call.method != "tools/call") {
+        if (call.method != methods::g_TOOLS_CALL) {
             return;
         }
         const auto known = state->tool_params.find(name->get_ref<const std::string&>());
@@ -1818,7 +1819,7 @@ struct HttpClientTransport::Impl {
         const auto cursor = std::make_shared<std::optional<std::string>>();
         for (int page = 0; page < mcp::detail::constants::http_client::g_MAX_REFRESH_PAGES; ++page) {
             auto refresh = std::make_shared<ModernCall>();
-            refresh->method = "tools/list";
+            refresh->method = methods::g_TOOLS_LIST;
             refresh->version = origin->version;
             refresh->owner_key = origin->id_key;
             refresh->forward = false;
@@ -1833,8 +1834,10 @@ struct HttpClientTransport::Impl {
             if (*cursor) {
                 params["cursor"] = **cursor;
             }
-            refresh->message = nlohmann::json{
-                {"jsonrpc", "2.0"}, {"id", refresh->id}, {"method", "tools/list"}, {"params", params}};
+            refresh->message = nlohmann::json{{"jsonrpc", "2.0"},
+                                              {"id", refresh->id},
+                                              {"method", methods::g_TOOLS_LIST},
+                                              {"params", params}};
             refresh->body = mcp::detail::dump_json(refresh->message);
             co_await run_exchange(impl, refresh, false);
             if (!refresh->final_message) {
@@ -1885,7 +1888,7 @@ struct HttpClientTransport::Impl {
             return;
         }
         auto text = *call.final_message;
-        if (call.method == "tools/list") {
+        if (call.method == methods::g_TOOLS_LIST) {
             text = track_tools(call, std::move(text));
         }
         enqueue_message(std::move(text));
@@ -1983,7 +1986,7 @@ struct HttpClientTransport::Impl {
         bool streaming = false;
         try {
             streaming = co_await run_exchange(impl, call, true);
-            if (!streaming && call->method == "tools/call" && is_header_mismatch(*call)) {
+            if (!streaming && call->method == methods::g_TOOLS_CALL && is_header_mismatch(*call)) {
                 co_await refresh_tool_schemas(impl, call);
                 streaming = co_await run_exchange(impl, call, true);
             }
