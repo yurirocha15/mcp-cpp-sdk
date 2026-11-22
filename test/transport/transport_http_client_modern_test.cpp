@@ -18,6 +18,7 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core.hpp>
@@ -160,14 +161,25 @@ class RawServer {
         }
     }
 
+    /// Sets @p gone when the client ends the connection. Reads nothing, so the next request the
+    /// client sends on the connection once the answer is over stays for serve_connection.
     static mcp::Task<void> watch_for_eof(std::shared_ptr<asio::ip::tcp::socket> socket,
                                          std::shared_ptr<bool> gone) {
-        std::array<char, 64> sink{};
-        try {
-            for (;;) {
-                co_await socket->async_read_some(asio::buffer(sink), asio::use_awaitable);
-            }
-        } catch (const std::exception&) {
+        boost::system::error_code error;
+        co_await socket->async_wait(asio::ip::tcp::socket::wait_read,
+                                    asio::redirect_error(asio::use_awaitable, error));
+        if (error) {
+            *gone = true;
+            co_return;
+        }
+        std::array<char, 1> byte{};
+        socket->non_blocking(true, error);
+        const auto peeked =
+            socket->receive(asio::buffer(byte), asio::ip::tcp::socket::message_peek, error);
+        boost::system::error_code ignored;
+        socket->non_blocking(false, ignored);
+        // Bytes waiting are the next request; would_block means serve_connection read them first.
+        if (peeked == 0 && error != asio::error::would_block) {
             *gone = true;
         }
     }
