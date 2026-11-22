@@ -739,7 +739,9 @@ struct HttpClientTransport::Impl {
         return mcp::detail::dump_json(parsed);
     }
 
-    void process_response(const StringResponse& response, const std::string& sent, bool in_session) {
+    /// Hands the JSON-RPC messages of @p response to the reader. An error status throws
+    /// HttpStatusError, unless a sessionless request was answered with a JSON-RPC error.
+    void deliver_response(const StringResponse& response, const std::string& sent, bool in_session) {
         if (response.result() == http::status::accepted) {
             return;
         }
@@ -922,7 +924,7 @@ struct HttpClientTransport::Impl {
                 response = co_await exchange(impl, *sent, bearer_token_provider);
             }
             impl->capture_session_id(response);
-            impl->process_response(response, *sent, in_session);
+            impl->deliver_response(response, *sent, in_session);
             if (initialize_operation) {
                 state.initialize_request_key.reset();
             }
@@ -962,7 +964,7 @@ struct HttpClientTransport::Impl {
         }
         impl->capture_session_id(initialized);
         try {
-            impl->process_response(initialized, *initialize, false);
+            impl->deliver_response(initialized, *initialize, false);
         } catch (...) {
             state.initialize_request_key.reset();
             throw;
@@ -972,7 +974,7 @@ struct HttpClientTransport::Impl {
             R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
         const bool in_session = !state.session_id.empty();
         const auto accepted = co_await exchange(impl, *notification, bearer_token_provider);
-        impl->process_response(accepted, *notification, in_session);
+        impl->deliver_response(accepted, *notification, in_session);
         state.session_lost = false;
     }
 
