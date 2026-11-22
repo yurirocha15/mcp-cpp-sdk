@@ -429,9 +429,8 @@ struct RequestOptions {
     /**
      * @brief Minimum log level the server should emit for this request.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging, with removal no
-     * earlier than 2027-07-28. Servers of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @details Sent as `io.modelcontextprotocol/logLevel` in the request's `_meta` when the
      * session is modern. A legacy session sets its level with logging/setLevel instead, and this
@@ -1180,9 +1179,8 @@ class MCP_API Client {
     /**
      * @brief Register a handler for sampling requests from the server.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling, with removal no
-     * earlier than 2027-07-28. Servers of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @details Registers a request handler for "sampling/createMessage": the handler receives the
      * request's CreateMessageRequestParams and returns the CreateMessageResult sent back. A
@@ -1198,9 +1196,8 @@ class MCP_API Client {
     /**
      * @brief Set static roots and auto-register the roots/list handler.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots, with removal no
-     * earlier than 2027-07-28. Servers of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @details Stores the given roots and registers a request handler for
      * "roots/list" that returns them. If notify is true, sends a
@@ -1215,9 +1212,8 @@ class MCP_API Client {
     /**
      * @brief Register a dynamic handler for roots/list requests.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots, with removal no
-     * earlier than 2027-07-28. Servers of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @param handler Async handler that returns a ListRootsResult.
      */

@@ -166,9 +166,8 @@ class Context {
     /**
      * @brief Sends an informational log message to the client.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging, with removal no
-     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @param msg The log message to send.
      * @return A task that completes when the message is sent.
@@ -178,9 +177,8 @@ class Context {
     /**
      * @brief Send a log message at a specific level.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging, with removal no
-     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @details Respects the server's current log level. Messages with a level
      * higher (less severe) than the current threshold are silently dropped.
@@ -265,9 +263,8 @@ class Context {
     /**
      * @brief Request the client to sample an LLM (reverse RPC).
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling, with removal no
-     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @details Sends a "sampling/createMessage" request to the client
      * and awaits the response. Requires the Context to be constructed
@@ -331,9 +328,8 @@ class Context {
     /**
      * @brief Request the list of roots from the client (reverse RPC).
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots, with removal no
-     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
-     * with MCP_DEPRECATED yet.
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
+     * on the Specification Support page for why the SDK keeps it.
      *
      * @details Sends a "roots/list" request to the client and awaits
      * the response. The client provides its configured root URIs.
