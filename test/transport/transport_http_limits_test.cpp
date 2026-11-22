@@ -1,4 +1,4 @@
-#include "../../src/detail/http_limits.hpp"
+#include "../../src/transport/http_limits.hpp"
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 

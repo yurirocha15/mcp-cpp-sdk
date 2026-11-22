@@ -11,7 +11,6 @@
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/protocol/request_meta.hpp>
-#include <mcp/transport/transport.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -54,6 +53,8 @@ using MessageSender = std::function<Task<void>(std::string_view)>;
 /// Context::report_progress_sync()).
 using ProgressSink = std::function<void(double progress, std::optional<double> total,
                                         const std::optional<std::string>& message)>;
+
+class ITransport;
 
 namespace detail {
 struct ContextRouting;

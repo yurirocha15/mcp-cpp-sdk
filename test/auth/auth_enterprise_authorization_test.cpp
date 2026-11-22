@@ -17,6 +17,7 @@
 #include <mcp/auth/enterprise_authorization.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
+#include <mcp/server/server.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>

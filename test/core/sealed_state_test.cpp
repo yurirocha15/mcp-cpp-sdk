@@ -1,4 +1,4 @@
-#include "../../src/detail/sealed_state.hpp"
+#include "../../src/server/sealed_state.hpp"
 #include "../../src/detail/constants.hpp"
 
 #include <gtest/gtest.h>

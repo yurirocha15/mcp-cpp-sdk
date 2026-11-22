@@ -2,6 +2,7 @@
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <memory>
 #include <optional>

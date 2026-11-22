@@ -15,8 +15,9 @@
 #include <mcp/core/export.hpp>
 #include <mcp/core/notification_rate_limit.hpp>
 #include <mcp/protocol/protocol.hpp>
-#include <mcp/server/request_context.hpp>
+#include <mcp/server/middleware.hpp>
 #include <mcp/server/task_store.hpp>
+#include <mcp/transport/request_context.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <atomic>
@@ -46,16 +47,9 @@ namespace detail {
 class RunControl;
 }  // namespace detail
 
-/// @brief Type-erased handler: takes a Context and JSON params, returns JSON result.
-using TypeErasedHandler = std::function<Task<nlohmann::json>(Context&, const nlohmann::json&)>;
-
 /// @brief Type-erased synchronous handler: takes a Context and JSON params, returns the JSON
 /// result directly.
 using SyncTypeErasedHandler = std::function<nlohmann::json(Context&, const nlohmann::json&)>;
-
-/// @brief Middleware function signature for intercepting handler invocations.
-using Middleware =
-    std::function<Task<nlohmann::json>(Context&, const nlohmann::json&, TypeErasedHandler)>;
 
 /// @brief Completion handler: takes CompleteParams, returns CompleteResult.
 using CompletionHandler = std::function<Task<CompleteResult>(const CompleteParams&)>;

@@ -1,6 +1,6 @@
 #include "../test_utils.hpp"
 
-#include "../../src/detail/http_request_metadata.hpp"
+#include "../../src/transport/http_request_metadata.hpp"
 #include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"

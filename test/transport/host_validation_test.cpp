@@ -1,6 +1,6 @@
 // The Host check of the HTTP and WebSocket servers. The policy is internal, so the test includes its
 // header; the test program builds src/transport/proxy.cpp, which holds the loopback rule.
-#include "../../src/detail/host_policy.hpp"
+#include "../../src/transport/host_policy.hpp"
 
 #include "mcp/core/async.hpp"
 #include "mcp/transport/http_server.hpp"

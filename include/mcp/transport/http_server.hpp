@@ -3,8 +3,8 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/protocol.hpp>
-#include <mcp/server/request_context.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/request_context.hpp>
 #include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
 

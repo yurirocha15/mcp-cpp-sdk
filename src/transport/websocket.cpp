@@ -5,10 +5,10 @@
 #include "../detail/connection.hpp"
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
-#include "../detail/host_policy.hpp"
 #include "../detail/socket_deadline.hpp"
 #include "../detail/tls.hpp"
-#include "../detail/tls_accept.hpp"
+#include "host_policy.hpp"
+#include "tls_accept.hpp"
 
 #include <algorithm>
 #include <atomic>

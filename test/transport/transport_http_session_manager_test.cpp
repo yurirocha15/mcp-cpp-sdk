@@ -5,6 +5,7 @@
 #include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/server/server.hpp"
 #include "mcp/transport/http_beast.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_session_manager.hpp"

@@ -1,4 +1,4 @@
-#include "../../src/detail/http_response_write.hpp"
+#include "../../src/transport/http_response_write.hpp"
 #include "../support/spawn.hpp"
 
 #include <mcp/core/async.hpp>

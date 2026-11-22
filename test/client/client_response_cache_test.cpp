@@ -1,6 +1,6 @@
 // The response cache of the client. The cache class is internal, so the unit tests include its
 // header; the client tests use a scripted 2026-07-28 peer that counts the requests reaching it.
-#include "../../src/detail/response_cache.hpp"
+#include "../../src/client/response_cache.hpp"
 
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"

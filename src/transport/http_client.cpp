@@ -2,13 +2,13 @@
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/header_value.hpp"
 #include "../detail/http_connect.hpp"
-#include "../detail/http_request_metadata.hpp"
 #include "../detail/param_headers.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/proxy.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/socket_deadline.hpp"
 #include "../detail/tls.hpp"
+#include "http_request_metadata.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>

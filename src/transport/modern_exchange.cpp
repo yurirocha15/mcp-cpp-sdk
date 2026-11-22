@@ -2,8 +2,8 @@
 
 #include "../detail/beast_string.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/http_request_metadata.hpp"
-#include "../detail/socket_probe.hpp"
+#include "http_request_metadata.hpp"
+#include "socket_probe.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>

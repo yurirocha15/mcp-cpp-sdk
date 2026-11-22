@@ -14,7 +14,8 @@
 namespace mcp {
 
 /**
- * @brief Per-call state for Server::dispatch_request_direct().
+ * @brief What a transport tells the server about one call it carries, for
+ * Server::dispatch_request_direct().
  */
 struct RequestContext {
     /// Cancellation flag for this call: setting it cancels the request, and its handler sees it

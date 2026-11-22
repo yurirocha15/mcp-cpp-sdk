@@ -2,8 +2,8 @@
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/notification_budget.hpp"
 #include "../detail/peer_json.hpp"
-#include "../detail/response_cache.hpp"
 #include "../detail/spawn_awaitable.hpp"
+#include "response_cache.hpp"
 
 #include <mcp/client/client.hpp>
 #include <mcp/core/async.hpp>

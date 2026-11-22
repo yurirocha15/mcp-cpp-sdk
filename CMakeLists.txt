@@ -133,7 +133,7 @@ set(MCP_CPP_SDK_SOURCES
     src/client/client.cpp
     src/client/endpoint.cpp
     src/client/restarting_stdio_transport.cpp
-    src/detail/sealed_state.cpp
+    src/server/sealed_state.cpp
     src/client/stdio_session.cpp
     src/client/apps.cpp
     src/client/skills.cpp
@@ -505,7 +505,7 @@ if(BUILD_TESTING)
   # sources themselves.
   add_executable(
     mcp-sdk-tests
-    ${TEST_SRCS} src/detail/sealed_state.cpp src/protocol/schema_uri.cpp
+    ${TEST_SRCS} src/server/sealed_state.cpp src/protocol/schema_uri.cpp
     src/transport/proxy.cpp test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   # Compiled apart from the test program, whose unity build would make Task
@@ -639,7 +639,7 @@ if(BUILD_TESTING)
     # the test program rebuilds.
     set_source_files_properties(
       test/support/test_timeout.cpp test/support/resolve_gate.cpp
-      test/support/socket_gate.cpp src/detail/sealed_state.cpp
+      test/support/socket_gate.cpp src/server/sealed_state.cpp
       src/protocol/schema_uri.cpp src/transport/proxy.cpp
       PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     # A fixture in a test file's unnamed namespace is the base of the test

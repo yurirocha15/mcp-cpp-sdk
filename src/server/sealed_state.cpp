@@ -1,5 +1,5 @@
 #include "sealed_state.hpp"
-#include "constants.hpp"
+#include "../detail/constants.hpp"
 
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>

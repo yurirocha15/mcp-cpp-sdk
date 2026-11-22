@@ -1,7 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
-#include "../../src/detail/principal.hpp"
+#include "../../src/transport/principal.hpp"
 
 #include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"

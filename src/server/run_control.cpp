@@ -1,6 +1,6 @@
 #include "run_control.hpp"
 
-#include "../detail/handler_pool.hpp"
+#include "handler_pool.hpp"
 
 #include <mcp/core/async.hpp>
 

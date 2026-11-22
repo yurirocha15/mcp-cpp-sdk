@@ -7,7 +7,7 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/core/export.hpp>
-#include <mcp/server/server.hpp>
+#include <mcp/server/middleware.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/proxy.hpp>
 #include <mcp/transport/tls.hpp>

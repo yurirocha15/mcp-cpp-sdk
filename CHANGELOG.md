@@ -69,6 +69,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Tool registration throws for a name that is empty, longer than 128 characters or holds characters other than ASCII letters, digits, `_`, `-` and `.`.
 - `Context::sample_llm()` refuses an `includeContext` other than "none" for a client that did not declare `sampling.context`.
 - An OAuth metadata discovery that finds no document says in its error why each well-known URL it tried failed.
+- `RequestContext` is declared in `<mcp/transport/request_context.hpp>`, and the transport, auth and `Context` headers no longer include server or transport headers they do not use.
 
 ### Removed
 
@@ -86,6 +87,9 @@ Code written for 0.3.0 needs these changes to compile with this release:
 - `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
 - Construct transports with `Runtime::executor()` instead of `TransportFactory`.
 - Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
+- Include `<mcp/server/server.hpp>` where code uses `Server` after including only `<mcp/transport/http_session_manager.hpp>` or `<mcp/auth/oauth.hpp>`.
+- Include `<mcp/transport/request_context.hpp>` where code included `<mcp/server/request_context.hpp>`.
+- Include `<mcp/transport/transport.hpp>` where code uses `ITransport` after including only `<mcp/core/context.hpp>`.
 
 These changes in behavior need no change to compile:
 

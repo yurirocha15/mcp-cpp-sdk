@@ -1,6 +1,6 @@
 #pragma once
 
-#include "connection.hpp"
+#include "../detail/connection.hpp"
 
 #include <mcp/core/async.hpp>
 
