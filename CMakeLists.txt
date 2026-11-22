@@ -153,6 +153,11 @@ set(MCP_CPP_SDK_SOURCES
     src/server/task_run.cpp
     src/server/task_store.cpp
     src/server/server.cpp
+    src/server/server_dispatch.cpp
+    src/server/server_listen.cpp
+    src/server/server_mrtr.cpp
+    src/server/server_session.cpp
+    src/server/server_tasks.cpp
     src/transport/stdio.cpp
     src/transport/transport.cpp
     src/transport/stdio_client.cpp
