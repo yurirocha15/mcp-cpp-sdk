@@ -827,6 +827,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
             try {
                 options.on_exit(exit);
             } catch (...) {
+                // The callback observes; a failure of its own has no listener.
             }
         }
     }
@@ -1043,6 +1044,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                 try {
                     self->options.on_stderr_line(line);
                 } catch (...) {
+                    // The callback observes; a failure of its own must not stop the reading.
                 }
             }
         };

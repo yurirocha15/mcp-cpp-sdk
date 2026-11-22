@@ -59,6 +59,7 @@ int main(int argc, char** argv) {
                 std::cerr << "Name the server's certificate authority as CA_FILE\n";
             }
         } catch (...) {
+            // Another cause: the message below describes it.
         }
         std::cerr << error.what() << "\n";
         return 1;

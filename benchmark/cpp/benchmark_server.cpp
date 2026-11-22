@@ -348,6 +348,7 @@ class RedisPool {
                 co_return rate_reply.as_integer();
             }
         } catch (...) {
+            // A failed pipeline drops its connection and counts nothing.
         }
         co_return 0;
     }
@@ -619,6 +620,7 @@ mcp::Task<mcp::CallToolResult> handle_get_user_cart(const GetUserCartArgs& args)
                     first_product_id = items[0]["product_id"].get<int>();
                 }
             } catch (...) {
+                // Items that are not valid JSON leave the defaults.
             }
         }
 
@@ -645,6 +647,7 @@ mcp::Task<mcp::CallToolResult> handle_get_user_cart(const GetUserCartArgs& args)
             try {
                 estimated_total = std::stod(cart_hash["total"]);
             } catch (...) {
+                // A total that is not a number leaves the estimate at zero.
             }
         }
 
