@@ -35,6 +35,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The documentation lists which parts of the specification the SDK implements and marks the features protocol revision 2026-07-28 deprecates.
 - The built-in transports throw `TransportError` for their failures, network errors included; `kind()` tells closed, connect, I/O and protocol failures apart; `code()` holds a network error's code.
 - `mcp::constants::methods` names the JSON-RPC methods the SDK sends and handles, such as `g_TOOLS_CALL`.
+- `Icon`, `Implementation`, `ServerCapabilities` and `InitializeResult` compare with `==`.
 
 ### Changed
 

@@ -467,6 +467,30 @@ Task<std::string> Server::Impl::dispatch_modern_wire(const nlohmann::json& json_
     co_return co_await handle_complete_wire(json_msg, scope);
 }
 
+namespace {
+
+/// The JSON text @p result serializes to. Each thread keeps the last result it serialized and
+/// reuses the text while the next result equals it: a session manager's factory and run_http()
+/// build the same server for every session, whose initialize results are then alike. Equal JSON
+/// values in the capabilities may write a number differently (1 and 1.0), which is still the same
+/// JSON number.
+const std::string& initialize_result_text(InitializeResult result) {
+    struct LastResult {
+        std::optional<InitializeResult> result;
+        std::string text;
+    };
+    thread_local LastResult s_last;
+    if (!s_last.result || *s_last.result != result) {
+        std::string text;
+        detail::append_json(text, nlohmann::json(result));
+        s_last.text = std::move(text);
+        s_last.result = std::move(result);
+    }
+    return s_last.text;
+}
+
+}  // namespace
+
 Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& json_msg,
                                                        bool update_lifecycle) {
     auto initialize_request =
@@ -499,8 +523,9 @@ Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& jso
         }
         lifecycle.store(Impl::LifecycleState::eAwaitingInitialized, std::memory_order_relaxed);
     }
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(),
-                               nlohmann::json(std::move(init_result)));
+    auto wire = make_result_text_wire(json_msg.at("id").get<RequestId>(),
+                                      initialize_result_text(std::move(init_result)));
+    co_return wire;
 }
 
 Task<std::string> Server::Impl::handle_shutdown_wire(const nlohmann::json& json_msg) {
@@ -1161,6 +1186,15 @@ std::string Server::Impl::make_result_wire(const RequestId& id, nlohmann::json r
     return wire;
 }
 
+std::string Server::Impl::make_result_text_wire(const RequestId& id, std::string_view result_text) {
+    std::string wire = R"({"id":)";
+    detail::append_json(wire, nlohmann::json(id));
+    wire += R"(,"jsonrpc":"2.0","result":)";
+    wire += result_text;
+    wire += '}';
+    return wire;
+}
+
 std::string Server::Impl::make_result_wire(const RequestId& id, const RequestScope& scope,
                                            nlohmann::json result,
                                            std::optional<CacheTarget> target) const {
@@ -1222,7 +1256,7 @@ std::string Server::Impl::make_result_wire(const RequestId& id,
             meta = nlohmann::json::object();
         }
         if (meta.is_object()) {
-            meta.emplace(mcp::constants::meta::g_META_SERVER_INFO, server_info_json);
+            meta.emplace(mcp::constants::meta::g_META_SERVER_INFO, nlohmann::json(server_info));
         }
     }
     if (target) {

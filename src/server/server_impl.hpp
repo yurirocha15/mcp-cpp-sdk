@@ -983,7 +983,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::shared_ptr<Registry> registry = std::make_shared<Registry>();
 
     Implementation& server_info = registry->server_info;
-    nlohmann::json& server_info_json = registry->server_info_json;
     ServerCapabilities& capabilities = registry->capabilities;
     std::optional<std::string>& instructions = registry->instructions;
     std::array<CacheHint, 6>& cache_hints = registry->cache_hints;
@@ -1157,8 +1156,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// and subscriptions) stays with each server.
     struct Registry {
         Implementation server_info;
-        /// server_info as JSON, converted once for the answers that report it.
-        nlohmann::json server_info_json;
         ServerCapabilities capabilities;
         std::optional<std::string> instructions;
         std::array<CacheHint, 6> cache_hints{};
@@ -1460,6 +1457,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     detail::ParamHeaderCheck make_param_header_check();
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
     static std::string make_result_wire(const RequestId& id, nlohmann::json result);
+    /// The response to @p id whose result is @p result_text, JSON text already serialized.
+    static std::string make_result_text_wire(const RequestId& id, std::string_view result_text);
     /// The response to a request: for a 2026-07-28 request, @p result with the members that
     /// revision adds to every result (resultType, and the server's identity when reported) and,
     /// for a cacheable one, the hints of @p target. Members the result already has are kept.

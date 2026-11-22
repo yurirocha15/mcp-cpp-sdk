@@ -79,6 +79,8 @@ struct Icon {
     std::optional<std::string> mimeType;            ///< Optional MIME type.
     std::optional<std::vector<std::string>> sizes;  ///< Optional size specification.
     std::optional<std::string> theme;               ///< Optional theme (e.g., "light" or "dark").
+
+    bool operator==(const Icon&) const = default;
 };
 
 /**
@@ -132,6 +134,8 @@ struct Implementation {
     std::optional<std::string> description;  ///< Human-readable description of this implementation.
     std::optional<std::string> websiteUrl;   ///< The website URL of the implementation.
     std::optional<std::vector<Icon>> icons;  ///< Icons for the implementation.
+
+    bool operator==(const Implementation&) const = default;
 };
 
 /**
@@ -228,6 +232,8 @@ struct ServerCapabilities {
     struct PromptsCapability {
         std::optional<bool>
             listChanged;  ///< Whether the server supports prompt list change notifications.
+
+        bool operator==(const PromptsCapability&) const = default;
     };
 
     /**
@@ -238,6 +244,8 @@ struct ServerCapabilities {
             listChanged;  ///< Whether the server supports resource list change notifications.
         std::optional<bool>
             subscribe;  ///< Whether the server supports subscribing to resource updates.
+
+        bool operator==(const ResourcesCapability&) const = default;
     };
 
     /**
@@ -246,6 +254,8 @@ struct ServerCapabilities {
     struct ToolsCapability {
         std::optional<bool>
             listChanged;  ///< Whether the server supports tool list change notifications.
+
+        bool operator==(const ToolsCapability&) const = default;
     };
 
     std::optional<nlohmann::json> completions;   ///< Support for completion/complete requests.
@@ -256,6 +266,8 @@ struct ServerCapabilities {
     std::optional<ToolsCapability> tools;          ///< Support for tool endpoints.
     std::optional<std::map<std::string, nlohmann::json>>
         extensions;  ///< Extension capability negotiation, keyed by extension name.
+
+    bool operator==(const ServerCapabilities&) const = default;
 };
 
 MCP_API void to_json(nlohmann::json& j, const ServerCapabilities::PromptsCapability& cap);
@@ -303,6 +315,8 @@ struct InitializeResult {
     ServerCapabilities capabilities;          ///< The capabilities supported by the server.
     ServerInfo serverInfo;                    ///< Information about the server implementation.
     std::optional<std::string> instructions;  ///< Optional instructions for the client.
+
+    bool operator==(const InitializeResult&) const = default;
 };
 
 /**
