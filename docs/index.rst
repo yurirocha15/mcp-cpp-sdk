@@ -11,11 +11,10 @@ features, this SDK offers a clean, type-safe API for building MCP servers and cl
 Features
 --------
 
-* **Modern C++20**: Leverages coroutines, concepts, and ranges
+* **Modern C++20**: Leverages coroutines and concepts for readable asynchronous code and clear compile-time errors
 * **Flexible transports**: stdio, WebSocket, Streamable HTTP, and custom transport support
 * **Type-safe**: Strong typing with JSON serialization via nlohmann_json
-* **Async-first**: Built on Boost.Asio for high-performance I/O
-* **Blocking API**: Synchronous handlers and blocking client calls for small programs, which include no Boost header
+* **Async-first**: Built on Boost.Asio for high-performance I/O. A sync mode, with plain-function handlers and blocking calls, is also available for simple programs and rapid prototyping
 * **Protocol revision 2026-07-28**: Sessionless requests, ``server/discover``, cache hints, multi round-trip requests and ``subscriptions/listen``, with the older revisions served on the same transports
 * **Broad MCP surface**: Tools, resources, prompts, sampling, roots, progress, and notifications
 * **Conformance tested**: The official MCP suites run in CI, with known gaps listed

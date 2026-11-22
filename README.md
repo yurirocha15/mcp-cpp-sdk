@@ -12,8 +12,7 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 
 ## Why mcp-cpp-sdk?
 
-- **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`.
-- **Blocking API**: Synchronous handlers and blocking client calls for small programs, which include no Boost header.
+- **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`. A sync mode, with plain-function handlers and blocking calls, is also available for simple programs and rapid prototyping.
 - **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
 - **Three transports**: Stdio, WebSocket and Streamable HTTP.
 - **Protocol revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
