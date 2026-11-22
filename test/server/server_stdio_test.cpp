@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <future>
@@ -205,6 +206,9 @@ class StdioServerProcess {
         int from_child[2];
         EXPECT_EQ(::pipe(to_child), 0);
         EXPECT_EQ(::pipe(from_child), 0);
+        // The child ends with std::exit(), which writes what the parent's streams held at the fork,
+        // such as buffered test output, into the server's standard output.
+        std::fflush(nullptr);
         child_ = ::fork();
         if (child_ == 0) {
             ::dup2(to_child[0], STDIN_FILENO);
