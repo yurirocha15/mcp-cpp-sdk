@@ -81,6 +81,9 @@ CURRENT_K6_CONTAINER=""
 HOST_CPU_LIMIT=""
 HOST_MEMORY_BYTES=""
 HOST_CPUSET=""
+TARGET_CPUSET=""
+RESERVED_CPUSET=""
+SHARED_CPUSET=""
 FAILURE_STAGE=""
 FAILURE_REASON=""
 FAILURE_EVIDENCE_LOG=""
@@ -778,7 +781,7 @@ run_k6_warmup() {
     set +e
     docker run --rm --name "$container" \
         --network host --cpus "$BENCHMARK_K6_CPUS" --memory "$BENCHMARK_K6_MEMORY" \
-        --cpuset-cpus "$HOST_CPUSET" \
+        --cpuset-cpus "$SHARED_CPUSET" \
         --user "$(id -u):$(id -g)" \
         -v "$K6_RUNTIME_SCRIPT_DIR:/scripts:ro" \
         -v "$server_results:/results" \
@@ -840,7 +843,7 @@ run_k6_measurement() {
     docker rm -f "$container" >/dev/null 2>&1 || true
     docker run --name "$container" \
         --network host --cpus "$BENCHMARK_K6_CPUS" --memory "$BENCHMARK_K6_MEMORY" \
-        --cpuset-cpus "$HOST_CPUSET" \
+        --cpuset-cpus "$SHARED_CPUSET" \
         --user "$(id -u):$(id -g)" \
         -v "$K6_RUNTIME_SCRIPT_DIR:/scripts:ro" \
         -v "$server_results:/results" \
@@ -865,7 +868,7 @@ run_k6_measurement() {
         --output-dir "$server_results/k6" \
         --expected-cpus "$BENCHMARK_K6_CPUS" \
         --expected-memory-bytes "$BENCHMARK_K6_MEMORY_BYTES" \
-        --expected-cpuset "$HOST_CPUSET" \
+        --expected-cpuset "$SHARED_CPUSET" \
         --skip-executable
 
     start_collector "${CONTAINER_NAME[$server]}" "$server_results/stats_run${run_idx}.json"
@@ -1011,6 +1014,10 @@ write_run_manifest() {
         --argjson think_time_seconds "$BENCHMARK_THINK_TIME_SECONDS" \
         --argjson api_service_cpus "$API_CPUS_ARG" \
         --argjson redis_cpus "$REDIS_CPUS_ARG" \
+        --arg host_cpuset "$HOST_CPUSET" \
+        --arg target_cpuset "$TARGET_CPUSET" \
+        --arg reserved_cpuset "$RESERVED_CPUSET" \
+        --arg shared_cpuset "$SHARED_CPUSET" \
         --argjson cell_failures_allowed \
             "$([[ "$CELL_FAILURES_ALLOWED" -eq 1 ]] && echo true || echo false)" \
         --slurpfile schedule "$RESULTS_DIR/run_order.json" \
@@ -1031,6 +1038,8 @@ write_run_manifest() {
               required_targets: $supplemental_targets
             }
           },
+          cpu_sets: {host: $host_cpuset, target: $target_cpuset,
+            reserved: $reserved_cpuset, shared: $shared_cpuset},
           session_modes: $session_modes,
           requested_protocols: $requested_protocols,
           resource_collection: {host_network_policy: $host_network_policy},
@@ -1225,18 +1234,29 @@ HOST_MEMORY_BYTES="$(awk '/^MemTotal:/ {printf "%.0f", $2 * 1024; exit}' /proc/m
 [[ "$HOST_CPU_LIMIT" =~ ^[1-9][0-9]*$ ]] || { error "Could not determine host CPU affinity"; exit 1; }
 [[ "$HOST_MEMORY_BYTES" =~ ^[1-9][0-9]*$ ]] || { error "Could not determine host memory"; exit 1; }
 [[ -n "$HOST_CPUSET" ]] || { error "Could not determine host CPU set"; exit 1; }
-export BENCHMARK_CPUSET="$HOST_CPUSET"
+# The server under test runs on CPUs of its own, one per physical core, with the other hardware
+# threads of those cores left idle. A CPU limit spread over the whole host lets a server whose
+# threads run at once use up its quota early in each scheduling period and then stops all of them
+# until the next one. Redis, the API service and k6 share the remaining CPUs.
+cpu_partition_json="$(python3 "$SCRIPT_DIR/cpu_partition.py" --cpus "$HOST_CPUSET" --target-cpus 2)" \
+    || { error "Could not give the server under test two CPUs on separate physical cores"; exit 1; }
+TARGET_CPUSET="$(jq -r .target <<< "$cpu_partition_json")"
+RESERVED_CPUSET="$(jq -r .reserved <<< "$cpu_partition_json")"
+SHARED_CPUSET="$(jq -r .shared <<< "$cpu_partition_json")"
+SHARED_CPU_COUNT="$(tr ',' '\n' <<< "$SHARED_CPUSET" | grep -c .)"
+export BENCHMARK_CPUSET="$SHARED_CPUSET"
+export BENCHMARK_TARGET_CPUSET="$TARGET_CPUSET"
 configured_cpus="$(awk -v k6="$BENCHMARK_K6_CPUS" -v api="$BENCHMARK_API_CPUS" \
-    -v redis="$BENCHMARK_REDIS_CPUS" 'BEGIN {printf "%g", k6 + api + redis + 2}')"
-required_host_cpus="$(awk -v n="$configured_cpus" 'BEGIN {c = int(n); if (c < n) c++; print c}')"
-if [[ "$RUN_PROFILE" != "smoke" && "$HOST_CPU_LIMIT" -lt "$required_host_cpus" ]]; then
-    error "Full-duration runs require at least $required_host_cpus host CPUs for $configured_cpus CPUs of configured limits"
+    -v redis="$BENCHMARK_REDIS_CPUS" 'BEGIN {printf "%g", k6 + api + redis}')"
+required_shared_cpus="$(awk -v n="$configured_cpus" 'BEGIN {c = int(n); if (c < n) c++; print c}')"
+if [[ "$RUN_PROFILE" != "smoke" && "$SHARED_CPU_COUNT" -lt "$required_shared_cpus" ]]; then
+    error "Full-duration runs require $required_shared_cpus CPUs beside the server's for $configured_cpus CPUs of configured limits; $SHARED_CPU_COUNT remain"
     exit 1
 fi
 compose version >/dev/null
 [[ -f "$K6_SCRIPT" ]] || { error "Missing local k6 profile: $K6_SCRIPT"; exit 1; }
 [[ -f "$K6_MODERN_SCRIPT" ]] || { error "Missing local k6 profile: $K6_MODERN_SCRIPT"; exit 1; }
-for helper in benchmark_order.py capture_container.py capture_environment.py \
+for helper in benchmark_order.py capture_container.py capture_environment.py cpu_partition.py \
     collect_stats.py select_median_run.py summarize_collector_failures.py \
     validate_resource_headroom.py verify_server.py; do
     [[ -f "$SCRIPT_DIR/$helper" ]] || { error "Missing benchmark helper: $helper"; exit 1; }
@@ -1343,12 +1363,12 @@ mkdir -p "$RESULTS_DIR/shared/redis" "$RESULTS_DIR/shared/api_service"
 python3 "$SCRIPT_DIR/capture_container.py" \
     --container mcp-redis --run 1 --output-dir "$RESULTS_DIR/shared/redis" \
     --expected-cpus "$REDIS_CPUS_ARG" --expected-memory-bytes 536870912 \
-    --expected-cpuset "$HOST_CPUSET"
+    --expected-cpuset "$SHARED_CPUSET"
 python3 "$SCRIPT_DIR/capture_container.py" \
     --container mcp-api-service --run 1 \
     --output-dir "$RESULTS_DIR/shared/api_service" \
     --expected-cpus "$API_CPUS_ARG" --expected-memory-bytes 2147483648 \
-    --expected-cpuset "$HOST_CPUSET"
+    --expected-cpuset "$SHARED_CPUSET"
 
 sequence_index=0
 for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
@@ -1384,7 +1404,7 @@ for run_idx in $(seq 1 "$BENCHMARK_RUNS"); do
         python3 "$SCRIPT_DIR/capture_container.py" \
             --container "$container" --run "$run_idx" --output-dir "$server_results" \
             --expected-cpus 2 --expected-memory-bytes 2147483648 \
-            --expected-cpuset "$HOST_CPUSET"
+            --expected-cpuset "$TARGET_CPUSET"
 
         reset_redis_dataset
         info "[$server] correctness and negotiation gate"

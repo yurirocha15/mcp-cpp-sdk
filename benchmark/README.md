@@ -24,9 +24,11 @@ that the harness works; it is not a performance result.
 - `python3`, `jq`, and `git`
 
 k6 runs from a container image pinned by digest, so a host k6 installation is
-not required. A full-duration run also requires at least nine CPUs in the
-orchestrator's effective affinity set; this leaves measurable capacity for the
-8.5 CPUs assigned across the target and shared services.
+not required. The server under test needs two CPUs on separate physical cores
+of the orchestrator's effective affinity set, and a full-duration run needs as
+many further CPUs as the limits of Redis, the API service and k6 add up to:
+7 for the paced load model and 17 for the capacity model (see
+[Concurrency and resource controls](#concurrency-and-resource-controls)).
 
 ## Quick start
 
@@ -350,9 +352,18 @@ by Docker CPU, memory, and network sampling. The harness records the effective
 container limits and image identity for every measured run.
 
 Redis is limited to 0.5 CPU and 512 MiB, the API service to 2 CPUs and 2 GiB,
-and k6 to 4 CPUs and 2 GiB. Every measured container is constrained to the same
-host CPU-affinity set inherited by the harness. The preflight rejects a Docker
-or effective cgroup CPU set that differs from that recorded set.
+and k6 to 4 CPUs and 2 GiB.
+
+The server under test runs on two CPUs of its own, on separate physical cores,
+chosen from the host CPU-affinity set inherited by the harness by
+`cpu_partition.py`: the two highest-numbered cores, one hardware thread each. The
+other hardware threads of those cores are left idle, and Redis, the API service
+and k6 share the remaining CPUs. With its 2-CPU limit spread over the whole host
+instead, a server whose threads run at once can use up its quota early in each
+scheduling period and is then stopped until the next one. `run_manifest.json`
+records the sets
+under `cpu_sets`, and the preflight rejects a container whose Docker or effective
+cgroup CPU set differs from the one chosen for it.
 
 These are the limits of the paced load model, `BENCHMARK_LOAD_MODEL=paced`, which
 is the default. Each virtual user sleeps 50 ms per iteration of 4 operations, so
@@ -364,9 +375,10 @@ limits above are not read from the environment by `run.sh`. A capacity run is
 labeled `capacity-full` when it selects `full` with the production round and
 duration settings and `capacity-smoke` otherwise; it is never labeled `production`
 or `production-full`. A complete `capacity-full` run is a publishable candidate and
-`capacity-smoke` is harness validation only. The preflight requires a
-host CPU set at least as large as the sum of all limits: 9 CPUs for the paced
-model and 19 for the capacity model.
+`capacity-smoke` is harness validation only. Beside the server's two CPUs and
+their idle hardware threads, the preflight requires as many CPUs as the shared
+containers' limits add up to: 7 for the paced model and 17 for the capacity
+model.
 
 A capacity run records a cell that crosses a k6 threshold (k6 exit code 99 in the
 warmup or the measurement) as failed and continues; a paced run still stops at the
