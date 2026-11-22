@@ -127,6 +127,11 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/client_identity.cpp
     src/auth/metadata_policy.cpp
     src/auth/oauth.cpp
+    src/auth/oauth_authenticator.cpp
+    src/auth/oauth_authorization_manager.cpp
+    src/auth/oauth_client_transport.cpp
+    src/auth/oauth_discovery.cpp
+    src/auth/oauth_http_client.cpp
     src/auth/grant_flow.cpp
     src/auth/client_authentication.cpp
     src/auth/client_credentials.cpp
