@@ -288,6 +288,13 @@ TEST(ResponseCacheTest, NotificationsDropWhatTheyName) {
     EXPECT_FALSE(kept("resources/read", json{{"uri", "a"}}));
     EXPECT_TRUE(kept("resources/read", json{{"uri", "b"}}));
 
+    // An update that names no URI drops nothing.
+    for (const auto& message : {json::object(), json{{"params", "a"}}, json{{"params", json::object()}},
+                                json{{"params", {{"uri", 7}}}}}) {
+        cache.invalidate("notifications/resources/updated", message);
+        EXPECT_TRUE(kept("resources/read", json{{"uri", "b"}})) << message;
+    }
+
     cache.invalidate("notifications/message", json::object());
     EXPECT_TRUE(kept("prompts/list", std::nullopt));
     cache.invalidate("notifications/prompts/list_changed", json::object());
@@ -479,6 +486,23 @@ TEST(ClientResponseCache, AClosedClientDoesNotAnswerFromTheCache) {
     });
     EXPECT_EQ(harness.count("tools/list"), 1U);
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+}
+
+TEST(ClientResponseCache, ACallBeforeConnectIsRefused) {
+    mcp::ClientOptions options;
+    options.response_cache = cache_on();
+    Harness harness(options);
+    std::optional<int> code;
+    mcp_test::spawn_detached(harness.io, [&]() -> mcp::Task<void> {
+        try {
+            co_await harness.client->list_tools();
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+    });
+    harness.io.run();
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_EQ(harness.count("tools/list"), 0U);
 }
 
 TEST(ClientResponseCache, RefusesLimitsThatKeepNothing) {

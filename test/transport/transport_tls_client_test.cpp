@@ -14,10 +14,16 @@
 #include "../support/spawn.hpp"
 #include "../support/tls_test_support.hpp"
 
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
+
+#include <array>
 #include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -88,6 +94,12 @@ mcp::TlsClientOptions trusting(const Issued& ca) {
     options.use_system_roots = false;
     options.ca_pem = {ca.cert_pem};
     return options;
+}
+
+/// A key of another type than the test certificates' EC keys, as PEM.
+std::string rsa_key_pem() {
+    const mcp_test::tls::KeyPtr key(EVP_RSA_gen(2048), &EVP_PKEY_free);
+    return mcp_test::tls::key_to_pem(key.get());
 }
 
 /// The kind of the TlsError @p error is or nests, if it holds one.
@@ -196,6 +208,16 @@ std::optional<TlsError::Kind> greet_failure(const std::string& url, Configure co
     return std::nullopt;
 }
 
+/// Whether greet() succeeds.
+bool greets(const std::string& url, Configure configure) {
+    try {
+        greet(url, std::move(configure));
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
 std::string https_url(unsigned short port, const std::string& host = "localhost") {
     return "https://" + host + ":" + std::to_string(port) + "/mcp";
 }
@@ -213,6 +235,26 @@ std::filesystem::path write_temp(const std::string& name, const std::string& tex
     const auto path = directory / name;
     std::ofstream(path, std::ios::binary) << text;
     return path;
+}
+
+void set_variable(const char* name, const char* value) {
+#if defined(_WIN32)
+    _putenv_s(name, value);
+#else
+    if (*value == '\0') {
+        ::unsetenv(name);
+    } else {
+        ::setenv(name, value, 1);
+    }
+#endif
+}
+
+void use_threadsafe_death_tests() {
+#ifdef GTEST_FLAG_SET
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+#else  // GoogleTest before 1.12
+    ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+#endif
 }
 
 }  // namespace
@@ -434,6 +476,146 @@ TEST(TlsClientTest, SettingsThatCannotBeUsed) {
     mcp::ProxyOptions socks;
     socks.https_proxy = "socks5://127.0.0.1:1080";
     EXPECT_THROW(plain.set_proxy(socks), std::invalid_argument);
+
+    for (const char* url : {"http://[::1/mcp", "http://[::1]x/mcp", "http://example.test:/mcp",
+                            "http://[::1]:/mcp", "http:///mcp"}) {
+        EXPECT_THROW(mcp::HttpClientTransport(io.get_executor(), url), std::invalid_argument) << url;
+    }
+    // A query or a fragment may follow the host without a path.
+    EXPECT_NO_THROW(mcp::HttpClientTransport(io.get_executor(), "http://example.test?x=1"));
+    EXPECT_NO_THROW(mcp::HttpClientTransport(io.get_executor(), "https://[::1]#top"));
+
+    mcp::HttpClientTransport secure(io.get_executor(), "https://example.test/mcp");
+    EXPECT_THROW(secure.set_server_name(""), std::invalid_argument);
+    EXPECT_THROW(secure.set_server_name("."), std::invalid_argument);
+    EXPECT_NO_THROW(secure.set_server_name("[::1]"));
+}
+
+TEST(TlsClientTest, RefusesClientCredentialsItCannotUse) {
+    const auto with_credentials = [](const std::string& name, const std::string& certificate_pem,
+                                     const std::string& key_pem) {
+        mcp::TlsClientOptions options;
+        options.client_certificate_file = write_temp(name + ".pem", certificate_pem);
+        options.client_key_file = write_temp(name + "-key.pem", key_pem);
+        return options;
+    };
+    EXPECT_THROW((void)mcp::TlsClientContext::create(
+                     with_credentials("garbage", "not a certificate", certs().client.key_pem)),
+                 mcp::TlsConfigError);
+    // A key of another type loads beside the certificate, and the check of the pair refuses it.
+    EXPECT_THROW((void)mcp::TlsClientContext::create(
+                     with_credentials("other-type", certs().client.cert_pem, rsa_key_pem())),
+                 mcp::TlsConfigError);
+
+    const auto encrypted = mcp_test::tls::key_to_pem(certs().client.key.get(), "secret");
+    auto right = with_credentials("encrypted", certs().client.cert_pem, encrypted);
+    right.key_password = [] { return std::string("secret"); };
+    EXPECT_NO_THROW((void)mcp::TlsClientContext::create(right));
+    auto failing = right;
+    failing.key_password = []() -> std::string { throw std::runtime_error("no passphrase"); };
+    EXPECT_THROW((void)mcp::TlsClientContext::create(failing), mcp::TlsConfigError);
+    auto oversized = right;
+    oversized.key_password = [] { return std::string(64 * 1024, 'x'); };
+    EXPECT_THROW((void)mcp::TlsClientContext::create(oversized), mcp::TlsConfigError);
+}
+
+// A ca_dirs entry is a directory of certificates named by their subject hash, as c_rehash makes.
+TEST(TlsClientTest, TrustsAHashedCertificateDirectory) {
+    const PlainServer server;
+    const TlsFront front(front_for(certs().server), server.port());
+    const auto directory = std::filesystem::temp_directory_path() / "mcp-tls-client-test" / "hashed";
+    std::filesystem::create_directories(directory);
+    std::array<char, 16> name{};
+    std::snprintf(name.data(), name.size(), "%08lx.0", X509_subject_name_hash(certs().ca.cert.get()));
+    std::ofstream(directory / name.data(), std::ios::binary) << certs().ca.cert_pem;
+
+    mcp::TlsClientOptions options;
+    options.use_system_roots = false;
+    options.ca_dirs = {directory};
+    greet(https_url(front.port()), with_tls(options));
+
+    options.ca_dirs = {std::filesystem::temp_directory_path() / "mcp-tls-client-test" / "empty"};
+    std::filesystem::create_directories(options.ca_dirs.front());
+    EXPECT_EQ(greet_failure(https_url(front.port()), with_tls(options)),
+              TlsError::Kind::eUntrustedCertificate);
+}
+
+// SSL_CERT_FILE and SSL_CERT_DIR name the authorities a client trusts by default, in place of the
+// operating system's stores. Those are read once per process, so each case runs in a child process
+// that re-executes the test binary.
+TEST(TlsClientRootsDeathTest, TheEnvironmentNamesTheSystemAuthorities) {
+    use_threadsafe_death_tests();
+    const PlainServer server;
+    const TlsFront front(front_for(certs().server), server.port());
+    const auto url = https_url(front.port());
+    const auto file = write_temp("environment-ca.pem", certs().ca.cert_pem);
+    const auto hashed = file.parent_path() / "environment-hashed";
+    std::filesystem::create_directories(hashed);
+    std::array<char, 16> name{};
+    std::snprintf(name.data(), name.size(), "%08lx.0", X509_subject_name_hash(certs().ca.cert.get()));
+    std::ofstream(hashed / name.data(), std::ios::binary) << certs().ca.cert_pem;
+    const auto unhashed = file.parent_path() / "environment-unhashed";
+    std::filesystem::create_directories(unhashed);
+    const auto missing = file.parent_path() / "environment-missing";
+    const auto list = [](const std::vector<std::filesystem::path>& entries) {
+#if defined(_WIN32)
+        const char separator = ';';
+#else
+        const char separator = ':';
+#endif
+        std::string joined;
+        for (const auto& entry : entries) {
+            if (&entry != &entries.front()) {
+                joined += separator;
+            }
+            joined += entry.string();
+        }
+        return joined;
+    };
+    const auto default_roots = [] { return with_tls(mcp::TlsClientOptions{}); };
+
+    // The file's authorities are read; list entries that name no directory are skipped.
+    EXPECT_EXIT(
+        {
+            set_variable(X509_get_default_cert_file_env(), file.string().c_str());
+            set_variable(X509_get_default_cert_dir_env(), list({unhashed, "", missing, file}).c_str());
+            std::exit(greets(url, default_roots()) ? 0 : 1);
+        },
+        ::testing::ExitedWithCode(0), "");
+
+    // So are the hashed directories of the list.
+    EXPECT_EXIT(
+        {
+            set_variable(X509_get_default_cert_file_env(), "");
+            set_variable(X509_get_default_cert_dir_env(), list({missing, hashed}).c_str());
+            std::exit(greets(url, default_roots()) ? 0 : 1);
+        },
+        ::testing::ExitedWithCode(0), "");
+
+    // Variables that name no authority give none, so the server is not trusted. That read is not
+    // kept: a later client reads them again.
+    EXPECT_EXIT(
+        {
+            set_variable(X509_get_default_cert_file_env(), "");
+            set_variable(X509_get_default_cert_dir_env(), missing.string().c_str());
+            const bool refused =
+                greet_failure(url, default_roots()) == TlsError::Kind::eUntrustedCertificate;
+            set_variable(X509_get_default_cert_file_env(), file.string().c_str());
+            std::exit(refused && greets(url, default_roots()) ? 0 : 1);
+        },
+        ::testing::ExitedWithCode(0), "");
+}
+
+// A host name written with a trailing dot is the same name; the certificate is checked, and the
+// server name sent, without it.
+TEST(TlsClientTest, AHostWithATrailingDotIsCheckedWithoutIt) {
+    const PlainServer server;
+    const TlsFront front(front_for(certs().server), server.port());
+    greet(https_url(front.port(), "localhost."), with_tls(trusting(certs().ca)));
+    ASSERT_FALSE(front.server_names().empty());
+    for (const auto& name : front.server_names()) {
+        EXPECT_EQ(name, "localhost");
+    }
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -482,6 +664,26 @@ TEST(TlsClientTest, SendsPlainRequestsToTheProxyWithTheFullUrl) {
         EXPECT_EQ(target, "http://mcp.example.test:8080/mcp");
     }
     EXPECT_TRUE(proxy.tunnels().empty());
+}
+
+// The proxy's credentials go with each request passed through it, and the URL's fragment, which
+// names a part of a document, is never sent.
+TEST(TlsClientTest, SendsProxyCredentialsAndNoFragmentToAPlainProxy) {
+    const PlainServer server({"mcp.example.test"});
+    const TestProxy proxy(server.port());
+    mcp::ProxyOptions proxy_options;
+    proxy_options.http_proxy = "http://alice:secret@127.0.0.1:" + std::to_string(proxy.port());
+
+    greet("http://mcp.example.test:8080/mcp#part",
+          [&](mcp::HttpClientTransport& transport) { transport.set_proxy(proxy_options); });
+
+    ASSERT_FALSE(proxy.forwarded().empty());
+    for (const auto& target : proxy.forwarded()) {
+        EXPECT_EQ(target, "http://mcp.example.test:8080/mcp");
+    }
+    for (const auto& authorization : proxy.authorizations()) {
+        EXPECT_EQ(authorization, "Basic YWxpY2U6c2VjcmV0");  // alice:secret
+    }
 }
 
 TEST(TlsClientTest, LoopbackAndListedHostsBypassTheProxy) {

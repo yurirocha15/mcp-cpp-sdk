@@ -21,6 +21,7 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -247,6 +248,18 @@ TEST(WebSocketTlsTest, APeerThatClosesGetsTheClosingHandshakeAndCloseNotify) {
     } catch (const std::exception& other) {
         ADD_FAILURE() << other.what();
     }
+}
+
+TEST(WebSocketTlsTest, RefusesTlsSettingsThatCannotBeUsed) {
+    asio::io_context io;
+    tcp::socket socket(io);
+    EXPECT_THROW(mcp::WebSocketServerTransport(std::move(socket),
+                                               std::shared_ptr<const mcp::TlsServerContext>{}),
+                 std::invalid_argument);
+    mcp::WebSocketClientTransport client(io.get_executor(), "example.test", "443");
+    EXPECT_THROW(client.set_server_name(""), std::invalid_argument);
+    EXPECT_THROW(client.set_server_name("."), std::invalid_argument);
+    EXPECT_NO_THROW(client.set_server_name("mcp.example.test."));
 }
 
 }  // namespace transport_ws_tls_test

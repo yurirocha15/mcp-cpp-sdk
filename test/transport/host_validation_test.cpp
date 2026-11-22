@@ -20,12 +20,14 @@
 #include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket.hpp>
 #include <future>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace host_validation_test {
 
@@ -72,6 +74,15 @@ constexpr unsigned g_forbidden = 403;
 mcp::Task<std::string> read_one_message(tcp::acceptor& acceptor) {
     auto socket = co_await acceptor.async_accept(asio::use_awaitable);
     mcp::WebSocketServerTransport transport(std::move(socket));
+    co_return co_await transport.read_message();
+}
+
+/// As read_one_message(), with the server allowing the names @p hosts.
+mcp::Task<std::string> read_one_message_allowing(tcp::acceptor& acceptor,
+                                                 std::vector<std::string> hosts) {
+    auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+    mcp::WebSocketServerTransport transport(std::move(socket));
+    transport.set_allowed_hosts(hosts);
     co_return co_await transport.read_message();
 }
 
@@ -215,6 +226,26 @@ TEST(HostValidationTest, AWebSocketClientNamesItsServerAsTheServerExpects) {
     ASSERT_EQ(served.wait_for(g_hang_guard), std::future_status::ready);
     EXPECT_EQ(served.get(), "hello");
     client.close();
+    thread.stop();
+}
+
+TEST(HostValidationTest, AWebSocketServerServesTheNamesItIsGiven) {
+    mcp_test::tls::ServerThread thread;
+    tcp::acceptor acceptor(thread.io(), tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto port = acceptor.local_endpoint().port();
+    const std::vector<std::string> hosts{"mcp.example.com"};
+    auto served = mcp_test::spawn_future(thread.io(), read_one_message_allowing(acceptor, hosts));
+    thread.start();
+
+    asio::io_context io;
+    beast::websocket::stream<beast::tcp_stream> ws(io);
+    beast::get_lowest_layer(ws).connect(tcp::endpoint(asio::ip::make_address("127.0.0.1"), port));
+    ws.handshake("mcp.example.com:" + std::to_string(port), "/");
+    ws.write(asio::buffer(std::string("hello")));
+    ASSERT_EQ(served.wait_for(g_hang_guard), std::future_status::ready);
+    EXPECT_EQ(served.get(), "hello");
+    beast::error_code ignored;
+    beast::get_lowest_layer(ws).socket().close(ignored);
     thread.stop();
 }
 

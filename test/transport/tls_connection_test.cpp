@@ -103,6 +103,7 @@ TEST(TlsConnectionTest, TheIdleCheckDropsLateTicketsAndSeesCloseNotify) {
     EXPECT_TRUE(mcp::detail::closed_by_peer(connection));
 
     mcp::detail::close_connection(connection);
+    EXPECT_TRUE(mcp::detail::closed_by_peer(connection));
     server.join();
 }
 

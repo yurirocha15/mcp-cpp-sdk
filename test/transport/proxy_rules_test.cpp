@@ -85,6 +85,27 @@ TEST(ProxyRules, ParsesProxyUrls) {
                  std::invalid_argument);
 }
 
+TEST(ProxyRules, ParsesTheLessCommonProxyUrlForms) {
+    // A user without a password, percent-encoding in either case, and spaces around the URL.
+    const auto user_only = mcp::detail::parse_proxy_url("  http://%41lice@proxy.test:3128  ", "test");
+    EXPECT_EQ(user_only.host, "proxy.test");
+    EXPECT_EQ(user_only.authorization, "Basic QWxpY2U6");  // Alice:
+    const auto lower_hex = mcp::detail::parse_proxy_url("http://bob:p%3aw@proxy.test", "test");
+    EXPECT_EQ(lower_hex.authorization, "Basic Ym9iOnA6dw==");  // bob:p:w
+
+    const auto v6_default_port = mcp::detail::parse_proxy_url("http://[fd00::1]", "test");
+    EXPECT_EQ(v6_default_port.host, "fd00::1");
+    EXPECT_EQ(v6_default_port.port, "80");
+    // RFC 3986 allows an empty port, which means the default one.
+    EXPECT_EQ(mcp::detail::parse_proxy_url("http://proxy.test:", "test").port, "80");
+
+    for (const char* url : {"http://a:%4@proxy.test", "http://a:%@proxy.test", "http://[fd00::1",
+                            "http://[fd00::1]x", "http://proxy.test:8o80", "http://proxy.test:0",
+                            "http://proxy.test:123456", "http://user@"}) {
+        EXPECT_THROW((void)mcp::detail::parse_proxy_url(url, "test"), std::invalid_argument) << url;
+    }
+}
+
 TEST(ProxyRules, LoopbackHostsNeverUseTheProxy) {
     const auto options = both();
     for (const char* host : {"localhost", "LOCALHOST", "localhost.", "127.0.0.1", "127.9.9.9", "::1",
@@ -93,6 +114,7 @@ TEST(ProxyRules, LoopbackHostsNeverUseTheProxy) {
     }
     EXPECT_TRUE(proxied(options, "example.test"));
     EXPECT_TRUE(proxied(options, "10.0.0.1"));
+    EXPECT_TRUE(proxied(options, "::ffff:10.0.0.1"));
 }
 
 TEST(ProxyRules, TheBypassListMatchesHostsDomainsAddressesAndPorts) {
@@ -114,6 +136,30 @@ TEST(ProxyRules, TheBypassListMatchesHostsDomainsAddressesAndPorts) {
     EXPECT_TRUE(proxied(options, "pinned.test", "443"));
     EXPECT_FALSE(proxied(options, "spaced.test"));
     EXPECT_FALSE(proxied(both({"*"}), "anything.test"));
+}
+
+TEST(ProxyRules, TheBypassListSkipsEntriesItCannotRead) {
+    const auto options = both({"   ", "[fd00::1", "[fd00::1]x", ".", "*.", "10.0.0.0/99", "fd00::2",
+                               "[fd00::3]:8443", "example.test:9"});
+    EXPECT_TRUE(proxied(options, "other.test"));
+    EXPECT_TRUE(proxied(options, "10.1.2.3"));
+    EXPECT_TRUE(proxied(options, "fd00::1"));
+    // A bare IPv6 entry names one address, and a bracketed one may name a port.
+    EXPECT_FALSE(proxied(options, "fd00::2"));
+    EXPECT_FALSE(proxied(options, "fd00::3", "8443"));
+    EXPECT_TRUE(proxied(options, "fd00::3", "443"));
+    EXPECT_FALSE(proxied(options, "example.test", "9"));
+    EXPECT_TRUE(proxied(options, "example.test", "443"));
+}
+
+TEST(ProxyRules, ANetworkEntryCoversAddressesOfItsOwnFamilyOnly) {
+    const auto v4 = both({"10.0.0.0/8"});
+    EXPECT_FALSE(proxied(v4, "10.9.9.9"));
+    EXPECT_TRUE(proxied(v4, "ten.test"));
+    EXPECT_TRUE(proxied(v4, "fd12::1"));
+    const auto v6 = both({"fd00::/8"});
+    EXPECT_FALSE(proxied(v6, "fd12::1"));
+    EXPECT_TRUE(proxied(v6, "10.9.9.9"));
 }
 
 TEST(ProxyRules, EachSchemeHasItsOwnProxy) {

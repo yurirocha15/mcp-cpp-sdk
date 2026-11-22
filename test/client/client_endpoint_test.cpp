@@ -269,6 +269,106 @@ TEST(ClientEndpointTest, AListenStreamGoesOnWithTheRestartedServer) {
     EXPECT_FALSE(subscription.end_reason().has_value());
 }
 
+// A listen stream the server ended, or the client closed, is not opened again on the restarted
+// server; one still open is.
+TEST(ClientEndpointTest, OnlyOpenListenStreamsGoOnWithTheRestartedServer) {
+    mcp::Client client(mcp::Endpoint::stdio(
+        test_server(), {.max_restarts = 1, .delay = std::chrono::milliseconds(10)}));
+    client.sync().connect("endpoint-test", "1.0");
+    const auto open_streams = [&client] {
+        const auto result = client.sync().call_tool("subscription_count", json::object());
+        return result.structuredContent.value_or(json::object()).value("count", -1);
+    };
+    mcp::SubscriptionFilter filter;
+    filter.toolsListChanged = true;
+
+    auto ended_by_server = client.sync().listen(filter);
+    client.sync().call_tool("close_subscriptions", json::object());
+    EXPECT_FALSE(ended_by_server.sync().next().has_value());
+    EXPECT_EQ(ended_by_server.end_reason(), mcp::SubscriptionEnd::eServerClosed);
+
+    auto closed_by_client = client.sync().listen(filter);
+    closed_by_client.sync().close();
+    auto kept_open = client.sync().listen(filter);
+    // The server forgets the closed stream once it reads the cancellation.
+    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (open_streams() != 1 && std::chrono::steady_clock::now() < give_up) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_EQ(open_streams(), 1);
+
+    EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_EQ(open_streams(), 1);
+    EXPECT_FALSE(kept_open.end_reason().has_value());
+}
+
+/// The text of the request @p id of @p method.
+std::string request_text(int id, const std::string& method, const json& params) {
+    return json{{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}}.dump();
+}
+
+/// Reads from @p transport until the answer to @p id, keeping the id of each answer read.
+mcp::Task<void> read_until_answer(mcp::ITransport& transport, int id, std::vector<json>& answered) {
+    while (true) {
+        const auto text = co_await transport.read_message();
+        const auto message = json::parse(text);
+        if (message.contains("method") || !message.contains("id")) {
+            continue;
+        }
+        answered.push_back(message.at("id"));
+        if (message.at("id") == id) {
+            co_return;
+        }
+    }
+}
+
+// A request the transport refuses to write, such as one that holds a newline, is not sent to the
+// restarted server either.
+TEST(ClientEndpointTest, ARefusedListenRequestIsNotSentToTheRestartedServer) {
+    boost::asio::io_context io;
+    const auto transport =
+        mcp::Endpoint::stdio(test_server(), {.max_restarts = 1, .delay = std::chrono::milliseconds(10)})
+            .make_transport(io.get_executor());
+    const auto initialize = request_text(
+        1, "initialize",
+        json{{"protocolVersion", std::string(mcp::constants::protocol::g_PROTOCOL_VERSION_2025_06_18)},
+             {"capabilities", json::object()},
+             {"clientInfo", {{"name", "endpoint-test"}, {"version", "1.0"}}}});
+    const auto initialized = json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}.dump();
+    const std::string listen =
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\n\"method\":\"subscriptions/listen\","
+        "\"params\":{\"notifications\":{}}}";
+    const auto crash_call =
+        request_text(3, "tools/call", json{{"name", "crash"}, {"arguments", crash(3)}});
+    const auto list = request_text(4, "tools/list", json::object());
+    std::vector<json> answered;
+    bool refused = false;
+    auto done = boost::asio::co_spawn(
+        io,
+        [&]() -> mcp::Task<void> {
+            co_await transport->write_message(initialize);
+            co_await read_until_answer(*transport, 1, answered);
+            co_await transport->write_message(initialized);
+            try {
+                co_await transport->write_message(listen);
+            } catch (const std::invalid_argument&) {
+                refused = true;
+            }
+            co_await transport->write_message(crash_call);
+            co_await read_until_answer(*transport, 3, answered);
+            // The read side starts the next process, so this write waits while it reads.
+            boost::asio::co_spawn(io, transport->write_message(list), boost::asio::detached);
+            co_await read_until_answer(*transport, 4, answered);
+            transport->close();
+        },
+        boost::asio::use_future);
+    io.run();
+    done.get();
+    EXPECT_TRUE(refused);
+    EXPECT_EQ(answered, (std::vector<json>{1, 3, 4}));
+}
+
 // Restarts are opt-in: without a policy, a server that fails closes the client.
 TEST(ClientEndpointTest, AServerThatFailsIsNotRestartedWithoutAPolicy) {
     mcp::Client client(mcp::Endpoint::stdio(test_server()));

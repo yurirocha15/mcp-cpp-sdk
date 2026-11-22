@@ -10,6 +10,8 @@
 #include "../support/hang_guard.hpp"
 #include "../support/mcp_server_hosts.hpp"
 #include "../support/tls_test_support.hpp"
+
+#include <openssl/rsa.h>
 #include "../test_utils.hpp"
 
 #include <array>
@@ -238,6 +240,20 @@ TEST(TlsServerTest, RefusesOptionsThatCannotBeUsed) {
         options.client_auth = mcp::TlsServerOptions::ClientAuth::eRequired;
         options.client_ca_pem = {"not a certificate"};
     }));
+    EXPECT_TRUE(refused([](auto& options) {
+        options.client_auth = mcp::TlsServerOptions::ClientAuth::eRequired;
+        options.client_ca_files = {std::filesystem::temp_directory_path() / "mcp-no-such-ca.pem"};
+    }));
+    EXPECT_TRUE(refused([](auto& options) { options.certificate_chain_pem = "not a certificate"; }));
+    EXPECT_TRUE(refused([](auto& options) {
+        options.certificate_chain_pem.clear();
+        options.certificate_chain_file = std::filesystem::temp_directory_path() / "mcp-no-such.pem";
+    }));
+    // A key of another type loads beside the EC certificate, and the check of the pair refuses it.
+    EXPECT_TRUE(refused([](auto& options) {
+        const mcp_test::tls::KeyPtr key(EVP_RSA_gen(2048), &EVP_PKEY_free);
+        options.private_key_pem = mcp_test::tls::key_to_pem(key.get());
+    }));
     EXPECT_FALSE(refused([](auto&) {}));
 }
 
@@ -268,6 +284,20 @@ TEST(TlsServerTest, RequiresAClientCertificateFromTheNamedAuthorities) {
     foreign.client_certificate_file = write_temp("foreign.pem", certs().foreign_client.cert_pem);
     foreign.client_key_file = write_temp("foreign-key.pem", certs().foreign_client.key_pem);
     EXPECT_ANY_THROW(greet(https_url(host.port()), foreign));
+}
+
+TEST(TlsServerTest, ReadsTheClientCertificateAuthoritiesFromFiles) {
+    auto options = server_options();
+    options.client_auth = mcp::TlsServerOptions::ClientAuth::eRequired;
+    options.client_ca_files = {write_temp("client-ca.pem", certs().ca.cert_pem)};
+    const ManagerHost host(
+        [&options](mcp::StreamableHttpSessionManager& manager) { manager.set_tls(options); });
+
+    auto with_certificate = trusting_ca();
+    with_certificate.client_certificate_file = write_temp("client.pem", certs().client.cert_pem);
+    with_certificate.client_key_file = write_temp("client-key.pem", certs().client.key_pem);
+    greet(https_url(host.port()), with_certificate);
+    EXPECT_ANY_THROW(greet(https_url(host.port()), trusting_ca()));
 }
 
 TEST(TlsServerTest, ClosesAConnectionThatDoesNotSpeakTls) {

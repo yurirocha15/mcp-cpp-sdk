@@ -148,6 +148,17 @@ void add_tools(mcp::Server& server, int argc, char** argv) {
             co_await server.notify_tools_list_changed();
             co_return json{{"notified", true}};
         });
+    server.add_tool<json, json>("close_subscriptions", "Ends every open subscription",
+                                json{{"type", "object"}},
+                                [&server](mcp::Context&, json) -> mcp::Task<json> {
+                                    server.close_subscriptions();
+                                    co_return json{{"closed", true}};
+                                });
+    server.add_tool<json, json>("subscription_count", "Answers with the number of open subscriptions",
+                                json{{"type", "object"}},
+                                [&server](mcp::Context&, json) -> mcp::Task<json> {
+                                    co_return json{{"count", server.subscription_count()}};
+                                });
     server.add_tool<json, json>(
         "ask",
         "Asks the client for a value and answers with it; ends the process crash_after_ms after asking",
