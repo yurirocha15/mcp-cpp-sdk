@@ -163,8 +163,7 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/tls_roots.cpp
     src/transport/http_session_manager.cpp
     src/transport/modern_exchange.cpp
-    src/transport/websocket.cpp
-    src/transport/transport_factories.cpp)
+    src/transport/websocket.cpp)
 
 # Configure one installed SDK linkage variant.
 function(mcp_cpp_sdk_configure_library target)
@@ -497,7 +496,6 @@ if(BUILD_TESTING)
       test/server/server_stdio_test.cpp
       test/server/server_http_test.cpp
       test/server/server_tool_test.cpp
-      test/transport/transport_factory_test.cpp
       test/core/gcc11_sso_crash_test.cpp
       test/core/json_peer_input_matrix_test.cpp
       test/support/spawn.cpp
