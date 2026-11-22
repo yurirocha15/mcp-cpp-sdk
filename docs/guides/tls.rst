@@ -73,7 +73,7 @@ encrypted key; it is called while the context is made.
 Errors
 ------
 
-A connection that fails its handshake throws ``mcp::TlsError``, whose ``kind()``
+A connection that fails its handshake throws ``mcp::TlsError``, whose ``reason()``
 says why. A ``Client`` call nests it in the ``McpError`` it throws, with code
 ``mcp::constants::jsonrpc::g_CONNECTION_CLOSED``, as the example shows:
 
@@ -86,7 +86,7 @@ says why. A ``Client`` call nests it in the ``McpError`` it throws, with code
 .. list-table::
    :header-rows: 1
 
-   * - ``TlsError::Kind``
+   * - ``TlsError::Reason``
      - Meaning
    * - ``eUntrustedCertificate``
      - The certificate does not chain to a trusted authority.

@@ -75,6 +75,17 @@ TEST_F(HttpTransportTest, PortReturnsEphemeralPortWhenBoundToZero) {
     server_transport.close();
 }
 
+TEST_F(HttpTransportTest, AnAddressItCannotBindIsAConnectFailure) {
+    std::optional<mcp::TransportError::Kind> kind;
+    try {
+        mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "not-an-address", 0);
+    } catch (const mcp::TransportError& error) {
+        kind = error.kind();
+        EXPECT_STREQ(error.what(), "Invalid bind address: not-an-address");
+    }
+    EXPECT_EQ(kind, mcp::TransportError::Kind::eConnect);
+}
+
 TEST_F(HttpTransportTest, PendingServerReadOwnsImplementationAfterTransportDestruction) {
     auto server = std::make_unique<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     auto read = server->read_message();

@@ -157,28 +157,32 @@ struct HttpServerTransport::Impl {
         boost::system::error_code ec;
         const auto bind_address = boost::asio::ip::make_address(this->host, ec);
         if (ec) {
-            throw std::runtime_error("Invalid bind address: " + this->host);
+            throw TransportError(TransportError::Kind::eConnect, "Invalid bind address: " + this->host);
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, this->port);
         (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
-            throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to open HTTP acceptor: " + ec.message());
         }
 
         (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
-            throw std::runtime_error("Failed to set reuse_address: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to set reuse_address: " + ec.message());
         }
 
         (void)acceptor.bind(endpoint, ec);
         if (ec) {
-            throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to bind HTTP acceptor: " + ec.message());
         }
 
         (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
-            throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to listen on HTTP acceptor: " + ec.message());
         }
     }
 
@@ -1549,7 +1553,8 @@ struct HttpServerTransport::Impl {
                 }
 
                 if (state.closed.load(std::memory_order_acquire)) {
-                    throw std::runtime_error("HttpServerTransport is closed");
+                    throw TransportError(TransportError::Kind::eClosed,
+                                         "HttpServerTransport is closed");
                 }
 
                 state.timer.expires_at(std::chrono::steady_clock::time_point::max());
@@ -1570,7 +1575,7 @@ struct HttpServerTransport::Impl {
     static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message,
                                 std::shared_ptr<const std::string> related_request = nullptr) {
         if (impl->state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpServerTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "HttpServerTransport is closed");
         }
 
         const auto response_json = nlohmann::json::parse(message, nullptr, false);
@@ -1761,7 +1766,8 @@ unsigned short HttpServerTransport::port() const {
     boost::system::error_code ec;
     const auto endpoint = impl_->acceptor.local_endpoint(ec);
     if (ec) {
-        throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+        throw TransportError(TransportError::Kind::eConnect,
+                             "Failed to query HTTP acceptor endpoint: " + ec.message());
     }
     return endpoint.port();
 }

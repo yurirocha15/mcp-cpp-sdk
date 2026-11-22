@@ -220,14 +220,15 @@ struct RestartingStdioTransport::State {
     }
 
     /// Whether @p message answers the replayed initialize.
-    /// @throws std::runtime_error When it refuses it.
+    /// @throws TransportError When it refuses it.
     [[nodiscard]] bool is_initialize_answer(std::string_view message) const {
         const auto scanned = scan_jsonrpc_envelope(message);
         if (!scanned || !scanned->method.empty() || canonical_id(scanned->id) != initialize_id) {
             return false;
         }
         if (!scanned->has_result) {
-            throw std::runtime_error("The restarted server refused initialize");
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "The restarted server refused initialize");
         }
         return true;
     }
@@ -244,7 +245,7 @@ struct RestartingStdioTransport::State {
     static Task<void> write(std::shared_ptr<State> self, std::shared_ptr<std::string> message) {
         co_await wait_until_ready(self);
         if (self->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("transport closed");
+            throw TransportError(TransportError::Kind::eClosed, "transport closed");
         }
         if (!self->note_write(*message)) {
             co_return;
@@ -371,7 +372,7 @@ struct RestartingStdioTransport::State {
                 co_return message;
             }
             if (self->closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("transport closed");
+                throw TransportError(TransportError::Kind::eClosed, "transport closed");
             }
             if (self->restart_due) {
                 co_await start_again(self);

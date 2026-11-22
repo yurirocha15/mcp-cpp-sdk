@@ -87,7 +87,7 @@ void remove_waiter(WaiterContainer& waiters, const std::shared_ptr<OperationWait
 
 void require_open(const std::atomic<bool>& closed, std::string_view transport_name) {
     if (closed.load(std::memory_order_acquire)) {
-        throw std::runtime_error(std::string(transport_name) + " is closed");
+        throw TransportError(TransportError::Kind::eClosed, std::string(transport_name) + " is closed");
     }
 }
 
@@ -100,7 +100,8 @@ std::shared_ptr<const Context> require_context(std::shared_ptr<const Context> co
 }
 
 std::exception_ptr closed_error(std::string_view transport_name) {
-    return std::make_exception_ptr(std::runtime_error(std::string(transport_name) + " is closed"));
+    return std::make_exception_ptr(
+        TransportError(TransportError::Kind::eClosed, std::string(transport_name) + " is closed"));
 }
 
 void close_socket(WsStream& ws) noexcept {
@@ -151,7 +152,7 @@ class SerializedWriteGate {
         }
         if (!waiter->granted) {
             require_open(closed_, transport_name_);
-            throw std::runtime_error(transport_name_ + " write was interrupted");
+            throw TransportError(TransportError::Kind::eIo, transport_name_ + " write was interrupted");
         }
         if (closed_.load(std::memory_order_acquire)) {
             release();
@@ -315,7 +316,8 @@ struct WebSocketServerTransport::Impl {
             refusal.keep_alive(false);
             refusal.prepare_payload();
             co_await beast::http::async_write(state->ws.next_layer(), refusal, asio::use_awaitable);
-            throw std::runtime_error(
+            throw TransportError(
+                TransportError::Kind::eConnect,
                 host_refused ? "WebSocketServerTransport refused an upgrade for Host " +
                                    detail::sanitize_for_diagnostics(host.value_or(""))
                              : "WebSocketServerTransport refused an upgrade from Origin " + *origin);
@@ -357,7 +359,8 @@ struct WebSocketServerTransport::Impl {
         if (state->handshake_error) {
             std::rethrow_exception(state->handshake_error);
         }
-        throw std::runtime_error("WebSocket server handshake did not complete");
+        throw TransportError(TransportError::Kind::eConnect,
+                             "WebSocket server handshake did not complete");
     }
 
     static Task<void> ensure_handshake(std::shared_ptr<Impl> state) {
@@ -589,7 +592,7 @@ struct WebSocketClientTransport::Impl {
         if (state->connect_error) {
             std::rethrow_exception(state->connect_error);
         }
-        throw std::runtime_error("WebSocket connection did not complete");
+        throw TransportError(TransportError::Kind::eConnect, "WebSocket connection did not complete");
     }
 
     void ensure_configurable() const {

@@ -40,6 +40,10 @@ Additionally, the SDK defines MCP-specific codes used throughout the library:
   error status, which ``data()`` holds as ``httpStatus``. The transport's exception, such as an
   ``mcp::HttpStatusError``, is nested in it and rethrown by ``std::rethrow_if_nested()``, except
   when the server answers with an event stream that breaks off: the message alone says why then.
+  A failure the transport detects itself is an ``mcp::TransportError``, whose ``kind()`` says
+  whether the transport was closed, could not connect or start the server, failed to read or
+  write, or received what it cannot carry; a TLS failure is an ``mcp::TlsError``, which derives
+  from it. An error of the network library stays a ``boost::system::system_error``.
 
 The codes ``-32020`` to ``-32022`` belong to protocol revision 2026-07-28. See `Protocol Errors`_.
 

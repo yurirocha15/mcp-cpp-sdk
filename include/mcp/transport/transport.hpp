@@ -3,7 +3,9 @@
 #include <mcp/core/async_fwd.hpp>
 #include <mcp/core/export.hpp>
 
+#include <cstdint>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -12,6 +14,34 @@ namespace mcp {
 
 class HttpServerTransport;
 class StdioTransport;
+
+/**
+ * @brief A failure the transport itself detects: it is closed, it could not be set up, a read or
+ * write failed, or the peer sent what the transport cannot carry.
+ *
+ * @details A TLS failure is a TlsError, which derives from this class. An error the network library
+ * reports while connecting, reading or writing keeps its own exception,
+ * `boost::system::system_error` with its error code. A Client call whose transport fails throws
+ * McpError with mcp::constants::jsonrpc::g_CONNECTION_CLOSED and the transport's exception nested.
+ */
+class MCP_API TransportError : public std::runtime_error {
+   public:
+    /** @brief What failed. */
+    enum class Kind : std::uint8_t {
+        eClosed,    ///< The transport is closed, by this side or by the peer.
+        eConnect,   ///< A connection, server process or listener could not be set up.
+        eIo,        ///< A read or write failed while the transport was open.
+        eProtocol,  ///< The peer sent what the transport cannot carry, such as a message too large.
+    };
+
+    TransportError(Kind kind, const std::string& message) : std::runtime_error(message), kind_(kind) {}
+
+    /** @return What failed. */
+    [[nodiscard]] Kind kind() const noexcept { return kind_; }
+
+   private:
+    Kind kind_;
+};
 
 /**
  * @brief A message read from a transport, with the principal that sent it.
@@ -55,7 +85,7 @@ class MCP_API ITransport {
      * @brief Read the next serialized MCP message from the transport.
      *
      * @return A task that resolves to the next complete JSON-RPC message.
-     * @throws std::runtime_error If the transport is closed while waiting.
+     * @throws TransportError If the transport is closed while waiting.
      */
     virtual Task<std::string> read_message() = 0;
 
@@ -70,7 +100,7 @@ class MCP_API ITransport {
      *
      * @return A task that resolves to the next message; the default reads read_message() and
      *         gives it an empty principal.
-     * @throws std::runtime_error If the transport is closed while waiting.
+     * @throws TransportError If the transport is closed while waiting.
      */
     virtual Task<IncomingMessage> read_incoming();
 
@@ -79,7 +109,7 @@ class MCP_API ITransport {
      *
      * @param message The complete JSON-RPC message to send.
      * @return A task that completes once the message has been accepted by the transport.
-     * @throws std::runtime_error If the transport is closed.
+     * @throws TransportError If the transport is closed.
      */
     virtual Task<void> write_message(std::string_view message) = 0;
 
@@ -96,7 +126,7 @@ class MCP_API ITransport {
      * @param related_request The id of the client request, as JSON text, such as `7` or `"seven"`.
      * @return A task that completes once the message has been accepted by the transport; the
      *         default writes it with write_message().
-     * @throws std::runtime_error If the transport is closed.
+     * @throws TransportError If the transport is closed.
      */
     virtual Task<void> write_related_message(std::string_view message,
                                              std::string_view related_request);

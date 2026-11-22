@@ -103,15 +103,15 @@ std::string rsa_key_pem() {
     return mcp_test::tls::key_to_pem(key.get());
 }
 
-/// The kind of the TlsError @p error is or nests, if it holds one.
-std::optional<TlsError::Kind> tls_kind(const std::exception& error) {
+/// The reason of the TlsError @p error is or nests, if it holds one.
+std::optional<TlsError::Reason> tls_reason(const std::exception& error) {
     if (const auto* tls = dynamic_cast<const TlsError*>(&error)) {
-        return tls->kind();
+        return tls->reason();
     }
     try {
         std::rethrow_if_nested(error);
     } catch (const std::exception& inner) {
-        return tls_kind(inner);
+        return tls_reason(inner);
     } catch (...) {
     }
     return std::nullopt;
@@ -205,11 +205,11 @@ void greet(const std::string& url, Configure configure,
 }
 
 /// The TLS failure greet() meets, or nullopt when it succeeds or fails another way.
-std::optional<TlsError::Kind> greet_failure(const std::string& url, Configure configure) {
+std::optional<TlsError::Reason> greet_failure(const std::string& url, Configure configure) {
     try {
         greet(url, std::move(configure));
     } catch (const std::exception& error) {
-        return tls_kind(error);
+        return tls_reason(error);
     }
     return std::nullopt;
 }
@@ -268,6 +268,24 @@ void use_threadsafe_death_tests() {
 // ------------------------------------------------------------------------------------------------
 // Connections that succeed
 
+// A TLS failure is a transport failure: a cut-off connection is one of I/O, and every handshake
+// failure one of setting the connection up.
+TEST(TlsClientTest, EachReasonIsATransportErrorOfItsKind) {
+    using Reason = TlsError::Reason;
+    using Kind = mcp::TransportError::Kind;
+    const auto kind_of = [](Reason reason) {
+        const TlsError error(reason, "TLS failed");
+        const mcp::TransportError& transport_error = error;
+        return transport_error.kind();
+    };
+    EXPECT_EQ(kind_of(Reason::eTruncated), Kind::eIo);
+    for (const auto reason : {Reason::eUntrustedCertificate, Reason::eExpiredCertificate,
+                              Reason::eHostnameMismatch, Reason::eProtocolVersion, Reason::eNotTls,
+                              Reason::eHandshakeFailed, Reason::eHandshakeTimeout}) {
+        EXPECT_EQ(kind_of(reason), Kind::eConnect) << static_cast<int>(reason);
+    }
+}
+
 TEST(TlsClientTest, CallsAToolOverTls) {
     const PlainServer server;
     const TlsFront front(front_for(certs().server), server.port());
@@ -324,13 +342,13 @@ TEST(TlsClientTest, AWildcardCoversOneLabel) {
                                 transport.set_tls(options);
                                 transport.set_server_name("deep.api.example.test");
                             }),
-              TlsError::Kind::eHostnameMismatch);
+              TlsError::Reason::eHostnameMismatch);
     EXPECT_EQ(greet_failure(https_url(front.port()),
                             [&options](mcp::HttpClientTransport& transport) {
                                 transport.set_tls(options);
                                 transport.set_server_name("example.test");
                             }),
-              TlsError::Kind::eHostnameMismatch);
+              TlsError::Reason::eHostnameMismatch);
 }
 
 TEST(TlsClientTest, PresentsAClientCertificateWhenTheServerRequiresOne) {
@@ -364,7 +382,7 @@ TEST(TlsClientTest, RefusesACertificateFromAnUntrustedAuthority) {
         greet(https_url(front.port()), with_tls(trusting(certs().ca)));
         FAIL() << "the connection succeeded";
     } catch (const std::exception& error) {
-        EXPECT_EQ(tls_kind(error), TlsError::Kind::eUntrustedCertificate);
+        EXPECT_EQ(tls_reason(error), TlsError::Reason::eUntrustedCertificate);
         const auto text = tls_text(error);
         EXPECT_NE(text.find("TLS to localhost failed: the server certificate is not trusted"),
                   std::string::npos)
@@ -375,41 +393,41 @@ TEST(TlsClientTest, RefusesACertificateFromAnUntrustedAuthority) {
 TEST(TlsClientTest, TheSystemAuthoritiesDoNotTrustATestAuthority) {
     const PlainServer server;
     const TlsFront front(front_for(certs().server), server.port());
-    EXPECT_EQ(greet_failure(https_url(front.port()), nullptr), TlsError::Kind::eUntrustedCertificate);
+    EXPECT_EQ(greet_failure(https_url(front.port()), nullptr), TlsError::Reason::eUntrustedCertificate);
 }
 
 TEST(TlsClientTest, RefusesAnExpiredCertificate) {
     const PlainServer server;
     const TlsFront front(front_for(certs().expired), server.port());
     EXPECT_EQ(greet_failure(https_url(front.port()), with_tls(trusting(certs().ca))),
-              TlsError::Kind::eExpiredCertificate);
+              TlsError::Reason::eExpiredCertificate);
 }
 
 TEST(TlsClientTest, RefusesACertificateForAnotherHost) {
     const PlainServer server;
     const TlsFront front(front_for(certs().other_name), server.port());
     EXPECT_EQ(greet_failure(https_url(front.port()), with_tls(trusting(certs().ca))),
-              TlsError::Kind::eHostnameMismatch);
+              TlsError::Reason::eHostnameMismatch);
 }
 
 TEST(TlsClientTest, RefusesACertificateThatNamesItsHostOnlyInTheCommonName) {
     const PlainServer server;
     const TlsFront front(front_for(certs().common_name_only), server.port());
     EXPECT_EQ(greet_failure(https_url(front.port()), with_tls(trusting(certs().ca))),
-              TlsError::Kind::eHostnameMismatch);
+              TlsError::Reason::eHostnameMismatch);
 }
 
 TEST(TlsClientTest, AnAddressUrlNeedsTheAddressInTheCertificate) {
     const PlainServer server;
     const TlsFront front(front_for(certs().dns_only), server.port());
     EXPECT_EQ(greet_failure(https_url(front.port(), "127.0.0.1"), with_tls(trusting(certs().ca))),
-              TlsError::Kind::eHostnameMismatch);
+              TlsError::Reason::eHostnameMismatch);
 }
 
 TEST(TlsClientTest, APlainServerIsNotTls) {
     const PlainServer server;
     EXPECT_EQ(greet_failure(https_url(server.port()), with_tls(trusting(certs().ca))),
-              TlsError::Kind::eNotTls);
+              TlsError::Reason::eNotTls);
 }
 
 TEST(TlsClientTest, NoVersionInCommon) {
@@ -420,7 +438,7 @@ TEST(TlsClientTest, NoVersionInCommon) {
     auto client_options = trusting(certs().ca);
     client_options.min_version = mcp::TlsVersion::eTls13;
     EXPECT_EQ(greet_failure(https_url(front.port()), with_tls(client_options)),
-              TlsError::Kind::eProtocolVersion);
+              TlsError::Reason::eProtocolVersion);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -599,7 +617,7 @@ TEST(TlsClientTest, TrustsAHashedCertificateDirectory) {
     options.ca_dirs = {std::filesystem::temp_directory_path() / "mcp-tls-client-test" / "empty"};
     std::filesystem::create_directories(options.ca_dirs.front());
     EXPECT_EQ(greet_failure(https_url(front.port()), with_tls(options)),
-              TlsError::Kind::eUntrustedCertificate);
+              TlsError::Reason::eUntrustedCertificate);
 }
 
 // SSL_CERT_FILE and SSL_CERT_DIR name the authorities a client trusts by default, in place of the
@@ -661,7 +679,7 @@ TEST(TlsClientRootsDeathTest, TheEnvironmentNamesTheSystemAuthorities) {
             set_variable(X509_get_default_cert_file_env(), "");
             set_variable(X509_get_default_cert_dir_env(), missing.string().c_str());
             const bool refused =
-                greet_failure(url, default_roots()) == TlsError::Kind::eUntrustedCertificate;
+                greet_failure(url, default_roots()) == TlsError::Reason::eUntrustedCertificate;
             set_variable(X509_get_default_cert_file_env(), file.string().c_str());
             std::exit(refused && greets(url, default_roots()) ? 0 : 1);
         },
@@ -851,7 +869,7 @@ TEST(TlsClientTest, OAuthChecksTheUrlHostNotThePinnedAddress) {
         });
         FAIL() << "the fetch succeeded";
     } catch (const std::exception& error) {
-        EXPECT_EQ(tls_kind(error), TlsError::Kind::eHostnameMismatch) << error.what();
+        EXPECT_EQ(tls_reason(error), TlsError::Reason::eHostnameMismatch) << error.what();
     }
 }
 
@@ -867,7 +885,7 @@ TEST(TlsClientTest, OAuthReportsABodyCutWithoutCloseNotify) {
         });
         FAIL() << "the fetch succeeded";
     } catch (const std::exception& error) {
-        EXPECT_EQ(tls_kind(error), TlsError::Kind::eTruncated) << error.what();
+        EXPECT_EQ(tls_reason(error), TlsError::Reason::eTruncated) << error.what();
     }
 }
 

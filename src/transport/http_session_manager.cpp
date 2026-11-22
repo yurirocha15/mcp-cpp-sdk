@@ -376,33 +376,38 @@ struct StreamableHttpSessionManager::Impl {
         boost::system::error_code ec;
         const auto bind_address = boost::asio::ip::make_address(host, ec);
         if (ec) {
-            throw std::runtime_error("Invalid bind address: " + host);
+            throw TransportError(TransportError::Kind::eConnect, "Invalid bind address: " + host);
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, port);
         (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
-            throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to open HTTP acceptor: " + ec.message());
         }
 
         (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
-            throw std::runtime_error("Failed to set reuse_address: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to set reuse_address: " + ec.message());
         }
 
         (void)acceptor.bind(endpoint, ec);
         if (ec) {
-            throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to bind HTTP acceptor: " + ec.message());
         }
 
         (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
-            throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to listen on HTTP acceptor: " + ec.message());
         }
 
         const auto bound = acceptor.local_endpoint(ec);
         if (ec) {
-            throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to query HTTP acceptor endpoint: " + ec.message());
         }
         port = bound.port();
     }

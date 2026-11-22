@@ -93,12 +93,14 @@ Task<void> establish(std::shared_ptr<Connection> connection,
         }
         const auto status = tunnel->parser.get().result_int();
         if (status < 200 || status > 299) {
-            throw std::runtime_error("The proxy refused the tunnel to " +
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "The proxy refused the tunnel to " +
                                      sanitize_for_diagnostics(authority) + " with status " +
                                      std::to_string(status));
         }
         if (tunnel->buffer.size() != 0) {
-            throw std::runtime_error("The proxy sent data before the tunnel to " +
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "The proxy sent data before the tunnel to " +
                                      sanitize_for_diagnostics(authority) + " opened");
         }
     }

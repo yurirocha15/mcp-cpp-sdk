@@ -2889,7 +2889,7 @@ struct OAuthClientTransport::Impl {
 
     static void throw_if_closed(Impl& owner) {
         if (is_closed(owner)) {
-            throw std::runtime_error("OAuthClientTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "OAuthClientTransport is closed");
         }
     }
 
@@ -2914,7 +2914,7 @@ struct OAuthClientTransport::Impl {
             }
         }
         if (closed) {
-            throw std::runtime_error("OAuthClientTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "OAuthClientTransport is closed");
         }
         co_return authorized;
     }

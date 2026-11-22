@@ -92,8 +92,9 @@ TEST_F(MemoryTransportTest, CloseOnOneSideAffectsOther) {
                                  ta->close();
                                  try {
                                      co_await tb->read_message();
-                                 } catch (const std::runtime_error& e) {
+                                 } catch (const mcp::TransportError& e) {
                                      exception_thrown = true;
+                                     EXPECT_EQ(e.kind(), mcp::TransportError::Kind::eClosed);
                                      EXPECT_STREQ(e.what(), "transport closed");
                                  }
                              });
@@ -117,8 +118,9 @@ TEST_F(MemoryTransportTest, CloseIsIdempotent) {
                              [ta = std::move(transport_a), &exception_thrown]() -> mcp::Task<void> {
                                  try {
                                      co_await ta->read_message();
-                                 } catch (const std::runtime_error& e) {
+                                 } catch (const mcp::TransportError& e) {
                                      exception_thrown = true;
+                                     EXPECT_EQ(e.kind(), mcp::TransportError::Kind::eClosed);
                                      EXPECT_STREQ(e.what(), "transport closed");
                                  }
                              });
@@ -139,8 +141,9 @@ TEST_F(MemoryTransportTest, WriteAfterCloseThrows) {
                                  ta->close();
                                  try {
                                      co_await ta->write_message("test");
-                                 } catch (const std::runtime_error& e) {
+                                 } catch (const mcp::TransportError& e) {
                                      exception_thrown = true;
+                                     EXPECT_EQ(e.kind(), mcp::TransportError::Kind::eClosed);
                                      EXPECT_STREQ(e.what(), "transport closed");
                                  }
                              });

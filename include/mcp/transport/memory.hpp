@@ -56,7 +56,7 @@ class MCP_API MemoryTransport final : public ITransport {
      * Suspends until a message is available or the transport is closed.
      *
      * @return A task yielding the next queued message.
-     * @throws std::runtime_error If the transport is closed.
+     * @throws TransportError If the transport is closed.
      */
     Task<std::string> read_message() override;
 
@@ -64,7 +64,7 @@ class MCP_API MemoryTransport final : public ITransport {
      * @brief Reads and parses the next message as JSON.
      *
      * @return A task yielding the next queued JSON value.
-     * @throws std::runtime_error If the transport is closed.
+     * @throws TransportError If the transport is closed.
      */
     Task<nlohmann::json> read_json();
 
@@ -73,7 +73,7 @@ class MCP_API MemoryTransport final : public ITransport {
      *
      * @param message The JSON value to send.
      * @return A task that completes when the peer queue has been updated.
-     * @throws std::runtime_error If either endpoint is closed or the peer is unavailable.
+     * @throws TransportError If either endpoint is closed or the peer is unavailable.
      */
     Task<void> write_json(nlohmann::json message);
 
@@ -85,7 +85,7 @@ class MCP_API MemoryTransport final : public ITransport {
      *
      * @param message The message to send.
      * @return A task that completes when the peer queue has been updated.
-     * @throws std::runtime_error If either endpoint is closed or the peer is unavailable.
+     * @throws TransportError If either endpoint is closed or the peer is unavailable.
      */
     Task<void> write_message(std::string_view message) override;
 
@@ -96,7 +96,7 @@ class MCP_API MemoryTransport final : public ITransport {
      * @param message The message to send.
      * @param related_request The id of the client request, as JSON text.
      * @return A task that completes when the peer queue has been updated.
-     * @throws std::runtime_error If either endpoint is closed or the peer is unavailable.
+     * @throws TransportError If either endpoint is closed or the peer is unavailable.
      */
     Task<void> write_related_message(std::string_view message,
                                      std::string_view related_request) override;

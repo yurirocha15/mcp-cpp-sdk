@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
         try {
             std::rethrow_if_nested(error);
         } catch (const mcp::TlsError& tls_error) {
-            if (tls_error.kind() == mcp::TlsError::Kind::eUntrustedCertificate) {
+            if (tls_error.reason() == mcp::TlsError::Reason::eUntrustedCertificate) {
                 std::cerr << "Name the server's certificate authority as CA_FILE\n";
             }
         } catch (...) {

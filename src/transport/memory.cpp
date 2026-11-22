@@ -131,7 +131,7 @@ struct MemoryTransportState {
     static Task<Message> next_message(std::shared_ptr<MemoryTransportState> state) {
         auto message = co_await next_message_or_closed(std::move(state));
         if (!message) {
-            throw std::runtime_error("transport closed");
+            throw TransportError(TransportError::Kind::eClosed, "transport closed");
         }
         co_return std::move(*message);
     }
@@ -157,7 +157,7 @@ struct MemoryTransportState {
                             MessageValue message) {
         if (sender.closed.load(std::memory_order_acquire) ||
             peer.closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("transport closed");
+            throw TransportError(TransportError::Kind::eClosed, "transport closed");
         }
 
         peer.deliver_message(Message(std::move(message)));
@@ -172,12 +172,12 @@ struct MemoryTransportState {
 
     static Task<void> write(std::shared_ptr<MemoryTransportState> state, Message message) {
         if (state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("transport closed");
+            throw TransportError(TransportError::Kind::eClosed, "transport closed");
         }
 
         auto peer = state->lock_peer();
         if (!peer) {
-            throw std::runtime_error("peer transport not set");
+            throw TransportError(TransportError::Kind::eClosed, "peer transport not set");
         }
 
         // A writer whose own executor is the peer's strand runs inside it already, which is all a

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/core/export.hpp>
+#include <mcp/transport/transport.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -161,11 +162,16 @@ class MCP_API TlsConfigError : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-/** @brief A TLS connection failed. */
-class MCP_API TlsError : public std::runtime_error {
+/**
+ * @brief A TLS connection failed.
+ *
+ * @details Its TransportError::kind() is TransportError::Kind::eIo for Reason::eTruncated and
+ * TransportError::Kind::eConnect for a failed handshake.
+ */
+class MCP_API TlsError : public TransportError {
    public:
     /** @brief What went wrong. */
-    enum class Kind : std::uint8_t {
+    enum class Reason : std::uint8_t {
         eUntrustedCertificate,  ///< The certificate does not chain to a trusted authority.
         eExpiredCertificate,    ///< The certificate has expired or is not valid yet.
         eHostnameMismatch,      ///< The certificate does not name the host.
@@ -176,13 +182,15 @@ class MCP_API TlsError : public std::runtime_error {
         eTruncated,             ///< The connection ended without the peer's close_notify, mid-message.
     };
 
-    TlsError(Kind kind, const std::string& message) : std::runtime_error(message), kind_(kind) {}
+    TlsError(Reason reason, const std::string& message)
+        : TransportError(reason == Reason::eTruncated ? Kind::eIo : Kind::eConnect, message),
+          reason_(reason) {}
 
     /** @return What went wrong. */
-    [[nodiscard]] Kind kind() const noexcept { return kind_; }
+    [[nodiscard]] Reason reason() const noexcept { return reason_; }
 
    private:
-    Kind kind_;
+    Reason reason_;
 };
 
 }  // namespace mcp

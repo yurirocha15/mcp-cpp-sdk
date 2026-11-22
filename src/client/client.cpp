@@ -69,10 +69,10 @@ std::optional<nlohmann::json> make_paginated_params(const std::optional<std::str
     return nlohmann::json(std::move(params));
 }
 
-/// Throws @p failure, a transport's failure to send a message to the server. An HTTP error status
-/// and a failed connection become McpError with g_CONNECTION_CLOSED, as a closed stdio connection
-/// does, with the transport's exception nested in it for std::rethrow_if_nested(); an HTTP status
-/// is also in its data() as `httpStatus`. Any other exception is thrown as it is.
+/// Throws @p failure, a transport's failure to send a message to the server. An HTTP error status,
+/// a TransportError and a network error become McpError with g_CONNECTION_CLOSED, with the
+/// transport's exception nested in it for std::rethrow_if_nested(); an HTTP status is also in its
+/// data() as `httpStatus`. Any other exception is thrown as it is.
 [[noreturn]] void throw_transport_failure(const std::exception_ptr& failure) {
     try {
         std::rethrow_exception(failure);
@@ -85,7 +85,7 @@ std::optional<nlohmann::json> make_paginated_params(const std::optional<std::str
         std::throw_with_nested(
             McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                      "The connection to the server failed: " + error.code().message()));
-    } catch (const TlsError& error) {
+    } catch (const TransportError& error) {
         std::throw_with_nested(McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, error.what()));
     }
 }

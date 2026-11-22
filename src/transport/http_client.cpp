@@ -80,7 +80,8 @@ class SseDecoder {
             if (symbol != '\n') {
                 line_.push_back(symbol);
                 if (line_.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                    throw std::runtime_error("An SSE line from the server is too long");
+                    throw TransportError(TransportError::Kind::eProtocol,
+                                         "An SSE line from the server is too long");
                 }
                 continue;
             }
@@ -140,7 +141,8 @@ class SseDecoder {
             }
             if (payload_.size() + value.size() + 1 >
                 mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                throw std::runtime_error("An SSE event from the server is too long");
+                throw TransportError(TransportError::Kind::eProtocol,
+                                     "An SSE event from the server is too long");
             }
             if (!payload_.empty()) {
                 payload_.push_back('\n');
@@ -513,7 +515,7 @@ struct HttpClientTransport::Impl {
         // cancel either. From here to the socket opening inside the connect nothing suspends, so a
         // later close() runs on the strand after it and closes that socket.
         if (state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpClientTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
         }
         state->stream = detail::make_connection(strand, *connection_plan);
         state->stream_plan = connection_plan;
@@ -823,7 +825,8 @@ struct HttpClientTransport::Impl {
                 }
 
                 if (state.closed.load(std::memory_order_acquire)) {
-                    throw std::runtime_error("HttpClientTransport is closed");
+                    throw TransportError(TransportError::Kind::eClosed,
+                                         "HttpClientTransport is closed");
                 }
 
                 state.timer.expires_at(std::chrono::steady_clock::time_point::max());
@@ -864,7 +867,7 @@ struct HttpClientTransport::Impl {
                                 std::function<std::string()> bearer_token_provider) {
         auto& state = *impl->state;
         if (state.closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpClientTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
         }
 
         bool handled = false;
@@ -893,7 +896,7 @@ struct HttpClientTransport::Impl {
                 }
             }
             if (state.closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("HttpClientTransport is closed");
+                throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
             }
         }
 
@@ -958,7 +961,8 @@ struct HttpClientTransport::Impl {
         if (impl->changes_session_terms(initialized, *initialize)) {
             // The Client would go on with what the old session said of the server.
             state.initialize_request_key.reset();
-            throw std::runtime_error(
+            throw TransportError(
+                TransportError::Kind::eProtocol,
                 "The server started a new session with another protocol version or other "
                 "capabilities; connect again to use it");
         }
@@ -1021,7 +1025,7 @@ struct HttpClientTransport::Impl {
                 }
             }
             if (state.closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("HttpClientTransport is closed");
+                throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
             }
         }
     }
@@ -1268,7 +1272,8 @@ struct HttpClientTransport::Impl {
             co_await impl->ensure_connected();
 
             if (!state.stream) {
-                throw std::runtime_error("HttpClientTransport stream is not initialized");
+                throw TransportError(TransportError::Kind::eConnect,
+                                     "HttpClientTransport stream is not initialized");
             }
             const auto& connection_plan = *state.stream_plan;
             StringRequest request{http::verb::post, connection_plan.request_target(impl->path),
@@ -1751,7 +1756,8 @@ struct HttpClientTransport::Impl {
             } else {
                 body.append(piece);
                 if (body.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                    throw std::runtime_error("The server's response is too large");
+                    throw TransportError(TransportError::Kind::eProtocol,
+                                         "The server's response is too large");
                 }
             }
         }
@@ -1763,7 +1769,8 @@ struct HttpClientTransport::Impl {
                 }
             }
             if (call->expects_response && !call->final_message) {
-                throw std::runtime_error("The server's event stream ended without a response");
+                throw TransportError(TransportError::Kind::eProtocol,
+                                     "The server's event stream ended without a response");
             }
             co_return;
         }
@@ -1784,12 +1791,14 @@ struct HttpClientTransport::Impl {
         if (status == static_cast<unsigned int>(http::status::accepted) || body.empty()) {
             // A server of an older revision may answer a request with 202 alone.
             if (call->expects_response && !call->legacy) {
-                throw std::runtime_error("The server answered a request without a response");
+                throw TransportError(TransportError::Kind::eProtocol,
+                                     "The server answered a request without a response");
             }
             co_return;
         }
         if (!starts_with(call->content_type, "application/json")) {
-            throw std::runtime_error("The server answered with an unexpected content type");
+            throw TransportError(TransportError::Kind::eProtocol,
+                                 "The server answered with an unexpected content type");
         }
         call->final_message = std::move(body);
     }

@@ -33,6 +33,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `ClientOptions::response_cache` lets a `Client` answer list and `read_resource()` calls from earlier results while their `ttlMs` lasts; `RequestOptions::cache_mode` refreshes or bypasses it.
 - `Server::set_notification_rate_limit()` and `ClientOptions::notification_rate_limit` cap the progress and log notifications each request sends or delivers; there is no limit by default.
 - The documentation lists which parts of the specification the SDK implements and marks the features protocol revision 2026-07-28 deprecates.
+- The built-in transports throw `TransportError` for failures they detect; its `kind()` tells a closed transport, a failed connection or launch, a failed read or write and a peer's protocol error apart.
 
 ### Changed
 

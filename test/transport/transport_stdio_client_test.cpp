@@ -458,14 +458,22 @@ TEST(StdioClientTransport, WorkingDirectoryIsApplied) {
 
 TEST(StdioClientTransport, LaunchFailuresAreReportedByTheConstructor) {
     Harness harness;
+    const auto launch_failure = [&harness](const auto& options) {
+        std::optional<mcp::TransportError::Kind> kind;
+        try {
+            mcp::StdioClientTransport transport(harness.io.get_executor(), options);
+        } catch (const mcp::TransportError& error) {
+            kind = error.kind();
+        }
+        return kind;
+    };
     auto missing = server_options();
     missing.command = "mcp-sdk-no-such-program";
-    EXPECT_THROW(mcp::StdioClientTransport(harness.io.get_executor(), missing), std::runtime_error);
+    EXPECT_EQ(launch_failure(missing), mcp::TransportError::Kind::eConnect);
 
     auto no_directory = server_options();
     no_directory.working_directory = std::filesystem::path("mcp-sdk-no-such-directory") / "nested";
-    EXPECT_THROW(mcp::StdioClientTransport(harness.io.get_executor(), no_directory),
-                 std::runtime_error);
+    EXPECT_EQ(launch_failure(no_directory), mcp::TransportError::Kind::eConnect);
 
     auto empty = server_options();
     empty.command.clear();
@@ -482,8 +490,8 @@ TEST(StdioClientTransport, LineLongerThanTheLimitFailsTheRead) {
         mcp::StdioClientTransport too_long(harness.io.get_executor(), options);
         try {
             co_await too_long.read_message();
-        } catch (const std::runtime_error&) {
-            refused = true;
+        } catch (const mcp::TransportError& error) {
+            refused = error.kind() == mcp::TransportError::Kind::eProtocol;
         }
         auto fitting = server_options("write-raw", {"100", "1"});
         fitting.max_message_bytes = 100;
@@ -517,8 +525,8 @@ TEST(StdioClientTransport, FinalLineWithoutANewlineIsDeliveredBeforeTheEnd) {
         last = co_await transport.read_message();
         try {
             co_await transport.read_message();
-        } catch (const std::runtime_error&) {
-            ended = true;
+        } catch (const mcp::TransportError& error) {
+            ended = error.kind() == mcp::TransportError::Kind::eClosed;
         }
     });
     EXPECT_EQ(last, std::string(7, 'x'));

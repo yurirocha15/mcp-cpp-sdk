@@ -75,7 +75,7 @@ class MCP_API StdioClientSession {
     /**
      * @brief Launch the server and connect to it.
      * @return What the server declared.
-     * @throws std::runtime_error If the process cannot start.
+     * @throws TransportError If the process cannot start.
      * @throws McpError If the connection fails; the process is then shut down, nothing is
      *         restarted, and client() is null.
      */

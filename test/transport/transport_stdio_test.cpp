@@ -229,6 +229,7 @@ TEST_F(StdioTransportTest, ReadAfterCloseDeliversLinesQueuedBeforeClose) {
 
     std::vector<std::string> results;
     std::string error_after_queue;
+    std::optional<mcp::TransportError::Kind> kind_after_queue;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
         results.push_back(co_await transport.read_message());
         // Give the reader thread time to queue the second line and reach end of input.
@@ -238,8 +239,9 @@ TEST_F(StdioTransportTest, ReadAfterCloseDeliversLinesQueuedBeforeClose) {
         results.push_back(co_await transport.read_message());
         try {
             (void)co_await transport.read_message();
-        } catch (const std::runtime_error& error) {
+        } catch (const mcp::TransportError& error) {
             error_after_queue = error.what();
+            kind_after_queue = error.kind();
         }
     });
     io_ctx_.run();
@@ -248,6 +250,7 @@ TEST_F(StdioTransportTest, ReadAfterCloseDeliversLinesQueuedBeforeClose) {
     EXPECT_EQ(results[0], "first");
     EXPECT_EQ(results[1], "second");
     EXPECT_EQ(error_after_queue, "StdioTransport is closed");
+    EXPECT_EQ(kind_after_queue, mcp::TransportError::Kind::eClosed);
 }
 
 // A newline inside a message would split it into two lines on the wire, so it is refused and nothing
@@ -481,18 +484,21 @@ TEST_F(StdioTransportTest, LineOverTheLimitFailsTheRead) {
 
     std::optional<std::string> at_the_limit;
     std::string error;
+    std::optional<mcp::TransportError::Kind> kind;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
         at_the_limit = co_await transport.read_message();
         try {
             co_await transport.read_message();
-        } catch (const std::runtime_error& failure) {
+        } catch (const mcp::TransportError& failure) {
             error = failure.what();
+            kind = failure.kind();
         }
     });
     io_ctx_.run();
 
     EXPECT_EQ(at_the_limit, "0123456789");
     EXPECT_NE(error.find("exceeds 10 bytes"), std::string::npos) << error;
+    EXPECT_EQ(kind, mcp::TransportError::Kind::eProtocol);
 }
 
 namespace {
