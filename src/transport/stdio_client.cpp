@@ -1055,13 +1055,14 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                 boost::asio::buffer(buffer),
                 boost::asio::redirect_error(boost::asio::use_awaitable, error));
             self->stderr_pending.append(buffer.data(), count);
-            std::size_t start = 0;
-            for (auto newline = self->stderr_pending.find('\n', start); newline != std::string::npos;
-                 newline = self->stderr_pending.find('\n', start)) {
-                deliver(std::string_view(self->stderr_pending).substr(start, newline - start));
-                start = newline + 1;
+            std::size_t line_start = 0;
+            for (auto newline = self->stderr_pending.find('\n', line_start);
+                 newline != std::string::npos; newline = self->stderr_pending.find('\n', line_start)) {
+                deliver(
+                    std::string_view(self->stderr_pending).substr(line_start, newline - line_start));
+                line_start = newline + 1;
             }
-            self->stderr_pending.erase(0, start);
+            self->stderr_pending.erase(0, line_start);
             if (error) {
                 break;
             }
