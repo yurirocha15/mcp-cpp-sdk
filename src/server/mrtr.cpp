@@ -326,9 +326,7 @@ nlohmann::json InlineInput::missing_capabilities() const {
 }
 
 bool asks_for_sampling_context(const nlohmann::json& params) {
-    if (!params.is_object()) {
-        return false;
-    }
+    // find() gives end() for a value that is no object.
     const auto include = params.find("includeContext");
     return include != params.end() && include->is_string() && *include != "none";
 }

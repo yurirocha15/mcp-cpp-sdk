@@ -1769,15 +1769,6 @@ void Server::register_tool(const Tool& tool, const std::string& name, TypeErased
     impl_->add_tool_registration(Tool(tool), name, std::move(schemas), std::move(handler), result_mode);
 }
 
-void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
-    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
-    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
-                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
-    auto name = tool.name;
-    impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
-                                 std::move(handler), result_mode);
-}
-
 void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
                            const nlohmann::json* output_schema, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {

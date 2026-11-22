@@ -1450,7 +1450,6 @@ class MCP_API Server {
     /// Non-template registration helpers called by the template add_* methods above.
     void register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                        detail::ToolResultMode result_mode);
-    void register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode);
     /// Registers @p tool, whose own schemas are unset, with @p input_schema and, unless it is null,
     /// @p output_schema. The server keeps the schemas in their compiled form, which servers that
     /// register the same schema share, so the schemas are not copied for each registration.
