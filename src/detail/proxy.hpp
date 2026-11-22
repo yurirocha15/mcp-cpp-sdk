@@ -3,6 +3,7 @@
 #include <mcp/transport/proxy.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace mcp::detail {
 
@@ -32,5 +33,8 @@ std::string authority_of(const std::string& host, const std::string& port, bool 
 
 /// Whether @p host (no brackets) is `localhost` or a loopback address.
 bool is_loopback_host(const std::string& host);
+
+/// @p text without the spaces and tabs around it.
+std::string trim_blanks(std::string_view text);
 
 }  // namespace mcp::detail

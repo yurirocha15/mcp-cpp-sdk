@@ -25,15 +25,6 @@ std::string environment_either(const char* lower_name, const char* upper_name) {
     return value.empty() ? environment(upper_name) : value;
 }
 
-std::string trim(std::string_view text) {
-    const auto first = text.find_first_not_of(" \t");
-    if (first == std::string_view::npos) {
-        return {};
-    }
-    const auto last = text.find_last_not_of(" \t");
-    return std::string(text.substr(first, last - first + 1));
-}
-
 }  // namespace
 
 ProxyOptions ProxyOptions::from_environment() {
@@ -52,7 +43,7 @@ ProxyOptions ProxyOptions::from_environment() {
     std::size_t begin = 0;
     while (begin <= bypass.size()) {
         const auto end = std::min(bypass.find(',', begin), bypass.size());
-        auto entry = trim(std::string_view(bypass).substr(begin, end - begin));
+        auto entry = detail::trim_blanks(std::string_view(bypass).substr(begin, end - begin));
         if (!entry.empty()) {
             options.no_proxy.push_back(std::move(entry));
         }

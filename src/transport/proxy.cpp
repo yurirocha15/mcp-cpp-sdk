@@ -24,15 +24,6 @@ std::string lower(std::string text) {
     return text;
 }
 
-std::string trim(std::string_view text) {
-    const auto first = text.find_first_not_of(" \t");
-    if (first == std::string_view::npos) {
-        return {};
-    }
-    const auto last = text.find_last_not_of(" \t");
-    return std::string(text.substr(first, last - first + 1));
-}
-
 int hex_value(char symbol) {
     if (symbol >= '0' && symbol <= '9') {
         return symbol - '0';
@@ -106,7 +97,7 @@ bool is_port(const std::string& text) {
 
 /// Whether one NO_PROXY entry covers @p host (lower case, no brackets) on @p port.
 bool entry_matches(const std::string& raw_entry, const std::string& host, const std::string& port) {
-    const auto entry = lower(trim(raw_entry));
+    const auto entry = lower(detail::trim_blanks(raw_entry));
     if (entry.empty()) {
         return false;
     }
@@ -158,8 +149,17 @@ bool entry_matches(const std::string& raw_entry, const std::string& host, const 
 
 namespace detail {
 
+std::string trim_blanks(std::string_view text) {
+    const auto first = text.find_first_not_of(" \t");
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    const auto last = text.find_last_not_of(" \t");
+    return std::string(text.substr(first, last - first + 1));
+}
+
 ProxyRoute parse_proxy_url(const std::string& url, const std::string& origin) {
-    std::string rest = trim(url);
+    std::string rest = trim_blanks(url);
     const auto scheme_end = rest.find("://");
     if (scheme_end != std::string::npos) {
         const auto scheme = lower(rest.substr(0, scheme_end));
