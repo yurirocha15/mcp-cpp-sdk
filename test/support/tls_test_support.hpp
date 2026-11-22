@@ -272,6 +272,9 @@ struct FrontOptions {
     bool ticket_after_response{false};
     /// Cut the connection, without close_notify, after this many bytes of a response body.
     std::size_t cut_after_body_bytes{0};
+    /// Close each connection, without close_notify, once a response has gone out, although the
+    /// response keeps the connection alive.
+    bool close_after_response{false};
 };
 
 /// A TLS server in front of a plain HTTP server on the loopback interface: it ends TLS and passes
@@ -326,6 +329,11 @@ class TlsFront {
     [[nodiscard]] int close_notifies() const {
         std::lock_guard lock(mutex_);
         return close_notifies_;
+    }
+    /// How many connections close_after_response closed.
+    [[nodiscard]] int server_closes() const {
+        std::lock_guard lock(mutex_);
+        return server_closes_;
     }
 
    private:
@@ -414,6 +422,13 @@ class TlsFront {
                 client->next_layer().close(ignored);
                 break;
             }
+            if (options_.close_after_response) {
+                boost::system::error_code ignored;
+                client->next_layer().close(ignored);
+                std::lock_guard lock(mutex_);
+                ++server_closes_;
+                break;
+            }
             if (options_.ticket_after_response) {
                 // A TLS 1.3 server may send a ticket at any time; the next handshake call sends it.
                 if (SSL_new_session_ticket(client->native_handle()) == 1) {
@@ -441,6 +456,7 @@ class TlsFront {
     tcp::acceptor acceptor_;
     mutable std::mutex mutex_;
     int handshakes_{0};
+    int server_closes_{0};
     int close_notifies_{0};
     std::vector<std::string> server_names_;
     std::vector<std::string> hosts_;
@@ -570,20 +586,39 @@ class TestProxy {
             co_await pump(backend, client);
             co_return;
         }
-        std::string target(request.target());
-        if (const auto scheme = target.find("://"); scheme != std::string::npos) {
-            const auto path = target.find('/', scheme + 3);
-            target = path == std::string::npos ? "/" : target.substr(path);
-        }
-        request.target(target);
-        request.erase(http::field::proxy_authorization);
-        co_await http::async_write(*backend, request, asio::redirect_error(asio::use_awaitable, error));
-        if (error) {
-            co_return;
-        }
+        // Requests are passed on one after another while the connection is kept alive.
         beast::flat_buffer backend_buffer;
-        bool keep_alive = true;
-        (void)co_await relay_response(*backend, backend_buffer, *client, 0, keep_alive, error);
+        for (;;) {
+            std::string target(request.target());
+            if (const auto scheme = target.find("://"); scheme != std::string::npos) {
+                const auto path = target.find('/', scheme + 3);
+                target = path == std::string::npos ? "/" : target.substr(path);
+            }
+            request.target(target);
+            request.erase(http::field::proxy_authorization);
+            co_await http::async_write(*backend, request,
+                                       asio::redirect_error(asio::use_awaitable, error));
+            if (error) {
+                break;
+            }
+            bool keep_alive = true;
+            (void)co_await relay_response(*backend, backend_buffer, *client, 0, keep_alive, error);
+            if (error || !keep_alive) {
+                break;
+            }
+            http::request_parser<http::string_body> next;
+            co_await http::async_read(*client, buffer, next,
+                                      asio::redirect_error(asio::use_awaitable, error));
+            if (error) {
+                break;
+            }
+            request = next.release();
+            {
+                std::lock_guard lock(mutex_);
+                authorizations_.emplace_back(request[http::field::proxy_authorization]);
+                forwarded_.emplace_back(request.target());
+            }
+        }
         boost::system::error_code ignored;
         client->shutdown(tcp::socket::shutdown_send, ignored);
     }

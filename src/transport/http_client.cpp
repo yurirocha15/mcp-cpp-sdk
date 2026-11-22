@@ -31,6 +31,7 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <limits>
@@ -268,6 +269,63 @@ struct HttpClientTransport::Impl {
         std::map<std::string, std::vector<detail::ParamHeader>> tool_params;
         /// The session whose GET stream is read, or was refused. Touched on the strand only.
         std::string listening_session;
+
+        /// A connection whose last answer was read to the end, kept for the next request.
+        struct IdleConnection {
+            std::shared_ptr<detail::Connection> stream;
+            std::shared_ptr<const detail::ConnectPlan> plan;
+            std::chrono::steady_clock::time_point since;
+        };
+        /// The kept connections, the most recently used last. Touched on the strand only.
+        std::deque<IdleConnection> idle_connections;
+
+        /// Keeps @p stream for a later request made the way @p plan says, closing the oldest kept
+        /// connection when there are as many as are kept.
+        void keep_connection(std::shared_ptr<detail::Connection> stream,
+                             std::shared_ptr<const detail::ConnectPlan> plan) {
+            const auto now = std::chrono::steady_clock::now();
+            while (!idle_connections.empty() &&
+                   now - idle_connections.front().since >=
+                       mcp::detail::constants::http_client::g_IDLE_CONNECTION_TIMEOUT) {
+                detail::close_connection(*idle_connections.front().stream);
+                idle_connections.pop_front();
+            }
+            if (idle_connections.size() >=
+                mcp::detail::constants::http_client::g_MAX_IDLE_CONNECTIONS) {
+                detail::close_connection(*idle_connections.front().stream);
+                idle_connections.pop_front();
+            }
+            idle_connections.push_back(IdleConnection{std::move(stream), std::move(plan), now});
+        }
+
+        /// The most recently used kept connection made the way @p plan says that the server has
+        /// not closed, or null. Kept connections passed over on the way are closed: they were made
+        /// with other settings, waited too long, or were closed by the server.
+        std::shared_ptr<detail::Connection> take_connection(
+            const std::shared_ptr<const detail::ConnectPlan>& plan) {
+            const auto now = std::chrono::steady_clock::now();
+            while (!idle_connections.empty()) {
+                auto entry = std::move(idle_connections.back());
+                idle_connections.pop_back();
+                const bool usable =
+                    entry.plan == plan &&
+                    now - entry.since <
+                        mcp::detail::constants::http_client::g_IDLE_CONNECTION_TIMEOUT &&
+                    !detail::closed_by_peer(*entry.stream);
+                if (usable) {
+                    return std::move(entry.stream);
+                }
+                detail::close_connection(*entry.stream);
+            }
+            return nullptr;
+        }
+
+        void close_kept_connections() {
+            for (auto& entry : idle_connections) {
+                detail::close_connection(*entry.stream);
+            }
+            idle_connections.clear();
+        }
 
         /// Ends the exchange of the call that @p key names, and of the calls made for it. Returns
         /// whether there was one.
@@ -1569,14 +1627,17 @@ struct HttpClientTransport::Impl {
 
         const auto connection_plan = impl->current_plan();
         call->plan = connection_plan;
-        net::ip::tcp::resolver resolver(impl->strand);
-        auto endpoints = co_await resolver.async_resolve(
-            connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
-        throw_if_unavailable(shared, *call);
-        call->stream = detail::make_connection(impl->strand, *connection_plan);
+        call->stream = shared.take_connection(connection_plan);
+        if (!call->stream) {
+            net::ip::tcp::resolver resolver(impl->strand);
+            auto endpoints = co_await resolver.async_resolve(
+                connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
+            throw_if_unavailable(shared, *call);
+            call->stream = detail::make_connection(impl->strand, *connection_plan);
+            co_await detail::establish(call->stream, endpoints_of(endpoints), connection_plan);
+            throw_if_unavailable(shared, *call);
+        }
         const auto stream = call->stream;
-        co_await detail::establish(stream, endpoints_of(endpoints), connection_plan);
-        throw_if_unavailable(shared, *call);
 
         call->deadline.emplace(
             stream->get_executor(), stream->socket(),
@@ -1782,10 +1843,23 @@ struct HttpClientTransport::Impl {
         }
     }
 
-    /// Ends an exchange: nothing of it stays open or registered.
+    /// Whether the connection of @p call can carry another request: its answer was read to the end,
+    /// nothing after it was received, and neither side ended the connection.
+    static bool reusable(const SharedState& shared, const ModernCall& call) {
+        return call.stream && call.parser && call.parser->is_done() && call.parser->keep_alive() &&
+               call.buffer.size() == 0 && !call.cancelled &&
+               !(call.deadline && call.deadline->expired()) &&
+               !shared.closed.load(std::memory_order_acquire) && call.stream->socket().is_open();
+    }
+
+    /// Ends an exchange: nothing of it stays registered, and its connection is kept for a later
+    /// request when it can carry one, else closed.
     static void end_call(SharedState& shared, ModernCall& call) {
+        const bool keep = reusable(shared, call);
         call.deadline.reset();
-        if (call.stream) {
+        if (keep) {
+            shared.keep_connection(std::move(call.stream), call.plan);
+        } else if (call.stream) {
             // Nothing runs on the connection any more, so a TLS one says goodbye.
             detail::close_connection(*call.stream);
         }
@@ -2068,6 +2142,7 @@ void HttpClientTransport::close() {
             for (auto& entry : shared_state->modern_calls) {
                 Impl::SharedState::close_call_socket(*entry.second);
             }
+            shared_state->close_kept_connections();
             shared_state->listen_timer.cancel();
             if (shared_state->operation_active) {
                 shared_state->resolver.cancel();

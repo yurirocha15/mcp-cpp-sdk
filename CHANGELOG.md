@@ -62,6 +62,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
   `#/definitions/nonNegativeInteger`, is refused as unresolved.
 - HTTP clients put the port in the `Host` header when it is not the scheme's default, as RFC 9110 requires.
 - `HttpClientTransport` warns once through its warning handler when bearer tokens would go over `http://` to a host other than a loopback one.
+- `HttpClientTransport` sends a request on a connection an earlier answer left open, keeping up to four, so calls no longer each make a connection and a TLS handshake.
 - HTTP and WebSocket servers answer 403 to a request on a loopback connection whose `Host` names no loopback host; `set_allowed_hosts()` lists other names, as a same-host proxy needs.
 - A `Client` pinned to 2026-07-28 sends `server/discover` once more when the server refuses that version while listing it as supported.
 - With a `StdioRestartPolicy`, `Endpoint::stdio()` sends each open `subscriptions/listen` request to the restarted server, so its `Subscription` goes on.

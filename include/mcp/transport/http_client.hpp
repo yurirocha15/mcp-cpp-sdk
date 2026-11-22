@@ -59,6 +59,10 @@ class MCP_API HttpStatusError : public std::runtime_error {
  * request, and opens it again from its last event when it ends; a server that answers that GET
  * with 405 is not asked again. A request's stream that ends before its response is resumed with a
  * GET that names its last event.
+ *
+ * An exchange goes on a connection that an earlier one read to the end, when the server left it
+ * open. Up to four such connections are kept; one that sat idle for 90 seconds, or that the server
+ * has closed, is not used again.
  */
 class MCP_API HttpClientTransport final : public ITransport {
    public:

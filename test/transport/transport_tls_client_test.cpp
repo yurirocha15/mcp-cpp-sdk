@@ -436,6 +436,73 @@ TEST(TlsClientTest, AClientEndsItsConnectionsWithCloseNotify) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Connection reuse
+
+/// Waits up to ten seconds for @p condition.
+bool eventually(const std::function<bool()>& condition) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!condition() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return condition();
+}
+
+// A request goes on a connection an earlier answer came on, so further calls make no handshakes,
+// and the client ends its kept connections with close_notify when it closes.
+TEST(TlsClientTest, RequestsShareTheConnectionsOfEarlierOnes) {
+    const PlainServer server;
+    const TlsFront front(front_for(certs().server), server.port());
+    for (const auto& protocol : {mcp::ClientProtocol::automatic(), mcp::ClientProtocol::legacy()}) {
+        const bool automatic = protocol.kind() == mcp::ClientProtocol::automatic().kind();
+        SCOPED_TRACE(automatic ? "automatic" : "legacy");
+        const auto before = front.handshakes();
+        const auto close_notifies = front.close_notifies();
+        {
+            mcp::ClientOptions options;
+            options.protocol = protocol;
+            mcp::HttpEndpointOptions endpoint_options;
+            endpoint_options.configure = with_tls(trusting(certs().ca));
+            mcp::Client client(
+                mcp::Endpoint::http(https_url(front.port()), std::move(endpoint_options)), options);
+            client.sync().connect("tls-test", "1.0");
+            const auto greet_once = [&client] {
+                EXPECT_FALSE(
+                    client.sync().call_tool("greet", nlohmann::json::object()).isError.value_or(false));
+            };
+            greet_once();
+            const auto after_first = front.handshakes();
+            for (int call = 0; call < 4; ++call) {
+                greet_once();
+            }
+            EXPECT_EQ(front.handshakes(), after_first);
+            if (automatic) {
+                // Discovery and every call went over one connection.
+                EXPECT_EQ(after_first - before, 1);
+            }
+        }
+        EXPECT_TRUE(eventually([&] { return front.close_notifies() > close_notifies; }));
+    }
+}
+
+// The client checks a kept connection before it sends on it: one the server has closed is not used.
+TEST(TlsClientTest, AConnectionTheServerClosedIsNotUsedAgain) {
+    const PlainServer server;
+    auto front_options = front_for(certs().server);
+    front_options.close_after_response = true;
+    const TlsFront front(front_options, server.port());
+    mcp::HttpEndpointOptions endpoint_options;
+    endpoint_options.configure = with_tls(trusting(certs().ca));
+    mcp::Client client(mcp::Endpoint::http(https_url(front.port()), std::move(endpoint_options)));
+    client.sync().connect("tls-test", "1.0");
+    for (int call = 0; call < 3; ++call) {
+        // The connection of the last answer is closed before the next request.
+        ASSERT_TRUE(eventually([&] { return front.server_closes() == front.handshakes(); }));
+        EXPECT_FALSE(
+            client.sync().call_tool("greet", nlohmann::json::object()).isError.value_or(false));
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
 // Settings
 
 TEST(TlsClientTest, SettingsThatCannotBeUsed) {
@@ -634,10 +701,9 @@ TEST(TlsClientTest, ReachesAnHttpsServerThroughAProxyTunnel) {
         transport.set_proxy(proxy_options);
     });
 
-    ASSERT_FALSE(proxy.tunnels().empty());
-    for (const auto& tunnel : proxy.tunnels()) {
-        EXPECT_EQ(tunnel, "mcp.example.test:443");
-    }
+    // The requests of the client went through one tunnel.
+    ASSERT_EQ(proxy.tunnels().size(), 1U);
+    EXPECT_EQ(proxy.tunnels().front(), "mcp.example.test:443");
     for (const auto& authorization : proxy.authorizations()) {
         EXPECT_EQ(authorization, "Basic dXNlcjpwQHNz");  // user:p@ss
     }
@@ -659,11 +725,13 @@ TEST(TlsClientTest, SendsPlainRequestsToTheProxyWithTheFullUrl) {
     greet("http://mcp.example.test:8080/mcp",
           [&](mcp::HttpClientTransport& transport) { transport.set_proxy(proxy_options); });
 
-    ASSERT_FALSE(proxy.forwarded().empty());
+    ASSERT_GE(proxy.forwarded().size(), 2U);
     for (const auto& target : proxy.forwarded()) {
         EXPECT_EQ(target, "http://mcp.example.test:8080/mcp");
     }
     EXPECT_TRUE(proxy.tunnels().empty());
+    // Over one connection to the proxy.
+    EXPECT_EQ(proxy.connections(), 1);
 }
 
 // The proxy's credentials go with each request passed through it, and the URL's fragment, which

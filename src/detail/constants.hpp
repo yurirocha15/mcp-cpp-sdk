@@ -89,6 +89,12 @@ inline constexpr std::size_t g_MAX_PARAM_HEADER_BYTES = 4096;
 /// The most pages of tools/list one schema refresh follows.
 inline constexpr int g_MAX_REFRESH_PAGES = 64;
 
+/// The most connections a transport keeps open between requests for the next ones.
+inline constexpr std::size_t g_MAX_IDLE_CONNECTIONS = 4;
+
+/// How long a kept connection waits for its next request before it is closed.
+inline constexpr std::chrono::seconds g_IDLE_CONNECTION_TIMEOUT{90};
+
 }  // namespace http_client
 
 /// URL prefixes the transports and the OAuth client compare against.
