@@ -20,18 +20,6 @@ namespace server_run_control_test {
 
 namespace {
 
-/// Whether @p condition holds within the hang guard.
-bool eventually(const std::function<bool()>& condition) {
-    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (!condition()) {
-        if (std::chrono::steady_clock::now() > deadline) {
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return true;
-}
-
 /// Runs an io_context on a thread of its own, stopping and joining it however the test ends.
 class LoopThread {
    public:

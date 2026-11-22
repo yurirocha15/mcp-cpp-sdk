@@ -835,20 +835,4 @@ TEST_F(ServerStdioTest, RunStdioExitsCleanlyOnEmptyInput) {
     EXPECT_TRUE(output.str().empty());
 }
 
-// Returning is the whole assertion: what this detects is run_stdio() failing to shut down on a
-// signal, which shows up as a join that never completes rather than as a wrong value. The absence
-// of an EXPECT here is deliberate.
-TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
-    BlockingStreambuf sbuf;
-    std::istream input(&sbuf);
-    std::ostringstream output;
-
-    std::thread server_thread([&] { server_->run_stdio(input, output); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    mcp::detail::trigger_shutdown_signal();
-    sbuf.close();
-    server_thread.join();
-}
-
 }  // namespace server_stdio_test

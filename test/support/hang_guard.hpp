@@ -1,6 +1,8 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
+#include <thread>
 
 // CMake sets this from MCP_CPP_SDK_TEST_TIMEOUT, the seconds ctest gives each test.
 #ifndef MCP_CPP_SDK_TEST_TIMEOUT_SECONDS
@@ -18,3 +20,16 @@ inline constexpr std::chrono::seconds g_hang_guard{MCP_CPP_SDK_TEST_TIMEOUT_SECO
 inline constexpr std::chrono::seconds g_release_guard{MCP_CPP_SDK_TEST_TIMEOUT_SECONDS - 10};
 
 static_assert(g_hang_guard.count() > 0, "MCP_CPP_SDK_TEST_TIMEOUT must be more than 20 seconds");
+
+/// Whether @p condition holds within @p timeout, checked every few milliseconds.
+inline bool eventually(const std::function<bool()>& condition,
+                       std::chrono::milliseconds timeout = g_hang_guard) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!condition()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return true;
+}

@@ -1800,18 +1800,6 @@ void run_with_teardown_watchdog(std::chrono::milliseconds budget, const std::fun
     reached_the_end.get();
 }
 
-// Spins until `condition` holds, or the budget runs out. Returns whether it held.
-bool wait_for_condition(const std::function<bool()>& condition, std::chrono::milliseconds budget) {
-    const auto deadline = std::chrono::steady_clock::now() + budget;
-    while (!condition()) {
-        if (std::chrono::steady_clock::now() >= deadline) {
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    return true;
-}
-
 constexpr std::chrono::milliseconds g_teardown_budget{10000};
 
 }  // namespace
@@ -1877,7 +1865,7 @@ TEST(ServerTeardownTest, DestroyAfterIoContextStoppedCompletes) {
     auto work = boost::asio::make_work_guard(io_ctx);
     std::thread runner([&io_ctx] { io_ctx.run(); });
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
 
     std::atomic_size_t settled{0};
     mcp_test::spawn_then(
@@ -1885,8 +1873,7 @@ TEST(ServerTeardownTest, DestroyAfterIoContextStoppedCompletes) {
         [&settled](std::exception_ptr, nlohmann::json) {
             settled.fetch_add(1, std::memory_order_release);
         });
-    ASSERT_TRUE(
-        wait_for_condition([&] { return transport->reverse_requests() == 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->reverse_requests() == 1; }, g_teardown_budget));
 
     work.reset();
     io_ctx.stop();
@@ -1943,7 +1930,7 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
         pool.emplace_back([&io_ctx] { io_ctx.run(); });
     }
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
 
     std::atomic_size_t settled{0};
     for (std::size_t sequence = 0; sequence < pending_count; ++sequence) {
@@ -1955,8 +1942,8 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
             });
     }
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->reverse_requests() == pending_count; },
-                                   g_teardown_budget));
+    ASSERT_TRUE(
+        eventually([&] { return transport->reverse_requests() == pending_count; }, g_teardown_budget));
     ASSERT_EQ(settled.load(std::memory_order_acquire), 0U);
     ASSERT_EQ(transport->close_calls(), 0U);
 
@@ -1970,8 +1957,8 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
     // teardown here: this transport does not wake its reader on close, so whatever the destructor
     // arranges is the only cleanup that runs. Destroying a Server mid-session must not strand the
     // callers waiting on its reverse requests.
-    EXPECT_TRUE(wait_for_condition(
-        [&] { return settled.load(std::memory_order_acquire) == pending_count; }, g_teardown_budget))
+    EXPECT_TRUE(eventually([&] { return settled.load(std::memory_order_acquire) == pending_count; },
+                           g_teardown_budget))
         << "settled " << settled.load(std::memory_order_acquire) << " of " << pending_count;
 
     work.reset();
@@ -2027,20 +2014,20 @@ TEST(ServerTeardownTest, ReverseRequestFromAHandlerReportsADestroyedServer) {
     auto work = boost::asio::make_work_guard(io_ctx);
     std::thread runner([&io_ctx] { io_ctx.run(); });
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
 
     transport->feed(make_initialize_request("init").dump());
     transport->feed(make_initialized_notification().dump());
     transport->feed(make_tool_call_request("call", "park").dump());
 
-    ASSERT_TRUE(wait_for_condition([&] { return handler_entered.load(std::memory_order_acquire); },
-                                   g_teardown_budget));
+    ASSERT_TRUE(
+        eventually([&] { return handler_entered.load(std::memory_order_acquire); }, g_teardown_budget));
 
     run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
     server_destroyed.store(true, std::memory_order_release);
 
-    EXPECT_TRUE(wait_for_condition([&] { return call_returned.load(std::memory_order_acquire); },
-                                   g_teardown_budget))
+    EXPECT_TRUE(
+        eventually([&] { return call_returned.load(std::memory_order_acquire); }, g_teardown_budget))
         << "the reverse-RPC call never returned";
     EXPECT_NE(observed.find("destroyed"), std::string::npos)
         << "reverse RPC after destruction reported: " << observed;

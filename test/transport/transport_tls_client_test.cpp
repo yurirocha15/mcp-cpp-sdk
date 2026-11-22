@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/hang_guard.hpp"
 #include "../support/loopback_server.hpp"
 #include "../support/spawn.hpp"
 #include "../support/tls_test_support.hpp"
@@ -437,15 +438,6 @@ TEST(TlsClientTest, AClientEndsItsConnectionsWithCloseNotify) {
 
 // ------------------------------------------------------------------------------------------------
 // Connection reuse
-
-/// Waits up to ten seconds for @p condition.
-bool eventually(const std::function<bool()>& condition) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!condition() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    return condition();
-}
 
 // A request goes on a connection an earlier answer came on, so further calls make no handshakes,
 // and the client ends its kept connections with close_notify when it closes.
