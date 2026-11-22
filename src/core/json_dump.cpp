@@ -2,7 +2,7 @@
 #include <mcp/detail/json_dump.hpp>
 
 #include "../detail/constants.hpp"
-#include "../detail/json_text_scan.hpp"
+#include "../detail/json/json_text_scan.hpp"
 
 #include <algorithm>
 #include <array>

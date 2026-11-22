@@ -1,7 +1,7 @@
 #include <mcp/auth/metadata_policy.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/protocol/schema.hpp>
-#include "../../src/detail/regex.hpp"
+#include "../../src/detail/text/regex.hpp"
 
 #include "../../src/detail/constants.hpp"
 #include "../../src/protocol/schema_cache.hpp"

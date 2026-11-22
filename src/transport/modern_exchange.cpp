@@ -1,8 +1,8 @@
 #include "modern_exchange.hpp"
 
-#include "../detail/beast_string.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/request_meta.hpp"
+#include "../detail/net/beast_string.hpp"
+#include "../detail/protocol/request_meta.hpp"
 #include "http_request_metadata.hpp"
 #include "socket_probe.hpp"
 

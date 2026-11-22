@@ -2,7 +2,7 @@
 #include <mcp/core/async.hpp>
 
 #include "../detail/constants.hpp"
-#include "../detail/encoding.hpp"
+#include "../detail/text/encoding.hpp"
 #include "grant_flow.hpp"
 
 #include <mcp/core/constants.hpp>

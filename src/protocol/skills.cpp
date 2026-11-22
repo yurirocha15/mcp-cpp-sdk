@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <set>
 #include "../detail/constants.hpp"
-#include "../detail/encoding.hpp"
+#include "../detail/text/encoding.hpp"
 #include "cache_hints.hpp"
 
 namespace mcp {

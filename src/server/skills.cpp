@@ -9,7 +9,7 @@
 #include <string>
 #include <utility>
 #include "../detail/constants.hpp"
-#include "../detail/encoding.hpp"
+#include "../detail/text/encoding.hpp"
 
 namespace methods = mcp::constants::methods;
 

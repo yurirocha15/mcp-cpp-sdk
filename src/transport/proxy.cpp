@@ -1,6 +1,6 @@
-#include "../detail/proxy.hpp"
+#include "../detail/net/proxy.hpp"
 
-#include "../detail/encoding.hpp"
+#include "../detail/text/encoding.hpp"
 
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/network_v4.hpp>

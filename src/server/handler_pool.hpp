@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../detail/strand_executor.hpp"
+#include "../detail/async/strand_executor.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>

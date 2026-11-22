@@ -1,6 +1,6 @@
 // The notification rate limit. The token bucket is internal, so the unit tests include its header;
 // the client tests use a scripted 2026-07-28 peer that floods progress and log notifications.
-#include "../../src/detail/notification_budget.hpp"
+#include "../../src/detail/protocol/notification_budget.hpp"
 
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"

@@ -1,6 +1,6 @@
 #include "sealed_state.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/encoding.hpp"
+#include "../detail/text/encoding.hpp"
 
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>

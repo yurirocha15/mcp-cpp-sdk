@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
-#include "constants.hpp"
+#include "../constants.hpp"
 
 namespace mcp::detail {
 

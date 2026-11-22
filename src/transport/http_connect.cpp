@@ -1,10 +1,10 @@
-#include "../detail/http_connect.hpp"
+#include "../detail/net/http_connect.hpp"
 
 #include "../detail/constants.hpp"
-#include "../detail/diagnostic_text.hpp"
-#include "../detail/network_failure.hpp"
-#include "../detail/socket_deadline.hpp"
-#include "../detail/tls.hpp"
+#include "../detail/net/network_failure.hpp"
+#include "../detail/net/socket_deadline.hpp"
+#include "../detail/net/tls.hpp"
+#include "../detail/text/diagnostic_text.hpp"
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/use_awaitable.hpp>

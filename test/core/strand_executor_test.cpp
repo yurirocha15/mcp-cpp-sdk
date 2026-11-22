@@ -1,4 +1,4 @@
-#include "../../src/detail/strand_executor.hpp"
+#include "../../src/detail/async/strand_executor.hpp"
 
 #include <gtest/gtest.h>
 

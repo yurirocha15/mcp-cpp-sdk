@@ -1,8 +1,8 @@
+#include "../detail/async/spawn_awaitable.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/diagnostic_text.hpp"
-#include "../detail/notification_budget.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/spawn_awaitable.hpp"
+#include "../detail/json/peer_json.hpp"
+#include "../detail/protocol/notification_budget.hpp"
+#include "../detail/text/diagnostic_text.hpp"
 #include "response_cache.hpp"
 
 #include <mcp/client/client.hpp>
@@ -11,7 +11,7 @@
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/tls.hpp>
-#include "../detail/serialized_transport_writer.hpp"
+#include "../detail/async/serialized_transport_writer.hpp"
 
 #include <algorithm>
 #include <atomic>

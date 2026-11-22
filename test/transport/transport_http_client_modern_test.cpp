@@ -1,7 +1,7 @@
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
-#include "../../src/detail/header_value.hpp"
+#include "../../src/detail/net/header_value.hpp"
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"

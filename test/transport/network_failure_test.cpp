@@ -1,4 +1,4 @@
-#include "../../src/detail/network_failure.hpp"
+#include "../../src/detail/net/network_failure.hpp"
 
 #include <gtest/gtest.h>
 

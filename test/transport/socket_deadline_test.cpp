@@ -1,4 +1,4 @@
-#include "../../src/detail/socket_deadline.hpp"
+#include "../../src/detail/net/socket_deadline.hpp"
 #include "../support/hang_guard.hpp"
 
 #include <gtest/gtest.h>

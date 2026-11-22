@@ -1,4 +1,4 @@
-#include "../detail/regex.hpp"
+#include "../detail/text/regex.hpp"
 
 #include <algorithm>
 #include <cstdint>

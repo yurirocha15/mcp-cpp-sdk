@@ -1,4 +1,4 @@
-#include "../detail/secure_random.hpp"
+#include "../detail/text/secure_random.hpp"
 #include <mcp/core/constants.hpp>
 
 #include <openssl/rand.h>

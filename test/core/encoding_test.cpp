@@ -1,6 +1,6 @@
 // The library's byte encodings: SHA-256, hexadecimal, base64, base64url, percent and form encoding.
 
-#include "../../src/detail/encoding.hpp"
+#include "../../src/detail/text/encoding.hpp"
 
 #include <gtest/gtest.h>
 

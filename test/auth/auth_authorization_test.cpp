@@ -42,7 +42,7 @@
 // Reach-in for retained-state assertions; see the header. Not a public SDK header.
 #include "../../src/auth/oauth_internal.hpp"
 #include "../../src/detail/constants.hpp"
-#include "../../src/detail/encoding.hpp"
+#include "../../src/detail/text/encoding.hpp"
 #include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/socket_gate.hpp"

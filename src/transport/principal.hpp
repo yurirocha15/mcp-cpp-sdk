@@ -2,7 +2,7 @@
 
 #include <mcp/transport/http_types.hpp>
 
-#include "../detail/encoding.hpp"
+#include "../detail/text/encoding.hpp"
 
 #include <algorithm>
 #include <optional>

@@ -1,5 +1,5 @@
-#include "../../src/detail/jsonrpc_envelope.hpp"
-#include "../../src/detail/request_meta.hpp"
+#include "../../src/detail/json/jsonrpc_envelope.hpp"
+#include "../../src/detail/protocol/request_meta.hpp"
 
 #include <gtest/gtest.h>
 

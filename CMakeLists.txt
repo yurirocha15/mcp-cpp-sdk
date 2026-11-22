@@ -228,9 +228,9 @@ if(MCP_CPP_SDK_BUILD_SHARED)
     # Keeps Beast's error categories and nlohmann_json's exception types shared
     # with the caller; see the headers.
     set(MCP_CPP_SDK_BEAST_VISIBILITY_HEADER
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/beast_error_visibility.hpp")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/net/beast_error_visibility.hpp")
     set(MCP_CPP_SDK_JSON_VISIBILITY_HEADER
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/json_error_visibility.hpp")
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/json/json_error_visibility.hpp")
     target_compile_options(
       mcp-cpp-sdk-shared
       PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}"

@@ -1,8 +1,8 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 
-#include "../detail/encoding.hpp"
-#include "../detail/secure_random.hpp"
+#include "../detail/text/encoding.hpp"
+#include "../detail/text/secure_random.hpp"
 
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/bind_executor.hpp>

@@ -5,18 +5,18 @@
  * @brief Server::Impl, the state behind a Server, and the helpers it uses. Private to the library.
  */
 
+#include "../detail/async/memory_transport_read.hpp"
+#include "../detail/async/spawn_awaitable.hpp"
+#include "../detail/async/strand_executor.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/diagnostic_text.hpp"
-#include "../detail/encoding.hpp"
-#include "../detail/memory_transport_read.hpp"
-#include "../detail/middleware_rejection.hpp"
-#include "../detail/modern_methods.hpp"
-#include "../detail/notification_budget.hpp"
-#include "../detail/param_headers.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/request_meta.hpp"
-#include "../detail/spawn_awaitable.hpp"
-#include "../detail/strand_executor.hpp"
+#include "../detail/json/peer_json.hpp"
+#include "../detail/net/param_headers.hpp"
+#include "../detail/protocol/middleware_rejection.hpp"
+#include "../detail/protocol/modern_methods.hpp"
+#include "../detail/protocol/notification_budget.hpp"
+#include "../detail/protocol/request_meta.hpp"
+#include "../detail/text/diagnostic_text.hpp"
+#include "../detail/text/encoding.hpp"
 #include "handler_pool.hpp"
 #include "mrtr.hpp"
 #include "run_control.hpp"
@@ -31,8 +31,8 @@
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/memory.hpp>
 #include <mcp/transport/stdio.hpp>
-#include "../detail/secure_random.hpp"
-#include "../detail/serialized_transport_writer.hpp"
+#include "../detail/async/serialized_transport_writer.hpp"
+#include "../detail/text/secure_random.hpp"
 
 // GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).

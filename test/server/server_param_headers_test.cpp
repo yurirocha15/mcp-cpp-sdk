@@ -1,6 +1,6 @@
 #include "../test_utils.hpp"
 
-#include "../../src/detail/param_headers.hpp"
+#include "../../src/detail/net/param_headers.hpp"
 #include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/protocol/schema.hpp"

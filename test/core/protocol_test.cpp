@@ -13,7 +13,7 @@
 #include "mcp/protocol/tools.hpp"
 
 #include "../../src/detail/constants.hpp"
-#include "../../src/detail/peer_json.hpp"
+#include "../../src/detail/json/peer_json.hpp"
 
 #include <gtest/gtest.h>
 

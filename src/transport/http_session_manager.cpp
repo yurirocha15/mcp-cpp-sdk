@@ -1,12 +1,12 @@
-#include "../detail/beast_string.hpp"
-#include "../detail/connection.hpp"
+#include "../detail/async/memory_transport_read.hpp"
+#include "../detail/async/strand_executor.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/jsonrpc_envelope.hpp"
-#include "../detail/memory_transport_read.hpp"
-#include "../detail/modern_methods.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/strand_executor.hpp"
-#include "../detail/tls.hpp"
+#include "../detail/json/jsonrpc_envelope.hpp"
+#include "../detail/json/peer_json.hpp"
+#include "../detail/net/beast_string.hpp"
+#include "../detail/net/connection.hpp"
+#include "../detail/net/tls.hpp"
+#include "../detail/protocol/modern_methods.hpp"
 #include "../server/run_control.hpp"
 #include "accept_retry.hpp"
 #include "host_policy.hpp"
@@ -25,7 +25,7 @@
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 #include <mcp/transport/tls.hpp>
-#include "../detail/secure_random.hpp"
+#include "../detail/text/secure_random.hpp"
 
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>

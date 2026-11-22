@@ -2,8 +2,8 @@
 
 #include <mcp/detail/json_dump.hpp>
 #include "../detail/constants.hpp"
-#include "../detail/diagnostic_text.hpp"
-#include "../detail/regex.hpp"
+#include "../detail/text/diagnostic_text.hpp"
+#include "../detail/text/regex.hpp"
 #include "native_schema.hpp"
 #include "schema_cache.hpp"
 #include "schema_checker.hpp"

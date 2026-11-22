@@ -1,8 +1,8 @@
-#include "../../src/detail/json_parse.hpp"
+#include "../../src/detail/json/json_parse.hpp"
 #include <mcp/detail/json_dump.hpp>
 #include "../../src/detail/constants.hpp"
 
-#include "../../src/detail/peer_json.hpp"
+#include "../../src/detail/json/peer_json.hpp"
 
 #include <gtest/gtest.h>
 

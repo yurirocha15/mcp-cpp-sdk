@@ -2,7 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "../../src/detail/constants.hpp"
-#include "../../src/detail/modern_methods.hpp"
+#include "../../src/detail/protocol/modern_methods.hpp"
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"

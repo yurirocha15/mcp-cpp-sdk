@@ -1,6 +1,6 @@
 #include "grant_flow.hpp"
 
-#include "../detail/diagnostic_text.hpp"
+#include "../detail/text/diagnostic_text.hpp"
 
 #include <algorithm>
 #include <mcp/auth/challenge.hpp>

@@ -1,4 +1,4 @@
-#include "../../src/detail/strand_executor.hpp"
+#include "../../src/detail/async/strand_executor.hpp"
 #include "../support/extension_harness.hpp"
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"

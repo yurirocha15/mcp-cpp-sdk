@@ -1,11 +1,11 @@
-#include "../detail/beast_string.hpp"
-#include "../detail/connection.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/modern_methods.hpp"
-#include "../detail/network_failure.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/request_meta.hpp"
-#include "../detail/tls.hpp"
+#include "../detail/json/peer_json.hpp"
+#include "../detail/net/beast_string.hpp"
+#include "../detail/net/connection.hpp"
+#include "../detail/net/network_failure.hpp"
+#include "../detail/net/tls.hpp"
+#include "../detail/protocol/modern_methods.hpp"
+#include "../detail/protocol/request_meta.hpp"
 #include "accept_retry.hpp"
 #include "host_policy.hpp"
 #include "http_limits.hpp"
@@ -22,7 +22,7 @@
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/tls.hpp>
-#include "../detail/secure_random.hpp"
+#include "../detail/text/secure_random.hpp"
 
 #include <algorithm>
 #include <atomic>

@@ -13,7 +13,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "../../src/detail/encoding.hpp"
+#include "../../src/detail/text/encoding.hpp"
 #include "../support/spawn.hpp"
 
 #include <boost/asio/co_spawn.hpp>

@@ -1,4 +1,4 @@
-#include "../detail/encoding.hpp"
+#include "../detail/text/encoding.hpp"
 
 #include <openssl/evp.h>
 

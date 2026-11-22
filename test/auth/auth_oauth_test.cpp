@@ -32,7 +32,7 @@
 #include <vector>
 
 #include "../../src/detail/constants.hpp"
-#include "../../src/detail/encoding.hpp"
+#include "../../src/detail/text/encoding.hpp"
 #include "../support/hang_guard.hpp"
 #include "../support/spawn.hpp"
 

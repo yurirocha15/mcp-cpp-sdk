@@ -1,13 +1,13 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 
+#include "../detail/async/spawn_awaitable.hpp"
 #include "../detail/constants.hpp"
-#include "../detail/encoding.hpp"
-#include "../detail/http_connect.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/socket_deadline.hpp"
-#include "../detail/spawn_awaitable.hpp"
-#include "../detail/tls.hpp"
+#include "../detail/json/peer_json.hpp"
+#include "../detail/net/http_connect.hpp"
+#include "../detail/net/socket_deadline.hpp"
+#include "../detail/net/tls.hpp"
+#include "../detail/text/encoding.hpp"
 #include "oauth_internal.hpp"
 
 #include <boost/asio/co_spawn.hpp>

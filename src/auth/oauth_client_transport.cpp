@@ -1,8 +1,8 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 
-#include "../detail/network_failure.hpp"
-#include "../detail/peer_json.hpp"
+#include "../detail/json/peer_json.hpp"
+#include "../detail/net/network_failure.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>

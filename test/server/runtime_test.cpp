@@ -1,5 +1,5 @@
 #include "mcp/core/runtime.hpp"
-#include "../../src/detail/runtime_access.hpp"
+#include "../../src/detail/async/runtime_access.hpp"
 #include "mcp/core/async.hpp"
 
 #include <gtest/gtest.h>

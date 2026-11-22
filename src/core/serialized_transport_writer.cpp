@@ -1,7 +1,7 @@
-#include "../detail/serialized_transport_writer.hpp"
+#include "../detail/async/serialized_transport_writer.hpp"
 #include <mcp/core/async.hpp>
 
-#include "../detail/strand_executor.hpp"
+#include "../detail/async/strand_executor.hpp"
 
 #include <mcp/transport/transport.hpp>
 #include "../detail/constants.hpp"

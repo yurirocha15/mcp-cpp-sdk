@@ -1,6 +1,6 @@
 #include <mcp/core/async.hpp>
 #include <mcp/core/runtime.hpp>
-#include "../detail/runtime_access.hpp"
+#include "../detail/async/runtime_access.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/executor_work_guard.hpp>

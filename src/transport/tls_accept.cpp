@@ -1,7 +1,7 @@
 #include "tls_accept.hpp"
 
-#include "../detail/socket_deadline.hpp"
-#include "../detail/tls.hpp"
+#include "../detail/net/socket_deadline.hpp"
+#include "../detail/net/tls.hpp"
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/steady_timer.hpp>
