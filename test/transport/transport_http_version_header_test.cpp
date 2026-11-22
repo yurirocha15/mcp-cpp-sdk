@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
@@ -120,9 +121,8 @@ mcp::Task<Answers> exchange(asio::any_io_executor executor, unsigned short port)
 TEST(VersionHeader, SessionManagerAcceptsAnyLegacyVersionOnASession) {
     asio::io_context io;
     const auto port = free_port();
-    mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", port,
-        [](const asio::any_io_executor&) { return make_server(); });
+    mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", port,
+                                              [](const mcp::Executor&) { return make_server(); });
     manager.set_json_only(true);
     Answers answers;
     mcp_test::spawn_detached(io, manager.listen());

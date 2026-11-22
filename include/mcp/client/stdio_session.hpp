@@ -1,32 +1,17 @@
 #pragma once
 
-#include <boost/asio/any_io_executor.hpp>
 #include <mcp/client/client.hpp>
 #include <mcp/core/constants.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
 
 namespace mcp {
-
-/**
- * @brief When StdioClientSession starts the server again after it ends on its own.
- */
-struct StdioRestartPolicy {
-    /// How many times the server is restarted over the life of the session; zero never restarts it.
-    std::size_t max_restarts = 0;
-    /// How long to wait before each start.
-    std::chrono::milliseconds delay{std::chrono::milliseconds(500)};
-    /// Also restart a server that ends on its own with status 0. By default only an abnormal end (a
-    /// non-zero status or a signal) restarts it: a server that exits cleanly of its own accord is
-    /// shutting down by choice.
-    bool restart_after_clean_exit = false;
-};
 
 /**
  * @brief What a StdioClientSession launches and how it connects.
@@ -76,7 +61,7 @@ class MCP_API StdioClientSession {
      * @brief Create a session; nothing starts until start().
      * @throws std::invalid_argument If the process command is empty.
      */
-    StdioClientSession(const boost::asio::any_io_executor& executor, StdioSessionOptions options);
+    StdioClientSession(const Executor& executor, StdioSessionOptions options);
 
     /// Stops restarting and starts shutting the current server down, also while the application
     /// still holds its Client, which is closed.

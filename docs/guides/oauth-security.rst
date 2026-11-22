@@ -293,7 +293,7 @@ A response exceeding the cap is rejected without being fully buffered, protectin
 Example: Hardened Policy Configuration
 ---------------------------------------
 
-Once the SDK can reach ``https://`` authorization servers (see the security boundary in :doc:`/concepts/oauth`; the built-in client has no TLS support yet), a hardened integration might configure:
+A hardened integration might configure:
 
 .. code-block:: cpp
 

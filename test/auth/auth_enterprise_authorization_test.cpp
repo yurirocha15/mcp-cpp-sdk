@@ -15,6 +15,7 @@
 #include <boost/asio/io_context.hpp>
 #include <functional>
 #include <mcp/auth/enterprise_authorization.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>

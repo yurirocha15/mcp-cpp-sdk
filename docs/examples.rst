@@ -20,6 +20,31 @@ The SDK builds nine core examples plus 16 specialized feature examples:
 8. **llama_server** - llama.cpp MCP adapter
 9. **debugger_server** - LLDB debugger MCP server (uses stubs when LLDB is unavailable)
 
+Sync-Mode and Async-Mode Examples
+---------------------------------
+
+``examples/sync/`` and ``examples/async/`` hold the same programs in the two
+modes:
+
+* ``notes_server`` and ``notes_client``: a server with a tool, a resource that
+  can be subscribed to and a prompt, and a client that uses them, over stdio.
+  :doc:`guides/sync-to-async` converts the sync programs to async mode.
+* ``server`` and ``client``: a server and a client with every feature, over HTTP
+  with a bearer token. The pages of :doc:`concepts/index` show each feature from
+  them, and :doc:`guides/async-mode` walks through the async programs.
+
+``examples/sync/`` also holds ``minimal_server`` and ``minimal_client``, the
+programs of :doc:`getting-started`. Each program builds as
+``example-<mode>-<name>``, with dashes for the underscores. A stdio client takes
+the server's command, an HTTP server its port, and an HTTP client the server's
+URL:
+
+.. code-block:: bash
+
+   ./build/release/example-async-notes-client ./build/release/example-async-notes-server
+   ./build/release/example-sync-server 8080 &
+   ./build/release/example-sync-client http://127.0.0.1:8080/mcp
+
 Feature Examples
 ----------------
 
@@ -138,7 +163,8 @@ server_with_sampling
 
 Demonstrates **reverse RPC** (server-to-client calls) via ``Context::sample_llm()``:
 
-* **Server capabilities**: Declares tool support with change notifications
+* **Server capabilities**: Declares tool support with change notifications, and logging
+  because the tool logs to the client
 * **Sampling tool**: Tool handler that calls back to the client via ``ctx.sample_llm()``
 * **Async context handlers**: Using ``Context&`` parameter for reverse RPC
 

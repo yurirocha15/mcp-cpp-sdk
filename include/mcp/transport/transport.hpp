@@ -1,6 +1,7 @@
 #pragma once
 
-#include <mcp/core/core.hpp>
+#include <mcp/core/async_fwd.hpp>
+#include <mcp/core/export.hpp>
 
 #include <functional>
 #include <string>
@@ -29,7 +30,7 @@ struct IncomingMessage {
  * Implementations handle the underlying I/O mechanism (stdio, WebSocket, etc.)
  * for reading and writing JSON-RPC messages.
  */
-class ITransport {
+class MCP_API ITransport {
    public:
     virtual ~ITransport() = default;
 
@@ -71,10 +72,7 @@ class ITransport {
      *         gives it an empty principal.
      * @throws std::runtime_error If the transport is closed while waiting.
      */
-    virtual Task<IncomingMessage> read_incoming() {
-        auto message = co_await read_message();
-        co_return IncomingMessage{std::move(message), {}};
-    }
+    virtual Task<IncomingMessage> read_incoming();
 
     /**
      * @brief Write a serialized MCP message to the transport.
@@ -101,10 +99,7 @@ class ITransport {
      * @throws std::runtime_error If the transport is closed.
      */
     virtual Task<void> write_related_message(std::string_view message,
-                                             std::string_view related_request) {
-        static_cast<void>(related_request);
-        co_await write_message(message);
-    }
+                                             std::string_view related_request);
 
     /**
      * @brief Close the transport and release underlying resources.

@@ -28,13 +28,17 @@ The mcp-cpp-sdk provides two ways to set up an HTTP server: a high-level conveni
 Convenience API (run_http)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up the :cpp:class:`mcp::HttpServerTransport`, and handles signal mapping automatically.
+For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up a :cpp:class:`mcp::StreamableHttpSessionManager` that serves each older-protocol client in a session of its own with the same server, and handles signal mapping automatically.
 
-.. literalinclude:: ../../examples/features/http_server_convenience.cpp
+.. literalinclude:: ../../examples/sync/server.cpp
    :language: cpp
-   :start-after: // Spawn server in background thread
-   :end-before: // Give server time to start
-   :dedent: 8
+   :start-at: // HTTP until a signal
+   :end-at: server.run_http(
+   :dedent: 4
+
+``run_http()`` blocks until SIGINT or SIGTERM, or until ``server.stop()`` is
+called from another thread or a handler. ``server.bound_port()`` returns the
+port it listens on, which is the one the system chose when it was given port 0.
 
 Manual HTTP Setup
 ~~~~~~~~~~~~~~~~~
@@ -74,6 +78,12 @@ revision, as before. All 2026-07-28 requests are answered by one shared
 the factory the first time it is needed. ``modern_server()`` returns it, and
 builds it if no request has yet. Because every 2026-07-28 client sees the same
 tools, resources and prompts, they must not depend on the connection.
+``Server::run_http()`` serves through a manager, which keeps its default
+settings unless the callback ``run_http()`` takes changes them before it
+listens: the server itself answers 2026-07-28 requests, and each session gets a
+server that shares its tools, resources, prompts, handlers and settings. A
+manager constructed with a ``Server`` instead of a factory serves it the same
+way, on the application's event loop, and the ``Server`` must outlive it.
 
 Configure that server before ``listen()``, for example its cache hints:
 
@@ -139,7 +149,7 @@ A request holds its place under ``HttpConnectionLimits::max_requests`` and
 is closed when the client does not take a write within ``request_read_timeout``.
 ``set_stream_options()`` sets the keep-alive and probe intervals and the limits
 on queued notifications, and ``stream_stats()`` counts what the streams did. ``set_json_only(true)`` keeps
-the answers to plain JSON. ``Server::run_http()`` uses ``HttpServerTransport``.
+the answers to plain JSON.
 
 Request headers
 ~~~~~~~~~~~~~~~
@@ -195,8 +205,14 @@ Graceful Shutdown
 
 In production, servers are frequently restarted or moved. Graceful shutdown ensures that the server finishes processing active requests before exiting, preventing data loss or client-side errors.
 
+.. _signal-handling:
+
 Signal Handling
 ~~~~~~~~~~~~~~~
+
+``run_stdio()`` and ``run_http()`` handle ``SIGINT`` and ``SIGTERM`` themselves,
+and ``server.stop()`` ends them the same way. A program that runs the event loop
+itself, with ``Server::run()``, handles the signals as below.
 
 You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdown process. The SDK provides ``mcp::graceful_shutdown()`` in ``mcp/core/signal.hpp`` to close the transport and stop the ``io_context`` after in-flight work finishes or times out.
 
@@ -215,7 +231,8 @@ Port Binding and Security
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Binding**: Use ``127.0.0.1`` if the server only needs to be accessed by a local proxy (like Nginx) or ``0.0.0.0`` to listen on all interfaces.
-- **TLS/SSL**: The built-in HTTP transport does not handle TLS. In production, always place your MCP server behind a reverse proxy like Nginx, Apache, or a cloud load balancer that handles SSL termination.
+- **TLS/SSL**: The HTTP server transports end TLS themselves once ``set_tls()`` gives them a certificate, and can require client certificates; see :doc:`tls`. They can also sit behind a reverse proxy like Nginx, Apache, or a cloud load balancer that ends TLS for them.
+- **Host check**: A request that reaches a server through a loopback address must name a loopback host (``localhost`` or a loopback address) in its ``Host`` header, or it is answered 403. This defends a local server against DNS rebinding, where a web page whose name points at ``127.0.0.1`` reaches it from the browser. A reverse proxy on the same machine that passes on the public name, as Nginx does with ``proxy_set_header Host $host``, needs that name listed with ``set_allowed_hosts({"mcp.example.com"})``. Once there is a list, every request must name a host on it, whatever address it reached.
 - **Authentication**: For sensitive tools, implement authentication middleware or use the OAuth flow patterns demonstrated in the ``oauth_flow.cpp`` example.
 
 Unix Daemon / Service Setup

@@ -1,17 +1,21 @@
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/handler_pool.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/modern_methods.hpp"
+#include "../detail/notification_budget.hpp"
 #include "../detail/param_headers.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/spawn_awaitable.hpp"
 #include "../detail/strand_executor.hpp"
 #include "mrtr.hpp"
+#include "run_control.hpp"
 #include "task_run.hpp"
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
@@ -783,11 +787,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     };
 
     struct ToolRegistration {
+        /// Called through middleware, task runs and the handler executor. For a sync handler it is
+        /// sync_handler lifted into a coroutine.
         TypeErasedHandler handler;
         detail::ToolResultMode result_mode;
         CompiledToolSchemas schemas;
         ToolTaskMode task_mode{ToolTaskMode::eNever};
         ToolTaskPreparation task_preparation;
+        /// The handler of a tool registered as synchronous, called directly when the call already
+        /// runs on the strand the handler belongs on; empty for an async handler.
+        SyncTypeErasedHandler sync_handler;
     };
 
     struct ResourceTemplateRegistration {
@@ -947,20 +956,31 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     static Task<void> skip_write() { co_return; }
 
-    Implementation server_info;
-    /// server_info as JSON, converted once for the answers that report it.
-    nlohmann::json server_info_json;
-    ServerCapabilities capabilities;
-    std::optional<std::string> instructions;
-    std::array<CacheHint, 6> cache_hints{};
-    bool report_server_info{true};
-    /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
-    /// mcp::constants::meta::g_META_SERVER_INFO, as JSON text. Written by the first such result,
-    /// so a server that only serves earlier revisions never writes it; empty when the identity cannot
-    /// be serialized.
-    mutable std::string server_info_meta_text;  // written once, under server_info_meta_once
-    mutable std::once_flag server_info_meta_once;
+    struct Registry;
+    Impl() = default;
+    /// A server for another session of the application whose servers share @p shared.
+    explicit Impl(std::shared_ptr<Registry> shared) : registry(std::move(shared)) {}
+    ~Impl();
+    Impl(const Impl&) = delete;
+    Impl& operator=(const Impl&) = delete;
+    Impl(Impl&&) = delete;
+    Impl& operator=(Impl&&) = delete;
+
+    /// What this server shares with the servers built for the other sessions it serves; see
+    /// Registry. Declared before the references into it below, which bind to it.
+    std::shared_ptr<Registry> registry = std::make_shared<Registry>();
+
+    Implementation& server_info = registry->server_info;
+    nlohmann::json& server_info_json = registry->server_info_json;
+    ServerCapabilities& capabilities = registry->capabilities;
+    std::optional<std::string>& instructions = registry->instructions;
+    std::array<CacheHint, 6>& cache_hints = registry->cache_hints;
+    bool& report_server_info = registry->report_server_info;
+    std::string& server_info_meta_text = registry->server_info_meta_text;
+    std::once_flag& server_info_meta_once = registry->server_info_meta_once;
     const std::string& server_info_meta() const;
+    /// The runs of this server in progress; each server has its own.
+    std::shared_ptr<detail::RunControl> run_control = std::make_shared<detail::RunControl>();
     std::atomic<LifecycleState> lifecycle{LifecycleState::eUninitialized};
     // The transport's terminated_session_count() when the current session was initialized.
     std::atomic<std::uint64_t> terminated_sessions_at_initialize{0};
@@ -973,10 +993,13 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::shared_ptr<Session> session;
     std::atomic<int64_t> next_request_id{1};
     std::atomic<LoggingLevel> log_level{g_default_log_level};
-    std::size_t page_size{0};
-    std::atomic_size_t max_in_flight_requests{1024};
-    std::atomic_size_t max_in_flight_bytes{
-        mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_BYTES};
+    /// The capabilities the client declared in its initialize request, for the requests a legacy
+    /// session sends it.
+    mutable std::mutex client_capabilities_mutex;
+    nlohmann::json client_capabilities = nlohmann::json::object();
+    std::size_t& page_size = registry->page_size;
+    std::atomic_size_t& max_in_flight_requests = registry->max_in_flight_requests;
+    std::atomic_size_t& max_in_flight_bytes = registry->max_in_flight_bytes;
     /// Requests dispatched with dispatch_request_direct(), which belong to no session, and the
     /// memory they take parsed. Together they are held to the limits of one session.
     struct DirectCounters {
@@ -1029,10 +1052,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         CountedSessionWork(const CountedSessionWork&) = delete;
         CountedSessionWork& operator=(const CountedSessionWork&) = delete;
     };
-    std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
+    std::atomic<std::chrono::milliseconds::rep>& reverse_request_timeout_ms =
+        registry->reverse_request_timeout_ms;
 
-    CompletionHandler completion_handler;
+    CompletionHandler& completion_handler = registry->completion_handler;
 
     /// A registered tool as tools/list describes it. The tool's own schemas are unset: they are
     /// listed from their compiled form, which servers that register the same schema share.
@@ -1052,39 +1075,36 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     };
 
     void add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
-                               TypeErasedHandler handler, detail::ToolResultMode result_mode);
+                               TypeErasedHandler handler, detail::ToolResultMode result_mode,
+                               SyncTypeErasedHandler sync_handler = {});
     /// Appends @p listed as tools/list writes it to @p text, adding the schema texts it was written
     /// from to @p held.
     static void append_listed_tool(std::string& text, const ListedTool& listed,
                                    std::vector<std::shared_ptr<const ListedSchemaText>>& held);
 
-    std::vector<ListedTool> tools;
-    /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
-    /// lists them all sends, without building the tools again. Built by the first such list after
-    /// a registration, since a server built for one session may never be asked for its tools.
-    /// Null when a tool could not be serialized, in which case the list is built (and fails) per
-    /// request.
-    mutable std::mutex tools_text_mutex;
-    std::shared_ptr<const std::string> tools_text;  // guarded by tools_text_mutex
-    bool tools_text_built{false};                   // guarded by tools_text_mutex
-    /// The schema texts tools_text was written from, held so that servers listing the same
-    /// schemas find them; guarded by tools_text_mutex.
-    std::vector<std::shared_ptr<const ListedSchemaText>> tools_text_schemas;
+    std::vector<ListedTool>& tools = registry->tools;
+    std::mutex& tools_text_mutex = registry->tools_text_mutex;
+    std::shared_ptr<const std::string>& tools_text = registry->tools_text;
+    bool& tools_text_built = registry->tools_text_built;
+    std::vector<std::shared_ptr<const ListedSchemaText>>& tools_text_schemas =
+        registry->tools_text_schemas;
     void forget_tools_text();
     [[nodiscard]] std::shared_ptr<const std::string> listed_tools_text();
-    std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
-    ToolValidationOptions tool_validation;
-    /// Where tool handlers run, when that is not the executor the server runs on.
-    std::optional<boost::asio::any_io_executor> handler_executor;
-    std::atomic<std::uint64_t> argument_rejections{0};
-    std::atomic<std::uint64_t> structured_content_rejections{0};
+    std::map<std::string, ToolRegistration, std::less<>>& tool_handlers = registry->tool_handlers;
+    ToolValidationOptions& tool_validation = registry->tool_validation;
+    std::optional<boost::asio::any_io_executor>& handler_executor = registry->handler_executor;
+    std::atomic<std::uint64_t>& argument_rejections = registry->argument_rejections;
+    std::atomic<std::uint64_t>& structured_content_rejections = registry->structured_content_rejections;
+    NotificationRateLimit& notification_rate_limit = registry->notification_rate_limit;
+    std::shared_ptr<std::atomic<std::uint64_t>>& dropped_notifications =
+        registry->dropped_notifications;
 
-    ServerProtocolPolicy protocol_policy;
-    // Set by the first request and by run(); the policy is read unsynchronized after that.
-    std::atomic_bool serving{false};
-    std::atomic<std::uint64_t> invalid_metadata_rejections{0};
-    std::atomic<std::uint64_t> unsupported_version_rejections{0};
-    std::atomic<std::uint64_t> legacy_shaped_rejections{0};
+    ServerProtocolPolicy& protocol_policy = registry->protocol_policy;
+    std::atomic_bool& serving = registry->serving;
+    std::atomic<std::uint64_t>& invalid_metadata_rejections = registry->invalid_metadata_rejections;
+    std::atomic<std::uint64_t>& unsupported_version_rejections =
+        registry->unsupported_version_rejections;
+    std::atomic<std::uint64_t>& legacy_shaped_rejections = registry->legacy_shaped_rejections;
 
     mutable std::mutex mrtr_mutex;
     /// Immutable snapshot of the options; `sealing_keys` is always empty, the key material lives in
@@ -1096,37 +1116,141 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::uint64_t next_park_sequence{0};
     std::shared_ptr<detail::MrtrCounters> mrtr_counters = std::make_shared<detail::MrtrCounters>();
 
-    // The tasks extension; configured before the server serves its first request.
-    std::atomic_bool tasks_enabled{false};
-    TaskOptions task_options;
-    std::shared_ptr<TaskStore> task_store;
-    /// The handlers of tasks that run in this process, by task id.
+    std::atomic_bool& tasks_enabled = registry->tasks_enabled;
+    TaskOptions& task_options = registry->task_options;
+    std::shared_ptr<TaskStore>& task_store = registry->task_store;
+    /// The handlers of tasks that run in this process for this server's requests, by task id.
     mutable std::mutex task_runs_mutex;
     std::map<std::string, std::shared_ptr<detail::TaskRun>> task_runs;  // guarded by task_runs_mutex
 
-    std::vector<Resource> resources;
-    std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
-
-    /// Request methods of extensions, served to 2026-07-28 clients (add_extension_method).
-    std::map<std::string, TypeErasedHandler, std::less<>> extension_methods;
-
-    std::vector<ResourceTemplateRegistration> resource_templates;
-
-    std::vector<Prompt> prompts;
-    std::map<std::string, TypeErasedHandler, std::less<>> prompt_handlers;
-
-    std::vector<Middleware> middlewares;
-
-    SubscriptionHandler subscribe_handler;
-    SubscriptionHandler unsubscribe_handler;
+    std::vector<Resource>& resources = registry->resources;
+    std::map<std::string, TypeErasedHandler, std::less<>>& resource_handlers =
+        registry->resource_handlers;
+    std::map<std::string, TypeErasedHandler, std::less<>>& extension_methods =
+        registry->extension_methods;
+    std::vector<ResourceTemplateRegistration>& resource_templates = registry->resource_templates;
+    std::vector<Prompt>& prompts = registry->prompts;
+    std::map<std::string, TypeErasedHandler, std::less<>>& prompt_handlers = registry->prompt_handlers;
+    std::vector<Middleware>& middlewares = registry->middlewares;
+    SubscriptionHandler& subscribe_handler = registry->subscribe_handler;
+    SubscriptionHandler& unsubscribe_handler = registry->unsubscribe_handler;
 
     mutable std::mutex listeners_mutex;
     std::vector<std::shared_ptr<Listener>> listeners;  // guarded by listeners_mutex
+
+    /// What the servers of one application share when one Server serves several sessions (the
+    /// servers run_http() builds for its legacy sessions share the one the application made): the
+    /// identity, capabilities, registrations, settings and counters. A server made on its own has
+    /// a registry of its own. The state of a session (its lifecycle, log level, requests, tasks
+    /// and subscriptions) stays with each server.
+    struct Registry {
+        Implementation server_info;
+        /// server_info as JSON, converted once for the answers that report it.
+        nlohmann::json server_info_json;
+        ServerCapabilities capabilities;
+        std::optional<std::string> instructions;
+        std::array<CacheHint, 6> cache_hints{};
+        bool report_server_info{true};
+        /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
+        /// mcp::constants::meta::g_META_SERVER_INFO, as JSON text. Written by the first such
+        /// result, so a server that only serves earlier revisions never writes it; empty when the
+        /// identity cannot be serialized.
+        std::string server_info_meta_text;  // written once, under server_info_meta_once
+        std::once_flag server_info_meta_once;
+        std::size_t page_size{0};
+        std::atomic_size_t max_in_flight_requests{1024};
+        std::atomic_size_t max_in_flight_bytes{
+            mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_BYTES};
+        std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
+        CompletionHandler completion_handler;
+        std::vector<ListedTool> tools;
+        /// The tools as JSON text, comma-separated, in registration order: what a tools/list that
+        /// lists them all sends, without building the tools again. Built by the first such list
+        /// after a registration, since a server built for one session may never be asked for its
+        /// tools. Null when a tool could not be serialized, in which case the list is built (and
+        /// fails) per request.
+        std::mutex tools_text_mutex;
+        std::shared_ptr<const std::string> tools_text;  // guarded by tools_text_mutex
+        bool tools_text_built{false};                   // guarded by tools_text_mutex
+        /// The schema texts tools_text was written from, held so that servers listing the same
+        /// schemas find them; guarded by tools_text_mutex.
+        std::vector<std::shared_ptr<const ListedSchemaText>> tools_text_schemas;
+        std::map<std::string, ToolRegistration, std::less<>> tool_handlers;
+        ToolValidationOptions tool_validation;
+        /// Where tool handlers run, when that is not the executor the server runs on.
+        std::optional<boost::asio::any_io_executor> handler_executor;
+        std::atomic<std::uint64_t> argument_rejections{0};
+        std::atomic<std::uint64_t> structured_content_rejections{0};
+        /// Read unsynchronized once the server serves; see Server::set_notification_rate_limit().
+        NotificationRateLimit notification_rate_limit;
+        /// Shared with the budget of each request, which may outlive the server.
+        std::shared_ptr<std::atomic<std::uint64_t>> dropped_notifications =
+            std::make_shared<std::atomic<std::uint64_t>>(0);
+        ServerProtocolPolicy protocol_policy;
+        // Set by the first request and by run(); the policy is read unsynchronized after that.
+        std::atomic_bool serving{false};
+        std::atomic<std::uint64_t> invalid_metadata_rejections{0};
+        std::atomic<std::uint64_t> unsupported_version_rejections{0};
+        std::atomic<std::uint64_t> legacy_shaped_rejections{0};
+        // The tasks extension; configured before the server serves its first request.
+        std::atomic_bool tasks_enabled{false};
+        TaskOptions task_options;
+        std::shared_ptr<TaskStore> task_store;
+        std::vector<Resource> resources;
+        std::map<std::string, TypeErasedHandler, std::less<>> resource_handlers;
+        /// Request methods of extensions, served to 2026-07-28 clients (add_extension_method).
+        std::map<std::string, TypeErasedHandler, std::less<>> extension_methods;
+        std::vector<ResourceTemplateRegistration> resource_templates;
+        std::vector<Prompt> prompts;
+        std::map<std::string, TypeErasedHandler, std::less<>> prompt_handlers;
+        std::vector<Middleware> middlewares;
+        SubscriptionHandler subscribe_handler;
+        SubscriptionHandler unsubscribe_handler;
+        /// The servers that share this registry, so that a notification about it reaches the
+        /// sessions of all of them.
+        std::mutex members_mutex;
+        std::vector<std::weak_ptr<Impl>> members;  // guarded by members_mutex
+    };
+
+    /// A resource or resource template implies the resources capability; one the application set
+    /// stays as it is.
+    void imply_resources() {
+        if (!capabilities.resources) {
+            capabilities.resources = ServerCapabilities::ResourcesCapability{};
+        }
+    }
+
+    /// The servers sharing this one's registry that are still alive, this one included.
+    [[nodiscard]] std::vector<std::shared_ptr<Impl>> registry_members() {
+        std::vector<std::shared_ptr<Impl>> alive;
+        std::lock_guard lock(registry->members_mutex);
+        auto& members = registry->members;
+        members.erase(std::remove_if(members.begin(), members.end(),
+                                     [&alive](const std::weak_ptr<Impl>& member) {
+                                         auto locked = member.lock();
+                                         if (!locked) {
+                                             return true;
+                                         }
+                                         alive.push_back(std::move(locked));
+                                         return false;
+                                     }),
+                      members.end());
+        return alive;
+    }
 
     // The request path lives here rather than on Server so that work still in flight when a
     // Server is destroyed has something valid to run against. Holders keep the implementation
     // alive; Server is only the handle the application owns.
     [[nodiscard]] std::shared_ptr<Session> session_snapshot() const;
+
+    /// Whether the client's initialize request declared `sampling.context`.
+    [[nodiscard]] bool client_declares_sampling_context() const {
+        std::lock_guard lock(client_capabilities_mutex);
+        const auto sampling = client_capabilities.find("sampling");
+        return sampling != client_capabilities.end() && sampling->is_object() &&
+               sampling->contains("context");
+    }
     /// Whether the session's transport has ended a session since the current one was initialized.
     [[nodiscard]] bool transport_started_new_session() const;
     void reset_session(const std::shared_ptr<Session>& session);
@@ -1319,7 +1443,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// Calls @p handler on a strand of its own, over the handler executor when one is set, and
     /// otherwise over the executor the caller runs on unless that is a strand already. A handler
     /// may fan out with `co_await (a || b)` or `co_await (a && b)`, which Boost.Asio makes safe
-    /// only when every branch runs one at a time.
+    /// only when every branch runs one at a time. On the handler executor, @p ctx then reaches the
+    /// client through the caller's executor (detail::ContextRouting).
     Task<nlohmann::json> call_on_handler_strand(const TypeErasedHandler& handler, Context& ctx,
                                                 const nlohmann::json& arguments);
     /// Checks @p arguments against the tool's input schema and runs its handler. A tool that
@@ -1374,6 +1499,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                        const std::shared_ptr<const std::string>& related_request);
     Task<void> send_notification(const std::string& method,
                                  const std::optional<nlohmann::json>& params);
+    /// send_notification() as part of a notification to every session sharing the registry: a
+    /// session that cannot take it, such as one closing meanwhile, misses it without stopping the
+    /// notification of the others.
+    Task<void> send_broadcast(const std::string& method);
+    /// notify_resource_updated() in the same way.
+    Task<void> broadcast_resource_updated(const std::string& uri);
     /// Sends the notification for @p topic on every open subscriptions/listen stream that opted in
     /// to it; @p uri names the resource of a resources/updated.
     Task<void> notify_listeners(ListenTopic topic, std::shared_ptr<const std::string> uri);
@@ -1417,10 +1548,63 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 };
 
 Server::Server(const Implementation& server_info, const ServerCapabilities& capabilities)
-    : impl_(std::make_shared<Impl>()) {
+    : Server(std::make_shared<Impl>()) {
     impl_->server_info = server_info;
     impl_->server_info_json = server_info;
     impl_->capabilities = capabilities;
+}
+
+Server::Server(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
+    std::lock_guard lock(impl_->registry->members_mutex);
+    impl_->registry->members.push_back(impl_);
+}
+
+Server::Impl::~Impl() {
+    // Leaves the registry's members now: make_shared put this implementation in one allocation with
+    // its control block, which the member's weak pointer would otherwise keep until the next
+    // registry_members() call, one per ended session of run_http().
+    std::lock_guard lock(registry->members_mutex);
+    auto& members = registry->members;
+    members.erase(std::remove_if(members.begin(), members.end(),
+                                 [](const std::weak_ptr<Impl>& member) { return member.expired(); }),
+                  members.end());
+}
+
+std::unique_ptr<Server> Server::session_server() const {
+    // The constructor is private, which std::make_unique cannot reach.
+    return std::unique_ptr<Server>(new Server(std::make_shared<Impl>(impl_->registry)));
+}
+
+std::shared_ptr<detail::RunControl> Server::run_control() const { return impl_->run_control; }
+
+ServerProtocolPolicy Server::protocol_policy() const { return impl_->protocol_policy; }
+
+void Server::stop() { impl_->run_control->stop_all(); }
+
+std::uint16_t Server::bound_port() const { return impl_->run_control->port(); }
+
+SyncServer Server::sync() { return SyncServer(*this); }
+
+SyncServer::SyncServer(Server& server) : server_(&server) {}
+
+void SyncServer::notify_tools_list_changed() {
+    server_->run_control()->run_blocking(
+        [server = server_] { return server->notify_tools_list_changed(); });
+}
+
+void SyncServer::notify_resources_list_changed() {
+    server_->run_control()->run_blocking(
+        [server = server_] { return server->notify_resources_list_changed(); });
+}
+
+void SyncServer::notify_prompts_list_changed() {
+    server_->run_control()->run_blocking(
+        [server = server_] { return server->notify_prompts_list_changed(); });
+}
+
+void SyncServer::notify_resource_updated(const std::string& uri) {
+    server_->run_control()->run_blocking(
+        [server = server_, uri] { return server->notify_resource_updated(uri); });
 }
 
 Server::~Server() {
@@ -1524,47 +1708,109 @@ std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
 }
 
 void Server::Impl::add_tool_registration(Tool&& tool, std::string name, CompiledToolSchemas schemas,
-                                         TypeErasedHandler handler,
-                                         detail::ToolResultMode result_mode) {
+                                         TypeErasedHandler handler, detail::ToolResultMode result_mode,
+                                         SyncTypeErasedHandler sync_handler) {
     forget_tools_text();
+    if (!capabilities.tools) {
+        capabilities.tools = ServerCapabilities::ToolsCapability{};
+    }
     tool.inputSchema = nullptr;
     tool.outputSchema.reset();
     tools.push_back(ListedTool{std::move(tool), schemas.input, schemas.output});
-    tool_handlers.emplace(std::move(name),
-                          ToolRegistration{std::move(handler), result_mode, std::move(schemas)});
+    ToolRegistration registration{std::move(handler), result_mode, std::move(schemas)};
+    registration.sync_handler = std::move(sync_handler);
+    tool_handlers.emplace(std::move(name), std::move(registration));
 }
+
+namespace {
+
+/// A sync handler as a TypeErasedHandler, for the paths that await handlers.
+TypeErasedHandler lift_sync_handler(SyncTypeErasedHandler handler) {
+    if (!handler) {
+        return {};
+    }
+    return [handler = std::move(handler)](Context& ctx,
+                                          const nlohmann::json& params) -> Task<nlohmann::json> {
+        co_return handler(ctx, params);
+    };
+}
+
+/// Refuses a name the tools page asks servers not to give a tool: empty, longer than 128
+/// characters, or holding a character other than an ASCII letter, a digit, `_`, `-` or `.`.
+void check_tool_name(std::string_view name) {
+    const bool allowed = !name.empty() &&
+                         name.size() <= mcp::detail::constants::server::g_MAX_TOOL_NAME_LENGTH &&
+                         std::ranges::all_of(name, [](char ch) {
+                             return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                                    (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == '.';
+                         });
+    if (!allowed) {
+        throw std::invalid_argument("Tool name '" + detail::sanitize_for_diagnostics(name) +
+                                    "' must be 1 to 128 characters from A-Z, a-z, 0-9, '_', '-' "
+                                    "and '.'");
+    }
+}
+
+/// Refuses a tool registration under @p name when the name breaks the naming rules or is @p taken.
+void check_new_tool(const std::string& name, bool taken) {
+    check_tool_name(name);
+    if (taken) {
+        throw std::invalid_argument("Duplicate tool registration: " + name);
+    }
+}
+
+}  // namespace
 
 void Server::register_tool(const Tool& tool, const std::string& name, TypeErasedHandler handler,
                            detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + name);
-    }
+    check_new_tool(name, impl_->tool_handlers.contains(name));
     auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
                                         tool.outputSchema ? &*tool.outputSchema : nullptr);
     impl_->add_tool_registration(Tool(tool), name, std::move(schemas), std::move(handler), result_mode);
 }
 
-void Server::register_tool(Tool&& tool, TypeErasedHandler handler, detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(tool.name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
-    }
-    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
-                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
+void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
+                           const nlohmann::json* output_schema, TypeErasedHandler handler,
+                           detail::ToolResultMode result_mode) {
+    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
+    auto schemas = compile_tool_schemas(tool.name, input_schema, output_schema);
     auto name = tool.name;
     impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
                                  std::move(handler), result_mode);
 }
 
-void Server::register_tool(Tool&& tool, const nlohmann::json& input_schema,
-                           const nlohmann::json* output_schema, TypeErasedHandler handler,
-                           detail::ToolResultMode result_mode) {
-    if (impl_->tool_handlers.contains(tool.name)) {
-        throw std::invalid_argument("Duplicate tool registration: " + tool.name);
-    }
+void Server::register_sync_tool(const Tool& tool, SyncTypeErasedHandler handler,
+                                detail::ToolResultMode result_mode) {
+    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
+    auto schemas = compile_tool_schemas(tool.name, tool.inputSchema,
+                                        tool.outputSchema ? &*tool.outputSchema : nullptr);
+    auto lifted = lift_sync_handler(handler);
+    impl_->add_tool_registration(Tool(tool), tool.name, std::move(schemas), std::move(lifted),
+                                 result_mode, std::move(handler));
+}
+
+void Server::register_sync_tool(Tool&& tool, const nlohmann::json& input_schema,
+                                const nlohmann::json* output_schema, SyncTypeErasedHandler handler,
+                                detail::ToolResultMode result_mode) {
+    check_new_tool(tool.name, impl_->tool_handlers.contains(tool.name));
     auto schemas = compile_tool_schemas(tool.name, input_schema, output_schema);
     auto name = tool.name;
+    auto lifted = lift_sync_handler(handler);
     impl_->add_tool_registration(std::move(tool), std::move(name), std::move(schemas),
-                                 std::move(handler), result_mode);
+                                 std::move(lifted), result_mode, std::move(handler));
+}
+
+void Server::register_sync_resource(const Resource& resource, SyncTypeErasedHandler handler) {
+    register_resource(resource, lift_sync_handler(std::move(handler)));
+}
+
+void Server::register_sync_resource_template(const ResourceTemplate& tmpl,
+                                             SyncTypeErasedHandler handler) {
+    register_resource_template(tmpl, lift_sync_handler(std::move(handler)));
+}
+
+void Server::register_sync_prompt(const Prompt& prompt, SyncTypeErasedHandler handler) {
+    register_prompt(prompt, lift_sync_handler(std::move(handler)));
 }
 
 void Server::register_resource(const Resource& resource, TypeErasedHandler handler) {
@@ -1574,6 +1820,7 @@ void Server::register_resource(const Resource& resource, TypeErasedHandler handl
     }
     impl_->resources.push_back(resource);
     impl_->resource_handlers.emplace(std::move(uri), std::move(handler));
+    impl_->imply_resources();
 }
 
 void Server::register_prompt(const Prompt& prompt, TypeErasedHandler handler) {
@@ -1583,6 +1830,117 @@ void Server::register_prompt(const Prompt& prompt, TypeErasedHandler handler) {
     }
     impl_->prompts.push_back(prompt);
     impl_->prompt_handlers.emplace(std::move(name), std::move(handler));
+    if (!impl_->capabilities.prompts) {
+        impl_->capabilities.prompts = ServerCapabilities::PromptsCapability{};
+    }
+}
+
+namespace {
+
+/// @p resource, with its MIME type text/plain when unset.
+Resource text_resource(const Resource& resource) {
+    Resource described = resource;
+    if (!described.mimeType) {
+        described.mimeType = "text/plain";
+    }
+    return described;
+}
+
+/// The resources/read result of a text resource.
+nlohmann::json text_contents(const Resource& resource, std::string text) {
+    ReadResourceResult result;
+    result.contents.emplace_back(TextResourceContents{
+        .uri = resource.uri, .text = std::move(text), .mimeType = resource.mimeType, .meta = {}});
+    return result;
+}
+
+/// The arguments of the prompts/get request whose params are @p params, for a prompt that
+/// declares @p declared.
+/// @throws InvalidParamsError When an argument the prompt requires is missing.
+Server::PromptArguments prompt_arguments(const std::vector<PromptArgument>& declared,
+                                         const nlohmann::json& params) {
+    Server::PromptArguments arguments;
+    if (const auto given = params.find("arguments"); given != params.end() && given->is_object()) {
+        arguments = given->get<Server::PromptArguments>();
+    }
+    for (const auto& argument : declared) {
+        if (argument.required.value_or(false) && !arguments.contains(argument.name)) {
+            throw InvalidParamsError("Missing required argument: " + argument.name);
+        }
+    }
+    return arguments;
+}
+
+/// The prompts/get result of a text prompt: one message from the user.
+nlohmann::json text_prompt_result(std::string text, const std::optional<std::string>& description) {
+    GetPromptResult result;
+    result.messages.push_back(
+        PromptMessage{.role = Role::eUser, .content = TextContent{.text = std::move(text)}});
+    result.description = description;
+    return result;
+}
+
+}  // namespace
+
+void Server::add_text_resource(const std::string& uri, const std::string& name,
+                               std::function<std::string()> read, const std::string& mime_type) {
+    Resource resource;
+    resource.uri = uri;
+    resource.name = name;
+    resource.mimeType = mime_type;
+    add_text_resource(resource, std::move(read));
+}
+
+void Server::add_text_resource(const Resource& resource, std::function<std::string()> read) {
+    auto described = text_resource(resource);
+    register_sync_resource(described, [described, read = std::move(read)](
+                                          Context& /*ctx*/, const nlohmann::json& /*params*/) {
+        return text_contents(described, read());
+    });
+}
+
+void Server::register_text_resource(const Resource& resource, std::function<Task<std::string>()> read) {
+    auto described = text_resource(resource);
+    register_resource(described,
+                      [described, read = std::move(read)](
+                          Context& /*ctx*/, const nlohmann::json& /*params*/) -> Task<nlohmann::json> {
+                          auto text = co_await read();
+                          co_return text_contents(described, std::move(text));
+                      });
+}
+
+void Server::add_text_prompt(const std::string& name, const std::string& description,
+                             std::vector<PromptArgument> arguments,
+                             std::function<std::string(const PromptArguments&)> render) {
+    Prompt prompt;
+    prompt.name = name;
+    prompt.description = description;
+    prompt.arguments = std::move(arguments);
+    add_text_prompt(prompt, std::move(render));
+}
+
+void Server::add_text_prompt(const Prompt& prompt,
+                             std::function<std::string(const PromptArguments&)> render) {
+    register_sync_prompt(prompt, [declared = prompt.arguments.value_or(std::vector<PromptArgument>{}),
+                                  description = prompt.description, render = std::move(render)](
+                                     Context& /*ctx*/, const nlohmann::json& params) {
+        return text_prompt_result(render(prompt_arguments(declared, params)), description);
+    });
+}
+
+void Server::register_text_prompt(const Prompt& prompt,
+                                  std::function<Task<std::string>(const PromptArguments&)> render) {
+    register_prompt(prompt,
+                    [declared = prompt.arguments.value_or(std::vector<PromptArgument>{}),
+                     description = prompt.description, render = std::move(render)](
+                        Context& /*ctx*/, const nlohmann::json& params) -> Task<nlohmann::json> {
+                        // [gcc11-sso] The arguments live behind a pointer, so no map of strings is kept
+                        // in the frame across the co_await.
+                        const auto arguments =
+                            std::make_shared<const PromptArguments>(prompt_arguments(declared, params));
+                        auto text = co_await render(*arguments);
+                        co_return text_prompt_result(std::move(text), description);
+                    });
 }
 
 void Server::add_resource_template(const ResourceTemplate& tmpl) {
@@ -1602,20 +1960,33 @@ void Server::register_resource_template(const ResourceTemplate& tmpl, TypeErased
 
     impl_->resource_templates.push_back(Impl::ResourceTemplateRegistration{
         tmpl, std::move(pattern.source), std::move(pattern.matcher), std::move(handler)});
+    impl_->imply_resources();
 }
 
 void Server::use(Middleware mw) { impl_->middlewares.push_back(std::move(mw)); }
 
 void Server::set_completion_provider(CompletionHandler handler) {
+    if (handler && !impl_->capabilities.completions) {
+        impl_->capabilities.completions = nlohmann::json::object();
+    }
     impl_->completion_handler = std::move(handler);
 }
 
-void Server::set_handler_executor(const boost::asio::any_io_executor& executor) {
-    impl_->handler_executor = executor;
+void Server::set_handler_executor(const Executor& executor) {
+    impl_->handler_executor = executor.get();
 }
 
 void Server::set_tool_validation(const ToolValidationOptions& options) {
     impl_->tool_validation = options;
+}
+
+void Server::set_notification_rate_limit(const NotificationRateLimit& limit) {
+    detail::check_rate_limit(limit);
+    impl_->notification_rate_limit = limit;
+}
+
+std::uint64_t Server::dropped_notifications() const {
+    return impl_->dropped_notifications->load(std::memory_order_relaxed);
 }
 
 ToolValidationStats Server::tool_validation_stats() const {
@@ -1660,7 +2031,16 @@ void Server::declare_extension(const std::string& id, nlohmann::json settings) {
     mcp::declare_extension(impl_->capabilities, id, std::move(settings));
 }
 
-ServerCapabilities Server::capabilities() const { return impl_->capabilities; }
+ServerCapabilities& Server::capabilities() { return impl_->capabilities; }
+
+const ServerCapabilities& Server::capabilities() const { return impl_->capabilities; }
+
+Implementation Server::named(std::string_view name, std::string_view version) {
+    Implementation info;
+    info.name = std::string(name);
+    info.version = std::string(version);
+    return info;
+}
 
 void Server::add_extension_method(const std::string& method, TypeErasedHandler handler) {
     if (method.empty() || !handler) {
@@ -1747,6 +2127,9 @@ std::vector<std::string> served_protocol_versions(const ServerProtocolPolicy& po
 void Server::set_protocol_policy(ServerProtocolPolicy policy) {
     policy.validate();
     if (impl_->serving.load(std::memory_order_acquire)) {
+        if (policy == impl_->protocol_policy) {
+            return;
+        }
         throw std::logic_error("The protocol policy cannot change once the server serves requests");
     }
     impl_->protocol_policy = std::move(policy);
@@ -1800,7 +2183,13 @@ Task<nlohmann::json> Server::Impl::send_request(std::shared_ptr<std::atomic<bool
     auto session = session_snapshot();
     if (!session || !session->transport || !session->strand ||
         session->stopping.load(std::memory_order_acquire)) {
-        throw std::runtime_error("reverse RPC is unavailable in stateless direct dispatch");
+        // A handler's Context calls with caller_cancelled; Server::send_request() without.
+        if (caller_cancelled) {
+            throw std::runtime_error("reverse RPC is unavailable: the client's session has ended");
+        }
+        throw std::runtime_error(
+            "reverse RPC is unavailable: this Server serves no session with a client now; a "
+            "handler reaches its client through its Context");
     }
 
     // [gcc11-sso: int64-id] DO NOT change id to std::string.
@@ -1948,10 +2337,10 @@ Task<nlohmann::json> Server::invoke_tool(const std::string& tool_name, const nlo
                                    std::nullopt);
 }
 
-Task<void> Server::run(std::shared_ptr<ITransport> transport, boost::asio::any_io_executor executor) {
+Task<void> Server::run(std::shared_ptr<ITransport> transport, Executor executor) {
     // Deliberately not a coroutine: reading impl_ here, on the caller's thread, hands the session
     // a reference that outlives this Server rather than one that is read again later.
-    return Impl::run(impl_, std::move(transport), std::move(executor));
+    return Impl::run(impl_, std::move(transport), executor.get());
 }
 
 Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransport> transport,
@@ -1960,6 +2349,10 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
         throw std::invalid_argument("Server transport must not be null");
     }
     impl->serving.store(true, std::memory_order_release);
+
+    // stop() closes the transport on the run's executor, which ends the read loop below.
+    const auto registration = impl->run_control->add(
+        [transport, executor] { boost::asio::post(executor, [transport] { transport->close(); }); });
 
     auto session = std::make_shared<Session>();
     session->transport = std::move(transport);
@@ -2012,6 +2405,29 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
         }
         this->session = session;
     }
+    // The end below unregisters the session. When the event loop is destroyed while this coroutine
+    // waits, as run_stdio() and run_http() destroy theirs once the shutdown deadline passes, the
+    // session is unregistered here instead, so that ~Server does not reach the destroyed loop.
+    class Unregister {
+       public:
+        Unregister(Impl& impl, const std::shared_ptr<Session>& session)
+            : impl_(impl), session_(session) {}
+        Unregister(const Unregister&) = delete;
+        Unregister& operator=(const Unregister&) = delete;
+        Unregister(Unregister&&) = delete;
+        Unregister& operator=(Unregister&&) = delete;
+        ~Unregister() {
+            std::lock_guard lock(impl_.session_mutex);
+            if (impl_.session == session_) {
+                impl_.session.reset();
+            }
+        }
+
+       private:
+        Impl& impl_;
+        const std::shared_ptr<Session>& session_;
+    };
+    const Unregister unregister(*this, session);
 
     lifecycle.store(Impl::LifecycleState::eUninitialized, std::memory_order_relaxed);
     shutdown_requested.store(false, std::memory_order_relaxed);
@@ -2074,7 +2490,7 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
             boost::asio::co_spawn(
                 *session->strand,
                 [impl = shared_from_this(), session, message_bytes, json_msg = std::move(json_msg),
-                 principal = std::move(principal)]() mutable -> Task<void> {
+                 principal = std::move(principal)]() mutable -> boost::asio::awaitable<void> {
                     try {
                         co_await impl->dispatch_on_strand(std::move(json_msg), std::move(principal));
                     } catch (...) {
@@ -2374,6 +2790,13 @@ Context Server::Impl::make_context(
             if (session && Impl::session_epoch(*session) != epoch) {
                 throw std::runtime_error("the client ended the session this request belongs to");
             }
+            if (method == "sampling/createMessage" && params &&
+                detail::asks_for_sampling_context(*params) &&
+                !impl->client_declares_sampling_context()) {
+                throw std::invalid_argument(
+                    "includeContext other than \"none\" needs a client that declares the "
+                    "sampling.context capability");
+            }
             return impl->send_request(cancelled, method, params, related_request);
         };
     }
@@ -2387,6 +2810,11 @@ Context Server::Impl::make_context(
                     std::move(request_meta),
                     std::move(principal),
                     mrtr ? mrtr->replaying : nullptr};
+    if (notification_rate_limit.burst > 0) {
+        detail::ContextRouting::set_notification_budget(
+            context, std::make_shared<detail::NotificationBudget>(notification_rate_limit,
+                                                                  dropped_notifications));
+    }
     if (task_run) {
         context.set_progress_sink([task_run](double progress, std::optional<double> total,
                                              const std::optional<std::string>& message) {
@@ -3447,6 +3875,14 @@ Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& jso
     init_result.instructions = instructions;
 
     if (update_lifecycle) {
+        {
+            const auto& params = json_msg.at("params");
+            const auto declared = params.find("capabilities");
+            std::lock_guard lock(client_capabilities_mutex);
+            client_capabilities = declared != params.end() && declared->is_object()
+                                      ? *declared
+                                      : nlohmann::json::object();
+        }
         if (auto current = session_snapshot(); current && current->http_transport != nullptr) {
             const auto epoch = session_epoch(*current);
             if (epoch != terminated_sessions_at_initialize.load(std::memory_order_relaxed)) {
@@ -3523,8 +3959,10 @@ Task<nlohmann::json> Server::Impl::call_on_handler_strand(const TypeErasedHandle
                                                           Context& ctx,
                                                           const nlohmann::json& arguments) {
     if (handler_executor) {
-        co_return co_await detail::spawn_awaitable(detail::make_strand_executor(*handler_executor),
-                                                   call_handler(handler, ctx, arguments));
+        const auto loop = co_await boost::asio::this_coro::executor;
+        detail::ContextRouting::through_loop(ctx, loop);
+        co_return co_await detail::run_on_pool(*handler_executor,
+                                               call_handler(handler, ctx, arguments));
     }
     auto executor = co_await boost::asio::this_coro::executor;
     if (detail::is_strand_executor(executor)) {
@@ -3545,6 +3983,14 @@ Task<nlohmann::json> Server::Impl::call_tool_handler(const ToolRegistration& too
         }
     }
     try {
+        // A sync handler is called in place when the call runs on its strand already; otherwise it
+        // reaches the strand through its lifted coroutine, as an async handler does.
+        if (tool.sync_handler && !handler_executor) {
+            const auto executor = co_await boost::asio::this_coro::executor;
+            if (detail::is_strand_executor(executor)) {
+                co_return tool.sync_handler(ctx, arguments);
+            }
+        }
         co_return co_await call_on_handler_strand(tool.handler, ctx, arguments);
     } catch (const std::exception& error) {
         co_return nlohmann::json(
@@ -4820,42 +5266,76 @@ Task<void> Server::Impl::send_notification(const std::string& method,
     co_await session->writer->write_message(wire);
 }
 
+Task<void> Server::Impl::send_broadcast(const std::string& method) {
+    try {
+        co_await send_notification(method, std::nullopt);
+    } catch (const std::exception&) {
+        // A session whose transport cannot take the message ends through that transport.
+    }
+}
+
+Task<void> Server::Impl::broadcast_resource_updated(const std::string& uri) {
+    try {
+        co_await notify_resource_updated(uri);
+    } catch (const std::exception&) {
+        // As in send_broadcast().
+    }
+}
+
 // These three await rather than returning the task, and that is load-bearing. The argument is a
 // temporary bound to a reference parameter of a lazy coroutine: under co_await it lives to the end
 // of the full expression, which includes the await, but a plain `return` destroys it before the
 // coroutine body ever runs and leaves the reference dangling. Both forms compile.
+// Each goes to the sessions of every server sharing this one's registry, such as the legacy
+// sessions run_http() serves.
 Task<void> Server::notify_tools_list_changed() {
-    co_await impl_->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
-    if (impl_->legacy_broadcast_wanted()) {
-        co_await impl_->send_notification("notifications/tools/list_changed", std::nullopt);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
+        if (member->legacy_broadcast_wanted()) {
+            co_await member->send_broadcast("notifications/tools/list_changed");
+        }
     }
 }
 
 Task<void> Server::notify_resources_list_changed() {
-    co_await impl_->notify_listeners(Impl::ListenTopic::eResourcesListChanged, nullptr);
-    if (impl_->legacy_broadcast_wanted()) {
-        co_await impl_->send_notification("notifications/resources/list_changed", std::nullopt);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::eResourcesListChanged, nullptr);
+        if (member->legacy_broadcast_wanted()) {
+            co_await member->send_broadcast("notifications/resources/list_changed");
+        }
     }
 }
 
 Task<void> Server::notify_prompts_list_changed() {
-    co_await impl_->notify_listeners(Impl::ListenTopic::ePromptsListChanged, nullptr);
-    if (impl_->legacy_broadcast_wanted()) {
-        co_await impl_->send_notification("notifications/prompts/list_changed", std::nullopt);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::ePromptsListChanged, nullptr);
+        if (member->legacy_broadcast_wanted()) {
+            co_await member->send_broadcast("notifications/prompts/list_changed");
+        }
     }
 }
 
 Task<void> Server::notify_resource_updated(const std::string& uri) {
-    co_await impl_->notify_listeners(Impl::ListenTopic::eResourceUpdated,
-                                     std::make_shared<const std::string>(uri));
-    co_await impl_->notify_resource_updated(uri);
+    for (const auto& member : impl_->registry_members()) {
+        co_await member->notify_listeners(Impl::ListenTopic::eResourceUpdated,
+                                          std::make_shared<const std::string>(uri));
+        co_await member->broadcast_resource_updated(uri);
+    }
 }
 
-void Server::close_subscriptions() { impl_->end_listeners(Impl::ListenEnd::eClosed); }
+void Server::close_subscriptions() {
+    for (const auto& member : impl_->registry_members()) {
+        member->end_listeners(Impl::ListenEnd::eClosed);
+    }
+}
 
 std::size_t Server::subscription_count() const {
-    std::lock_guard lock(impl_->listeners_mutex);
-    return impl_->listeners.size();
+    std::size_t count = 0;
+    for (const auto& member : impl_->registry_members()) {
+        std::lock_guard lock(member->listeners_mutex);
+        count += member->listeners.size();
+    }
+    return count;
 }
 
 Task<void> Server::Impl::notify_resource_updated(const std::string& uri) {
@@ -4912,12 +5392,36 @@ Task<nlohmann::json> Server::Impl::call_through_middleware(const TypeErasedHandl
     co_return co_await handler(ctx, params);
 }
 
+namespace {
+
+// The links of a middleware chain. Each returns a coroutine that owns what it calls, so that a
+// middleware may return next(ctx, params) unawaited, which destroys its copy of next before the
+// coroutine runs.
+Task<nlohmann::json> call_owned_handler(std::shared_ptr<const TypeErasedHandler> handler, Context& ctx,
+                                        const nlohmann::json& params) {
+    co_return co_await (*handler)(ctx, params);
+}
+
+Task<nlohmann::json> call_owned_middleware(std::shared_ptr<const Middleware> middleware,
+                                           TypeErasedHandler next, Context& ctx,
+                                           const nlohmann::json& params) {
+    co_return co_await (*middleware)(ctx, params, std::move(next));
+}
+
+}  // namespace
+
 TypeErasedHandler Server::Impl::build_middleware_chain(TypeErasedHandler final_handler) {
-    auto handler = std::move(final_handler);
+    if (middlewares.empty()) {
+        return final_handler;
+    }
+    TypeErasedHandler handler = [owned = std::make_shared<const TypeErasedHandler>(std::move(
+                                     final_handler))](Context& ctx, const nlohmann::json& params) {
+        return call_owned_handler(owned, ctx, params);
+    };
     for (const auto& mw : std::ranges::reverse_view(middlewares)) {
-        handler = [mw, next = std::move(handler)](
-                      Context& ctx, const nlohmann::json& params) -> Task<nlohmann::json> {
-            co_return co_await mw(ctx, params, next);
+        handler = [owned = std::make_shared<const Middleware>(mw), next = std::move(handler)](
+                      Context& ctx, const nlohmann::json& params) {
+            return call_owned_middleware(owned, next, ctx, params);
         };
     }
     return handler;

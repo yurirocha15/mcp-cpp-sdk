@@ -15,6 +15,28 @@ sandbox, and the messages between a view and its host are the host
 application's work and are not part of the SDK. The types follow revision
 2026-01-26 of the extension specification.
 
+Using MCP Apps
+--------------
+
+``apps::add_view_resource()`` registers the page under a ``ui://`` URI, and
+``apps::add_view_tool()`` registers a tool linked to it. In sync mode the tool's
+handler is a plain function; in async mode it is a coroutine that takes the
+request's ``Context``:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // MCP Apps:
+   :end-before: // Agent Skills.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // MCP Apps:
+   :end-before: // Agent Skills.
+   :dedent: 4
+
 Serving views
 -------------
 
@@ -86,6 +108,7 @@ A host declares support when it connects:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/apps.hpp>
 
    mcp::ClientCapabilities capabilities;

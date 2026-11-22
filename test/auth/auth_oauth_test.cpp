@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <future>
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -1168,11 +1169,13 @@ TEST(AuthOAuthHttpClientUrlTest, AQueryWithoutAPathIsSentOnTheRootPath) {
 
     EXPECT_TRUE(fetched);
     EXPECT_EQ(recorded.target, "/?probe=1");
-    EXPECT_EQ(recorded.host, "127.0.0.1");
+    // A port other than the scheme's default is part of the Host header.
+    EXPECT_EQ(recorded.host, "127.0.0.1:" + std::to_string(port));
 }
 
-// An IPv6 literal is resolved without its brackets and keeps them in the Host header. The resolver
-// hook maps it onto the IPv4 test server, so the test needs no IPv6 on the host.
+// An IPv6 literal is resolved without its brackets and keeps them, and its port, in the Host
+// header. The resolver hook maps it onto the IPv4 test server, so the test needs no IPv6 on the
+// host.
 TEST(AuthOAuthHttpClientUrlTest, AnIpv6LiteralHostIsResolvedWithoutItsBrackets) {
     asio::io_context io_ctx;
     asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
@@ -1209,7 +1212,7 @@ TEST(AuthOAuthHttpClientUrlTest, AnIpv6LiteralHostIsResolvedWithoutItsBrackets) 
     EXPECT_EQ(resolved_host, "::1");
     EXPECT_EQ(resolved_port, port);
     EXPECT_EQ(recorded.target, "/prm");
-    EXPECT_EQ(recorded.host, "[::1]");
+    EXPECT_EQ(recorded.host, "[::1]:" + port);
 }
 
 // -------------------------------------------------------------------------------------------

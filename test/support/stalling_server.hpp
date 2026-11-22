@@ -5,6 +5,7 @@
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/system/error_code.hpp>
+#include <mcp/core/async.hpp>
 #include <optional>
 #include <utility>
 

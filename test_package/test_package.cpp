@@ -1,12 +1,13 @@
 #include <mcp/mcp.hpp>
 #include <mcp/transport/http_server.hpp>
+#include <mcp/transport/stdio.hpp>
 
 #include <cstdlib>
+#include <memory>
 
 int main() {
     mcp::Runtime runtime;
-    mcp::TransportFactory transport_factory(runtime);
-    auto transport = transport_factory.create_stdio();
+    auto transport = std::make_shared<mcp::StdioTransport>(runtime.executor());
 
     mcp::ServerCapabilities capabilities;
     mcp::Server server({"test-package", std::string(mcp::g_VERSION)}, capabilities);

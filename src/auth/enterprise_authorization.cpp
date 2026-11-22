@@ -1,4 +1,5 @@
 #include <mcp/auth/enterprise_authorization.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/constants.hpp"
 #include "grant_flow.hpp"
@@ -29,7 +30,7 @@ class EnterpriseFlow final : public detail::GrantFlow {
     EnterpriseFlow(const boost::asio::any_io_executor& executor, std::shared_ptr<TokenStore> store,
                    EnterpriseAuthorizationConfig config, IdentityAssertionProvider provider)
         : GrantFlow(executor, std::move(store), config.server_url, config.policy, config.host_resolver,
-                    config.scope),
+                    config.tls, config.proxy, config.scope),
           idp_token_endpoint_(std::move(config.idp_token_endpoint)),
           idp_client_(std::move(config.idp_client)),
           client_(std::move(config.client)),
@@ -146,7 +147,7 @@ struct EnterpriseAuthorizationAuthenticator::Impl {
 };
 
 EnterpriseAuthorizationAuthenticator::EnterpriseAuthorizationAuthenticator(
-    const boost::asio::any_io_executor& executor, std::shared_ptr<TokenStore> token_store,
+    const Executor& executor, std::shared_ptr<TokenStore> token_store,
     EnterpriseAuthorizationConfig config, IdentityAssertionProvider provider)
     : impl_(std::make_shared<Impl>()) {
     if (!token_store || !provider) {
@@ -160,8 +161,8 @@ EnterpriseAuthorizationAuthenticator::EnterpriseAuthorizationAuthenticator(
             "EnterpriseAuthorizationConfig needs a server_url, an idp_token_endpoint and client "
             "identifiers for the IdP and the authorization server");
     }
-    impl_->flow = std::make_shared<EnterpriseFlow>(executor, std::move(token_store), std::move(config),
-                                                   std::move(provider));
+    impl_->flow = std::make_shared<EnterpriseFlow>(executor.get(), std::move(token_store),
+                                                   std::move(config), std::move(provider));
 }
 
 EnterpriseAuthorizationAuthenticator::~EnterpriseAuthorizationAuthenticator() = default;

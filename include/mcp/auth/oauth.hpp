@@ -3,19 +3,21 @@
 #include <mcp/auth/challenge.hpp>
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/metadata_policy.hpp>
+#include <mcp/core/async_fwd.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
-#include <mcp/core/core.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/proxy.hpp>
+#include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <array>
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -24,8 +26,6 @@
 #include <vector>
 
 namespace mcp::auth {
-
-namespace net = boost::asio;
 
 namespace detail {
 MCP_API std::string base64_encode(const unsigned char* data, std::size_t len);
@@ -225,7 +225,7 @@ class MCP_API OAuthHttpClient {
      * `WWW-Authenticate` challenges must be given a policy naming the origins it is meant to reach,
      * because the URLs it then visits are influenced by the server it talks to.
      */
-    explicit OAuthHttpClient(const net::any_io_executor& executor);
+    explicit OAuthHttpClient(const Executor& executor);
 
     /**
      * @brief Apply an outbound-request policy to every request this client issues.
@@ -267,6 +267,26 @@ class MCP_API OAuthHttpClient {
      * may already be serving requests.
      */
     void configure(MetadataFetchPolicy policy, HostResolver resolver);
+
+    /**
+     * @brief Install the policy, the resolver, the TLS settings and the proxy as one indivisible
+     * change.
+     *
+     * @param policy As above.
+     * @param resolver As above.
+     * @param tls TLS settings for `https` servers; null checks them against the system's
+     *        certificate authorities.
+     * @param proxy The proxy requests go through. The proxy resolves the names of the servers it
+     *        reaches, so the policy's address checks apply only to addresses written in a URL.
+     *        Connections to loopback hosts never use it.
+     *
+     * @details The two-argument form keeps the TLS settings and proxy the client has. Without
+     * either, `https` servers are checked against the system's certificate authorities and every
+     * request connects directly.
+     * @throws std::invalid_argument If a proxy URL is malformed or not supported.
+     */
+    void configure(MetadataFetchPolicy policy, HostResolver resolver,
+                   std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy = {});
 
     /**
      * @brief Exchange an authorization code for an access token.
@@ -597,7 +617,7 @@ MCP_API std::string extract_bearer_token(std::string_view auth_header_value);
  * string. `try_refresh_token()` is a coroutine that performs network I/O to refresh the token and
  * persists the new token via the configured token store on success.
  */
-class Authenticator {
+class MCP_API Authenticator {
    public:
     virtual ~Authenticator() = default;
 
@@ -628,10 +648,7 @@ class Authenticator {
      * full authorization exchange rather than only renewing an existing grant. The default
      * implementation reports that it handled nothing.
      */
-    virtual Task<bool> try_handle_challenge(const std::string& www_authenticate) {
-        (void)www_authenticate;
-        co_return false;
-    }
+    virtual Task<bool> try_handle_challenge(const std::string& www_authenticate);
 
     /**
      * @brief Cancel the authorization work this authenticator has in flight and release parked
@@ -734,6 +751,9 @@ struct OAuthAuthorizationConfig {
     std::shared_ptr<ClientCredentialStore> credential_store;
     MetadataFetchPolicy policy;  ///< Outbound-request policy for every discovery and token request.
     HostResolver host_resolver;  ///< Optional custom resolver; the system resolver is used when unset.
+    /// TLS settings for authorization servers; null uses the system's certificate authorities.
+    std::shared_ptr<const TlsClientContext> tls;
+    ProxyOptions proxy;  ///< Proxy for discovery and token requests; none by default.
 };
 
 /**
@@ -758,9 +778,8 @@ class MCP_API OAuthAuthorizationManager : public Authenticator {
      *         sets `client_id`, `client_secret` or `client_issuer` together with
      *         `client_identity.pre_registered`.
      */
-    OAuthAuthorizationManager(const net::any_io_executor& executor,
-                              std::shared_ptr<TokenStore> token_store, OAuthAuthorizationConfig config,
-                              AuthorizationCallback callback);
+    OAuthAuthorizationManager(const Executor& executor, std::shared_ptr<TokenStore> token_store,
+                              OAuthAuthorizationConfig config, AuthorizationCallback callback);
 
     /**
      * @brief Return the stored access token without network I/O.

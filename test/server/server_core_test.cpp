@@ -1,8 +1,10 @@
 #include "../../src/detail/strand_executor.hpp"
+#include "../support/extension_harness.hpp"
 #include "../support/hang_guard.hpp"
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/core/context.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
@@ -1407,6 +1409,95 @@ TEST_F(ServerCoreTest, DiscoverCapabilitiesMatchInitializeCapabilitiesForNonTriv
     EXPECT_EQ(discover_caps, init_caps);
 }
 
+/// The capabilities a server states in its answer to @p request.
+nlohmann::json advertised(mcp::Server& server, const nlohmann::json& request) {
+    const auto response = mcp_test::dispatch_direct(server, request);
+    EXPECT_TRUE(response.contains("result")) << response.dump();
+    return response.value("result", nlohmann::json::object())
+        .value("capabilities", nlohmann::json::object());
+}
+
+// Each kind of registration declares the capability it implies, in initialize and server/discover.
+TEST_F(ServerCoreTest, RegistrationsDeclareTheCapabilitiesTheyImply) {
+    mcp::Server server("derived-server", "1.0");
+    EXPECT_FALSE(server.capabilities().tools.has_value());
+    EXPECT_FALSE(server.capabilities().resources.has_value());
+    EXPECT_FALSE(server.capabilities().prompts.has_value());
+    EXPECT_FALSE(server.capabilities().completions.has_value());
+
+    server.add_tool("echo", "Echoes", nlohmann::json{{"type", "object"}},
+                    [](const nlohmann::json& arguments) { return arguments; });
+    mcp::Resource resource;
+    resource.uri = "test://resource";
+    resource.name = "resource";
+    server.add_resource<mcp::ReadResourceRequestParams, mcp::ReadResourceResult>(
+        resource, [](const mcp::ReadResourceRequestParams&) { return mcp::ReadResourceResult{}; });
+    mcp::Prompt prompt;
+    prompt.name = "prompt";
+    server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
+        prompt, [](const mcp::GetPromptRequestParams&) { return mcp::GetPromptResult{}; });
+    server.set_completion_provider([](const mcp::CompleteParams&) -> mcp::Task<mcp::CompleteResult> {
+        co_return mcp::CompleteResult{};
+    });
+
+    const auto discovered = advertised(server, make_discover_request("d1"));
+    for (const auto* kind : {"tools", "resources", "prompts", "completions"}) {
+        EXPECT_TRUE(discovered.contains(kind)) << kind << " in " << discovered.dump();
+    }
+    EXPECT_EQ(advertised(server, make_initialize_request("i1")), discovered);
+}
+
+// A registration adds no capability the application already set, however many there are, and a
+// resource template alone declares resources.
+TEST_F(ServerCoreTest, ARegistrationKeepsTheCapabilityTheApplicationSet) {
+    mcp::ServerCapabilities capabilities;
+    capabilities.tools = mcp::ServerCapabilities::ToolsCapability{true};
+    mcp::Server server({"kept-server", "1.0"}, capabilities);
+    for (const auto* name : {"first", "second"}) {
+        server.add_tool(name, "A tool", nlohmann::json{{"type", "object"}},
+                        [](const nlohmann::json&) { return nlohmann::json::object(); });
+    }
+    ASSERT_TRUE(server.capabilities().tools.has_value());
+    EXPECT_EQ(server.capabilities().tools->listChanged, true);
+
+    mcp::ResourceTemplate resource_template;
+    resource_template.uriTemplate = "test://items/{id}";
+    resource_template.name = "items";
+    server.add_resource_template(resource_template);
+    EXPECT_TRUE(server.capabilities().resources.has_value());
+    EXPECT_EQ(advertised(server, make_initialize_request("i1"))["tools"]["listChanged"], true);
+}
+
+// What registration cannot imply is set through capabilities() before the server serves.
+TEST_F(ServerCoreTest, CapabilitiesAreAdjustedBeforeServing) {
+    mcp::Server server("adjusted-server", "1.0");
+    server.add_tool("echo", "Echoes", nlohmann::json{{"type", "object"}},
+                    [](const nlohmann::json& arguments) { return arguments; });
+    server.capabilities().tools->listChanged = true;
+    server.capabilities().logging = nlohmann::json::object();
+    const auto initialized = advertised(server, make_initialize_request("i1"));
+    EXPECT_EQ(initialized["tools"]["listChanged"], true);
+    EXPECT_TRUE(initialized.contains("logging"));
+}
+
+// The name-and-version constructor names the server as the Implementation one does, from string
+// literals, std::string and std::string_view alike, and a braced Implementation still picks the
+// latter.
+TEST_F(ServerCoreTest, NameAndVersionConstructorNamesTheServer) {
+    const std::string name = "named-server";
+    const std::string_view version = "2.0";
+    mcp::Server from_literals("named-server", "2.0");
+    mcp::Server from_strings(name, version);
+    mcp::Server from_info({"named-server", "2.0"}, {});
+    for (auto* server : {&from_literals, &from_strings, &from_info}) {
+        const auto response = mcp_test::dispatch_direct(*server, make_initialize_request("i1"));
+        ASSERT_TRUE(response.contains("result")) << response.dump();
+        EXPECT_EQ(response["result"]["serverInfo"]["name"], "named-server");
+        EXPECT_EQ(response["result"]["serverInfo"]["version"], "2.0");
+        EXPECT_EQ(response["result"]["capabilities"], nlohmann::json::object());
+    }
+}
+
 TEST_F(ServerCoreTest, DiscoverWorksAgainAfterInitializeIdempotently) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();
@@ -1570,7 +1661,7 @@ TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticFlattensThePeerChosenMessage
     const auto outcome = reverse_request_against_peer_error(io_ctx_, forged);
 
     // Tripwire, ordered before the flattening assertions. send_request() has four other throw
-    // sites -- "reverse RPC is unavailable in stateless direct dispatch", "server session is
+    // sites -- "reverse RPC is unavailable: this Server serves no session", "server session is
     // closing", "duplicate pending request id", "pending request not found for id" -- none of
     // which interpolates a byte the peer chose, and each of which would satisfy everything below
     // for a reason unrelated to the site under test. Dump what() on failure so a vacuous pass

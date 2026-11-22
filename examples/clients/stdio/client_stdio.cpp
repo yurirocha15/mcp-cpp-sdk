@@ -7,6 +7,7 @@
 /// executable next to this one, or the program named by the first argument.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
 #include <boost/asio/co_spawn.hpp>

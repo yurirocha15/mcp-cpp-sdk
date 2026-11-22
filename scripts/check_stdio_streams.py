@@ -40,6 +40,9 @@ SERVER_REQUESTS = [
 # in the build directory is skipped, so this runs against partial builds.
 CASES = [
     ("example-server-stdio", SERVER_REQUESTS),
+    ("example-sync-minimal-server", SERVER_REQUESTS),
+    ("example-sync-notes-server", SERVER_REQUESTS),
+    ("example-async-notes-server", SERVER_REQUESTS),
 ]
 
 

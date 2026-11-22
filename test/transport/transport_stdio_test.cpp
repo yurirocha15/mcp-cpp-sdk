@@ -1,5 +1,6 @@
 #include "../support/hang_guard.hpp"
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/transport/stdio.hpp"
 
 #include <gtest/gtest.h>

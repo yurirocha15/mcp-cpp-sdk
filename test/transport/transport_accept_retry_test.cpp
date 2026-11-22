@@ -1,5 +1,6 @@
 #include "../support/hang_guard.hpp"
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
@@ -175,7 +176,7 @@ TEST(AcceptRetry, SessionManagerOutlivesRunningOutOfDescriptors) {
     asio::io_context io;
     const auto port = free_port();
     mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", port, [](const asio::any_io_executor&) {
+        io.get_executor(), "127.0.0.1", port, [](const mcp::Executor&) {
             return std::make_unique<mcp::Server>(mcp::Implementation{"accept", "1.0"},
                                                  mcp::ServerCapabilities{});
         });

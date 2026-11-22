@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstddef>
 #include <future>
+#include <mcp/core/async.hpp>
 #include <memory>
 #include <thread>
 #include <typeinfo>

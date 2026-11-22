@@ -1,6 +1,7 @@
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -8,11 +9,13 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <chrono>
 #include <functional>
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace sampling_test {
 
@@ -147,6 +150,72 @@ TEST_F(SamplingTest, HandlerCallsSampleLlmAndReceivesResult) {
     auto content_arr = tool_response["result"]["content"];
     ASSERT_FALSE(content_arr.empty());
     EXPECT_EQ(content_arr[0]["text"], "LLM says hello");
+}
+
+// sampling.mdx: servers "SHOULD NOT use [thisServer or allServers] unless the client declares
+// sampling.context capability". A legacy session reads the capability from initialize.
+TEST_F(SamplingTest, SamplingWithContextNeedsTheClientToDeclareIt) {
+    const auto run_with = [](const nlohmann::json& capabilities) {
+        boost::asio::io_context io;
+        auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
+        auto* raw_transport = transport.get();
+        mcp::Server server("test-server", "1.0");
+        server.add_tool<nlohmann::json, nlohmann::json>(
+            "ask_with_context", "Asks the LLM with the server's context",
+            nlohmann::json{{"type", "object"}},
+            [](mcp::Context& ctx, nlohmann::json) -> mcp::Task<nlohmann::json> {
+                mcp::CreateMessageRequestParams request;
+                request.maxTokens = 10;
+                request.includeContext = "allServers";
+                const auto result = co_await ctx.sample_llm(request);
+                co_return nlohmann::json{{"model", result.model}};
+            });
+        std::vector<nlohmann::json> written;
+        raw_transport->set_on_write([&written, raw_transport](std::string_view text) {
+            auto message = nlohmann::json::parse(text);
+            if (message.value("id", "") == "initialize") {
+                return;
+            }
+            written.push_back(message);
+            if (message.value("method", "") == "sampling/createMessage") {
+                raw_transport->enqueue_message(nlohmann::json{
+                    {"jsonrpc", "2.0"},
+                    {"id", message["id"]},
+                    {"result",
+                     {{"role", "assistant"},
+                      {"content", {{"type", "text"}, {"text", "ok"}}},
+                      {"model", "test-model"}}}}.dump());
+            } else if (message.contains("result") || message.contains("error")) {
+                raw_transport->close();
+            }
+        });
+        auto initialize = make_initialize_request("initialize");
+        initialize["params"]["capabilities"] = capabilities;
+        raw_transport->enqueue_message(initialize.dump());
+        raw_transport->enqueue_message(make_initialized_notification().dump());
+        raw_transport->enqueue_message(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", "req-1"},
+            {"method", "tools/call"},
+            {"params", {{"name", "ask_with_context"}, {"arguments", nlohmann::json::object()}}}}
+                                           .dump());
+        mcp_test::spawn_detached(
+            io, [&]() -> mcp::Task<void> { co_await server.run(transport, io.get_executor()); });
+        io.run_for(std::chrono::seconds(10));
+        return written;
+    };
+
+    const auto refused = run_with(nlohmann::json{{"sampling", nlohmann::json::object()}});
+    ASSERT_EQ(refused.size(), 1U);
+    EXPECT_EQ(refused[0]["id"], "req-1");
+    EXPECT_TRUE(refused[0]["result"].value("isError", false)) << refused[0];
+    EXPECT_NE(refused[0].dump().find("sampling.context"), std::string::npos) << refused[0];
+
+    const auto asked = run_with(nlohmann::json{{"sampling", {{"context", nlohmann::json::object()}}}});
+    ASSERT_EQ(asked.size(), 2U);
+    EXPECT_EQ(asked[0]["method"], "sampling/createMessage");
+    EXPECT_EQ(asked[0]["params"]["includeContext"], "allServers");
+    EXPECT_EQ(asked[1]["result"]["structuredContent"]["model"], "test-model") << asked[1];
 }
 
 TEST_F(SamplingTest, SampleLlmWithoutSenderThrows) {

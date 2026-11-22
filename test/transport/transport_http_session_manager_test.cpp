@@ -4,6 +4,8 @@
 #include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
+#include "mcp/transport/http_beast.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -236,7 +238,7 @@ std::vector<std::pair<std::string, json>> parse_sse_events(const std::string& bo
 // ---------------------------------------------------------------------------
 
 mcp::StreamableHttpSessionManager::ServerFactory make_echo_server_factory() {
-    return [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+    return [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
         auto server = std::make_unique<mcp::Server>(mcp::Implementation{"test-session-server", "1.0.0"},
@@ -254,7 +256,7 @@ mcp::StreamableHttpSessionManager::ServerFactory make_echo_server_factory() {
 }
 
 mcp::StreamableHttpSessionManager::ServerFactory make_notifying_server_factory() {
-    return [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+    return [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
         caps.logging = json::object();
@@ -705,8 +707,8 @@ TEST_F(SessionManagerTest, SecurityChecksRunBeforeCustomHttpHandlers) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "valid-token"; });
-    manager.set_custom_request_handler(
-        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+    mcp::set_custom_request_handler(
+        manager, [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
             if (request.target() != "/health") {
                 return std::nullopt;
             }
@@ -1209,17 +1211,19 @@ TEST_F(SessionManagerTest, CustomRequestHandler) {
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
 
-    manager.set_custom_request_handler([](const http::request<http::string_body>& request)
-                                           -> std::optional<http::response<http::string_body>> {
-        if (request.target() == "/health") {
-            http::response<http::string_body> response{http::status::ok, request.version()};
-            response.set(http::field::content_type, "application/json");
-            response.body() = R"({"status":"healthy"})";
-            response.prepare_payload();
-            return response;
-        }
-        return std::nullopt;
-    });
+    mcp::set_custom_request_handler(manager,
+                                    [](const http::request<http::string_body>& request)
+                                        -> std::optional<http::response<http::string_body>> {
+                                        if (request.target() == "/health") {
+                                            http::response<http::string_body> response{
+                                                http::status::ok, request.version()};
+                                            response.set(http::field::content_type, "application/json");
+                                            response.body() = R"({"status":"healthy"})";
+                                            response.prepare_payload();
+                                            return response;
+                                        }
+                                        return std::nullopt;
+                                    });
 
     mcp_test::spawn_detached(io_ctx_, manager.listen());
 
@@ -1391,7 +1395,7 @@ TEST_F(SessionManagerTest, SessionlessDiscoversShareOneServer) {
     std::atomic<int> factory_calls{0};
     auto echo_factory = make_echo_server_factory();
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
-                                              [&](const asio::any_io_executor& executor) {
+                                              [&](const mcp::Executor& executor) {
                                                   factory_calls.fetch_add(1, std::memory_order_relaxed);
                                                   return echo_factory(executor);
                                               });
@@ -1717,23 +1721,25 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
     auto echo_factory = make_echo_server_factory();
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&factory_calls, echo_factory](const asio::any_io_executor& executor) mutable {
+        [&factory_calls, echo_factory](const mcp::Executor& executor) mutable {
             factory_calls.fetch_add(1, std::memory_order_relaxed);
             return echo_factory(executor);
         });
-    manager.set_custom_request_handler([&custom_handler_calls](const mcp::StringRequest& request)
-                                           -> std::optional<mcp::StringResponse> {
-        custom_handler_calls.fetch_add(1, std::memory_order_relaxed);
-        if (request.target() != "/health") {
-            return std::nullopt;
-        }
-        mcp::StringResponse response{http::status::ok, request.version()};
-        response.set(http::field::content_type, "application/json");
-        response.keep_alive(request.keep_alive());
-        response.body() = R"({"status":"ok"})";
-        response.prepare_payload();
-        return response;
-    });
+    mcp::set_custom_request_handler(
+        manager,
+        [&custom_handler_calls](
+            const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+            custom_handler_calls.fetch_add(1, std::memory_order_relaxed);
+            if (request.target() != "/health") {
+                return std::nullopt;
+            }
+            mcp::StringResponse response{http::status::ok, request.version()};
+            response.set(http::field::content_type, "application/json");
+            response.keep_alive(request.keep_alive());
+            response.body() = R"({"status":"ok"})";
+            response.prepare_payload();
+            return response;
+        });
 
     auto client = std::make_shared<beast::tcp_stream>(io_ctx_.get_executor());
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
@@ -1909,7 +1915,7 @@ TEST_F(SessionManagerTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     auto listener = manager.listen();
 
     EXPECT_NO_THROW(manager.set_json_only(true));
-    EXPECT_THROW(manager.set_custom_request_handler({}), std::logic_error);
+    EXPECT_THROW(mcp::set_custom_request_handler(manager, {}), std::logic_error);
     EXPECT_THROW(manager.set_allowed_origins({"https://trusted.example"}), std::logic_error);
     EXPECT_THROW(manager.set_allow_all_origins(true), std::logic_error);
     EXPECT_THROW(manager.set_bearer_token_validator({}), std::logic_error);
@@ -1936,7 +1942,7 @@ TEST_F(SessionManagerTest, StatelessDispatchUsesConfiguredToolExecutor) {
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
         [&handler_ran, &handler_ran_on_http_thread,
-         http_thread](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+         http_thread](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(
@@ -1987,7 +1993,7 @@ TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) 
 
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
             capabilities.logging = json::object();
@@ -2072,7 +2078,7 @@ TEST_F(SessionManagerTest, ResourceAndPromptProgressReachesAClientWithoutCapabil
     const unsigned short port = 19165;
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
             capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
@@ -2145,7 +2151,7 @@ TEST_F(SessionManagerTest, ResourceAndPromptHandlersRunOnTheToolExecutor) {
 
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.resources = mcp::ServerCapabilities::ResourcesCapability{};
             capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
@@ -2254,7 +2260,7 @@ void run_fan_out_case(asio::io_context& io_ctx, unsigned short port, bool with_t
     asio::thread_pool tool_pool(4);
     mcp::StreamableHttpSessionManager manager(
         io_ctx.get_executor(), "127.0.0.1", port,
-        [&probe](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&probe](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities capabilities;
             capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(mcp::Implementation{"fan-out-server", "1.0.0"},
@@ -2411,8 +2417,8 @@ TEST_F(SessionManagerTest, MetadataRouteIsServedAheadOfTheCustomRequestHandler) 
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
-    manager.set_custom_request_handler(
-        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+    mcp::set_custom_request_handler(
+        manager, [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
             mcp::StringResponse response{http::status::ok, request.version()};
             response.body() = "from custom handler";
             response.prepare_payload();
@@ -2444,8 +2450,8 @@ TEST_F(SessionManagerTest, UnauthenticatedPathsBypassTheBearerCheck) {
                                               make_echo_server_factory());
     manager.set_bearer_token_validator([](std::string_view token) { return token == "good"; });
     manager.set_unauthenticated_paths({"/health"});
-    manager.set_custom_request_handler(
-        [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
+    mcp::set_custom_request_handler(
+        manager, [](const mcp::StringRequest& request) -> std::optional<mcp::StringResponse> {
             const auto target = request.target();
             if (mcp::http_request_path({target.data(), target.size()}) != "/health") {
                 return std::nullopt;
@@ -2945,7 +2951,7 @@ TEST_F(SessionManagerTest, RequestPendingWhenItsSessionIsDeletedIsAnswered) {
     std::atomic<bool> tool_finished{false};
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [&](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [&](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities caps;
             caps.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(
@@ -3033,7 +3039,7 @@ TEST_F(SessionManagerTest, BlockedHandlerDoesNotStallAnotherSessionOfItsConnecti
 
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", port,
-        [gate](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+        [gate](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
             mcp::ServerCapabilities caps;
             caps.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(

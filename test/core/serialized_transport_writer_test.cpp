@@ -1,6 +1,7 @@
 #include "../../src/detail/strand_executor.hpp"
 #include "../support/spawn.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/transport/transport.hpp>
 

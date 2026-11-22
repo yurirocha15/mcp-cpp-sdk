@@ -7,8 +7,8 @@
 // Everything about one parked handler lives in an MrtrEntry, and every member of the entry is
 // read and written only on the entry's strand, where the handler itself runs.
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>
-#include <mcp/core/core.hpp>
 
 #include <mcp/protocol/request_meta.hpp>
 
@@ -188,6 +188,10 @@ class InlineInput {
 /// `{"method", "params"}` input request, or an empty object when it declared them.
 nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabilities,
                                            const nlohmann::json& request);
+
+/// Whether the sampling/createMessage @p params ask for `includeContext` other than "none", which a
+/// server sends only to a client that declares `sampling.context`.
+bool asks_for_sampling_context(const nlohmann::json& params);
 
 /// Asks the client for input on behalf of the handler of @p entry, and returns the client's
 /// response once a retry brings it. Runs on the entry's strand. Throws MrtrAbandoned when the

@@ -5,6 +5,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/strand.hpp>
 
+#include <mcp/core/async.hpp>
 #include <typeinfo>
 
 namespace mcp::detail {

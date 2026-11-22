@@ -81,9 +81,6 @@ come from the fixtures:
   as not scored. The client does not implement DPoP (`auth/dpop`,
   `auth/dpop-nonce`) or the workload identity federation grant
   (`auth/wif-jwt-bearer`), so those scenarios fail.
-- The conformance client pins the protocol version the runner names, so
-  `request-metadata` reports a warning for its simulated version rejection:
-  a pinned client does not renegotiate, and `ClientProtocol::automatic()` does.
 - `input-required-result-ignore-extra-params` reports a warning: it sends
   `inputResponses` on a first call that carries no `requestState`. The SDK
   issues a `requestState` with every `input_required` result and resumes a

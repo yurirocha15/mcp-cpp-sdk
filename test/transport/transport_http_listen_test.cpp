@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -189,7 +190,7 @@ class HttpListen : public ::testing::Test {
     std::unique_ptr<mcp::StreamableHttpSessionManager> make_manager(unsigned short port) {
         return std::make_unique<mcp::StreamableHttpSessionManager>(
             io_ctx_.get_executor(), "127.0.0.1", port,
-            [this](const asio::any_io_executor&) -> std::unique_ptr<mcp::Server> {
+            [this](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
                 factory_calls_.fetch_add(1);
                 return make_server("factory");
             });

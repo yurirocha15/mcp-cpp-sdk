@@ -14,6 +14,18 @@ Middleware functions sit between the server's request dispatcher and the final h
 - Catch exceptions thrown by inner middleware and by resource and prompt handlers.
 - Inject additional context or metadata.
 
+Using Middleware
+----------------
+
+Middleware is a coroutine in both modes. It receives the request's ``Context``,
+its parameters and the next handler, which it may call:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Middleware:
+   :end-before: // Pagination:
+   :dedent: 4
+
 Registering Middleware
 ----------------------
 

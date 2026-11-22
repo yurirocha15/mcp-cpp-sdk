@@ -1,4 +1,5 @@
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/skills.hpp>
 
@@ -129,10 +130,9 @@ SkillsExtension::SkillsExtension(Server& server, SkillsOptions options)
     if (options.page_size == 0) {
         throw std::invalid_argument("SkillsOptions::page_size must be at least 1");
     }
+    // The skills are served as resources.
     if (!server.capabilities().resources) {
-        throw std::invalid_argument(
-            "The Skills extension needs the resources capability; declare it in the server's "
-            "capabilities");
+        server.capabilities().resources = ServerCapabilities::ResourcesCapability{};
     }
     state_->options = options;
     server.declare_extension(std::string(mcp::constants::skills::g_EXTENSION_ID),

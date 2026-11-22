@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -340,6 +341,15 @@ class MrtrTest : public ::testing::Test {
                                          tool.name = "lookup";
                                          tool.inputSchema = json{{"type", "object"}};
                                          params.tools = std::vector<mcp::Tool>{tool};
+                                         const auto result = co_await ctx.sample_llm(params);
+                                         co_return json{{"model", result.model}};
+                                     });
+        server->add_tool<json, json>("sample_with_context", "Asks the client's model with context",
+                                     json{{"type", "object"}},
+                                     [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                         mcp::CreateMessageRequestParams params;
+                                         params.maxTokens = 10;
+                                         params.includeContext = "thisServer";
                                          const auto result = co_await ctx.sample_llm(params);
                                          co_return json{{"model", result.model}};
                                      });
@@ -1070,6 +1080,30 @@ TEST_F(MrtrTest, ToolSamplingNeedsTheSamplingToolsCapability) {
               (json{{"sampling", {{"tools", json::object()}}}}));
     expect_input_required(asked);
     EXPECT_EQ(asked["result"]["inputRequests"].begin().value()["params"]["tools"][0]["name"], "lookup")
+        << asked;
+}
+
+// sampling.mdx: servers "SHOULD NOT use [thisServer or allServers] unless the client declares
+// sampling.context capability".
+TEST_F(MrtrTest, SamplingWithContextNeedsTheSamplingContextCapability) {
+    const json sampling_only = declaring("sampling");
+    const json sampling_with_context = declaring("sampling", json{{"context", json::object()}});
+    json refused;
+    json asked;
+    run([&]() -> mcp::Task<void> {
+        refused = co_await send(call_tool(1, "sample_with_context", json::object(), sampling_only));
+        asked =
+            co_await send(call_tool(2, "sample_with_context", json::object(), sampling_with_context));
+    });
+
+    EXPECT_EQ(refused.value("error", json::object()).value("code", 0),
+              jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY)
+        << refused;
+    EXPECT_EQ(refused["error"]["data"]["requiredCapabilities"],
+              (json{{"sampling", {{"context", json::object()}}}}));
+    expect_input_required(asked);
+    EXPECT_EQ(asked["result"]["inputRequests"].begin().value()["params"]["includeContext"],
+              "thisServer")
         << asked;
 }
 

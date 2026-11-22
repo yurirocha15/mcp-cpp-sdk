@@ -26,6 +26,49 @@ The server side is the same in both: the server calls ``notify_resource_updated(
 and the ``notify_*_list_changed()`` methods, and the SDK sends each
 notification to the clients that asked for it.
 
+Using Resource Subscriptions
+----------------------------
+
+A server that lets clients subscribe to its resources sets the ``subscribe``
+flag of its resources capability, and calls ``notify_resource_updated()`` when a
+resource changes. In sync mode a plain-function handler on the handler pool sends
+the notification through the blocking ``server.sync()``; in async mode a
+coroutine awaits it:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Prompts.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Prompts.
+   :dedent: 4
+
+``server.sync()`` throws ``std::logic_error`` on the thread of the server's
+event loop, where handlers run when no handler executor is set.
+
+A client of protocol revision 2026-07-28 subscribes with ``listen()`` and takes
+each notification with ``next()``, or its blocking form on ``sync()``:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Errors:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resource subscriptions:
+   :end-before: // Errors:
+   :dedent: 4
+
 Listening for Notifications
 ---------------------------
 
@@ -79,6 +122,9 @@ dropped, or the server answered with an error. After a dropped connection,
 connect a new client and call ``listen()`` again; the server keeps no
 subscription across connections.
 
+For a client constructed from an ``Endpoint``, ``Subscription::sync()`` makes
+``next()`` and ``close()`` block until they are done.
+
 ``Client::listen()`` throws ``McpError`` with ``g_METHOD_NOT_FOUND`` in a
 session of an older revision.
 
@@ -94,11 +140,12 @@ not run for ``subscriptions/listen``.
 Which transports carry the stream:
 
 - stdio, WebSocket and in-memory transports served by ``Server::run()``.
-- ``StreamableHttpSessionManager``, as a server-sent event stream. The client
-  must accept ``text/event-stream``. The stream runs on the manager's shared
-  modern server, see :doc:`/guides/deployment`.
-- ``HttpServerTransport``, and so ``Server::run_http()``, as a server-sent
-  event stream on the server that reads the transport. The client must accept
+- ``StreamableHttpSessionManager``, and so ``Server::run_http()``, as a
+  server-sent event stream. The client must accept ``text/event-stream``. The
+  stream runs on the manager's shared modern server, which is the server
+  itself for ``run_http()``, see :doc:`/guides/deployment`.
+- ``HttpServerTransport``, as a server-sent event stream on the server that
+  reads the transport. The client must accept
   ``text/event-stream``. Closing the stream, or closing the transport, ends the
   subscription.
 

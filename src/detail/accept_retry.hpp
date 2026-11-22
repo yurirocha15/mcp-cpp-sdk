@@ -4,6 +4,7 @@
 #include <boost/system/error_code.hpp>
 
 #include <chrono>
+#include <mcp/core/async.hpp>
 
 namespace mcp::detail {
 

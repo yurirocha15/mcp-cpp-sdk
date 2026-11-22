@@ -1,10 +1,11 @@
 #pragma once
 
 #include <mcp/core/export.hpp>
+#include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <mcp/core/executor.hpp>
 
 #include <chrono>
 #include <cstddef>
@@ -30,6 +31,21 @@ class MCP_API WebSocketServerTransport final : public ITransport {
      * @param socket An accepted TCP socket.
      */
     explicit WebSocketServerTransport(boost::asio::ip::tcp::socket socket);
+
+    /**
+     * @brief Construct from an accepted TCP socket whose peer speaks TLS (wss).
+     *
+     * The TLS handshake runs with the WebSocket upgrade, on the first read_message() or
+     * write_message(), within the handshake timeout. The context's own handshake_timeout and
+     * max_pending_handshakes apply to the HTTP server transports, which accept their connections
+     * themselves, and not here.
+     *
+     * @param socket An accepted TCP socket.
+     * @param tls The server's TLS settings.
+     * @throws std::invalid_argument If @p tls is null.
+     */
+    WebSocketServerTransport(boost::asio::ip::tcp::socket socket,
+                             std::shared_ptr<const TlsServerContext> tls);
 
     ~WebSocketServerTransport() override;
 
@@ -75,6 +91,19 @@ class MCP_API WebSocketServerTransport final : public ITransport {
      * @throws std::logic_error If the handshake has started or the transport is closed.
      */
     void set_allow_all_origins(bool allow_all);
+
+    /**
+     * @brief Accept only upgrades whose Host header names one of @p hosts.
+     *
+     * The rule is HttpServerTransport::set_allowed_hosts()'s: without a list, an upgrade that
+     * reaches a loopback address must name a loopback host or is refused with 403, against DNS
+     * rebinding; with one, every upgrade must name a listed host. Call it before the first read or
+     * write.
+     *
+     * @throws std::invalid_argument If an entry names no host.
+     * @throws std::logic_error If the handshake has started or the transport is closed.
+     */
+    void set_allowed_hosts(const std::vector<std::string>& hosts);
 
     /**
      * @brief Limit the time from the first read or write to the end of the upgrade.
@@ -143,8 +172,8 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      *                 (such as `std::chrono::milliseconds::max()`) disables the limit.
      *                 Established connections are not subject to it.
      */
-    WebSocketClientTransport(const boost::asio::any_io_executor& executor, std::string host,
-                             std::string port, std::string path = "/",
+    WebSocketClientTransport(const Executor& executor, std::string host, std::string port,
+                             std::string path = "/",
                              std::chrono::milliseconds connect_timeout = std::chrono::seconds(30));
 
     ~WebSocketClientTransport() override;
@@ -181,6 +210,34 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      * or write.
      */
     void set_max_message_bytes(std::size_t bytes);
+
+    /**
+     * @brief Connect over TLS (wss) with these settings. Call it before the first read or write.
+     *
+     * The server's certificate must name the host given to the constructor, or the name given to
+     * set_server_name().
+     *
+     * @throws TlsConfigError If the options cannot be used.
+     * @throws std::logic_error If the connection has started or the transport is closed.
+     */
+    void set_tls(const TlsClientOptions& options);
+
+    /**
+     * @brief Connect over TLS (wss) with a context created before; a null context checks the
+     * server against the system's certificate authorities. Call it before the first read or write.
+     *
+     * @throws std::logic_error If the connection has started or the transport is closed.
+     */
+    void set_tls(std::shared_ptr<const TlsClientContext> context);
+
+    /**
+     * @brief Check a TLS server's certificate against @p name instead of the host, and send it as
+     * the TLS server name. Call it before the first read or write.
+     *
+     * @throws std::invalid_argument If @p name is empty.
+     * @throws std::logic_error If the connection has started or the transport is closed.
+     */
+    void set_server_name(std::string name);
 
     /**
      * @brief Close the WebSocket connection. Safe to call multiple times.

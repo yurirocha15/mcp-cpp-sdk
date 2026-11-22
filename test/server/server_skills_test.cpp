@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "mcp/client/skills.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/protocol/skills.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/server/skills.hpp"
@@ -211,9 +212,10 @@ TEST(SkillsCapabilityTest, SettingsAndDetection) {
     EXPECT_TRUE(skills::supports_directory_read(capabilities));
 }
 
-TEST(SkillsServerTest, TheExtensionIsDeclaredAndNeedsTheResourcesCapability) {
-    mcp::Server without({"skills-server", "1.0"}, {});
-    EXPECT_THROW(skills::SkillsExtension rejected(without), std::invalid_argument);
+TEST(SkillsServerTest, TheExtensionIsDeclaredWithTheResourcesCapability) {
+    mcp::Server without("skills-server", "1.0");
+    const skills::SkillsExtension declared(without);
+    EXPECT_TRUE(without.capabilities().resources.has_value());
 
     mcp::Server server({"skills-server", "1.0"}, skill_capabilities());
     skills::SkillsExtension extension(server);

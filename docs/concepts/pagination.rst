@@ -5,6 +5,33 @@ Pagination allows servers to return large lists of items (tools, resources, or p
 
 The `mcp-cpp-sdk` implements cursor-based pagination as defined in the Model Context Protocol.
 
+Using Pagination
+----------------
+
+The server sets a page size, the same way in both modes:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Pagination:
+   :end-before: // Tasks:
+   :dedent: 4
+
+A client passes each page's ``nextCursor`` back for the next page:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Pagination:
+   :end-at: } while (cursor);
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Pagination:
+   :end-at: } while (cursor);
+   :dedent: 4
+
 Server-side Configuration
 -------------------------
 

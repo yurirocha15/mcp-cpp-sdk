@@ -84,7 +84,7 @@ Server
 
 * Protocol compliance (2026-07-28 requests served one by one, and the ``initialize`` handshake of older revisions, on the same transport)
 * Handler type erasure and invocation
-* ``ensure_async_handler`` — automatically normalizes handler signatures (sync/async, with/without ``Context``) into unified async form; called internally by ``add_tool``, ``add_resource``, etc.
+* Handler wrapping: ``add_tool``, ``add_resource`` and the other registrations turn each handler signature (synchronous or coroutine, with or without ``Context``) into a type-erased coroutine handler; a synchronous tool handler is also kept as it is, and called without a coroutine when the call already runs on its strand
 * Error handling: tool-handler exceptions become ``CallToolResult`` values with
   ``isError=true``; other request-dispatch failures use JSON-RPC error responses
 * Context creation and lifecycle management
@@ -172,7 +172,7 @@ Core Types
 
 The core headers expose fundamental types in the ``mcp`` namespace:
 
-* ``Task<T>`` - Coroutine return type (alias for ``boost::asio::awaitable<T>``)
+* ``Task<T>`` - Coroutine return type, a class derived from ``boost::asio::awaitable<T>``
 * ``LoggingLevel`` - Protocol enum for log severity
 * ``Error`` and JSON-RPC error responses - Structured peer-visible failures
 
@@ -322,8 +322,9 @@ synchronization.
 
 Complete server registrations before starting a session. Configure Origin and
 bearer-token setters directly on ``HttpServerTransport`` or
-``StreamableHttpSessionManager`` before ``listen()`` or ``run()``;
-``Server::run_http()`` does not expose those transport settings. The token store
+``StreamableHttpSessionManager`` before ``listen()`` or ``run()``, or, with
+``Server::run_http()``, in the callback it passes its manager to before it
+listens. The token store
 is independently synchronized, but that does not make every OAuth wrapper
 operation safe for arbitrary concurrent calls.
 
@@ -363,8 +364,9 @@ The SDK is designed for extension:
 
 * **Custom transports**: Implement ``ITransport`` (e.g., for HTTP/2)
 * **Custom serialization**: Provide ``to_json``/``from_json`` for your types
-* **Asio executors**: Pass an executor accepted by the relevant
-  ``boost::asio::any_io_executor`` API
+* **Asio executors**: Pass any Asio executor, such as an ``io_context``'s, a
+  strand or a thread pool's; it converts to ``mcp::Executor``, and
+  ``Executor::get()`` returns it as a ``boost::asio::any_io_executor``
 * **Middleware**: Intercept handler execution for auth, logging, and request shaping
 
 Future Work

@@ -1,6 +1,7 @@
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 

@@ -4,6 +4,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_session_manager.hpp"
@@ -673,7 +674,8 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
 
-// A refusal that lists the pinned version itself must not call that version unsupported.
+// A refusal that lists the pinned version itself must not call that version unsupported. The
+// client asks once more before it gives up.
 TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
     Harness harness(pinned_options("2026-07-28"));
     harness.peer.reply = [](const json& request) -> std::optional<json> {
@@ -697,6 +699,54 @@ TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
     EXPECT_NE(message.find("refused protocol version 2026-07-28"), std::string::npos) << message;
     EXPECT_NE(message.find("lists it"), std::string::npos) << message;
     EXPECT_EQ(message.find("does not support"), std::string::npos) << message;
+    EXPECT_EQ(harness.peer.count("server/discover"), 2u);
+}
+
+// basic_index.md: "The client SHOULD select a mutually supported version from the supported list
+// and retry the request". A pinned client retries with its own version when the list holds it.
+TEST(ClientEra, PinnedModernRetriesARefusalThatListsItsVersion) {
+    Harness harness(pinned_options("2026-07-28"));
+    int probes = 0;
+    harness.peer.reply = [&](const json& request) -> std::optional<json> {
+        if (request.at("method") == "server/discover" && probes++ == 0) {
+            return error_to(
+                request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                "Unsupported protocol version",
+                json{{"supported", json::array({"2026-07-28"})}, {"requested", "2026-07-28"}});
+        }
+        return modern_peer(request);
+    };
+
+    mcp::ConnectResult connected;
+    harness.run([&]() -> mcp::Task<void> {
+        connected = co_await harness.client->connect("test-client", "1.0");
+    });
+
+    EXPECT_EQ(connected.era, mcp::ProtocolEra::eModern);
+    EXPECT_EQ(connected.protocolVersion, "2026-07-28");
+    EXPECT_EQ(harness.peer.count("server/discover"), 2u);
+    const auto retry = harness.peer.with_method("server/discover").back();
+    EXPECT_EQ(retry.at("params").at("_meta").at("io.modelcontextprotocol/protocolVersion"),
+              "2026-07-28");
+}
+
+// A refusal that lists only versions other than the pinned one is not retried.
+TEST(ClientEra, PinnedModernDoesNotRetryARefusalThatListsOtherVersions) {
+    Harness harness(pinned_options("2026-07-28"));
+    harness.peer.reply = [](const json& request) -> std::optional<json> {
+        return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                        "Unsupported protocol version",
+                        json{{"supported", json::array({"2025-11-25"})}, {"requested", "2026-07-28"}});
+    };
+
+    harness.run([&]() -> mcp::Task<void> {
+        try {
+            co_await harness.client->connect("test-client", "1.0");
+        } catch (const mcp::McpError&) {
+        }
+    });
+
+    EXPECT_EQ(harness.peer.count("server/discover"), 1u);
 }
 
 // basic_index.md: "A resultType of any value unrecognized by the client MUST be considered invalid."
@@ -1011,9 +1061,9 @@ TEST(ClientEra, CancelStopsWaitingForAModernRequestOnly) {
     }
 }
 
-// A modern request that times out is cancelled with notifications/cancelled, so the server stops
-// working on it. A legacy request and the era probe are left as they were.
-TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
+// A request that times out is cancelled with notifications/cancelled in either era, so the server
+// stops working on it. An era probe that gets no answer is left as it was.
+TEST(ClientEra, TimeoutCancelsTheRequestButNotTheProbe) {
     struct Case {
         std::string name;
         mcp::ClientProtocol protocol;
@@ -1022,8 +1072,9 @@ TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
     };
     const std::vector<Case> cases = {
         {"modern", mcp::ClientProtocol::pinned("2026-07-28"), false, 1},
-        {"legacy", mcp::ClientProtocol::pinned("2025-11-25"), false, 0},
-        {"auto, silent probe", mcp::ClientProtocol::automatic(), true, 0},
+        {"legacy", mcp::ClientProtocol::pinned("2025-11-25"), false, 1},
+        // The one cancellation names the tools/call made after the probe gave up, not the probe.
+        {"auto, silent probe", mcp::ClientProtocol::automatic(), true, 1},
     };
     for (const auto& item : cases) {
         SCOPED_TRACE(item.name);
@@ -1068,6 +1119,32 @@ TEST(ClientEra, TimeoutCancelsAModernRequestOnly) {
             EXPECT_EQ(params.value("reason", ""), "Request timed out");
         }
     }
+}
+
+// An initialize request that times out is not cancelled: a client must not cancel one.
+TEST(ClientEra, ATimedOutInitializeIsNotCancelled) {
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::pinned("2025-11-25");
+    options.request_timeout = std::chrono::milliseconds(100);
+    Harness harness(options);
+    harness.peer.reply = [](const json&) -> std::optional<json> { return std::nullopt; };
+
+    int code = 0;
+    harness.run([&]() -> mcp::Task<void> {
+        try {
+            co_await harness.client->connect("test-client", "1.0");
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+        // A notification would be written after the request fails; give it time to reach the peer.
+        boost::asio::steady_timer settle(harness.io);
+        settle.expires_after(std::chrono::milliseconds(20));
+        co_await settle.async_wait(boost::asio::use_awaitable);
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_TIMEOUT);
+    EXPECT_EQ(harness.peer.with_method("initialize").size(), 1u);
+    EXPECT_TRUE(harness.peer.with_method("notifications/cancelled").empty());
 }
 
 // A CancellationToken ends every call given it at once, in either era: each fails with
@@ -1639,7 +1716,7 @@ TEST(E2eEra, AutoOverHttpIsModern) {
     bool fired = false;
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_dual_era_server(); });
+        [](const mcp::Executor&) { return make_dual_era_server(); });
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     std::vector<mcp::EraDecision> decisions;
@@ -1672,7 +1749,7 @@ TEST(E2eEra, DefaultClientOverHttpIsModern) {
     bool fired = false;
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_dual_era_server(); });
+        [](const mcp::Executor&) { return make_dual_era_server(); });
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::Client client(transport, io.get_executor());
@@ -1699,7 +1776,7 @@ TEST(E2eEra, LegacyClientOverHttpIsLegacy) {
     bool fired = false;
     mcp::StreamableHttpSessionManager manager(
         io.get_executor(), "127.0.0.1", port,
-        [](const boost::asio::any_io_executor&) { return make_dual_era_server(); });
+        [](const mcp::Executor&) { return make_dual_era_server(); });
     auto transport = std::make_shared<mcp::HttpClientTransport>(
         io.get_executor(), "http://127.0.0.1:" + std::to_string(port) + "/mcp");
     mcp::ClientOptions options;

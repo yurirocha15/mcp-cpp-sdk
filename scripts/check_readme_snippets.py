@@ -10,6 +10,10 @@ built the SDK, with the SDK's own include paths and language standard.
 Fenced blocks without ``int main(`` are fragments that only make sense inside a
 larger program, so they are reported as skipped rather than compiled.
 
+The README's server and client must also be the programs of
+examples/sync/minimal_server.cpp and minimal_client.cpp, which the getting-started
+page shows and CI runs, so that the copies stay the same.
+
 Compiler flags are taken from ``compile_commands.json`` in the build directory,
 so this script needs a configured build tree. With no --build-dir it looks for
 one under build/, preferring build/release, which is what scripts/build.py
@@ -25,6 +29,9 @@ import tempfile
 from pathlib import Path
 
 FENCE_RE = re.compile(r"^```cpp\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
+
+REPO = Path(__file__).resolve().parents[1]
+README_PROGRAMS = ("examples/sync/minimal_server.cpp", "examples/sync/minimal_client.cpp")
 
 # Flags that carry the information a snippet needs: where the headers are, which
 # language standard applies, which macros the SDK's own headers expect, and which
@@ -46,6 +53,23 @@ def extract_snippets(readme_path):
         line_no = text.count("\n", 0, match.start()) + 1
         snippets.append((line_no, body))
     return snippets
+
+
+def code_lines(text):
+    """The lines that are compared: stripped, without blank and comment-only lines."""
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("//"):
+            lines.append(stripped)
+    return lines
+
+
+def program_problems(snippets):
+    """The README_PROGRAMS that no snippet holds as it is."""
+    blocks = [code_lines(body) for _, body in snippets]
+    return [f"README.md: no cpp block holds {name} as it is" for name in README_PROGRAMS
+            if code_lines((REPO / name).read_text(encoding="utf-8")) not in blocks]
 
 
 def has_example_entry(database):
@@ -179,6 +203,12 @@ def main():
     if not snippets:
         print(f"No cpp snippets found in {readme_path}")
         return 1
+    if readme_path.resolve() == (REPO / "README.md").resolve():
+        problems = program_problems(snippets)
+        for problem in problems:
+            print(f"error: {problem}")
+        if problems:
+            return 1
 
     build_dir = find_build_dir(args.build_dir)
     try:

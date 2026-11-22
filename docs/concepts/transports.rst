@@ -35,25 +35,23 @@ extremely easy to deploy as a subprocess.
 Server Side
 ~~~~~~~~~~~
 
-The simplest way to start a stdio-based server is using the high-level `run_stdio()`
-method, which blocks the main thread until the connection is closed.
+In sync mode ``run_stdio()`` serves stdio on an event loop of its own and
+blocks until the connection is closed. In async mode ``Server::run()`` serves a
+``StdioTransport`` on the application's event loop, here an ``mcp::Runtime``:
 
-.. code-block:: cpp
+.. literalinclude:: ../../examples/sync/notes_server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // The event loop:
+   :end-before: }
+   :dedent: 4
 
-   #include <mcp/mcp.hpp>
-
-   // Define server information and capabilities
-   mcp::Implementation info{"my-server", "1.0.0"};
-   mcp::ServerCapabilities caps;
-   caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-
-   mcp::Server server(info, caps);
-
-   // Add your tools, resources, and prompts here with add_tool(), add_resource()
-   // and add_prompt().
-
-   // Run the server on stdin/stdout
-   server.run_stdio();
+.. literalinclude:: ../../examples/async/notes_server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // The event loop:
+   :end-before: }
+   :dedent: 4
 
 ``run_stdio()`` returns when the client closes standard input, once the requests
 already read have ended and their answers are written, and when standard output
@@ -69,10 +67,30 @@ Client Side
 
 ``StdioClientTransport`` launches the server as a child process and owns it:
 the server's standard input and output carry the messages, and the transport
-ends the process when the client is done.
+ends the process when the client is done. In sync mode ``Endpoint::stdio()``
+makes it for a client that runs its own event loop, from a command or from the
+same ``StdioProcessOptions``; in async mode the application makes it on its own
+event loop:
+
+.. literalinclude:: ../../examples/sync/notes_client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // The client launches the server
+   :end-before: // The session
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/notes_client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // The client launches the server
+   :end-before: // The session
+   :dedent: 4
+
+The options of the process, in either mode:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/client/client.hpp>
    #include <mcp/transport/stdio_client.hpp>
 
@@ -154,11 +172,31 @@ with ``g_CONNECTION_CLOSED`` and its subscriptions end as
 ``SubscriptionEnd::eDropped``), and ``on_exit`` runs with ``requested`` false.
 
 The specification asks a client to restart a server that exits unexpectedly,
-and to establish active ``subscriptions/listen`` streams again.
-``StdioClientSession`` does both:
+and to establish active ``subscriptions/listen`` streams again. A ``Client``
+built from ``Endpoint::stdio()`` with a ``StdioRestartPolicy`` starts the server
+again itself, and goes on with the new process, keeping its handlers, callbacks
+and ``sync()`` view:
 
 .. code-block:: cpp
 
+   mcp::Client client(mcp::Endpoint::stdio({"./server"}, mcp::StdioRestartPolicy{.max_restarts = 3}));
+
+The requests waiting for an answer when the process ended fail with
+``g_CONNECTION_CLOSED``; requests made while it starts again wait for it, within
+their own timeouts. A legacy session sends its ``initialize`` request to the new
+process again. Each open ``subscriptions/listen`` request goes to the new
+process again, so its ``Subscription`` goes on. What the old process kept for a
+legacy session, such as a log level, resource subscriptions or tasks, is gone.
+A start that fails uses one of the restarts the policy allows; when it allows
+no more, the client closes as it does without a restart.
+
+With a ``StdioClientSession`` the application opens the streams again: the
+session makes a new ``Client`` for each process and runs the application's
+``on_connected`` after each connect:
+
+.. code-block:: cpp
+
+   #include <mcp/core/async.hpp>
    #include <mcp/client/stdio_session.hpp>
 
    mcp::StdioSessionOptions options;
@@ -180,7 +218,8 @@ and to establish active ``subscriptions/listen`` streams again.
    co_await session.client()->call_tool("add", args);
 
 When the process ends without the session or the transport having asked it to,
-the session waits ``restart.delay`` and starts the server again, up to
+the session, like the ``Client`` above, waits ``restart.delay`` and starts the
+server again, up to
 ``restart.max_restarts`` times over its life (the default is not to restart).
 By default only an abnormal end restarts the server (a non-zero status or a
 signal): one that exits with status 0 is shutting down by choice. Set
@@ -217,8 +256,9 @@ resumes a stream from there: one still going on continues live, and one that
 ended is replayed. A client leaving a stream does not cancel its request.
 Managed sessions also support session IDs and DELETE teardown.
 
-``HttpClientTransport`` sends each message on an exchange of its own, so
-requests overlap, and reads an SSE answer as it arrives: a request the server
+``HttpClientTransport`` reaches an ``https://`` URL over TLS, directly or through
+an HTTP proxy (see :doc:`/guides/tls`). It sends each message on an exchange of
+its own, so requests overlap, and reads an SSE answer as it arrives: a request the server
 sends while it handles one of the client's reaches the client at once. After
 notifications/initialized it opens the session's GET stream, and opens it again
 from its last event when it ends; a server that answers that GET with 405 is
@@ -236,11 +276,14 @@ them), and no ``Mcp-Session-Id``. ``StreamableHttpSessionManager`` and
 sessions. See :doc:`/guides/deployment` for the headers and the error statuses,
 and :doc:`protocol` for the protocol itself.
 
-The built-in HTTP transports are plaintext. Bind local development servers to
-loopback. For remote deployments, place them behind a TLS-terminating proxy or
-provide a custom TLS transport. Requests carrying an ``Origin`` header are
-denied by default; configure an exact allowlist (or explicitly opt into all
-origins) before starting the listener. Bearer-token validators must likewise be
+The HTTP server transports serve plain HTTP unless ``set_tls()`` gives them a
+certificate (see :doc:`/guides/tls`). Bind local development servers to
+loopback, and serve remote clients over TLS, the transport's own or a reverse
+proxy's. A request that reaches a server through a loopback address must name a
+loopback host in ``Host`` unless ``set_allowed_hosts()`` lists others (see
+:doc:`/guides/deployment`). Requests carrying an ``Origin`` header are denied
+by default; configure an exact allowlist (or explicitly opt into all origins)
+before starting the listener. Bearer-token validators must likewise be
 installed before ``listen()`` or ``run()``.
 
 HTTP Server Convenience
@@ -249,26 +292,48 @@ HTTP Server Convenience
 For developers who want a quick way to host an MCP server over HTTP without
 worrying about the underlying networking boilerplate, the SDK provides `run_http()`.
 
-``Server::run_http()`` owns its ``HttpServerTransport`` internally and does not
-currently expose Origin allowlist or bearer-token validator configuration. Use
-it only on a suitable trusted boundary, such as the loopback example below. For
-a configurable deployment, construct ``HttpServerTransport`` or
-``StreamableHttpSessionManager`` directly, apply the security settings, and
-then start the listener.
+``Server::run_http()`` owns its ``StreamableHttpSessionManager`` internally,
+which gives each client of protocol revision 2025-11-25 or earlier a session of
+its own. Its optional third argument is a callback that receives the manager
+before it listens, where the Origin allowlist, bearer-token validation and the
+other manager settings are set. Without one, the manager keeps its default
+settings: use it that way only on a suitable trusted boundary, such as
+loopback. In async mode the application constructs a
+``StreamableHttpSessionManager`` with the ``Server`` instead, configures it and
+runs ``listen()`` on its own event loop. Both servers here set a bearer token
+validator and an allowed origin:
 
-.. literalinclude:: ../../examples/features/http_server_convenience.cpp
+.. literalinclude:: ../../examples/sync/server.cpp
    :language: cpp
-   :start-after: // This convenience method handles everything:
-   :end-before: server.run_http("127.0.0.1", http_port);
-   :dedent: 16
+   :caption: Sync mode
+   :start-at: // HTTP until a signal
+   :end-at: server.run_http(
+   :dedent: 4
 
-The following example shows how to use the convenience method:
-
-.. literalinclude:: ../../examples/features/http_server_convenience.cpp
+.. literalinclude:: ../../examples/async/server.cpp
    :language: cpp
-   :start-after: // ========== CONVENIENCE SETUP (this example) ==========
-   :end-before: constexpr auto startup_delay
-   :dedent: 8
+   :caption: Async mode
+   :start-at: // The event loop:
+   :end-at: io.run();
+   :dedent: 4
+
+A client connects with ``Endpoint::http(url)`` in sync mode, and with an
+``HttpClientTransport`` on its own event loop in async mode. These send a bearer
+token:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // The connection:
+   :end-before: // Logging:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // The connection:
+   :end-before: // Logging:
+   :dedent: 4
 
 Manual HTTP Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -306,8 +371,10 @@ required.
 ``Origin`` header with ``403`` unless that origin was added with
 ``set_allowed_origins()`` or ``set_allow_all_origins(true)`` was called, as
 the HTTP transports do. An upgrade without an ``Origin`` header is accepted.
-Configure origins before the first ``read_message()`` or ``write_message()``,
-which perform the handshake.
+Its ``Host`` header is checked as the HTTP servers check it, with
+``set_allowed_hosts()``. Configure both before the first ``read_message()`` or
+``write_message()``, which perform the handshake. Both transports also speak
+TLS (wss); see :doc:`/guides/tls`.
 
 Three limits protect a server from a peer that stops cooperating, and take
 effect when set before that first read or write:
@@ -360,18 +427,15 @@ see :doc:`/guides/older-protocols`.
 
 For more information on writing effective tests, see the :doc:`/guides/testing` guide.
 
-TransportFactory and Runtime
-----------------------------
+Runtime
+-------
 
-The `Runtime` class is a high-level wrapper around the Boost.Asio event loop,
-providing a simple `run()` and `stop()` interface. The `TransportFactory`
-further simplifies transport creation by binding them to a specific runtime.
-
-.. literalinclude:: ../../examples/features/transport_memory.cpp
-   :language: cpp
-   :start-after: void demo_transport_factory() {
-   :end-before: std::cout << "[Main] Demo 2 completed
-   :dedent: 4
+``mcp::Runtime`` is an event loop that a program uses without Boost:
+``executor()`` binds a transport, a ``Client`` or ``Server::run()`` to it, such
+as ``std::make_shared<mcp::StdioTransport>(runtime.executor())``, ``spawn()``
+starts a coroutine on it, ``run()`` runs the loop on the calling thread until
+its work is done, and ``start(threads)`` runs it on threads of its own until
+``stop()``. The async stdio server and client above run on one.
 
 Choosing the Right Transport
 ----------------------------
@@ -388,7 +452,7 @@ integration. Use the table below as a guide:
 +----------------------+--------------------------+------------------------------------------------+
 | **HTTP**             | MCP remote endpoints     | - Standard Streamable HTTP request model       |
 |                      |                          | - Managed sessions and bounded event replay    |
-|                      |                          | - Deploy behind TLS for non-loopback use       |
+|                      |                          | - TLS of its own or from a reverse proxy       |
 +----------------------+--------------------------+------------------------------------------------+
 | **WebSocket**        | Agreed custom integration| - Full-duplex persistent channel               |
 |                      |                          | - Separate client and server transport types   |
@@ -410,6 +474,7 @@ All you need to do is inherit from `mcp::ITransport` and implement three methods
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/transport/transport.hpp>
 
    class MyCustomTransport : public mcp::ITransport {

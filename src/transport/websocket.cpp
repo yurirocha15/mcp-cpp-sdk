@@ -1,11 +1,19 @@
+#include <mcp/core/async.hpp>
+#include <mcp/transport/tls.hpp>
 #include <mcp/transport/websocket.hpp>
 
+#include "../detail/connection.hpp"
 #include "../detail/constants.hpp"
+#include "../detail/diagnostic_text.hpp"
+#include "../detail/host_policy.hpp"
 #include "../detail/socket_deadline.hpp"
+#include "../detail/tls.hpp"
+#include "../detail/tls_accept.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
+#include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
@@ -14,7 +22,6 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
-#include <boost/beast/core/tcp_stream.hpp>
 #include <boost/beast/http/read.hpp>
 #include <boost/beast/http/string_body.hpp>
 #include <boost/beast/http/write.hpp>
@@ -37,7 +44,7 @@ namespace mcp {
 
 namespace beast = boost::beast;
 namespace asio = boost::asio;
-using WsStream = beast::websocket::stream<beast::tcp_stream>;
+using WsStream = beast::websocket::stream<detail::Connection>;
 
 namespace {
 
@@ -82,6 +89,14 @@ void require_open(const std::atomic<bool>& closed, std::string_view transport_na
     if (closed.load(std::memory_order_acquire)) {
         throw std::runtime_error(std::string(transport_name) + " is closed");
     }
+}
+
+template <typename Context>
+std::shared_ptr<const Context> require_context(std::shared_ptr<const Context> context) {
+    if (!context) {
+        throw std::invalid_argument("A WebSocket transport over TLS needs a TLS context");
+    }
+    return context;
 }
 
 std::exception_ptr closed_error(std::string_view transport_name) {
@@ -180,6 +195,8 @@ struct WebSocketServerTransport::Impl {
         eFailed,
     };
 
+    /// Null for a plain connection. Holds the context the TLS stream was built on.
+    std::shared_ptr<const TlsServerContext> tls;
     WsStream ws;
     asio::strand<asio::any_io_executor> strand;
     std::atomic<bool> closed{false};
@@ -194,17 +211,26 @@ struct WebSocketServerTransport::Impl {
     mutable std::mutex configuration_mutex;
     std::unordered_set<std::string> allowed_origins;
     bool allow_all_origins{false};
+    detail::HostPolicy host_policy;
     /// Set once the handshake starts; the Origin policy and the limits are fixed from then on.
     bool configuration_locked{false};
     std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
     std::chrono::milliseconds idle_timeout{std::chrono::minutes(5)};
     std::size_t max_message_bytes{mcp::detail::constants::websocket::g_DEFAULT_MAX_MESSAGE_BYTES};
 
-    explicit Impl(asio::ip::tcp::socket socket)
-        : ws(std::move(socket)),
+    Impl(asio::ip::tcp::socket socket, std::shared_ptr<const TlsServerContext> tls_arg)
+        : tls(std::move(tls_arg)),
+          ws(make_stream(std::move(socket), tls.get())),
           strand(asio::make_strand(ws.get_executor())),
           write_gate(strand, closed, "WebSocketServerTransport") {
         ws.text(true);
+    }
+
+    static WsStream make_stream(asio::ip::tcp::socket socket, const TlsServerContext* tls) {
+        if (tls != nullptr) {
+            return WsStream(std::move(socket), detail::TlsContextAccess::native(*tls));
+        }
+        return WsStream(std::move(socket));
     }
 
     static void throw_if_closed(const std::shared_ptr<Impl>& state) {
@@ -218,17 +244,34 @@ struct WebSocketServerTransport::Impl {
         }
     }
 
-    /// Fix the Origin policy for the handshake and report whether an upgrade carrying `origin`,
-    /// or none when it is empty, may open the connection.
-    bool lock_configuration_and_allow(const std::optional<std::string>& origin) {
+    /// What the policies say of an upgrade.
+    enum class Admission : std::uint8_t {
+        eAllowed,
+        eHostRefused,
+        eOriginRefused
+    };
+
+    /// Fix the policies for the handshake and say whether an upgrade naming `host` (none when
+    /// absent) and carrying `origin` (none when absent) may open the connection.
+    Admission lock_configuration_and_admit(const std::optional<std::string_view>& host,
+                                           const std::optional<std::string>& origin) {
+        boost::system::error_code endpoint_error;
+        const auto local_endpoint = ws.next_layer().socket().local_endpoint(endpoint_error);
+        const bool loopback_connection = endpoint_error || detail::is_loopback_endpoint(local_endpoint);
         std::lock_guard lock(configuration_mutex);
         configuration_locked = true;
-        return !origin || allow_all_origins || allowed_origins.contains(*origin);
+        if (!host_policy.allows(host, loopback_connection)) {
+            return Admission::eHostRefused;
+        }
+        return !origin || allow_all_origins || allowed_origins.contains(*origin)
+                   ? Admission::eAllowed
+                   : Admission::eOriginRefused;
     }
 
-    /// Accept the WebSocket upgrade, refusing one whose Origin is not allowed. A browser sends the
-    /// page's Origin with the upgrade and applies no cross-origin check to WebSockets itself, so
-    /// without this any web page could open a connection to a local server.
+    /// Accept the WebSocket upgrade, after the TLS handshake of a TLS connection, refusing one whose
+    /// Host or Origin is not allowed. A browser sends the page's Origin with the upgrade and applies
+    /// no cross-origin check to WebSockets itself, so without this any web page could open a
+    /// connection to a local server.
     static Task<void> accept_upgrade(std::shared_ptr<Impl> state) {
         std::optional<detail::SocketDeadline> deadline;
         if (const auto timeout = effective_connect_timeout(state->handshake_timeout);
@@ -246,22 +289,36 @@ struct WebSocketServerTransport::Impl {
     }
 
     static Task<void> read_and_answer_upgrade(std::shared_ptr<Impl> state) {
+        if (state->tls) {
+            // Within the deadline accept_upgrade() set.
+            co_await detail::accept_tls(state->ws.next_layer(), state->strand,
+                                        std::chrono::milliseconds::zero());
+        }
         beast::flat_buffer buffer;
         beast::http::request<beast::http::string_body> upgrade;
         co_await beast::http::async_read(state->ws.next_layer(), buffer, upgrade, asio::use_awaitable);
         const auto origin_it = upgrade.find(beast::http::field::origin);
         const auto origin =
             origin_it == upgrade.end() ? std::nullopt : std::optional<std::string>(origin_it->value());
-        if (!state->lock_configuration_and_allow(origin)) {
+        std::optional<std::string_view> host;
+        if (upgrade.count(beast::http::field::host) == 1) {
+            const auto value = upgrade[beast::http::field::host];
+            host = std::string_view(value.data(), value.size());
+        }
+        const auto admission = state->lock_configuration_and_admit(host, origin);
+        if (admission != Admission::eAllowed) {
+            const bool host_refused = admission == Admission::eHostRefused;
             beast::http::response<beast::http::string_body> refusal{beast::http::status::forbidden,
                                                                     upgrade.version()};
             refusal.set(beast::http::field::content_type, "text/plain");
-            refusal.body() = "Origin not allowed";
+            refusal.body() = host_refused ? "Host not allowed" : "Origin not allowed";
             refusal.keep_alive(false);
             refusal.prepare_payload();
             co_await beast::http::async_write(state->ws.next_layer(), refusal, asio::use_awaitable);
-            throw std::runtime_error("WebSocketServerTransport refused an upgrade from Origin " +
-                                     *origin);
+            throw std::runtime_error(
+                host_refused ? "WebSocketServerTransport refused an upgrade for Host " +
+                                   detail::sanitize_for_diagnostics(host.value_or(""))
+                             : "WebSocketServerTransport refused an upgrade from Origin " + *origin);
         }
         co_await state->ws.async_accept(upgrade, asio::use_awaitable);
         std::lock_guard lock(state->configuration_mutex);
@@ -376,7 +433,11 @@ struct WebSocketServerTransport::Impl {
 };
 
 WebSocketServerTransport::WebSocketServerTransport(asio::ip::tcp::socket socket)
-    : impl_(std::make_shared<Impl>(std::move(socket))) {}
+    : impl_(std::make_shared<Impl>(std::move(socket), nullptr)) {}
+
+WebSocketServerTransport::WebSocketServerTransport(asio::ip::tcp::socket socket,
+                                                   std::shared_ptr<const TlsServerContext> tls)
+    : impl_(std::make_shared<Impl>(std::move(socket), require_context(std::move(tls)))) {}
 
 WebSocketServerTransport::~WebSocketServerTransport() {
     try {
@@ -414,6 +475,13 @@ void WebSocketServerTransport::set_allow_all_origins(bool allow_all) {
     std::lock_guard lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->allow_all_origins = allow_all;
+}
+
+void WebSocketServerTransport::set_allowed_hosts(const std::vector<std::string>& hosts) {
+    detail::HostPolicy policy(hosts);
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->host_policy = std::move(policy);
 }
 
 void WebSocketServerTransport::set_handshake_timeout(std::chrono::milliseconds timeout) {
@@ -457,7 +525,8 @@ struct WebSocketClientTransport::Impl {
     std::chrono::milliseconds connect_timeout;
     asio::strand<asio::any_io_executor> strand;
     asio::ip::tcp::resolver resolver;
-    WsStream ws;
+    /// Replaced by a TLS stream when the first connection starts, if TLS is set.
+    std::unique_ptr<WsStream> ws;
     std::string host;
     std::string port;
     std::string path;
@@ -467,20 +536,32 @@ struct WebSocketClientTransport::Impl {
     std::vector<std::shared_ptr<OperationWaiter>> connection_waiters;
     SerializedWriteGate write_gate;
     bool read_active{false};
+    /// The certificate name of a TLS connection being made, and the Host of its upgrade request.
+    std::optional<std::string> tls_name;
+    std::string authority;
     std::atomic<std::size_t> max_message_bytes{
         mcp::detail::constants::websocket::g_DEFAULT_MAX_MESSAGE_BYTES};
+
+    mutable std::mutex configuration_mutex;
+    /// Whether the connection is made over TLS, with `tls_context` (null: the default context).
+    bool use_tls{false};
+    std::shared_ptr<const TlsClientContext> tls_context;
+    /// The name the server certificate is checked against; empty for the host.
+    std::string server_name;
+    /// Set when the first connection starts; the TLS settings are fixed from then on.
+    bool configuration_locked{false};
 
     Impl(const asio::any_io_executor& executor, std::string host_arg, std::string port_arg,
          std::string path_arg, std::chrono::milliseconds connect_timeout_arg)
         : connect_timeout(effective_connect_timeout(connect_timeout_arg)),
           strand(asio::make_strand(executor)),
           resolver(strand),
-          ws(strand),
+          ws(std::make_unique<WsStream>(strand)),
           host(std::move(host_arg)),
           port(std::move(port_arg)),
           path(std::move(path_arg)),
           write_gate(strand, closed, "WebSocketClientTransport") {
-        ws.text(true);
+        ws->text(true);
     }
 
     static void throw_if_closed(const std::shared_ptr<Impl>& state) {
@@ -511,6 +592,30 @@ struct WebSocketClientTransport::Impl {
         throw std::runtime_error("WebSocket connection did not complete");
     }
 
+    void ensure_configurable() const {
+        if (configuration_locked || closed.load(std::memory_order_acquire)) {
+            throw std::logic_error(
+                "WebSocketClientTransport must be configured before the first read or write");
+        }
+    }
+
+    /// Fixes the TLS settings and builds the stream they ask for. Runs on the strand, before
+    /// anything else uses the stream. Returns the name to check the certificate against, or
+    /// nothing for a plain connection.
+    std::optional<std::string> lock_configuration_and_prepare_stream() {
+        std::lock_guard lock(configuration_mutex);
+        configuration_locked = true;
+        if (!use_tls) {
+            return std::nullopt;
+        }
+        const auto context = tls_context ? tls_context : detail::default_client_context();
+        ws = std::make_unique<WsStream>(strand, detail::TlsContextAccess::native(*context));
+        // The stream holds the OpenSSL context; the object is kept for as long as the stream.
+        tls_context = context;
+        ws->text(true);
+        return server_name.empty() ? detail::tls_server_name(host) : server_name;
+    }
+
     static Task<void> ensure_connected(std::shared_ptr<Impl> state) {
         throw_if_closed(state);
         if (state->connection_state == ConnectionState::eConnected) {
@@ -526,6 +631,9 @@ struct WebSocketClientTransport::Impl {
 
         state->connection_state = ConnectionState::eConnecting;
         state->connect_error = nullptr;
+        // Held by the state rather than the coroutine frame: GCC 11 mishandles a std::string that
+        // lives across a suspension point.
+        state->tls_name = state->lock_configuration_and_prepare_stream();
         std::optional<detail::SocketDeadline> deadline;
         try {
             auto results =
@@ -537,15 +645,20 @@ struct WebSocketClientTransport::Impl {
             // One deadline covers the TCP connect and the handshake: a peer that accepts and then
             // says nothing would otherwise hold the pending call forever.
             if (state->connect_timeout > std::chrono::milliseconds::zero()) {
-                deadline.emplace(state->strand, state->ws.next_layer().socket(),
+                deadline.emplace(state->strand, state->ws->next_layer().socket(),
                                  state->connect_timeout);
             }
-            co_await state->ws.next_layer().async_connect(results, asio::use_awaitable);
-            co_await state->ws.async_handshake(state->host + ":" + state->port, state->path,
-                                               asio::use_awaitable);
+            co_await asio::async_connect(state->ws->next_layer().socket(), results,
+                                         asio::use_awaitable);
+            if (state->tls_name) {
+                co_await handshake_tls(state);
+            }
+            state->authority = detail::authority_of(detail::tls_server_name(state->host), state->port,
+                                                    state->tls_name.has_value());
+            co_await state->ws->async_handshake(state->authority, state->path, asio::use_awaitable);
             deadline.reset();
             throw_if_closed(state);
-            state->ws.read_message_max(state->max_message_bytes.load(std::memory_order_acquire));
+            state->ws->read_message_max(state->max_message_bytes.load(std::memory_order_acquire));
             state->connection_state = ConnectionState::eConnected;
         } catch (...) {
             const bool timed_out = deadline && deadline->expired();
@@ -560,6 +673,25 @@ struct WebSocketClientTransport::Impl {
         notify_connection_waiters(state);
     }
 
+    static Task<void> handshake_tls(std::shared_ptr<Impl> state) {
+        auto& connection = state->ws->next_layer();
+        auto* tls = connection.tls();
+        detail::prepare_client_ssl(tls->native_handle(), *state->tls_name);
+        std::exception_ptr failure;
+        boost::system::error_code error;
+        try {
+            co_await tls->async_handshake(asio::ssl::stream_base::client, asio::use_awaitable);
+        } catch (const boost::system::system_error& handshake_error) {
+            error = handshake_error.code();
+            failure = std::current_exception();
+        }
+        if (failure) {
+            // A deadline that passed is reported as a timeout by the caller.
+            throw detail::handshake_failure(error, tls->native_handle(), *state->tls_name, false);
+        }
+        connection.mark_established();
+    }
+
     static Task<std::string> read(std::shared_ptr<Impl> state) {
         throw_if_closed(state);
         if (state->read_active) {
@@ -570,7 +702,7 @@ struct WebSocketClientTransport::Impl {
 
         co_await ensure_connected(state);
         beast::flat_buffer buffer;
-        co_await state->ws.async_read(buffer, asio::use_awaitable);
+        co_await state->ws->async_read(buffer, asio::use_awaitable);
         co_return beast::buffers_to_string(buffer.data());
     }
 
@@ -579,7 +711,7 @@ struct WebSocketClientTransport::Impl {
         co_await ensure_connected(state);
         co_await state->write_gate.acquire();
         try {
-            co_await state->ws.async_write(asio::buffer(message), asio::use_awaitable);
+            co_await state->ws->async_write(asio::buffer(message), asio::use_awaitable);
         } catch (...) {
             state->write_gate.release();
             throw;
@@ -593,14 +725,14 @@ struct WebSocketClientTransport::Impl {
         notify_connection_waiters(state);
         state->write_gate.cancel();
         state->resolver.cancel();
-        close_socket(state->ws);
+        close_socket(*state->ws);
     }
 };
 
-WebSocketClientTransport::WebSocketClientTransport(const asio::any_io_executor& executor,
-                                                   std::string host, std::string port, std::string path,
+WebSocketClientTransport::WebSocketClientTransport(const Executor& executor, std::string host,
+                                                   std::string port, std::string path,
                                                    std::chrono::milliseconds connect_timeout)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), std::move(port), std::move(path),
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), std::move(port), std::move(path),
                                    connect_timeout)) {}
 
 WebSocketClientTransport::~WebSocketClientTransport() {
@@ -626,6 +758,27 @@ Task<void> WebSocketClientTransport::write_message(std::string_view message) {
 
 void WebSocketClientTransport::set_max_message_bytes(std::size_t bytes) {
     impl_->max_message_bytes.store(bytes, std::memory_order_release);
+}
+
+void WebSocketClientTransport::set_tls(const TlsClientOptions& options) {
+    set_tls(TlsClientContext::create(options));
+}
+
+void WebSocketClientTransport::set_tls(std::shared_ptr<const TlsClientContext> context) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->use_tls = true;
+    impl_->tls_context = std::move(context);
+}
+
+void WebSocketClientTransport::set_server_name(std::string name) {
+    name = detail::tls_server_name(std::move(name));
+    if (name.empty()) {
+        throw std::invalid_argument("The TLS server name is empty");
+    }
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->server_name = std::move(name);
 }
 
 void WebSocketClientTransport::close() {

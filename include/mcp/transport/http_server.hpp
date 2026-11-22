@@ -5,15 +5,16 @@
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/request_context.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <iterator>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -45,11 +46,12 @@ struct HttpServerBinding {
     /// serves them, when the transport hands them to whoever reads it. The server it belongs to is
     /// held weakly: once that server is gone it answers with an error.
     std::function<Task<std::string>(nlohmann::json, RequestContext)> modern_dispatch;
-    /// Where modern_dispatch runs.
-    boost::asio::any_io_executor dispatch_executor;
+    /// Where modern_dispatch runs; required when modern_dispatch is set.
+    Executor dispatch_executor;
 };
 
 /// Installed by Server::run().
+/// @throws std::invalid_argument When the binding has a modern_dispatch but no dispatch_executor.
 void bind_server(HttpServerTransport& transport, HttpServerBinding binding);
 }  // namespace detail
 
@@ -235,7 +237,7 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @param event_store_capacity Maximum number of replayable SSE events to retain.
      */
     HttpServerTransport(
-        const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
+        const Executor& executor, std::string host, unsigned short port,
         std::size_t event_store_capacity = mcp::constants::event_store::g_DEFAULT_CAPACITY);
 
     ~HttpServerTransport() override;
@@ -302,6 +304,42 @@ class MCP_API HttpServerTransport final : public ITransport {
      * @throws std::logic_error If listen() has already been called or the transport is closed.
      */
     void set_allow_all_origins(bool allow_all);
+
+    /**
+     * @brief Serve only requests whose Host header names one of @p hosts.
+     *
+     * Without a list, a request that reaches the transport through a loopback address must name
+     * a loopback host in its Host header, `localhost` or a loopback address, or it is answered
+     * 403; through other addresses Host is not checked. This defends a local server against DNS
+     * rebinding. A reverse proxy on the same machine that passes on the public name in Host needs
+     * that name listed. With a list, every request must name a host on it, whatever address it
+     * reached, so list `localhost` too if local clients use it. Names compare without the port
+     * and regardless of case. An empty list restores the loopback rule.
+     *
+     * @throws std::invalid_argument If an entry names no host.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_allowed_hosts(const std::vector<std::string>& hosts);
+
+    /**
+     * @brief Accept connections over TLS with these settings.
+     *
+     * Every connection must then complete a TLS handshake, within the options' handshake_timeout,
+     * before a request is read; one that does not is closed. With ClientAuth::eRequired, a client
+     * must show a certificate from one of the named client authorities.
+     *
+     * @throws TlsConfigError If the options cannot be used.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_tls(const TlsServerOptions& options);
+
+    /**
+     * @brief Accept connections over TLS with a context created before; see set_tls(). A null
+     * context serves plain TCP again.
+     *
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_tls(std::shared_ptr<const TlsServerContext> context);
 
     /**
      * @brief Require and validate an HTTP Authorization: Bearer header.

@@ -49,6 +49,7 @@ and a handler reads them from ``Context::request_meta()->clientCapabilities``:
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/protocol/extensions.hpp>
 
    mcp::ClientCapabilities capabilities;

@@ -1,3 +1,4 @@
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/apps.hpp>
 

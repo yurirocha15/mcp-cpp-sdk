@@ -1,7 +1,7 @@
 Server Context
 ==============
 
-The ``mcp::Context`` object is a fundamental construct in the MCP C++ SDK. It is passed as a reference to every asynchronous handler for tools, resources, and prompts. Think of the ``Context`` as the per-request interface between your server's logic and the connected client.
+The ``mcp::Context`` object is a fundamental construct in the MCP C++ SDK. It is passed as a reference to every handler for tools, resources, and prompts that takes one. Think of the ``Context`` as the per-request interface between your server's logic and the connected client.
 
 Core Responsibilities
 ---------------------
@@ -23,6 +23,10 @@ A ``Context`` is valid only for the duration of the request handler. It should n
 Logging
 -------
 
+.. note::
+
+   Protocol revision 2026-07-28 deprecates logging; the SDK keeps it for peers
+   that use it. See :ref:`spec-deprecated`.
 
 You can send log messages to the client using various log levels. The SDK respects the server's current log level, automatically filtering messages that are less severe than the configured threshold. For a request of protocol revision 2026-07-28 the threshold is the ``io.modelcontextprotocol/logLevel`` in the request's ``_meta``; without one nothing is sent.
 
@@ -39,6 +43,7 @@ Available log levels (from most to least severe):
 
 .. code-block:: cpp
 
+   #include <mcp/core/async.hpp>
    #include <mcp/mcp.hpp>
 
    server.add_tool<nlohmann::json, nlohmann::json>("debug_tool", "Tool with logging", schema,
@@ -67,9 +72,8 @@ For long-running tasks, you can report progress to the client. This is essential
 Prerequisites
 ~~~~~~~~~~~~~
 
-Progress reporting requires:
-1.  The client must support the ``notifications/progress`` capability.
-2.  The client must provide a ``progressToken`` in the request metadata (``_meta``).
+Progress reporting requires the client to provide a ``progressToken`` in the
+request metadata (``_meta``), as ``RequestOptions::on_progress`` does for one request.
 
 If no token is provided in the request, ``ctx.report_progress()`` calls are silently ignored.
 
@@ -88,6 +92,57 @@ The ``report_progress`` method accepts:
    :dedent: 8
 
 The example above demonstrates a typical pattern where a tool loops through several steps, reporting the percentage completion and a descriptive message at each stage.
+
+Using Logging and Progress
+--------------------------
+
+A handler that logs or reports progress takes the request's ``Context`` and
+awaits each message, so it is a coroutine in both modes. In async mode it can
+also await other work, here a timer, while the server answers other requests:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Logging and progress.
+   :end-before: // Resources.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Logging and progress.
+   :end-before: // Resources.
+   :dedent: 4
+
+A client asks for the progress of one call with ``RequestOptions::on_progress``,
+which sends a progress token with the request and is called for each report
+until the answer arrives. ``RequestOptions::log_level`` asks the server for the
+log messages of that call at that level and above; a session of protocol
+revision 2025-11-25 or earlier sets one level for all its requests with a
+``logging/setLevel`` request instead.
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Logging and progress:
+   :end-before: // Resources.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Logging and progress:
+   :end-before: // Resources.
+   :dedent: 4
+
+``on_notification()`` registers a function for a notification method, here the
+server's log messages. It is the same in both modes:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :start-after: // Logging:
+   :end-before: // Elicitation:
+   :dedent: 4
 
 Cancellation
 ------------
@@ -135,6 +190,12 @@ Implementation Pattern
 
 Handlers should periodically check ``ctx.is_cancelled()`` during long-running operations. Since cancellation is cooperative, the server doesn't forcibly terminate the coroutine; it's the handler's responsibility to stop work.
 
+A plain-function handler can take the ``Context`` too,
+``[](mcp::Context& ctx, const nlohmann::json& args) -> nlohmann::json``, and call
+``ctx.is_cancelled()``. The server reads the cancellation on its event loop, so
+such a handler sees it only when it runs on the handler executor (see
+``Server::set_handler_executor()``).
+
 .. code-block:: cpp
 
    for (int i = 0; i < steps; ++i) {
@@ -154,6 +215,11 @@ Handlers should periodically check ``ctx.is_cancelled()`` during long-running op
 
 Sampling (Reverse RPC)
 ----------------------
+
+.. note::
+
+   Protocol revision 2026-07-28 deprecates sampling; the SDK keeps it for peers
+   that use it. See :ref:`spec-deprecated`.
 
 Sampling allows the server to request a completion from the LLM via the client. This "Reverse RPC" capability enables servers to build complex, multi-step workflows where the server uses the client's LLM to process data or make decisions.
 
@@ -175,6 +241,8 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                        params.messages.push_back(std::move(msg));
                        params.maxTokens = 100;
 
+                       // A json, not a std::string, which must not live across co_await on GCC 11.
+                       nlohmann::json failure;
                        try {
                            auto result = co_await ctx.sample_llm(params);
                            std::string summary;
@@ -187,13 +255,31 @@ The server sends a ``sampling/createMessage`` request back to the client. The cl
                                {"content", nlohmann::json::array(
                                    {nlohmann::json{{"type", "text"}, {"text", summary}}})}};
                        } catch (const std::exception& e) {
-                           co_await ctx.log(mcp::LoggingLevel::eError,
-                                            "Sampling failed: " + std::string(e.what()));
-                           co_return nlohmann::json{
-                               {"content", nlohmann::json::array(
-                                   {nlohmann::json{{"type", "text"}, {"text", "Sampling failed"}}})}};
+                           failure = std::string("Sampling failed: ") + e.what();
                        }
+                       // A catch block cannot contain co_await, so the failure is logged after it.
+                       co_await ctx.log(mcp::LoggingLevel::eError, failure.get_ref<const std::string&>());
+                       co_return nlohmann::json{
+                           {"content", nlohmann::json::array(
+                               {nlohmann::json{{"type", "text"}, {"text", "Sampling failed"}}})}};
                    });
+
+In both modes the tool that asks is a coroutine, and so is the client's
+handler, which ``on_sampling()`` registers: it passes the messages to the
+client's model and returns the reply. Registered before ``connect()``, the
+handler also declares the sampling capability:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Sampling:
+   :end-before: // Roots:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :start-after: // Sampling:
+   :end-before: // Roots:
+   :dedent: 4
 
 Elicitation
 -----------
@@ -276,8 +362,8 @@ To further explore the MCP C++ SDK and how it integrates with other features, co
 *   :doc:`resources`: Learn how to expose read-only data via MCP URIs.
 *   :doc:`prompts`: Guide to creating dynamic prompt templates for LLMs.
 *   :doc:`transports`: Understand the underlying communication layers (Stdio, WebSocket, HTTP).
-*   :doc:`elicitation` (if available): Advanced patterns for user interaction.
-*   :doc:`roots` (if available): Deep dive into the roots discovery protocol.
+*   :doc:`elicitation`: Advanced patterns for user interaction.
+*   :doc:`roots`: Deep dive into the roots discovery protocol.
 *   **Examples**: The ``examples/features/`` directory in the source tree contains self-contained code for all features discussed here.
 
 Summary

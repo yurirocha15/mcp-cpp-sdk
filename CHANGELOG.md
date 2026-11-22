@@ -8,11 +8,49 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Added
 
+- Sync mode: `Server` and `Client` run their own event loop, take synchronous handlers and make blocking calls, with no Boost in the program; async mode uses the same objects.
+- `mcp::Endpoint` names the server a `Client(const Endpoint&)` connects to: a command to launch (`stdio()`), a Streamable HTTP URL (`http()`) or the application's transport (`custom()`).
+- `Client::sync()`, `TaskHandle::sync()` and `Subscription::sync()` make blocking calls, and `Client::run()` runs a coroutine on the client's loop until it ends.
+- `Endpoint::stdio()` takes a `StdioRestartPolicy`, under which the same `Client` starts the server again when its process ends and goes on with it.
+- `RequestOptions::on_progress` receives the progress of one request, and `read_resource()`, `get_prompt()`, `complete()`, `start_tool()` and the `list_*()` members take `RequestOptions`.
+- `Client::on_sampling()` registers a typed handler for `sampling/createMessage`.
+- `Server(name, version)` constructs a server that advertises the capabilities its registrations imply.
+- `mcp::tool_params()` writes a tool's input schema, and `add_tool()` takes a JSON handler with the request's `Context` and a `Tool` definition.
+- `Server::add_text_resource()` and `Server::add_text_prompt()` register a resource or prompt whose text a function makes.
+- `mcp::result_text()` joins the text blocks of a `CallToolResult`.
+- `Server::run_http()` takes a callback that configures its `StreamableHttpSessionManager`, and `Server::bound_port()` returns the port it listens on.
+- `Server::stop()` ends `run_stdio()`, `run_http()` and `run()` from any thread or handler.
+- `Server::sync()` sends the `notify_*` notifications of `run_stdio()` and `run_http()` from threads other than the server's loop.
+- `Runtime::executor()`, `spawn()`, `run(threads)` and `start(threads)`, so that a `Runtime` runs a program's loop or a pool for `set_handler_executor()`.
+- `SyncTypeErasedHandler`, the synchronous form of `TypeErasedHandler`, and `Client::executor()`.
+- `StreamableHttpSessionManager` takes a `Server` in place of a factory and serves it as `run_http()` does, on the application's event loop.
+- `examples/sync/` and `examples/async/` hold a notes server and client, which the guide "Converting to Async Mode" converts, and a server and client with every feature, in each mode.
 - `CompiledSchema::compile()` takes `SchemaDocuments`: schema documents, by
   absolute URI, that references may reach. Nothing is fetched.
+- Clients connect to `https://` servers over TLS, checked against the system's certificate authorities, with `TlsClientOptions` for private ones and client certificates; OAuth reaches https servers.
+- `HttpClientTransport::set_proxy()` and the OAuth configurations' `proxy` field send connections through an HTTP proxy; `ProxyOptions::from_environment()` reads `HTTPS_PROXY` and `NO_PROXY`.
+- `HttpServerTransport` and `StreamableHttpSessionManager` serve TLS with `set_tls()` and can require client certificates; the WebSocket transports speak wss on both sides.
+- `ClientOptions::response_cache` lets a `Client` answer list and `read_resource()` calls from earlier results while their `ttlMs` lasts; `RequestOptions::cache_mode` refreshes or bypasses it.
+- `Server::set_notification_rate_limit()` and `ClientOptions::notification_rate_limit` cap the progress and log notifications each request sends or delivers; there is no limit by default.
+- The documentation lists which parts of the specification the SDK implements and marks the features protocol revision 2026-07-28 deprecates.
 
 ### Changed
 
+- `<mcp/mcp.hpp>` and the server, client and transport headers include no Boost header; code that defines or awaits a coroutine includes `<mcp/core/async.hpp>`.
+- `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>`, declared without Boost in `<mcp/core/async_fwd.hpp>`; `co_spawn` takes a callable that returns one.
+- Public APIs take `mcp::Executor`, which needs no Boost, instead of `boost::asio::any_io_executor`; an Asio executor converts to it.
+- `Server::run_http()` serves any number of clients of 2025-11-25 and earlier, each in its own session, where it served one at a time.
+- A server advertises the capability each registration implies, and `Server::capabilities()` returns a reference for the rest.
+- A legacy `initialize` declares sampling and elicitation when the client has a handler for them, as it does for roots.
+- `Server::add_raw_tool()` takes any coroutine JSON handler, with or without the request's `Context`.
+- `set_custom_request_handler()` is a free function in `<mcp/transport/http_beast.hpp>`, where `StringRequest` and `StringResponse` moved from `http_types.hpp`.
+- `ITransport` and `auth::Authenticator` are exported from the library.
+- `Client::get_prompt()` and its blocking twin take the arguments as a `std::map`, empty for none, so `{{"name", "Ada"}}` is accepted.
+- A `Client` call whose transport fails throws `McpError` (`g_CONNECTION_CLOSED`), with an HTTP status in `data()` and the transport's exception nested unless a response stream broke off.
+- `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
+- `Runtime::run()` runs the loop again after an earlier run ended; a `stop()` made while nothing runs the loop ends the next run instead.
+- A closing `StdioClientTransport` keeps its event loop from running out of work until the process has ended and `on_exit` has run.
+- On every platform, destroying the context a `Server` runs on waits for its handlers on the `set_handler_executor()` executor; `run_stdio()` and `run_http()` still return at the shutdown deadline.
 - Every JSON Schema is validated by the SDK's own evaluation. jsoncons is no
   longer compiled into the library, and packages carry only the SDK's license.
 - Schemas are checked against the published metaschemas: a draft-06 `enum` must
@@ -22,6 +60,36 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `properties` may nest 31 levels deep in a schema, up from 26.
 - A `$ref` to a location inside a metaschema, such as draft-07's
   `#/definitions/nonNegativeInteger`, is refused as unresolved.
+- HTTP clients put the port in the `Host` header when it is not the scheme's default, as RFC 9110 requires.
+- `HttpClientTransport` warns once through its warning handler when bearer tokens would go over `http://` to a host other than a loopback one.
+- `HttpClientTransport` sends a request on a connection an earlier answer left open, keeping up to four, so calls no longer each make a connection and a TLS handshake.
+- HTTP and WebSocket servers answer 403 to a request on a loopback connection whose `Host` names no loopback host; `set_allowed_hosts()` lists other names, as a same-host proxy needs.
+- A `Client` pinned to 2026-07-28 sends `server/discover` once more when the server refuses that version while listing it as supported.
+- With a `StdioRestartPolicy`, `Endpoint::stdio()` sends each open `subscriptions/listen` request to the restarted server, so its `Subscription` goes on.
+- Tool registration throws for a name that is empty, longer than 128 characters or holds characters other than ASCII letters, digits, `_`, `-` and `.`.
+- `Context::sample_llm()` refuses an `includeContext` other than "none" for a client that did not declare `sampling.context`.
+
+### Removed
+
+- `<mcp/core/core.hpp>`; `Task` is in `<mcp/core/async.hpp>`.
+- `mcp::TransportFactory`; transports are constructed with `Runtime::executor()`. The deprecated `make_*_transport()` functions remain.
+- The `mcp::auth::net` alias of `boost::asio`.
+
+### Migrating from 0.3.0
+
+Code written for 0.3.0 needs these changes to compile with this release:
+
+- Write `mcp::Task<T>` for `boost::asio::awaitable<T>` in `ITransport` and `auth::Authenticator` overrides and in coroutine handlers given to the `add_*()` registrations.
+- Include `<mcp/core/async.hpp>` where a coroutine is defined or awaited; `<mcp/core/core.hpp>` is gone.
+- A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
+- `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
+- Construct transports with `Runtime::executor()` instead of `TransportFactory`.
+- Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
+
+These changes in behavior need no change to compile:
+
+- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows those.
+- Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
 
 ### Fixed
 
@@ -29,6 +97,13 @@ Versioning; a `0.x` version is a stable release unless its version has an
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key
   is not certified when it checks the source signature.
+- A middleware may return `next(ctx, params)` without awaiting it.
+- Closing a client ends a wait for a task at once, instead of after the pause
+  before the next poll.
+- A client sends `notifications/cancelled` for a request that times out in
+  sessions of 2025-11-25 and earlier too, as the specification asks.
+- The error for an HTTP response stream that breaks off names the reason without
+  the source location that Boost adds to it.
 
 ## [0.3.0] - 2026-11-17
 

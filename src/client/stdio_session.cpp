@@ -1,4 +1,5 @@
 #include <mcp/client/stdio_session.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/spawn_awaitable.hpp"
 
@@ -217,12 +218,11 @@ struct StdioClientSession::Impl : std::enable_shared_from_this<Impl> {
     std::atomic<bool> stopping{false};
 };
 
-StdioClientSession::StdioClientSession(const boost::asio::any_io_executor& executor,
-                                       StdioSessionOptions options) {
+StdioClientSession::StdioClientSession(const Executor& executor, StdioSessionOptions options) {
     if (options.process.command.empty()) {
         throw std::invalid_argument("StdioProcessOptions::command must not be empty");
     }
-    impl_ = std::make_shared<Impl>(executor, std::move(options));
+    impl_ = std::make_shared<Impl>(executor.get(), std::move(options));
 }
 
 StdioClientSession::~StdioClientSession() {

@@ -123,6 +123,14 @@ MCP_API CallToolResult make_tool_structured_result(nlohmann::json structured_con
                                                    std::optional<std::string> text = std::nullopt);
 
 /**
+ * @brief The text of @p result: its text blocks, joined by newlines.
+ *
+ * @details Blocks of any other kind, such as images, are left out, and so is structuredContent.
+ * A result with no text block gives an empty string.
+ */
+MCP_API std::string result_text(const CallToolResult& result);
+
+/**
  * @brief Serializes CallToolResult to JSON.
  *
  * @param json_obj The JSON object to populate.

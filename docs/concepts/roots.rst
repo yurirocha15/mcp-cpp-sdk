@@ -1,6 +1,11 @@
 Roots
 =====
 
+.. note::
+
+   Protocol revision 2026-07-28 deprecates roots; the SDK keeps them for peers
+   that use them. See :ref:`spec-deprecated`.
+
 Roots allow a client to declare specific URI prefixes that it has access to. Servers can then discover these roots to understand the boundaries of the client environment, which is particularly useful for tools that need to perform file system operations or access specific resources.
 
 Roots Overview
@@ -10,6 +15,25 @@ In the Model Context Protocol, roots represent the "home" or "workspace" directo
 
 - The absolute URIs (typically ``file:///``) that the server is allowed to interact with.
 - The names of these workspaces to provide context to the LLM.
+
+Using Roots
+-----------
+
+A tool asks for the client's roots with ``ctx.request_roots()`` and awaits
+them, so its handler is a coroutine in both modes, and so is the client's
+handler, which ``on_roots_list()`` registers:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Roots:
+   :end-before: // Middleware:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :start-after: // Roots:
+   :end-before: // The session
+   :dedent: 4
 
 Client-side Setup
 -----------------

@@ -89,6 +89,12 @@ inline constexpr std::size_t g_MAX_PARAM_HEADER_BYTES = 4096;
 /// The most pages of tools/list one schema refresh follows.
 inline constexpr int g_MAX_REFRESH_PAGES = 64;
 
+/// The most connections a transport keeps open between requests for the next ones.
+inline constexpr std::size_t g_MAX_IDLE_CONNECTIONS = 4;
+
+/// How long a kept connection waits for its next request before it is closed.
+inline constexpr std::chrono::seconds g_IDLE_CONNECTION_TIMEOUT{90};
+
 }  // namespace http_client
 
 /// URL prefixes the transports and the OAuth client compare against.
@@ -150,6 +156,10 @@ namespace stdio_client {
 
 inline constexpr std::size_t g_CHUNK_BYTES = 64U * 1024U;
 
+/// How long a killed process may take to be seen as ended, which the destructor of a Client that
+/// launched it waits on top of the process's stdin_close_wait and terminate_wait.
+inline constexpr std::chrono::milliseconds g_KILL_WAIT{1000};
+
 /// Whether the process can be asked to exit before it is killed: SIGTERM on POSIX, nothing on Windows.
 inline constexpr bool g_HAS_TERMINATE_STEP =
 #if defined(_WIN32)
@@ -207,6 +217,9 @@ inline constexpr std::size_t g_DEFAULT_MAX_IN_FLIGHT_BYTES = 256U * 1024U * 1024
 inline constexpr std::size_t g_MAX_SUBSCRIPTIONS = 4096;
 
 inline constexpr std::size_t g_MAX_SUBSCRIPTION_BYTES = 8U * 1024U * 1024U;
+
+/// The longest tool name the tools page of the specification allows.
+inline constexpr std::size_t g_MAX_TOOL_NAME_LENGTH = 128;
 
 }  // namespace server
 
@@ -449,5 +462,23 @@ inline constexpr int g_OCTET2_SHIFT = 16;
 inline constexpr int g_OCTET3_SHIFT = 8;
 
 }  // namespace ipv4
+
+/// Requests a Client sends.
+namespace client_requests {
+
+/// Starts each progress token the client makes for RequestOptions::on_progress. A string, so that
+/// no integer token an application writes into another request can equal it.
+inline constexpr std::string_view g_PROGRESS_TOKEN_PREFIX = "mcp-cpp-sdk-progress-";
+
+}  // namespace client_requests
+
+/// The stdio client transport that starts its server again.
+namespace stdio_restart {
+
+/// Starts the id a request of a restarted server gets toward the client when the id is still that
+/// of an unanswered request of an earlier process of that server.
+inline constexpr std::string_view g_RENAMED_REQUEST_PREFIX = "mcp-cpp-sdk-restart-";
+
+}  // namespace stdio_restart
 
 }  // namespace mcp::detail::constants

@@ -5,8 +5,9 @@
 // Pattern used here:
 //   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
 
+#include <mcp/core/async_fwd.hpp>
 #include <mcp/core/constants.hpp>
-#include <mcp/core/core.hpp>
+#include <mcp/core/export.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/protocol/request_meta.hpp>
@@ -53,6 +54,11 @@ using MessageSender = std::function<Task<void>(std::string_view)>;
 /// Context::report_progress_sync()).
 using ProgressSink = std::function<void(double progress, std::optional<double> total,
                                         const std::optional<std::string>& message)>;
+
+namespace detail {
+struct ContextRouting;
+class NotificationBudget;
+}  // namespace detail
 
 /**
  * @brief Request-scoped context provided to server handlers.
@@ -160,13 +166,21 @@ class Context {
     /**
      * @brief Sends an informational log message to the client.
      *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
+     *
      * @param msg The log message to send.
      * @return A task that completes when the message is sent.
      */
-    Task<void> log_info(std::string_view msg) { co_await log(LoggingLevel::eInfo, msg); }
+    MCP_API Task<void> log_info(std::string_view msg);
 
     /**
      * @brief Send a log message at a specific level.
+     *
+     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging, with removal no
+     * earlier than 2027-07-28. Clients of earlier revisions still rely on it, so it is not marked
+     * with MCP_DEPRECATED yet.
      *
      * @details Respects the server's current log level. Messages with a level
      * higher (less severe) than the current threshold are silently dropped.
@@ -174,47 +188,16 @@ class Context {
      * A message is sent only if its level <= current server log level.
      *
      * A 2026-07-28 request has no session level: its threshold is the
-     * `io.modelcontextprotocol/logLevel` in its `_meta`, and without one nothing is sent.
+     * `io.modelcontextprotocol/logLevel` in its `_meta`, and without one nothing is sent. A
+     * message over the limit of Server::set_notification_rate_limit() is dropped.
      *
      * @param level The severity level of the log message.
      * @param msg The log message to send.
      * @param logger Optional logger name.
      * @return A task that completes when the message is sent (or immediately if filtered).
      */
-    Task<void> log(LoggingLevel level, std::string_view msg,
-                   const std::optional<std::string>& logger = std::nullopt) {
-        if (request_meta_) {
-            if (!request_meta_->logLevel ||
-                static_cast<uint8_t>(level) > static_cast<uint8_t>(*request_meta_->logLevel)) {
-                co_return;
-            }
-        } else if (log_level_ != nullptr) {
-            auto current = log_level_->load(std::memory_order_relaxed);
-            if (static_cast<uint8_t>(level) > static_cast<uint8_t>(current)) {
-                co_return;
-            }
-        }
-
-        // [gcc11-sso: scope-before-await]
-        std::shared_ptr<const std::string> wire;
-        {
-            LoggingMessageNotificationParams params;
-            params.level = level;
-            params.data = std::string(msg);
-            params.logger = logger;
-
-            JSONRPCNotification notification;
-            notification.method = "notifications/message";
-            notification.params = nlohmann::json(std::move(params));
-            wire = std::make_shared<const std::string>(
-                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
-        }
-        if (message_sender_) {
-            co_await message_sender_(*wire);
-        } else {
-            co_await transport_.write_message(*wire);
-        }
-    }
+    MCP_API Task<void> log(LoggingLevel level, std::string_view msg,
+                           const std::optional<std::string>& logger = std::nullopt);
 
     /**
      * @brief Check whether the current request has been cancelled.
@@ -222,7 +205,9 @@ class Context {
      * @return true once the request has been cancelled: by notifications/cancelled for this
      * request's ID, by the client disconnecting while a 2026-07-28 request runs on
      * StreamableHttpSessionManager, or through the cancellation flag given to
-     * Server::dispatch_request_direct().
+     * Server::dispatch_request_direct(). The server reads a cancellation on its event loop, which
+     * a synchronous handler running there holds up: such a handler sees it only on the executor
+     * of Server::set_handler_executor().
      */
     [[nodiscard]] bool is_cancelled() const {
         if (cancelled_) {
@@ -236,7 +221,8 @@ class Context {
      *
      * @details Sends a notifications/progress notification to the client. Uses the
      * progress token extracted from the request's _meta.progressToken. If no progress
-     * token was provided in the request, this is a no-op.
+     * token was provided in the request, this is a no-op. A notification over the limit of
+     * Server::set_notification_rate_limit() is dropped.
      *
      * @param progress The current progress value.
      * @param total Optional total progress value.
@@ -246,37 +232,8 @@ class Context {
      * In a task (see Server::enable_tasks()) the progress becomes the task's status message
      * instead, and no notification is sent.
      */
-    Task<void> report_progress(double progress, std::optional<double> total = std::nullopt,
-                               const std::optional<std::string>& message = std::nullopt) {
-        if (progress_sink_) {
-            progress_sink_(progress, total, message);
-            co_return;
-        }
-        if (!progress_token_) {
-            co_return;
-        }
-
-        // [gcc11-sso: scope-before-await]
-        std::shared_ptr<const std::string> wire;
-        {
-            ProgressNotificationParams params;
-            params.progressToken = *progress_token_;
-            params.progress = progress;
-            params.total = total;
-            params.message = message;
-
-            JSONRPCNotification notification;
-            notification.method = "notifications/progress";
-            notification.params = nlohmann::json(std::move(params));
-            wire = std::make_shared<const std::string>(
-                mcp::detail::dump_json(nlohmann::json(std::move(notification))));
-        }
-        if (message_sender_) {
-            co_await message_sender_(*wire);
-        } else {
-            co_await transport_.write_message(*wire);
-        }
-    }
+    MCP_API Task<void> report_progress(double progress, std::optional<double> total = std::nullopt,
+                                       const std::optional<std::string>& message = std::nullopt);
 
     /**
      * @brief Report progress without suspending, for a handler that is not a coroutine.
@@ -321,27 +278,21 @@ class Context {
      * @return A task that resolves to the client's CreateMessageResult.
      * @throws std::runtime_error If no request sender is available.
      * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
-     *         2026-07-28 request (other requests ignore the key).
+     *         2026-07-28 request (other requests ignore the key), or if `includeContext` is other
+     *         than "none" in a session whose client did not declare `sampling.context` in its
+     *         initialize request.
      *
      * For a 2026-07-28 tools/call, prompts/get or resources/read, the question goes back to the
      * client in the request's `input_required` result, and the call returns once the client
      * retries the request with the answer; see Server::set_mrtr_options(). If the client did not
-     * declare the capability the question needs, the request is answered with
+     * declare the capability the question needs (`sampling.context` for an `includeContext` other
+     * than "none"), the request is answered with
      * `mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY` and the call throws, as it does
      * when the client never retries in time; the handler's own answer then goes nowhere. Any other
      * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request,
-                                         InputOptions options = {}) {
-        if (!sender_) {
-            throw std::runtime_error("Context has no request sender for reverse RPC");
-        }
-
-        nlohmann::json params = request;
-        auto result_json =
-            co_await sender_("sampling/createMessage", std::move(params), std::move(options.key));
-        co_return result_json.get<CreateMessageResult>();
-    }
+    MCP_API Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request,
+                                                 InputOptions options = {});
 
     /**
      * @brief Elicit additional information from the user via the client (reverse RPC).
@@ -375,24 +326,7 @@ class Context {
      * when the client never retries in time; the handler's own answer then goes nowhere. Any other
      * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<ElicitResult> elicit(const ElicitRequestParams& params, InputOptions options = {}) {
-        if (!sender_) {
-            throw std::runtime_error("Context has no request sender for reverse RPC");
-        }
-
-        nlohmann::json json_params = params;
-        if (json_params.value("mode", "") == "url" && !json_params.contains("elicitationId")) {
-            // Before 2026-07-28 the field is required on the wire.
-            json_params["elicitationId"] = generate_elicitation_id();
-        }
-        auto result_json =
-            co_await sender_("elicitation/create", std::move(json_params), std::move(options.key));
-        auto result = result_json.get<ElicitResult>();
-        if (options.validate_content) {
-            check_form_content(params, result);
-        }
-        co_return result;
-    }
+    MCP_API Task<ElicitResult> elicit(const ElicitRequestParams& params, InputOptions options = {});
 
     /**
      * @brief Request the list of roots from the client (reverse RPC).
@@ -418,16 +352,11 @@ class Context {
      * when the client never retries in time; the handler's own answer then goes nowhere. Any other
      * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
-    Task<ListRootsResult> request_roots(InputOptions options = {}) {
-        if (!sender_) {
-            throw std::runtime_error("Context has no request sender for reverse RPC");
-        }
-
-        auto result_json = co_await sender_("roots/list", std::nullopt, std::move(options.key));
-        co_return result_json.get<ListRootsResult>();
-    }
+    MCP_API Task<ListRootsResult> request_roots(InputOptions options = {});
 
    private:
+    friend struct detail::ContextRouting;
+
     /// Throws when @p result accepts the form request @p params with content its schema rejects.
     static void check_form_content(const ElicitRequestParams& params, const ElicitResult& result) {
         const auto* form = std::get_if<ElicitRequestFormParams>(&params);
@@ -463,6 +392,8 @@ class Context {
     std::shared_ptr<const std::string> principal_;
     std::shared_ptr<const std::atomic<bool>> replaying_;
     ProgressSink progress_sink_;
+    /// The progress and log notifications this request may still send; null for no limit.
+    std::shared_ptr<detail::NotificationBudget> budget_;
 };
 
 }  // namespace mcp

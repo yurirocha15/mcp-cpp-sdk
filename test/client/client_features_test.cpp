@@ -2,6 +2,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 
 #include <gtest/gtest.h>
 
@@ -399,7 +400,7 @@ TEST_F(ClientFeaturesTest, GetPromptSendsCorrectWireFormat) {
 TEST_F(ClientFeaturesTest, GetPromptWithoutArgumentsSendsCorrectWireFormat) {
     auto [client, raw] = make_client_with_auto_init();
 
-    nlohmann::json captured_params;
+    std::vector<nlohmann::json> captured_params;
 
     raw->set_on_write([raw, &captured_params](std::string_view msg) {
         auto json_msg = nlohmann::json::parse(msg);
@@ -411,7 +412,7 @@ TEST_F(ClientFeaturesTest, GetPromptWithoutArgumentsSendsCorrectWireFormat) {
         if (method == "initialize") {
             raw->enqueue_message(make_result_response(id, make_initialize_result()).dump());
         } else if (method == "prompts/get") {
-            captured_params = json_msg["params"];
+            captured_params.push_back(json_msg["params"]);
             nlohmann::json result = {
                 {"messages",
                  {{{"role", "assistant"}, {"content", {{"type", "text"}, {"text", "Hi there"}}}}}}};
@@ -427,13 +428,19 @@ TEST_F(ClientFeaturesTest, GetPromptWithoutArgumentsSendsCorrectWireFormat) {
         co_await client.connect(std::move(info), mcp::ClientCapabilities{});
 
         result = co_await client.get_prompt("simple_prompt");
+        const std::map<std::string, std::string> no_arguments;
+        co_await client.get_prompt("simple_prompt", no_arguments);
         raw->close();
     });
 
     io_ctx_.run();
 
-    EXPECT_EQ(captured_params["name"], "simple_prompt");
-    EXPECT_FALSE(captured_params.contains("arguments"));
+    // Neither the default nor an empty map sends arguments.
+    ASSERT_EQ(captured_params.size(), 2U);
+    for (const auto& params : captured_params) {
+        EXPECT_EQ(params["name"], "simple_prompt");
+        EXPECT_FALSE(params.contains("arguments"));
+    }
     ASSERT_EQ(result.messages.size(), 1);
     EXPECT_EQ(result.messages[0].role, mcp::Role::eAssistant);
 }

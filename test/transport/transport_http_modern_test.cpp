@@ -2,6 +2,7 @@
 
 #include "../../src/detail/http_request_metadata.hpp"
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -109,6 +110,10 @@ json call_tool(const json& id, const std::string& name) {
     return make_modern_request(id, "tools/call", {{"name", name}, {"arguments", json::object()}});
 }
 
+json get_prompt(const json& id, const std::string& name) {
+    return make_modern_request(id, "prompts/get", {{"name", name}});
+}
+
 std::unique_ptr<mcp::Server> make_server(const std::string& name) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
@@ -116,9 +121,10 @@ std::unique_ptr<mcp::Server> make_server(const std::string& name) {
     auto server = std::make_unique<mcp::Server>(mcp::Implementation{name, "1.0"}, caps);
     server->add_tool<json, json>("echo", "Echoes its arguments", json{{"type", "object"}},
                                  [](json args) -> mcp::Task<json> { co_return args; });
-    server->add_tool<json, json>(
-        "héllo wörld", "A name outside the header-safe characters", json{{"type", "object"}},
-        [](json /*args*/) -> mcp::Task<json> { co_return json{{"ok", true}}; });
+    // Tool names are limited to header-safe characters, prompt names are not: a prompt carries the
+    // name that needs Base64 in its Mcp-Name header.
+    server->add_text_prompt("héllo wörld", "A name outside the header-safe characters", {},
+                            [](const auto& /*arguments*/) { return std::string("ok"); });
     const json routed_schema = {
         {"type", "object"},
         {"properties",
@@ -145,7 +151,7 @@ class HttpModernTest : public ::testing::Test {
     std::atomic<int> factory_calls_{0};
 
     mcp::StreamableHttpSessionManager::ServerFactory factory() {
-        return [this](const asio::any_io_executor&) {
+        return [this](const mcp::Executor&) {
             factory_calls_.fetch_add(1);
             return make_server("factory-server");
         };
@@ -310,7 +316,7 @@ TEST_F(HttpModernTest, McpNameInTheBase64SentinelIsDecodedBeforeComparing) {
     Reply encoded;
     Reply undecodable;
     run(manager, [&]() -> mcp::Task<void> {
-        const auto body = call_tool(1, "héllo wörld");
+        const auto body = get_prompt(1, "héllo wörld");
         encoded = co_await post(
             port, body, with(modern_headers(body), "Mcp-Name", "=?base64?aMOpbGxvIHfDtnJsZA==?="));
         undecodable =

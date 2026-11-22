@@ -7,7 +7,7 @@ endif()
 include(CMakeFindDependencyMacro)
 find_dependency(Boost 1.74 REQUIRED)
 find_dependency(nlohmann_json 3.10.5 CONFIG REQUIRED)
-find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
+find_dependency(OpenSSL 3.0 REQUIRED COMPONENTS Crypto SSL)
 
 set(MCP_CPP_SDK_VERSION_FULL "@MCP_CPP_SDK_VERSION_FULL@")
 set(MCP_CPP_SDK_HAS_SHARED FALSE)

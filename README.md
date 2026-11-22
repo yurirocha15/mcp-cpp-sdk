@@ -12,7 +12,7 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 
 ## Why mcp-cpp-sdk?
 
-- **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`.
+- **C++20 coroutines**: Asynchronous I/O on Boost.Asio, written with `co_await`. A sync mode, with plain-function handlers and blocking calls, is also available for simple programs and rapid prototyping.
 - **Typed protocol models**: MCP messages are C++ types that convert to and from `nlohmann/json`.
 - **Three transports**: Stdio, WebSocket and Streamable HTTP.
 - **Protocol revisions**: A `Server` serves revision `2026-07-28` alongside `2025-11-25` and earlier on the same transport. A `Client` detects which one the server speaks when it connects.
@@ -56,70 +56,53 @@ FetchContent_MakeAvailable(mcp-cpp-sdk)
 target_link_libraries(your_target PRIVATE mcp::sdk)
 ```
 
-### 2. Create a Minimal Server
+### 2. A Minimal Server
 
 ```cpp
 #include <mcp/mcp.hpp>
 
+#include <string>
+
 int main() {
-    mcp::ServerCapabilities capabilities;
-    capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
-    mcp::Server server({"hello-server", "1.0.0"}, capabilities);
+    mcp::Server server("greeter", "1.0.0");
 
-    server.add_tool("hello", "Greets the user",
-        {{"type", "object"},
-         {"properties", {{"name", {{"type", "string"}}}}},
-         {"required", nlohmann::json::array({"name"})}},
-        [](const nlohmann::json& args) -> nlohmann::json {
-            return nlohmann::json{
-                {"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
-        });
+    server.add_tool("greet", "Greets someone by name",
+                    mcp::tool_params({{"name", "string", "Who to greet"}}),
+                    [](const nlohmann::json& args) -> nlohmann::json {
+                        return "Hello, " + args.at("name").get<std::string>() + "!";
+                    });
 
-    server.run_http("127.0.0.1", 3000); // Serves http://127.0.0.1:3000/mcp
+    server.run_stdio();
 }
 ```
 
-### 3. Create a Minimal Client
+Link it with `target_link_libraries(greeter PRIVATE mcp::sdk)`. MCP hosts launch it as a stdio
+server.
+
+### 3. A Minimal Client
 
 ```cpp
-#include <mcp/client/client.hpp>
-#include <mcp/transport/http_client.hpp>
+#include <mcp/mcp.hpp>
 
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
 #include <iostream>
-#include <memory>
+#include <string>
 
-int main() {
-    boost::asio::io_context io;
-    auto transport = std::make_shared<mcp::HttpClientTransport>(
-        io.get_executor(), "http://127.0.0.1:3000/mcp");
-    mcp::Client client(transport, io.get_executor());
+int main(int argc, char** argv) {
+    const std::string command = argc > 1 ? argv[1] : "./greeter";
+    mcp::Client client(mcp::Endpoint::stdio({command}));
+    client.sync().connect("greeter-client", "1.0.0");
 
-    boost::asio::co_spawn(io, [&]() -> mcp::Task<void> {
-        mcp::ConnectResult connected = co_await client.connect("my-client", "1.0.0");
-        std::cerr << "Connected using protocol " << connected.protocolVersion << '\n';
-        nlohmann::json arguments{{"name", "World"}};
-        auto result = co_await client.call_tool("hello", arguments);
-        std::cerr << nlohmann::json(result).dump(2) << '\n';
-        client.close();
-    }, boost::asio::detached);
-
-    io.run();
+    const auto result = client.sync().call_tool("greet", {{"name", "Ada"}});
+    std::cout << mcp::result_text(result) << "\n";
 }
 ```
 
-`Client` defaults to `mcp::ClientProtocol::automatic()`: it sends `server/discover`
-first and falls back to `initialize` when the server does not answer as a
-2026-07-28 server. `connect()` returns a `mcp::ConnectResult` holding the
-session's `era`, the `protocolVersion` in use, the server's `capabilities`, and,
-when the server sent them, `serverInfo`, `instructions` and `supportedVersions`.
-To skip detection, set `ClientOptions::protocol` to
-`mcp::ClientProtocol::legacy()` or `mcp::ClientProtocol::pinned("2026-07-28")`.
+`./greeter-client ./greeter` prints `Hello, Ada!`.
 
-Note the named `arguments` variable. See [Compiler Notes](#compiler-notes) for
-why it is not built inline.
+Both programs use the blocking API. The
+[getting-started guide](https://www.yurirocha.com/mcp-cpp-sdk/getting-started.html) explains
+them, and [Async Servers and Clients](https://www.yurirocha.com/mcp-cpp-sdk/guides/async-mode.html)
+covers the coroutine API.
 
 ## Usage Highlights
 
@@ -133,7 +116,7 @@ compiled registrations.
 
 ### Server Context (Logging & Progress)
 
-Async handlers have access to a `Context` for real-time interaction:
+A handler that takes the request's `Context` logs to the client and reports progress:
 
 ```cpp
 server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progress", schema,
@@ -150,6 +133,7 @@ Guides, API reference and integration details are on the **[documentation site](
 
 - **[Getting Started](https://www.yurirocha.com/mcp-cpp-sdk/getting-started.html)**: Detailed installation and build instructions.
 - **[Core Concepts](https://www.yurirocha.com/mcp-cpp-sdk/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
+- **[Guides](https://www.yurirocha.com/mcp-cpp-sdk/guides/index.html)**: Async servers and clients, converting sync programs, testing, error handling and deployment.
 - **[Client App Integrations](https://www.yurirocha.com/mcp-cpp-sdk/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
 - **[Examples](https://www.yurirocha.com/mcp-cpp-sdk/examples.html)**: Walkthrough of included example applications.
 

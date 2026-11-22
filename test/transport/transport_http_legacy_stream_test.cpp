@@ -6,6 +6,7 @@
 #include "../support/hang_guard.hpp"
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -346,7 +347,7 @@ class LegacyStreamTest : public ::testing::Test {
     std::unique_ptr<mcp::StreamableHttpSessionManager> make_manager(unsigned short port) {
         auto manager = std::make_unique<mcp::StreamableHttpSessionManager>(
             io_ctx_.get_executor(), "127.0.0.1", port,
-            [shared = shared_](const asio::any_io_executor&) { return make_server(shared); });
+            [shared = shared_](const mcp::Executor&) { return make_server(shared); });
         mcp_test::spawn_detached(io_ctx_, manager->listen());
         return manager;
     }

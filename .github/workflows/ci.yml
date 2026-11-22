@@ -49,6 +49,7 @@ jobs:
       run: python3 scripts/ci_changes.py --event "$EVENT" --base "$BASE" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   naming:
+    # Checks that only the TLS context factory sets certificate verification, then
     # clang-tidy runs only readability-identifier-naming, over the .cpp files in src/ and examples/
     # and the headers of include/, src/ and examples/ they include (`make lint` also checks each
     # header on its own). It needs the compile database, so CMake configures against distribution
@@ -67,6 +68,11 @@ jobs:
       uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
       with:
         python-version: '3.12'
+
+    - name: Check where TLS verification is set
+      run: |
+        PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_tls_verification
+        python3 scripts/check_tls_verification.py
 
     - name: Install clang-tidy
       run: python3 -m pip install clang-tidy==23.1.4
@@ -178,13 +184,11 @@ jobs:
       if: runner.os != 'Windows'
       run: python scripts/check_readme_snippets.py
 
-    # The reStructuredText guides carry complete programs too. Same compiler and
-    # flags as the README check; code-blocks without a main are reported as skipped.
-    - name: Compile documentation snippets
+    # <mcp/mcp.hpp> and the headers beside it are the sync-mode API, which an application
+    # uses without writing or including Boost. Same compiler and flags as the README check.
+    - name: Check Boost-free headers
       if: runner.os != 'Windows'
-      run: |
-        PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_doc_snippets
-        python scripts/check_doc_snippets.py
+      run: python scripts/check_boost_free_headers.py
 
     - name: Run Examples
       run: python scripts/run_examples.py

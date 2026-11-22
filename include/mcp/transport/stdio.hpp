@@ -1,6 +1,6 @@
 #pragma once
 
-#include <boost/asio/any_io_executor.hpp>
+#include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -55,8 +55,8 @@ class MCP_API StdioTransport final : public ITransport {
      * waits one second for a write that a stalled peer is blocking and then
      * leaves it to finish on its own.
      */
-    explicit StdioTransport(const boost::asio::any_io_executor& executor,
-                            std::istream& input = std::cin, std::ostream& output = std::cout);
+    explicit StdioTransport(const Executor& executor, std::istream& input = std::cin,
+                            std::ostream& output = std::cout);
 
     /**
      * @brief Construct a StdioTransport that owns the process's standard output.
@@ -89,8 +89,8 @@ class MCP_API StdioTransport final : public ITransport {
      * `server 2>&1`), stray stdout output still reaches the protocol stream,
      * and so does anything written to stderr.
      */
-    static std::unique_ptr<StdioTransport> create_owning_stdout(
-        const boost::asio::any_io_executor& executor, std::istream& input = std::cin);
+    static std::unique_ptr<StdioTransport> create_owning_stdout(const Executor& executor,
+                                                                std::istream& input = std::cin);
 
     ~StdioTransport() override;
 
@@ -145,7 +145,7 @@ class MCP_API StdioTransport final : public ITransport {
 
    private:
     struct OwnStdoutTag {};
-    StdioTransport(const boost::asio::any_io_executor& executor, std::istream& input, OwnStdoutTag);
+    StdioTransport(const Executor& executor, std::istream& input, OwnStdoutTag);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

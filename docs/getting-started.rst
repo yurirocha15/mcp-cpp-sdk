@@ -1,8 +1,11 @@
 Getting Started
 ===============
 
-This guide will help you get started with the mcp-cpp-sdk, from installation
-to building your first MCP server and client.
+This page installs the SDK and builds a minimal server and client with the
+blocking API, in which handlers are plain functions, client calls block until
+they are answered, and the ``Server`` and ``Client`` run their own event loop.
+The coroutine API, in which the program runs the event loop and handlers and
+calls are C++20 coroutines, is described in :doc:`guides/async-mode`.
 
 Prerequisites
 -------------
@@ -31,7 +34,9 @@ In a clone of this repository, Conan can provide the dependencies:
 .. code-block:: bash
 
    # Install dependencies
-   conan install . --build=missing -s compiler.cppstd=20
+   conan install . --output-folder=build --build=missing \
+     -s compiler.cppstd=20 \
+     -c tools.cmake.cmaketoolchain:generator=Ninja
 
    # Build the project
    cmake --preset conan-release
@@ -101,173 +106,71 @@ To build the SDK and examples from source:
    # Run tests
    python scripts/build.py --test
 
-Quick Start: Minimal Server
-----------------------------
+Your First Server
+-----------------
 
-Here's a minimal MCP server that exposes a single tool over stdio.
+This server offers one tool, ``greet``, over stdio:
 
-.. code-block:: cpp
+.. literalinclude:: ../examples/sync/minimal_server.cpp
+   :language: cpp
+   :start-at: #include
 
-   #include <mcp/mcp.hpp>
+* The server advertises the capabilities its registrations imply, here tools.
+* ``mcp::tool_params()`` makes the tool's input schema from the name, JSON Schema
+  type and description of each argument. Arguments are required unless marked
+  optional, and a call whose arguments do not match is answered with an error
+  result. See :doc:`concepts/tools`.
+* The handler's return value becomes the result: a string its text, an object
+  its structured content. An exception becomes an error result.
+* ``run_stdio()`` serves until standard input closes or the process receives
+  SIGINT or SIGTERM.
 
-   int main() {
-       mcp::ServerCapabilities caps;
-       caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+Build it with CMake against an installed SDK (see :doc:`installation`):
 
-       mcp::Implementation info{"hello-server", "1.0.0"};
-       mcp::Server server(std::move(info), std::move(caps));
+.. code-block:: cmake
 
-       nlohmann::json schema = {
-           {"type", "object"},
-           {"properties", {{"name", {{"type", "string"}}}}},
-           {"required", nlohmann::json::array({"name"})}};
+   cmake_minimum_required(VERSION 3.20)
+   project(greeter CXX)
+   find_package(mcp-cpp-sdk CONFIG REQUIRED)
+   add_executable(greeter minimal_server.cpp)
+   target_compile_features(greeter PRIVATE cxx_std_20)
+   target_link_libraries(greeter PRIVATE mcp::sdk)
 
-       server.add_tool("hello", "Greets the user", std::move(schema),
-                       [](const nlohmann::json& args) -> nlohmann::json {
-                           return {{"message", "Hello, " + args.at("name").get<std::string>() + "!"}};
-                       });
+Your First Client
+-----------------
 
-       server.run_stdio();
-   }
+This client launches the server, calls its tool and prints the answer:
 
-``server.run_stdio()`` blocks until the client closes the connection or the
-process receives SIGINT/SIGTERM. The runtime, transport, and event loop are
-all managed internally.
+.. literalinclude:: ../examples/sync/minimal_client.cpp
+   :language: cpp
+   :start-at: #include
 
-Advanced: Manual Transport Setup
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+* ``mcp::Endpoint::stdio()`` launches the server and talks to it over its
+  standard input and output. ``Endpoint::http(url)`` connects to a Streamable
+  HTTP server instead.
+* The calls of ``client.sync()`` block until they return the result or throw.
+* ``connect()`` detects the protocol revision the server speaks; see
+  :doc:`guides/older-protocols`.
+* ``mcp::result_text()`` joins the text blocks of a tool result.
 
-If you need direct control over the ``io_context`` — for example, to share it
-with other async work — you can wire up the transport manually:
-
-.. code-block:: cpp
-
-   #include <mcp/server/server.hpp>
-   #include <mcp/transport/stdio.hpp>
-   #include <boost/asio/co_spawn.hpp>
-   #include <boost/asio/detached.hpp>
-   #include <boost/asio/io_context.hpp>
-
-   int main() {
-       mcp::ServerCapabilities caps;
-       caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-
-       mcp::Implementation info{"math-server", "1.0.0"};
-       mcp::Server server(std::move(info), std::move(caps));
-
-       nlohmann::json schema = {
-           {"type", "object"},
-           {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}},
-           {"required", nlohmann::json::array({"a", "b"})}};
-
-       server.add_tool<nlohmann::json, nlohmann::json>(
-           "add", "Add two numbers", std::move(schema),
-           [](const nlohmann::json& params) -> mcp::Task<nlohmann::json> {
-               double result = params.at("a").get<double>() + params.at("b").get<double>();
-               co_return nlohmann::json{{"result", result}};
-           });
-
-       boost::asio::io_context io;
-       auto transport = std::make_shared<mcp::StdioTransport>(io.get_executor());
-       boost::asio::co_spawn(
-           io,
-           [&]() -> mcp::Task<void> {
-               co_await server.run(transport, io.get_executor());
-           },
-           boost::asio::detached);
-       io.run();
-   }
-
-Quick Start: Minimal Client
-----------------------------
-
-.. note::
-
-   A client runs on an ``io_context`` that the application owns, as below. To
-   launch a stdio server as a child process and talk to it, give the ``Client`` a
-   ``StdioClientTransport``, or use ``StdioClientSession``, which also restarts
-   the server when it exits; see :doc:`concepts/transports` and the
-   ``stdio_launch`` example.
-
-Here's a minimal MCP client that connects to an already running Streamable HTTP
-server and calls its ``hello`` tool. The quick-start server above serves it over
-HTTP when ``server.run_stdio()`` is replaced by
-``server.run_http("127.0.0.1", 3000)``:
-
-.. code-block:: cpp
-
-   #include <mcp/client/client.hpp>
-   #include <mcp/transport/http_client.hpp>
-   #include <boost/asio/co_spawn.hpp>
-   #include <boost/asio/detached.hpp>
-   #include <boost/asio/io_context.hpp>
-   #include <iostream>
-
-   int main() {
-       using namespace mcp;
-
-       boost::asio::io_context io;
-
-       auto transport = std::make_shared<HttpClientTransport>(
-           io.get_executor(), "http://127.0.0.1:3000/mcp");
-       Client client(transport, io.get_executor());
-
-       boost::asio::co_spawn(
-           io,
-           [&]() -> Task<void> {
-               // Connect. The client detects the protocol revision the server speaks.
-               ConnectResult connected = co_await client.connect("hello-client", "1.0.0");
-               std::cout << "Protocol: " << connected.protocolVersion << std::endl;
-
-               // Call the "hello" tool
-               nlohmann::json args = {{"name", "World"}};
-               auto result = co_await client.call_tool("hello", args);
-               std::cout << "Result: " << nlohmann::json(result).dump(2) << std::endl;
-
-               client.close();
-           },
-           boost::asio::detached
-       );
-
-       io.run();
-   }
-
-``co_spawn`` is given the lambda itself, not the result of calling it: it keeps
-the lambda alive until the coroutine finishes. A coroutine started from a
-temporary lambda would read the lambda's captures after the temporary is
-destroyed.
-
-``connect()`` returns a ``ConnectResult`` with the ``era`` of the session
-(``ProtocolEra::eModern`` for protocol revision 2026-07-28 or ``eLegacy`` for
-2025-11-25 and earlier), the negotiated ``protocolVersion`` and what the server
-declared (``capabilities``, ``serverInfo``, ``instructions``). By default the
-client sends ``server/discover`` first and falls back to ``initialize`` for an
-older server. To keep speaking an older revision, or to skip that probe, set
-``ClientOptions::protocol``; see :doc:`guides/older-protocols`.
+Build it as ``greeter-client`` the same way. ``./greeter-client ./greeter``
+prints ``Hello, Ada!``.
 
 .. important::
 
-   **Client requests time out after 30 seconds by default.** The ``Client``
-   above takes no options, so every ``call_tool``, ``read_resource`` and
-   ``list_*`` it issues carries a 30-second deadline and throws
-   ``mcp::McpError`` with code ``-32001`` when it expires — even though the
-   server may still be working on the call. Set
-   ``ClientOptions::request_timeout`` before constructing the client if any of
-   your tools legitimately run longer:
-
-   .. code-block:: cpp
-
-      mcp::ClientOptions options;
-      options.request_timeout = std::chrono::minutes(5);
-      Client client(transport, io.get_executor(), options);
-
-   See :doc:`guides/error-handling` for per-request deadlines and what a
-   timeout does and does not guarantee about the server.
+   **Client requests time out after 30 seconds by default.** A call that takes
+   longer throws ``mcp::McpError`` with code ``-32001``, even though the server
+   may still be working on it. Set ``ClientOptions::request_timeout`` when
+   constructing the client, or give one call a deadline through
+   ``RequestOptions``; see :doc:`guides/error-handling`.
 
 Next Steps
 ----------
 
-* Explore the :doc:`examples` to see more advanced usage patterns
-* Read the :doc:`api/index` for detailed API documentation
-* Learn about the :doc:`architecture` and design decisions
-* Check out :doc:`contributing` to contribute to the project
+* :doc:`guides/async-mode`: servers and clients with coroutines on an event loop
+* :doc:`guides/sync-to-async`: converting a server or client to the coroutine API
+* :doc:`concepts/index`: each MCP feature, on the server and the client
+* :doc:`examples`: the example programs and how to run them
+* :doc:`api/index`: the API reference
+* :doc:`architecture`: the design and its decisions
+* :doc:`contributing`: building, testing and contributing to the SDK

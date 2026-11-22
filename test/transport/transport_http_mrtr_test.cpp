@@ -2,6 +2,7 @@
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
@@ -149,7 +150,7 @@ class HttpMrtrTest : public ::testing::Test {
     std::shared_ptr<std::atomic<bool>> cancelled_ = std::make_shared<std::atomic<bool>>(false);
 
     mcp::StreamableHttpSessionManager::ServerFactory factory() {
-        return [resumed = resumed_, cancelled = cancelled_](const asio::any_io_executor&) {
+        return [resumed = resumed_, cancelled = cancelled_](const mcp::Executor&) {
             mcp::ServerCapabilities caps;
             caps.tools = mcp::ServerCapabilities::ToolsCapability{};
             auto server = std::make_unique<mcp::Server>(mcp::Implementation{"mrtr-http", "1.0"}, caps);

@@ -1,6 +1,8 @@
 #include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
+#include "../detail/connection.hpp"
 #include "../detail/constants.hpp"
+#include "../detail/host_policy.hpp"
 #include "../detail/http_limits.hpp"
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/jsonrpc_envelope.hpp"
@@ -10,13 +12,19 @@
 #include "../detail/principal.hpp"
 #include "../detail/scope_challenge.hpp"
 #include "../detail/strand_executor.hpp"
+#include "../detail/tls.hpp"
+#include "../detail/tls_accept.hpp"
+#include "../server/run_control.hpp"
 #include "modern_exchange.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
+#include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
+#include <mcp/transport/tls.hpp>
 
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -281,7 +289,7 @@ inline StringResponse make_sse_response(const StringRequest& request, const SseE
 // ============================================================================
 
 struct StreamableHttpSessionManager::Impl {
-    using Connection = beast::tcp_stream;
+    using Connection = detail::Connection;
     using SessionMap =
         std::unordered_map<std::string, std::shared_ptr<detail_session_mgr::SessionRuntime>>;
 
@@ -294,12 +302,18 @@ struct StreamableHttpSessionManager::Impl {
     boost::asio::ip::tcp::acceptor acceptor;
 
     StreamableHttpSessionManager::ServerFactory factory;
-    StreamableHttpSessionManager::CustomRequestHandler custom_handler;
+    CustomRequestHandler custom_handler;
     std::size_t event_store_capacity;
     std::shared_ptr<std::atomic<bool>> json_only_mode_ = std::make_shared<std::atomic<bool>>(false);
     bool stateless_json_mode_{false};
     bool allow_all_origins_{false};
     std::unordered_set<std::string> allowed_origins_;
+    /// Set before listen(); read while serving.
+    detail::HostPolicy host_policy_;
+    /// The TLS settings of new connections, or null for plain TCP. Set before listen().
+    std::shared_ptr<const TlsServerContext> tls_;
+    /// TLS handshakes running, against the context's limit.
+    std::atomic<std::size_t> pending_handshakes_{0};
     BearerTokenValidator bearer_token_validator_;
     AsyncBearerTokenValidator async_bearer_token_validator_;
     std::size_t max_request_body_bytes_{http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES};
@@ -331,6 +345,13 @@ struct StreamableHttpSessionManager::Impl {
     std::mutex modern_server_mutex_;
     std::shared_ptr<Server> modern_server_;
     std::optional<ServerProtocolPolicy> protocol_policy_;
+    // Set by the constructor that takes a Server. The session servers then share that server's
+    // registrations and settings, so the protocol policy and the tool executor are set on it once
+    // instead of on each server the manager builds.
+    Server* served_server_{nullptr};
+    // The served server's runs, which listen() joins so that Server::stop() closes this manager and
+    // Server::sync() knows the server is served through coroutines.
+    std::shared_ptr<detail::RunControl> served_run_control_;
     std::atomic<std::uint64_t> header_mismatch_rejections_{0};
     StreamOptions stream_options_;
     std::shared_ptr<detail::StreamCounters> stream_counters_ =
@@ -377,6 +398,12 @@ struct StreamableHttpSessionManager::Impl {
         if (ec) {
             throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
         }
+
+        const auto bound = acceptor.local_endpoint(ec);
+        if (ec) {
+            throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+        }
+        port = bound.port();
     }
 
     void ensure_configurable() const {
@@ -398,6 +425,13 @@ struct StreamableHttpSessionManager::Impl {
             throw std::logic_error(
                 "StreamableHttpSessionManager::set_scope_requirements() needs a token validator: "
                 "call set_bearer_token_validator() or set_async_bearer_token_validator()");
+        }
+        // A policy set on the served server itself holds for the HTTP side too, as one set here.
+        if (served_server_ != nullptr && !protocol_policy_) {
+            auto policy = served_server_->protocol_policy();
+            if (policy != ServerProtocolPolicy{}) {
+                protocol_policy_ = std::move(policy);
+            }
         }
         listening_started_ = true;
         return true;
@@ -447,6 +481,10 @@ struct StreamableHttpSessionManager::Impl {
     /// A Server from the factory, with the protocol policy applied when one is set.
     std::unique_ptr<Server> build_server(const boost::asio::any_io_executor& server_executor) const {
         auto server = factory(server_executor);
+        if (served_server_ != nullptr) {
+            // Shares the served server's settings, which the setters changed already.
+            return server;
+        }
         if (server && protocol_policy_) {
             server->set_protocol_policy(*protocol_policy_);
         }
@@ -517,7 +555,7 @@ struct StreamableHttpSessionManager::Impl {
         boost::asio::co_spawn(
             conn_strand,
             [srv = std::move(server), transport = std::move(server_transport),
-             exec = server_exec]() mutable -> Task<void> {
+             exec = server_exec]() mutable -> boost::asio::awaitable<void> {
                 co_await srv->run(std::move(transport), exec);
             },
             boost::asio::detached);
@@ -650,6 +688,19 @@ struct StreamableHttpSessionManager::Impl {
         namespace beast = boost::beast;
 
         auto& stream = *connection;
+        if (stream.is_tls()) {
+            const auto handshake_timeout = detail::TlsContextAccess::limits(*tls_).handshake_timeout;
+            const bool accepted = co_await detail::accept_tls_for_listener(
+                stream, conn_strand, handshake_timeout, pending_handshakes_);
+            if (!accepted) {
+                co_return;
+            }
+        }
+        // A connection whose local address cannot be read is treated as a loopback one, so the
+        // stricter Host rule applies.
+        boost::system::error_code endpoint_error;
+        const auto local_endpoint = stream.socket().local_endpoint(endpoint_error);
+        const bool loopback_connection = endpoint_error || detail::is_loopback_endpoint(local_endpoint);
         beast::flat_buffer request_buffer;
         std::unique_ptr<Server> stateless_server;
         // Set once a watch has read the client's end of the stream. That end is consumed: a later
@@ -662,9 +713,10 @@ struct StreamableHttpSessionManager::Impl {
         // The scopes the bearer token validator reported for the request being served.
         std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal_id,
-             &token_scopes](const StringRequest& head) -> Task<std::optional<StringResponse>> {
-            co_return co_await refuse_before_body(head, principal_id, token_scopes);
+            [this, &principal_id, &token_scopes,
+             loopback_connection](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            co_return co_await refuse_before_body(head, principal_id, token_scopes,
+                                                  loopback_connection);
         };
 
         for (;;) {
@@ -735,8 +787,7 @@ struct StreamableHttpSessionManager::Impl {
             }
         }
 
-        boost::system::error_code shutdown_error;
-        (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
+        detail::finish_sending(stream);
     }
 
     /// @brief Render the challenge a 401 will carry, borrowing the metadata URL when unset.
@@ -799,14 +850,23 @@ struct StreamableHttpSessionManager::Impl {
         return detail::to_std_string_view(authorization_it->value());
     }
 
-    /// Origin and bearer checks: they need only the headers, so a request they refuse never has its
-    /// body read. Sets @p principal_id to the principal the validator names, if it names one.
+    /// Host, Origin and bearer checks: they need only the headers, so a request they refuse never
+    /// has its body read. Sets @p principal_id to the principal the validator names, if it names
+    /// one.
     Task<std::optional<StringResponse>> refuse_before_body(
         const StringRequest& request, std::optional<std::string>& principal_id,
-        std::optional<std::vector<std::string>>& token_scopes) {
+        std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (closed.load(std::memory_order_acquire)) {
             co_return std::nullopt;
+        }
+        std::optional<std::string_view> host;
+        if (request.count(http::field::host) == 1) {
+            host = detail::to_std_string_view(request[http::field::host]);
+        }
+        if (!host_policy_.allows(host, loopback_connection)) {
+            co_return detail_session_mgr::make_error_response(request, http::status::forbidden,
+                                                              "Host not allowed");
         }
         const auto origin_it = request.find(http::field::origin);
         if (origin_it != request.end() && !allow_all_origins_ &&
@@ -1808,12 +1868,25 @@ struct StreamableHttpSessionManager::Impl {
 // StreamableHttpSessionManager public methods
 // ============================================================================
 
-StreamableHttpSessionManager::StreamableHttpSessionManager(const boost::asio::any_io_executor& executor,
-                                                           std::string host, unsigned short port,
-                                                           ServerFactory factory,
+StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& executor, std::string host,
+                                                           unsigned short port, ServerFactory factory,
                                                            std::size_t event_store_capacity)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), port, std::move(factory),
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), port, std::move(factory),
                                    event_store_capacity)) {}
+
+StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& executor, std::string host,
+                                                           unsigned short port, Server& server,
+                                                           std::size_t event_store_capacity)
+    : StreamableHttpSessionManager(
+          executor, std::move(host), port,
+          [&server](const Executor&) { return server.session_server(); }, event_store_capacity) {
+    // The manager does not own the server, which the application keeps alive. The deleter does
+    // nothing, and the pointer still has a control block, so copies and weak pointers of it behave
+    // as those of any other server.
+    set_modern_server(std::shared_ptr<Server>(&server, [](Server*) {}));
+    impl_->served_server_ = &server;
+    impl_->served_run_control_ = server.run_control();
+}
 
 StreamableHttpSessionManager::~StreamableHttpSessionManager() {
     try {
@@ -1824,11 +1897,24 @@ StreamableHttpSessionManager::~StreamableHttpSessionManager() {
     }
 }
 
-void StreamableHttpSessionManager::set_custom_request_handler(CustomRequestHandler handler) {
-    std::lock_guard lock(impl_->configuration_mutex_);
-    impl_->ensure_configurable();
-    impl_->custom_handler = std::move(handler);
+namespace detail {
+
+struct CustomRouteAccess {
+    static void set(StreamableHttpSessionManager& manager, CustomRequestHandler handler) {
+        auto& impl = *manager.impl_;
+        std::lock_guard lock(impl.configuration_mutex_);
+        impl.ensure_configurable();
+        impl.custom_handler = std::move(handler);
+    }
+};
+
+}  // namespace detail
+
+void set_custom_request_handler(StreamableHttpSessionManager& manager, CustomRequestHandler handler) {
+    detail::CustomRouteAccess::set(manager, std::move(handler));
 }
+
+unsigned short StreamableHttpSessionManager::port() const { return impl_->port; }
 
 void StreamableHttpSessionManager::set_allowed_origins(std::vector<std::string> origins) {
     std::lock_guard lock(impl_->configuration_mutex_);
@@ -1845,6 +1931,23 @@ void StreamableHttpSessionManager::set_allow_all_origins(bool allow_all) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
     impl_->allow_all_origins_ = allow_all;
+}
+
+void StreamableHttpSessionManager::set_allowed_hosts(const std::vector<std::string>& hosts) {
+    detail::HostPolicy policy(hosts);
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->host_policy_ = std::move(policy);
+}
+
+void StreamableHttpSessionManager::set_tls(const TlsServerOptions& options) {
+    set_tls(TlsServerContext::create(options));
+}
+
+void StreamableHttpSessionManager::set_tls(std::shared_ptr<const TlsServerContext> context) {
+    std::lock_guard lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->tls_ = std::move(context);
 }
 
 void StreamableHttpSessionManager::set_connection_limits(const HttpConnectionLimits& limits) {
@@ -1957,16 +2060,23 @@ void StreamableHttpSessionManager::set_stateless_json_mode(bool enabled) {
     }
 }
 
-void StreamableHttpSessionManager::set_tool_executor(const boost::asio::any_io_executor& exec) {
+void StreamableHttpSessionManager::set_tool_executor(const Executor& exec) {
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
-    impl_->tool_executor_ = exec;
+    if (impl_->served_server_ != nullptr) {
+        impl_->served_server_->set_handler_executor(exec);
+        return;
+    }
+    impl_->tool_executor_ = exec.get();
 }
 
 void StreamableHttpSessionManager::set_protocol_policy(ServerProtocolPolicy policy) {
     policy.validate();
     std::lock_guard lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
+    if (impl_->served_server_ != nullptr) {
+        impl_->served_server_->set_protocol_policy(policy);
+    }
     impl_->protocol_policy_ = std::move(policy);
 }
 
@@ -1997,8 +2107,9 @@ StreamStats StreamableHttpSessionManager::stream_stats() const {
     return impl_->stream_counters_->snapshot();
 }
 
-void StreamableHttpSessionManager::close() {
-    auto impl = impl_;
+void StreamableHttpSessionManager::close() { close_impl(impl_); }
+
+void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl) {
     {
         std::lock_guard lock(impl->configuration_mutex_);
         if (impl->closed.exchange(true, std::memory_order_acq_rel)) {
@@ -2060,7 +2171,24 @@ Task<void> StreamableHttpSessionManager::listen() {
     (void)impl->begin_listening();
     boost::asio::co_spawn(impl->listener_strand, Impl::expire_idle_sessions(impl),
                           boost::asio::detached);
-    return boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
+    auto listening =
+        boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
+    if (!impl->served_run_control_) {
+        return listening;
+    }
+    return listen_as_run(std::move(impl), std::move(listening));
+}
+
+Task<void> StreamableHttpSessionManager::listen_as_run(std::shared_ptr<Impl> impl,
+                                                       Task<void> listening) {
+    // A run of the served server while it listens: Server::stop() closes the manager, on its own
+    // executor and without waiting, as RunControl asks.
+    const auto registration = impl->served_run_control_->add([weak = std::weak_ptr<Impl>(impl)] {
+        if (auto alive = weak.lock()) {
+            boost::asio::post(alive->executor, [alive] { close_impl(alive); });
+        }
+    });
+    co_await std::move(listening);
 }
 
 Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl) {
@@ -2100,11 +2228,33 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
             (void)socket.close(ignored);
             continue;
         }
+        boost::system::error_code endpoint_error;
+        const auto protocol = socket.local_endpoint(endpoint_error).protocol();
+        if (endpoint_error) {
+            impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
+            boost::system::error_code ignored;
+            (void)socket.close(ignored);
+            continue;
+        }
+        if (impl->tls_) {
+            const auto limit = detail::resolved_max_pending_handshakes(
+                detail::TlsContextAccess::limits(*impl->tls_).max_pending_handshakes, max_connections);
+            if (!detail::take_handshake_slot(impl->pending_handshakes_, limit)) {
+                // As past the connection limit: a client that never finishes its handshake must
+                // not keep others from being accepted.
+                impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
+                boost::system::error_code ignored;
+                (void)socket.close(ignored);
+                continue;
+            }
+        }
         auto conn_strand = detail::make_strand_executor(impl->executor);
         auto native_handle = socket.release();
-        boost::asio::ip::tcp::socket conn_socket(conn_strand, boost::asio::ip::tcp::v4(),
-                                                 native_handle);
-        auto connection = std::make_shared<Impl::Connection>(std::move(conn_socket));
+        boost::asio::ip::tcp::socket conn_socket(conn_strand, protocol, native_handle);
+        auto connection =
+            impl->tls_ ? std::make_shared<Impl::Connection>(
+                             std::move(conn_socket), detail::TlsContextAccess::native(*impl->tls_))
+                       : std::make_shared<Impl::Connection>(std::move(conn_socket));
         if (!impl->register_connection(connection)) {
             impl->budget_.connections.fetch_sub(1, std::memory_order_relaxed);
             Impl::request_connection_close(connection);
@@ -2112,7 +2262,7 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
         }
         boost::asio::co_spawn(
             conn_strand,
-            [impl, connection, conn_strand]() mutable -> Task<void> {
+            [impl, connection, conn_strand]() mutable -> boost::asio::awaitable<void> {
                 try {
                     co_await impl->handle_connection(connection, conn_strand);
                 } catch (...) {

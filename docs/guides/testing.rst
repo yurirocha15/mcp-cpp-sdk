@@ -57,7 +57,9 @@ A typical loopback test follows these steps:
 Here is a simplified example of this pattern. A default ``Client`` and a default
 ``Server`` speak protocol revision 2026-07-28 with each other, so the test
 needs no handshake of its own: ``connect()`` sends one ``server/discover``
-request.
+request. The test includes ``<mcp/core/async.hpp>``, ``<mcp/mcp.hpp>``,
+``<mcp/transport/memory.hpp>`` for ``create_memory_transport_pair()``, and the
+Boost.Asio headers of ``io_context``, ``co_spawn`` and ``detached``.
 
 .. code-block:: cpp
 
@@ -172,6 +174,13 @@ Key considerations for E2E tests:
 - **Cleanup**: Use teardown logic to kill child processes or close open sockets to avoid leaking resources between test runs.
 - **Port Management**: When testing network transports, use ephemeral ports to avoid collisions in parallel CI environments.
 
+A server program is tested end to end by launching it: a client constructed
+from ``Endpoint::stdio()`` starts the program and calls its tools with the
+blocking calls of ``client.sync()``. For an HTTP server, ``run_http("127.0.0.1", 0)``
+on a thread of the test lets the system choose a free port, which
+``server.bound_port()`` returns once the server listens (0 until then), and
+``server.stop()`` ends ``run_http()`` when the test is done.
+
 When running E2E tests in CI, prefer MemoryTransport for most logic verification, and reserve real I/O tests for a smaller set of smoke tests to keep the test suite fast.
 
 Mocking and Stubbing
@@ -184,7 +193,7 @@ For tool handlers, you can pass mock dependencies into your lambda captures or f
 CI Integration
 --------------
 
-MCP tests can be integrated into any standard C++ CI pipeline. Since the SDK relies on Boost.Asio and C++20, ensure your CI environment has a compatible compiler (GCC 11+, Clang 13+, or MSVC 2022+) and the necessary libraries installed.
+MCP tests can be integrated into any standard C++ CI pipeline. Since the SDK relies on Boost.Asio and C++20, ensure your CI environment has a compatible compiler (GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022) and the necessary libraries installed.
 
 We recommend running tests under sanitizers (ASan, UBSan) to catch memory leaks or undefined behavior in your asynchronous code.
 

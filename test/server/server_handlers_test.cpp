@@ -1,6 +1,8 @@
 #include "../test_utils.hpp"
 
 #include "../support/spawn.hpp"
+#include "mcp/core/async.hpp"
+#include "mcp/core/runtime.hpp"
 #include "mcp/server/server.hpp"
 
 #include <gtest/gtest.h>
@@ -9,13 +11,20 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/thread_pool.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -143,6 +152,583 @@ TEST_F(ServerHandlersTest, SyncToolCallReturnsResult) {
     ASSERT_TRUE(tool_response.contains("result"));
     EXPECT_EQ(tool_response["result"]["structuredContent"]["sum"], 7);
     EXPECT_EQ(tool_response["result"]["content"][0]["type"], "text");
+}
+
+TEST_F(ServerHandlersTest, SyncToolWithContextReceivesTheRequestContext) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    bool saw_live_request = false;
+    setup.server.add_tool<AddParams, AddResult>(
+        "add", "Adds two numbers", nlohmann::json{{"type", "object"}},
+        [&saw_live_request](mcp::Context& ctx, AddParams params) -> AddResult {
+            saw_live_request = !ctx.is_cancelled();
+            return AddResult{params.augend + params.addend};
+        });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "add"}, {"arguments", {{"augend", 2}, {"addend", 5}}}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_TRUE(saw_live_request);
+    EXPECT_EQ(responses[1]["result"]["structuredContent"]["sum"], 7) << responses[1];
+}
+
+TEST_F(ServerHandlersTest, SyncToolRunsOnTheHandlerExecutor) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    boost::asio::thread_pool pool(1);
+    std::promise<std::thread::id> pool_thread;
+    boost::asio::post(pool, [&pool_thread] { pool_thread.set_value(std::this_thread::get_id()); });
+    const auto pool_thread_id = pool_thread.get_future().get();
+
+    setup.server.set_handler_executor(pool.get_executor());
+    std::thread::id handler_thread;
+    setup.server.add_tool("where", "Reports its thread", nlohmann::json{{"type", "object"}},
+                          [&handler_thread](const nlohmann::json&) -> nlohmann::json {
+                              handler_thread = std::this_thread::get_id();
+                              return nlohmann::json{{"ok", true}};
+                          });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "where"}, {"arguments", nlohmann::json::object()}}}});
+    pool.join();
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_FALSE(responses[1]["result"].value("isError", false)) << responses[1];
+    EXPECT_EQ(handler_thread, pool_thread_id);
+}
+
+// Destroying the event loop's context while a tool handler runs on the handler executor waits for
+// the handler, whose answer then goes nowhere; the server is destroyed afterwards.
+TEST(ServerHandlerPoolTest, DestroyingTheEventLoopWaitsForAHandlerOnThePool) {
+    boost::asio::thread_pool pool(1);
+    std::promise<void> started;
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> returned{false};
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool.get_executor());
+    server->add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
+                     [&started, released, &returned](const nlohmann::json&) -> nlohmann::json {
+                         started.set_value();
+                         released.wait();
+                         returned = true;
+                         return "done";
+                     });
+
+    auto io_ctx = std::make_unique<boost::asio::io_context>();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx->get_executor());
+    transport->enqueue_message(make_initialize_request("1").dump());
+    transport->enqueue_message(make_initialized_notification().dump());
+    transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "block"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    boost::asio::co_spawn(*io_ctx, server->run(transport, io_ctx->get_executor()),
+                          boost::asio::detached);
+    std::thread loop([&io_ctx] { io_ctx->run(); });
+    started.get_future().wait();
+    io_ctx->stop();
+    loop.join();
+    transport.reset();
+    // Destroying the loop's context waits for the handler its coroutine waits for, which returns
+    // meanwhile; released a little later, it returns while that destruction is under way.
+    std::thread releaser([&release] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        release.set_value();
+    });
+    io_ctx.reset();
+    EXPECT_TRUE(returned.load());
+    releaser.join();
+
+    pool.join();
+    server.reset();
+}
+
+// The same with a Runtime as the handler executor, destroyed after the loop.
+TEST(ServerHandlerPoolTest, DestroyingTheEventLoopWaitsForAHandlerOnARuntime) {
+    auto pool = std::make_unique<mcp::Runtime>();
+    pool->start(1);
+    std::promise<void> started;
+    std::promise<void> release;
+    const std::shared_future<void> released = release.get_future().share();
+    std::atomic<bool> returned{false};
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool->executor());
+    server->add_tool("block", "Waits until released", nlohmann::json{{"type", "object"}},
+                     [&started, released, &returned](const nlohmann::json&) -> nlohmann::json {
+                         started.set_value();
+                         released.wait();
+                         returned = true;
+                         return "done";
+                     });
+
+    auto io_ctx = std::make_unique<boost::asio::io_context>();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx->get_executor());
+    transport->enqueue_message(make_initialize_request("1").dump());
+    transport->enqueue_message(make_initialized_notification().dump());
+    transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "block"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    boost::asio::co_spawn(*io_ctx, server->run(transport, io_ctx->get_executor()),
+                          boost::asio::detached);
+    std::thread loop([&io_ctx] { io_ctx->run(); });
+    started.get_future().wait();
+    io_ctx->stop();
+    loop.join();
+    transport.reset();
+    // Destroying the loop's context waits for the handler its coroutine waits for, which returns
+    // meanwhile; released a little later, it returns while that destruction is under way.
+    std::thread releaser([&release] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        release.set_value();
+    });
+    io_ctx.reset();
+    EXPECT_TRUE(returned.load());
+    releaser.join();
+
+    pool->stop();
+    pool.reset();
+    server.reset();
+}
+
+// A coroutine handler on the handler executor that sends to the client once its event loop's
+// context is being destroyed gets an error instead of reaching the loop's objects.
+TEST(ServerHandlerPoolTest, AHandlerWhoseEventLoopIsDestroyedCannotReachTheClient) {
+    boost::asio::thread_pool pool(1);
+    std::promise<void> started;
+    std::promise<void> release;
+    std::promise<std::string> outcome;
+    const std::shared_future<void> released = release.get_future().share();
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool.get_executor());
+    server->add_tool("late", "Logs once released", nlohmann::json{{"type", "object"}},
+                     [&started, released, &outcome](
+                         mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                         started.set_value();
+                         released.wait();
+                         try {
+                             co_await ctx.log_info("after the loop stopped");
+                             outcome.set_value("sent");
+                         } catch (const std::runtime_error& error) {
+                             outcome.set_value(error.what());
+                         }
+                         co_return "done";
+                     });
+
+    auto io_ctx = std::make_unique<boost::asio::io_context>();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx->get_executor());
+    transport->enqueue_message(make_initialize_request("1").dump());
+    transport->enqueue_message(make_initialized_notification().dump());
+    transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "late"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    boost::asio::co_spawn(*io_ctx, server->run(transport, io_ctx->get_executor()),
+                          boost::asio::detached);
+    std::thread loop([&io_ctx] { io_ctx->run(); });
+    started.get_future().wait();
+    io_ctx->stop();
+    loop.join();
+    transport.reset();
+    // Destroying the loop's context waits for the handler its coroutine waits for, which returns
+    // meanwhile.
+    std::thread releaser([&release] { release.set_value(); });
+    io_ctx.reset();
+    releaser.join();
+
+    EXPECT_EQ(outcome.get_future().get(), "The server has stopped");
+    pool.join();
+    server.reset();
+}
+
+namespace {
+
+/// An initialize request from a client that answers elicitation requests.
+nlohmann::json make_eliciting_initialize_request() {
+    auto request = make_initialize_request("1");
+    request["params"]["capabilities"] = nlohmann::json{{"elicitation", nlohmann::json::object()}};
+    return request;
+}
+
+/// Registers a tool "ask" that asks the client a question nobody answers and reports, through
+/// @p outcome, what ended the wait: the error's text, or "unwound" when its frame is destroyed
+/// instead.
+void add_unanswered_question(mcp::Server& server, std::promise<std::string>& outcome) {
+    server.add_tool("ask", "Asks the client", nlohmann::json{{"type", "object"}},
+                    [&outcome](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                        struct Report {
+                            std::promise<std::string>* outcome;
+                            bool done = false;
+                            explicit Report(std::promise<std::string>* reported) : outcome(reported) {}
+                            Report(const Report&) = delete;
+                            Report& operator=(const Report&) = delete;
+                            ~Report() {
+                                if (!done) {
+                                    outcome->set_value("unwound");
+                                }
+                            }
+                        };
+                        Report report{&outcome};
+                        // On the heap: a std::string in the coroutine frame must not live across
+                        // co_await.
+                        const auto question = std::make_shared<const mcp::ElicitRequestParams>([] {
+                            mcp::ElicitRequestFormParams form;
+                            form.message = "Anyone there?";
+                            form.requestedSchema = nlohmann::json{{"type", "object"}};
+                            return mcp::ElicitRequestParams(std::move(form));
+                        }());
+                        try {
+                            (void)co_await ctx.elicit(*question);
+                            report.done = true;
+                            outcome.set_value("answered");
+                        } catch (const std::exception& error) {
+                            report.done = true;
+                            outcome.set_value(error.what());
+                        }
+                        co_return "done";
+                    });
+}
+
+/// Serves "ask" on a loop of its own thread for @p server until the question reaches the client,
+/// then stops that loop, calls @p before_destroying and destroys the loop's context.
+void serve_until_asked(mcp::Server& server, const std::function<void()>& before_destroying = [] {}) {
+    auto io_ctx = std::make_unique<boost::asio::io_context>();
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx->get_executor());
+    std::promise<void> asked;
+    bool signalled = false;
+    transport->set_on_write([&asked, &signalled](std::string_view message) {
+        if (!signalled && message.find("elicitation/create") != std::string_view::npos) {
+            signalled = true;
+            asked.set_value();
+        }
+    });
+    transport->enqueue_message(make_eliciting_initialize_request().dump());
+    transport->enqueue_message(make_initialized_notification().dump());
+    transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "ask"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    boost::asio::co_spawn(*io_ctx, server.run(transport, io_ctx->get_executor()),
+                          boost::asio::detached);
+    std::thread loop([&io_ctx] { io_ctx->run(); });
+    asked.get_future().wait();
+    io_ctx->stop();
+    loop.join();
+    before_destroying();
+    transport.reset();
+    io_ctx.reset();
+}
+
+}  // namespace
+
+// A Context call under way when its event loop's context is destroyed ends with an error in the
+// handler, on the handler executor.
+TEST(ServerHandlerPoolTest, AContextCallUnderWayWhenItsEventLoopIsDestroyedThrows) {
+    boost::asio::thread_pool pool(1);
+    std::promise<std::string> outcome;
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool.get_executor());
+    add_unanswered_question(*server, outcome);
+
+    serve_until_asked(*server);
+
+    EXPECT_EQ(outcome.get_future().get(), "The server has stopped");
+    pool.join();
+    server.reset();
+}
+
+// The same, when the handler executor's context is destroyed before the event loop's: it waits for
+// the Context call, and the handler goes with the loop's context.
+TEST(ServerHandlerPoolTest, AContextCallUnderWayWhenItsHandlerExecutorIsDestroyedFirstUnwindsIt) {
+    auto pool = std::make_unique<mcp::Runtime>();
+    pool->start(1);
+    std::promise<std::string> outcome;
+    auto ended = outcome.get_future();
+    auto server = std::make_unique<mcp::Server>("pool-test", "1.0");
+    server->set_handler_executor(pool->executor());
+    add_unanswered_question(*server, outcome);
+
+    // Destroying the handler executor's context waits for the Context call under way on the loop,
+    // which ends as the loop's context is destroyed, and the handler is destroyed with it. Stopped
+    // first, the handler executor runs nothing more.
+    std::thread destroyer;
+    serve_until_asked(*server, [&destroyer, &pool] {
+        pool->stop();
+        destroyer = std::thread([&pool] { pool.reset(); });
+    });
+    destroyer.join();
+    server.reset();
+
+    EXPECT_EQ(ended.get(), "unwound");
+}
+
+// A coroutine handler on the handler executor reaches the client through the server's loop.
+TEST_F(ServerHandlersTest, AToolOnTheHandlerExecutorLogsToTheClient) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    boost::asio::thread_pool pool(1);
+    setup.server.set_handler_executor(pool.get_executor());
+    setup.server.add_tool("log_then_answer", "Logs, then answers", nlohmann::json{{"type", "object"}},
+                          [](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                              co_await ctx.log_info("from the pool");
+                              co_return "answered";
+                          });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 3) {
+            setup.raw_transport->close();
+        }
+    });
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "2"},
+        {"method", "tools/call"},
+        {"params", {{"name", "log_then_answer"}, {"arguments", nlohmann::json::object()}}}}
+                                             .dump());
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+    io_ctx_.run();
+    pool.join();
+
+    ASSERT_EQ(responses.size(), 3);
+    EXPECT_EQ(responses[1]["method"], "notifications/message");
+    EXPECT_EQ(responses[1]["params"]["data"], "from the pool");
+    EXPECT_FALSE(responses[2]["result"].value("isError", false)) << responses[2];
+}
+
+// A middleware that calls the next handler more than once, with the handlers on the handler
+// executor, reaches the client through the Context from the handlers and after the calls.
+TEST_F(ServerHandlersTest, AMiddlewareThatCallsNextAgainReachesTheClientWithAHandlerExecutor) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    boost::asio::thread_pool pool(2);
+    setup.server.set_handler_executor(pool.get_executor());
+    setup.server.use([](mcp::Context& ctx, const nlohmann::json& params,
+                        mcp::TypeErasedHandler next) -> mcp::Task<nlohmann::json> {
+        nlohmann::json result;
+        for (int call = 0; call < 3; ++call) {
+            result = co_await next(ctx, params);
+        }
+        co_await ctx.log_info("after the calls");
+        co_return result;
+    });
+    setup.server.add_tool("log_then_answer", "Logs, then answers", nlohmann::json{{"type", "object"}},
+                          [](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                              co_await ctx.log_info("from the pool");
+                              co_return "answered";
+                          });
+    setup.server.add_text_resource("test://text", "text", [] { return std::string("hello"); });
+    setup.server.add_text_prompt("greet", "Greets", {},
+                                 [](const mcp::Server::PromptArguments&) { return std::string("hi"); });
+
+    std::vector<nlohmann::json> messages;
+    int answers = 0;
+    setup.raw_transport->set_on_write([&messages, &answers, &setup](std::string_view msg) {
+        messages.push_back(nlohmann::json::parse(msg));
+        if (messages.back().contains("id") && ++answers == 4) {
+            setup.raw_transport->close();
+        }
+    });
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "2"},
+        {"method", "tools/call"},
+        {"params", {{"name", "log_then_answer"}, {"arguments", nlohmann::json::object()}}}}
+                                             .dump());
+    setup.raw_transport->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "3"},
+        {"method", "resources/read"},
+        {"params", {{"uri", "test://text"}}}}.dump());
+    setup.raw_transport->enqueue_message(nlohmann::json{
+        {"jsonrpc", "2.0"},
+        {"id", "4"},
+        {"method", "prompts/get"},
+        {"params", {{"name", "greet"}}}}.dump());
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+    io_ctx_.run();
+    pool.join();
+
+    std::map<std::string, int> logged;
+    std::map<std::string, nlohmann::json> answered;
+    for (const auto& message : messages) {
+        if (message.value("method", "") == "notifications/message") {
+            ++logged[message["params"]["data"].get<std::string>()];
+        } else if (message.contains("id")) {
+            answered[message["id"].get<std::string>()] = message;
+        }
+    }
+    EXPECT_EQ(logged["from the pool"], 3);
+    EXPECT_EQ(logged["after the calls"], 3);
+    ASSERT_EQ(answered.size(), 4);
+    EXPECT_FALSE(answered["2"]["result"].value("isError", false)) << answered["2"];
+    EXPECT_EQ(answered["3"]["result"]["contents"][0]["text"], "hello") << answered["3"];
+    EXPECT_TRUE(answered["4"].contains("result")) << answered["4"];
+}
+
+// A request a handler makes through its Context after its session ended says so.
+TEST_F(ServerHandlersTest, AContextRequestAfterTheSessionEndedSaysTheSessionEnded) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    std::string outcome;
+    setup.server.add_tool(
+        "late", "Asks for the roots once the client has gone", nlohmann::json{{"type", "object"}},
+        [&setup, &outcome](mcp::Context& ctx, const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+            setup.raw_transport->close();
+            while (!ctx.is_cancelled()) {
+                boost::asio::steady_timer timer(co_await boost::asio::this_coro::executor,
+                                                std::chrono::milliseconds(1));
+                co_await timer.async_wait(boost::asio::use_awaitable);
+            }
+            try {
+                (void)co_await ctx.request_roots();
+                outcome = "answered";
+            } catch (const std::exception& error) {
+                outcome = error.what();
+            }
+            co_return "done";
+        });
+    auto initialize = make_initialize_request("1");
+    initialize["params"]["capabilities"] = nlohmann::json{{"roots", nlohmann::json::object()}};
+    setup.raw_transport->enqueue_message(initialize.dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "late"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+    io_ctx_.run();
+
+    EXPECT_EQ(outcome, "reverse RPC is unavailable: the client's session has ended");
+}
+
+// A middleware may return the next handler's coroutine without awaiting it.
+TEST_F(ServerHandlersTest, AMiddlewareMayReturnTheNextHandlerUnawaited) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    const auto pass_on = [](mcp::Context& ctx, const nlohmann::json& params,
+                            mcp::TypeErasedHandler next) -> mcp::Task<nlohmann::json> {
+        return next(ctx, params);
+    };
+    setup.server.use(pass_on);
+    setup.server.use(pass_on);
+    const auto greeting = std::make_shared<const std::string>("hello from the tool");
+    setup.server.add_tool<nlohmann::json, nlohmann::json>(
+        "greet", "Greets", nlohmann::json{{"type", "object"}},
+        [greeting](mcp::Context&, nlohmann::json) -> mcp::Task<nlohmann::json> {
+            co_return nlohmann::json(*greeting);
+        });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "greet"}, {"arguments", nlohmann::json::object()}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_NE(responses[1].dump().find("hello from the tool"), std::string::npos) << responses[1];
+}
+
+// When the handler executor ends while a tool handler waits on it and the server's loop goes on,
+// the call ends with a tool error on that loop.
+TEST_F(ServerHandlersTest, AToolCallFailsWhenTheHandlerExecutorEndsFirst) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    auto pool = std::make_unique<mcp::Runtime>();
+    pool->start(1);
+    setup.server.set_handler_executor(pool->executor());
+    const auto loop = io_ctx_.get_executor();
+    setup.server.add_tool("wait", "Waits on the handler executor", nlohmann::json{{"type", "object"}},
+                          [&pool, loop](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                              const auto executor = co_await boost::asio::this_coro::executor;
+                              boost::asio::steady_timer never(executor, std::chrono::hours(1));
+                              // The loop destroys the handler executor, whose Runtime waits for this
+                              // thread to leave the handler, so the wait below is under way when its
+                              // context goes.
+                              boost::asio::post(loop, [&pool] { pool.reset(); });
+                              co_await never.async_wait(boost::asio::use_awaitable);
+                              co_return "done";
+                          });
+
+    auto responses = run_request(
+        setup, nlohmann::json{{"jsonrpc", "2.0"},
+                              {"id", "2"},
+                              {"method", "tools/call"},
+                              {"params", {{"name", "wait"}, {"arguments", nlohmann::json::object()}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_TRUE(responses[1]["result"].value("isError", false)) << responses[1];
+    EXPECT_NE(responses[1].dump().find("ended before the handler returned"), std::string::npos)
+        << responses[1];
+}
+
+TEST_F(ServerHandlersTest, SyncHandlersRunThroughMiddleware) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    int middleware_calls = 0;
+    setup.server.use([&middleware_calls](mcp::Context& ctx, const nlohmann::json& params,
+                                         mcp::TypeErasedHandler next) -> mcp::Task<nlohmann::json> {
+        ++middleware_calls;
+        co_return co_await next(ctx, params);
+    });
+    setup.server.add_tool<AddParams, AddResult>(
+        "add", "Adds two numbers", nlohmann::json{{"type", "object"}},
+        [](AddParams params) -> AddResult { return AddResult{params.augend + params.addend}; });
+
+    auto responses = run_request(
+        setup,
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "add"}, {"arguments", {{"augend", 1}, {"addend", 1}}}}}});
+
+    ASSERT_EQ(responses.size(), 2);
+    EXPECT_EQ(responses[1]["result"]["structuredContent"]["sum"], 2) << responses[1];
+    EXPECT_EQ(middleware_calls, 1);
 }
 
 TEST_F(ServerHandlersTest, AsyncToolCallReturnsResult) {
@@ -1055,6 +1641,34 @@ TEST_F(ServerHandlersTest, DuplicateNamedRegistrationsAreRejected) {
     EXPECT_THROW((setup.server.add_prompt<mcp::GetPromptRequestParams, mcp::GetPromptResult>(
                      prompt, prompt_handler)),
                  std::invalid_argument);
+}
+
+// tools.mdx "Tool Names": 1 to 128 characters from ASCII letters, digits, '_', '-' and '.'.
+TEST_F(ServerHandlersTest, ToolNamesFollowTheSpecificationRules) {
+    ServerSetup setup(io_ctx_, mcp::ServerCapabilities{});
+    auto handler = [](nlohmann::json) { return nlohmann::json::object(); };
+    const auto schema = nlohmann::json{{"type", "object"}};
+    for (const std::string name :
+         {std::string("get_weather"), std::string("DATA-export.v2"), std::string(128, 'a')}) {
+        EXPECT_NO_THROW(
+            (setup.server.add_tool<nlohmann::json, nlohmann::json>(name, "ok", schema, handler)))
+            << name;
+    }
+    for (const std::string name :
+         {std::string(), std::string(129, 'b'), std::string("my tool"), std::string("files/read"),
+          std::string("a,b"), std::string("caf\xc3\xa9")}) {
+        EXPECT_THROW(
+            (setup.server.add_tool<nlohmann::json, nlohmann::json>(name, "bad", schema, handler)),
+            std::invalid_argument)
+            << name;
+        mcp::Tool tool;
+        tool.name = name;
+        tool.inputSchema = schema;
+        EXPECT_THROW(
+            setup.server.add_tool(tool, [](const nlohmann::json&) { return nlohmann::json(); }),
+            std::invalid_argument)
+            << name;
+    }
 }
 
 // The prompts spec lists "Invalid prompt name" under -32602 (Invalid params): the method exists,

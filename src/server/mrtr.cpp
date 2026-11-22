@@ -4,6 +4,7 @@
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 
@@ -324,6 +325,12 @@ nlohmann::json InlineInput::missing_capabilities() const {
     return missing_;
 }
 
+bool asks_for_sampling_context(const nlohmann::json& params) {
+    // find() gives end() for a value that is no object.
+    const auto include = params.find("includeContext");
+    return include != params.end() && include->is_string() && *include != "none";
+}
+
 nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabilities,
                                            const nlohmann::json& request) {
     const auto& method = request.at("method").get_ref<const std::string&>();
@@ -355,6 +362,9 @@ nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabili
         if (tools != params.end() && tools->is_array() && !tools->empty() &&
             !sampling->contains("tools")) {
             return {{"sampling", {{"tools", nlohmann::json::object()}}}};
+        }
+        if (asks_for_sampling_context(params) && !sampling->contains("context")) {
+            return {{"sampling", {{"context", nlohmann::json::object()}}}};
         }
     } else if (method == "roots/list") {
         if (declared("roots") == nullptr) {

@@ -11,6 +11,50 @@ In `mcp-cpp-sdk`, prompts are registered with a name, description, and an option
 set of arguments. Clients can discover these prompts and request them with
 specific arguments to get a list of messages to include in the conversation.
 
+Using Prompts
+-------------
+
+``add_text_prompt()`` registers a prompt whose one message, from the user, is
+the text a function makes of the request's arguments. The function receives the
+arguments as a ``Server::PromptArguments`` map, empty when the request gave
+none. In sync mode it returns ``std::string``; in async mode it is a coroutine
+that returns ``mcp::Task<std::string>``:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
+
+A request that leaves out a required argument is answered with invalid params,
+without calling the function. A ``Prompt`` passed in place of the name,
+description and arguments sets the title and icons as well.
+
+A client fills in a prompt with ``get_prompt()``, whose arguments are given by
+name; the result's ``messages`` are the conversation to hand to a model:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Prompts.
+   :end-before: // Completions.
+   :dedent: 4
+
 Registering a Basic Prompt
 --------------------------
 
@@ -123,9 +167,11 @@ dynamic content from your server's resources in the prompt response.
 
 .. code-block:: cpp
 
+   TextResourceContents contents;
+   contents.uri = "mcp://system/config";
+   contents.text = "System configuration data...";
    EmbeddedResource resource;
-   resource.resource.uri = "mcp://system/config";
-   resource.resource.text = "System configuration data...";
+   resource.resource = std::move(contents);
    msg.content = std::move(resource);
 
 Advanced Registration
@@ -186,9 +232,10 @@ prompting them to call `prompts/list` again if they need the updated list.
 Prompt Capabilities
 -------------------
 
-To enable prompts, include them in your server capabilities during initialization.
-If the client does not see prompt capabilities, it may not attempt to list or
-get prompts.
+A server that has a prompt advertises the prompts capability on its own. What
+registration cannot imply, such as list-changed notifications, is set in the
+capabilities the server is constructed with, or on ``server.capabilities()``
+before it serves:
 
 .. code-block:: cpp
 

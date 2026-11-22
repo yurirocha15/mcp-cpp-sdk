@@ -1,12 +1,17 @@
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/notification_budget.hpp"
 #include "../detail/peer_json.hpp"
+#include "../detail/response_cache.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/serialized_transport_writer.hpp>
+#include <mcp/transport/http_client.hpp>
+#include <mcp/transport/tls.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -15,6 +20,8 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/error.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -22,10 +29,13 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <exception>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -33,12 +43,21 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace mcp {
 
 namespace {
+
+/// Awaits @p request and decodes its result as a Result.
+template <typename Result>
+Task<Result> parse_result(Task<nlohmann::json> request) {
+    auto result_json = co_await std::move(request);
+    co_return result_json.template get<Result>();
+}
 
 std::optional<nlohmann::json> make_paginated_params(const std::optional<std::string>& cursor) {
     if (!cursor) {
@@ -48,6 +67,27 @@ std::optional<nlohmann::json> make_paginated_params(const std::optional<std::str
     PaginatedRequestParams params;
     params.cursor = cursor;
     return nlohmann::json(std::move(params));
+}
+
+/// Throws @p failure, a transport's failure to send a message to the server. An HTTP error status
+/// and a failed connection become McpError with g_CONNECTION_CLOSED, as a closed stdio connection
+/// does, with the transport's exception nested in it for std::rethrow_if_nested(); an HTTP status
+/// is also in its data() as `httpStatus`. Any other exception is thrown as it is.
+[[noreturn]] void throw_transport_failure(const std::exception_ptr& failure) {
+    try {
+        std::rethrow_exception(failure);
+    } catch (const HttpStatusError& error) {
+        std::throw_with_nested(
+            McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                     "The server answered with HTTP status " + std::to_string(error.status()),
+                     nlohmann::json{{"httpStatus", error.status()}}));
+    } catch (const boost::system::system_error& error) {
+        std::throw_with_nested(
+            McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                     "The connection to the server failed: " + error.code().message()));
+    } catch (const TlsError& error) {
+        std::throw_with_nested(McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, error.what()));
+    }
 }
 
 }  // namespace
@@ -233,6 +273,111 @@ void check_elicitation_content(const nlohmann::json& params, const ElicitResult&
 
 namespace detail {
 
+/// The event loop a Client constructed from an Endpoint runs on, for the calls that wait for it.
+struct BlockingLoop {
+    BlockingLoop(std::shared_ptr<void> loop_owner, boost::asio::any_io_executor loop_executor,
+                 std::thread::id loop_thread)
+        : owner(std::move(loop_owner)), executor(std::move(loop_executor)), thread(loop_thread) {}
+
+    /// Owns the loop's io_context. Every state that holds this BlockingLoop declares it first, so
+    /// that the io_context is destroyed after that state's timers and strand, also when a
+    /// TaskHandle or Subscription keeps the state after the Client is gone.
+    std::shared_ptr<void> owner;
+    boost::asio::any_io_executor executor;
+    std::thread::id thread;
+
+    /// Whether the Client has stopped the loop for good, after which nothing runs a blocking call,
+    /// and the calls that wait. Held apart from the loop, which a waiting call must not keep.
+    struct End {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool ended = false;  // guarded by mutex
+    };
+    std::shared_ptr<End> end = std::make_shared<End>();
+
+    /// Ends the waits of the blocking calls, including those whose coroutine the loop never ran.
+    void mark_ended() const {
+        {
+            std::lock_guard lock(end->mutex);
+            end->ended = true;
+        }
+        end->changed.notify_all();
+    }
+};
+
+/// Runs the coroutine @p start makes on @p loop and waits for it; see Client::sync().
+template <typename T>
+T run_blocking(const std::shared_ptr<const BlockingLoop>& loop, std::function<Task<T>()> start) {
+    if (!loop) {
+        throw std::logic_error(
+            "mcp::Client: blocking calls need a client constructed from an Endpoint; a client on "
+            "the application's executor is used through its coroutines");
+    }
+    if (std::this_thread::get_id() == loop->thread) {
+        throw std::logic_error(
+            "mcp::Client: a blocking call on the client's own event loop thread would wait for "
+            "itself; await the coroutine instead");
+    }
+    struct Call {
+        std::conditional_t<std::is_void_v<T>, bool, std::optional<T>> value{};
+        std::exception_ptr error;
+        bool done = false;
+    };
+    auto call = std::make_shared<Call>();
+    const auto end = loop->end;
+    const auto closed = [] {
+        return McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                        "The client has been destroyed, and its connection with it");
+    };
+    // Spawned with the mutex held, so the end comes either before the check or after the spawn and
+    // then ends the wait below. The coroutine is made on the loop as well, so that no part of the
+    // call runs on this thread.
+    {
+        std::lock_guard lock(end->mutex);
+        if (end->ended) {
+            throw closed();
+        }
+        auto body = [start = std::move(start)]() -> boost::asio::awaitable<T> {
+            co_return co_await start();
+        };
+        if constexpr (std::is_void_v<T>) {
+            boost::asio::co_spawn(loop->executor, std::move(body),
+                                  [call, end](std::exception_ptr error) {
+                                      {
+                                          std::lock_guard done_lock(end->mutex);
+                                          call->error = std::move(error);
+                                          call->done = true;
+                                      }
+                                      end->changed.notify_all();
+                                  });
+        } else {
+            boost::asio::co_spawn(loop->executor, std::move(body),
+                                  [call, end](std::exception_ptr error, T value) {
+                                      {
+                                          std::lock_guard done_lock(end->mutex);
+                                          call->error = std::move(error);
+                                          if (!call->error) {
+                                              call->value.emplace(std::move(value));
+                                          }
+                                          call->done = true;
+                                      }
+                                      end->changed.notify_all();
+                                  });
+        }
+    }
+    std::unique_lock lock(end->mutex);
+    end->changed.wait(lock, [&] { return call->done || end->ended; });
+    if (!call->done) {
+        throw closed();
+    }
+    if (call->error) {
+        std::rethrow_exception(call->error);
+    }
+    if constexpr (!std::is_void_v<T>) {
+        return std::move(call->value).value();
+    }
+}
+
 /// The client's side of one subscriptions/listen stream. Every change to it happens on the client
 /// strand; the mutex only lets the handle's accessors read it from any thread.
 struct SubscriptionState {
@@ -240,6 +385,9 @@ struct SubscriptionState {
                       std::size_t limit)
         : wake(strand), queue_limit(limit) {}
 
+    /// The loop of a Client constructed from an Endpoint, for Subscription::sync(); null otherwise.
+    /// Declared first, as BlockingLoop::owner requires.
+    std::shared_ptr<const BlockingLoop> blocking_loop;
     /// Wakes whoever waits for the acknowledgment or the next notification.
     boost::asio::steady_timer wake;
     std::size_t queue_limit;
@@ -625,10 +773,18 @@ struct Client::Impl {
     /// the result type of the answer; a legacy session sends @p params as given.
     /// @p declare_tasks makes the request declare the tasks extension, as every request of a
     /// session with ClientOptions::tasks set does, and lets a tools/call be answered with a task.
+    /// @p answered_input, when given, is set when the answer came after the client answered the
+    /// server's `input_required` questions.
     static Task<nlohmann::json> request(std::shared_ptr<Impl> state, std::string_view method,
                                         const std::optional<nlohmann::json>& params,
                                         const RequestOptions& request_options,
-                                        bool declare_tasks = false) {
+                                        bool declare_tasks = false,
+                                        std::shared_ptr<bool> answered_input = nullptr) {
+        if (request_options.on_progress) {
+            return request_with_progress(std::move(state), std::make_shared<const std::string>(method),
+                                         params.value_or(nlohmann::json()), request_options,
+                                         declare_tasks, std::move(answered_input));
+        }
         const auto modern_version = state->modern_version();
         if (!modern_version) {
             return request_wire(std::move(state), method, params, request_options, false);
@@ -636,14 +792,228 @@ struct Client::Impl {
         reject_removed_method(*modern_version, method);
         declare_tasks = declare_tasks || method.starts_with("tasks/");
         if (supports_input_required(method)) {
-            return resume_input_required(
-                std::move(state), std::make_shared<const std::string>(method), params, request_options,
-                std::make_shared<const std::string>(*modern_version), declare_tasks);
+            return resume_input_required(std::move(state), std::make_shared<const std::string>(method),
+                                         params, request_options,
+                                         std::make_shared<const std::string>(*modern_version),
+                                         declare_tasks, std::move(answered_input));
         }
         auto modern_params =
             state->with_request_meta(*modern_version, params, request_options.log_level, declare_tasks);
         return checked_result(
             request_wire(std::move(state), method, modern_params, request_options, false));
+    }
+
+    /// A request of a cacheable method, answered from the response cache when the cache is on and
+    /// holds a fresh result, as RequestOptions::cache_mode allows; see ResponseCacheOptions.
+    static Task<nlohmann::json> cacheable_request(std::shared_ptr<Impl> state, std::string_view method,
+                                                  std::optional<nlohmann::json> params,
+                                                  const RequestOptions& request_options) {
+        if (!state->read_loop_started.load(std::memory_order_acquire)) {
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                           "Client must connect before sending requests");
+        }
+        // A closed client fails the call as it would without the cache.
+        if (!state->response_cache.enabled() || request_options.cache_mode == CacheMode::eBypass ||
+            state->closed.load(std::memory_order_acquire)) {
+            return request(std::move(state), method, params, request_options);
+        }
+        return cached_request(std::move(state), std::make_shared<const std::string>(method),
+                              std::move(params), request_options);
+    }
+
+    static Task<nlohmann::json> cached_request(std::shared_ptr<Impl> state,
+                                               std::shared_ptr<const std::string> method,
+                                               std::optional<nlohmann::json> params,
+                                               RequestOptions request_options) {
+        auto& cache = state->response_cache;
+        // On the heap: GCC 11 mishandles a std::string that lives across a suspension point.
+        const auto key =
+            std::make_shared<const std::string>(detail::ResponseCache::key(*method, params));
+        if (request_options.cache_mode == CacheMode::eUse) {
+            auto kept = cache.find(*key);
+            if (kept) {
+                co_return std::move(*kept);
+            }
+        }
+        const auto generation = cache.generation();
+        auto answered_input = std::make_shared<bool>(false);
+        nlohmann::json reply;
+        try {
+            reply = co_await request(state, *method, params, request_options, false, answered_input);
+        } catch (const McpError& error) {
+            // A refused cursor means the pages kept so far may not fit together any more; the
+            // next call starts the list again from the first page.
+            if (error.code() == mcp::constants::jsonrpc::g_INVALID_PARAMS && params &&
+                params->is_object() && params->contains("cursor")) {
+                cache.forget(*method);
+            }
+            throw;
+        }
+        // A result that depends on the answers to the server's questions is not one the method and
+        // parameters identify.
+        if (!*answered_input) {
+            cache.store(*key, *method, params, reply, generation);
+        }
+        co_return reply;
+    }
+
+    /// The RequestOptions::on_progress callback of one request in flight. The read loop calls it
+    /// holding `mutex`, and the request's end closes it holding `mutex`, so a progress
+    /// notification that arrives after the answer never reaches a callback whose caller returned.
+    struct ProgressRouteState {
+        explicit ProgressRouteState(const NotificationRateLimit& limit) : bucket(limit) {}
+
+        std::recursive_mutex mutex;
+        std::function<void(const ProgressNotificationParams&)> callback;
+        bool open = true;
+        /// The progress notifications of this request that may still reach the callback.
+        detail::TokenBucket bucket;
+    };
+
+    /// Ends a request's progress route when the request ends.
+    struct ProgressRoute {
+        std::shared_ptr<Impl> state;
+        std::shared_ptr<const std::string> key;
+        std::shared_ptr<ProgressRouteState> route;
+
+        ProgressRoute() = default;
+        ProgressRoute(const ProgressRoute&) = delete;
+        ProgressRoute& operator=(const ProgressRoute&) = delete;
+        ProgressRoute(ProgressRoute&&) noexcept = default;
+        ProgressRoute& operator=(ProgressRoute&&) = delete;
+        ~ProgressRoute() {
+            if (!route) {
+                return;
+            }
+            {
+                std::lock_guard lock(state->handlers_mutex);
+                state->progress_routes.erase(*key);
+            }
+            std::lock_guard lock(route->mutex);
+            route->open = false;
+        }
+    };
+
+    /// Gives the request in @p params a progress token, unless its `_meta` names one, and routes
+    /// the notifications/progress carrying it to RequestOptions::on_progress until the returned
+    /// route ends. The callback is taken out of @p request_options, so the requests made on this
+    /// one's behalf (input rounds, task polls, a cancel) carry no token of their own.
+    static ProgressRoute route_progress(const std::shared_ptr<Impl>& state, nlohmann::json& params,
+                                        RequestOptions& request_options) {
+        ProgressRoute ended;
+        if (!request_options.on_progress) {
+            return ended;
+        }
+        auto route = std::make_shared<ProgressRouteState>(state->options.notification_rate_limit);
+        route->callback = std::move(request_options.on_progress);
+        request_options.on_progress = nullptr;
+        if (params.is_null()) {
+            params = nlohmann::json::object();
+        }
+        if (!params.is_object()) {
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                           "Request params must be an object");
+        }
+        auto& meta = params["_meta"];
+        if (meta.is_null()) {
+            meta = nlohmann::json::object();
+        }
+        if (!meta.is_object()) {
+            throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                           "Request _meta must be an object");
+        }
+        ProgressToken token;
+        if (const auto found = meta.find("progressToken"); found != meta.end()) {
+            try {
+                token = found->get<ProgressToken>();
+            } catch (const std::exception&) {
+                throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                               "Request _meta.progressToken must be a string or an integer");
+            }
+        } else {
+            token = ProgressToken{
+                std::string(detail::constants::client_requests::g_PROGRESS_TOKEN_PREFIX) +
+                std::to_string(state->next_progress_token.fetch_add(1, std::memory_order_relaxed))};
+            meta["progressToken"] = token;
+        }
+        auto key = std::make_shared<const std::string>(token.correlation_key());
+        {
+            std::lock_guard lock(state->handlers_mutex);
+            if (!state->progress_routes.emplace(*key, route).second) {
+                throw std::invalid_argument(
+                    "The request's progress token is already used by another request in flight");
+            }
+        }
+        ProgressRoute routed;
+        routed.state = state;
+        routed.key = std::move(key);
+        routed.route = std::move(route);
+        return routed;
+    }
+
+    /// Sends a request whose RequestOptions::on_progress is set, routing its progress for as long
+    /// as the request lasts.
+    static Task<nlohmann::json> request_with_progress(
+        std::shared_ptr<Impl> state, std::shared_ptr<const std::string> method, nlohmann::json params,
+        RequestOptions request_options, bool declare_tasks, std::shared_ptr<bool> answered_input) {
+        const auto route = route_progress(state, params, request_options);
+        auto reply = co_await request(state, *method, params, request_options, declare_tasks,
+                                      std::move(answered_input));
+        co_return reply;
+    }
+
+    /// Hands a notifications/progress to the RequestOptions::on_progress of the request whose
+    /// token it carries. Returns false when no request in flight has that token, leaving the
+    /// notification to Client::on_progress.
+    static bool deliver_request_progress(const std::shared_ptr<Impl>& state,
+                                         const nlohmann::json& json_message) {
+        const auto params = json_message.find("params");
+        if (params == json_message.end() || !params->is_object()) {
+            return false;
+        }
+        const auto token = params->find("progressToken");
+        if (token == params->end() || !(token->is_string() || token->is_number_integer())) {
+            return false;
+        }
+        std::shared_ptr<ProgressRouteState> route;
+        {
+            const auto key = token->get<ProgressToken>().correlation_key();
+            std::lock_guard lock(state->handlers_mutex);
+            const auto found = state->progress_routes.find(key);
+            if (found == state->progress_routes.end()) {
+                return false;
+            }
+            route = found->second;
+        }
+        ProgressNotificationParams progress;
+        try {
+            params->get_to(progress);
+        } catch (const std::exception& error) {
+            report_protocol_error(state, mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                                  "Malformed progress notification params: " +
+                                      detail::sanitize_for_diagnostics(error.what()));
+            return true;
+        }
+        // As for any notification callback, a throw is reported and the session carries on.
+        std::lock_guard lock(route->mutex);
+        if (!route->open) {
+            return true;
+        }
+        if (!route->bucket.take()) {
+            state->dropped_notifications.fetch_add(1, std::memory_order_relaxed);
+            return true;
+        }
+        try {
+            route->callback(progress);
+        } catch (const std::exception& error) {
+            report_protocol_error(
+                state, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                "Progress callback threw: " + detail::sanitize_for_diagnostics(error.what()));
+        } catch (...) {
+            report_protocol_error(state, mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                                  "Progress callback threw");
+        }
+        return true;
     }
 
     static Task<nlohmann::json> request_wire(std::shared_ptr<Impl> state, std::string_view method,
@@ -664,10 +1034,13 @@ struct Client::Impl {
         auto strand = state->strand;
         // Awaiting post(strand) would not rebind a caller-owned coroutine's continuation.
         // Spawn the complete pending-request lifecycle on the client strand instead.
-        return boost::asio::co_spawn(strand,
-                                     send_request_wire(std::move(state), std::move(wire), id, timeout,
-                                                       probe, request_options.cancellation),
-                                     boost::asio::use_awaitable);
+        // A client must not cancel an initialize request.
+        const bool cancellable = method != "initialize";
+        return boost::asio::co_spawn(
+            strand,
+            send_request_wire(std::move(state), std::move(wire), id, timeout, probe, cancellable,
+                              request_options.cancellation),
+            boost::asio::use_awaitable);
     }
 
     /// The methods 2026-07-28 removed. The server answers none of them, so the request is refused
@@ -812,7 +1185,8 @@ struct Client::Impl {
                                                       std::optional<nlohmann::json> params,
                                                       RequestOptions request_options,
                                                       std::shared_ptr<const std::string> version,
-                                                      bool declare_tasks) {
+                                                      bool declare_tasks,
+                                                      std::shared_ptr<bool> answered_input) {
         const auto timeout = request_options.timeout.value_or(state->options.request_timeout);
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         // A tools/call that declared the extension may be answered with a task, which the caller
@@ -842,6 +1216,9 @@ struct Client::Impl {
                 *type != "input_required") {
                 if (!(task_allowed && is_task_result(reply))) {
                     check_complete(reply);
+                }
+                if (answered_input && round > 0) {
+                    *answered_input = true;
                 }
                 co_return reply;
             }
@@ -966,6 +1343,7 @@ struct Client::Impl {
         if (check.refusal) {
             throw *check.refusal;
         }
+        const auto route = route_progress(state, params, request_options);
         nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
         if (is_task_result(reply)) {
             nlohmann::json task_params = {{"taskId", nlohmann::json()}};
@@ -1004,7 +1382,8 @@ struct Client::Impl {
     /// to the caller.
     static Task<std::variant<CallToolResult, TaskHandle>> start_tool(std::shared_ptr<Impl> state,
                                                                      nlohmann::json params,
-                                                                     OutputCheck check) {
+                                                                     OutputCheck check,
+                                                                     RequestOptions request_options) {
         if (check.refusal) {
             throw *check.refusal;
         }
@@ -1012,7 +1391,7 @@ struct Client::Impl {
         if (params.contains("name") && params["name"].is_string()) {
             tool = params["name"].get<std::string>();
         }
-        const RequestOptions request_options;
+        const auto route = route_progress(state, params, request_options);
         nlohmann::json reply = co_await request(state, "tools/call", params, request_options, true);
         if (is_task_result(reply)) {
             try {
@@ -1057,6 +1436,7 @@ struct Client::Impl {
 
         auto stream = std::make_shared<detail::SubscriptionState>(
             state->strand, state->options.subscription_queue_limit);
+        stream->blocking_loop = state->blocking_loop;
         stream->id = RequestId{std::to_string(id)};
         stream->requested = filter;
         std::weak_ptr<Impl> weak_state = state;
@@ -1118,7 +1498,7 @@ struct Client::Impl {
                     throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                                    "Client transport is closed");
                 }
-                std::rethrow_exception(*write_failure);
+                throw_transport_failure(*write_failure);
             }
             if (stream->ack_wait() != detail::SubscriptionState::AckWait::ePending ||
                 std::chrono::steady_clock::now() >= deadline) {
@@ -1434,9 +1814,9 @@ struct Client::Impl {
                                                            const std::string& version) {
         InitializeRequest initialize_request;
         initialize_request.protocolVersion = version;
+        initialize_request.capabilities = state->effective_capabilities();
         std::lock_guard lock(state->handlers_mutex);
         initialize_request.clientInfo = state->client_info;
-        initialize_request.capabilities = state->client_capabilities;
         return nlohmann::json(std::move(initialize_request));
     }
 
@@ -1453,8 +1833,11 @@ struct Client::Impl {
             result_json = co_await std::move(pending);
             answered = true;
         } catch (const McpError& error) {
+            // A transport failure, which throw_transport_failure() nests, is no answer from the
+            // server, and goes to the caller whole.
             if (state->closed.load(std::memory_order_acquire) ||
-                error.code() == mcp::constants::jsonrpc::g_REQUEST_TIMEOUT) {
+                error.code() == mcp::constants::jsonrpc::g_REQUEST_TIMEOUT ||
+                dynamic_cast<const std::nested_exception*>(&error) != nullptr) {
                 throw;
             }
             attempt->error = error.error();
@@ -1585,11 +1968,27 @@ struct Client::Impl {
                        outcome.error ? outcome.error->data : std::nullopt);
     }
 
-    /// ClientProtocol::pinned("2026-07-28"): discover once for ConnectResult; never initialize.
+    /// Whether @p outcome refuses @p version as unsupported while listing it as supported.
+    static bool refuses_listed_version(const ProbeOutcome& outcome, const std::string& version) {
+        if (outcome.kind != ProbeOutcome::Kind::eModernError ||
+            outcome.error->code != mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION) {
+            return false;
+        }
+        const auto advertised = advertised_versions(*outcome.error);
+        return std::find(advertised.begin(), advertised.end(), version) != advertised.end();
+    }
+
+    /// ClientProtocol::pinned("2026-07-28"): discover for ConnectResult; never initialize.
     static Task<ConnectResult> connect_pinned_modern(std::shared_ptr<Impl> state,
                                                      std::chrono::steady_clock::time_point started) {
         auto version = std::make_shared<const std::string>(state->options.protocol.version());
         auto outcome = co_await probe(state, version, state->options.request_timeout);
+        // A client whose version is refused retries with a version from the server's list that both
+        // sides support. For a pinned client that can only be the pinned version, so a refusal that
+        // lists it is asked again, once.
+        if (refuses_listed_version(*outcome, *version)) {
+            outcome = co_await probe(state, version, state->options.request_timeout);
+        }
         if (outcome->kind != ProbeOutcome::Kind::eDiscover) {
             throw_probe_failure(*outcome, *version);
         }
@@ -1705,6 +2104,12 @@ struct Client::Impl {
                                                std::move(message), std::nullopt});
             state->transport->close();
             state->incoming_requests_wake.cancel();
+            for (const auto& pause : state->poll_pauses) {
+                if (auto timer = pause.lock()) {
+                    timer->cancel();
+                }
+            }
+            state->poll_pauses.clear();
         });
     }
 
@@ -1715,6 +2120,7 @@ struct Client::Impl {
     static Task<nlohmann::json> send_request_wire(std::shared_ptr<Impl> state,
                                                   std::shared_ptr<const std::string> wire, int64_t id,
                                                   std::chrono::milliseconds timeout, bool probe,
+                                                  bool cancellable,
                                                   std::optional<CancellationToken> cancellation) {
         if (state->closed.load(std::memory_order_acquire)) {
             throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed");
@@ -1807,11 +2213,12 @@ struct Client::Impl {
             state->pending_requests.erase(iter);
         }
 
-        // A 2026-07-28 request the client stops waiting for is cancelled, so the server stops
-        // working on it and an HTTP transport closes its response stream. An era probe is given up
-        // the same way where that closes a connection; elsewhere the server may predate the era.
+        // A request the client stops waiting for is cancelled, as the specification asks of a
+        // timeout, so the server stops working on it and an HTTP transport closes its response
+        // stream. An era probe is given up the same way where that closes a connection; elsewhere
+        // the server may predate the era.
         const bool cancels =
-            state->modern_version().has_value() || (probe && state->overlapping_writes);
+            probe ? state->modern_version().has_value() || state->overlapping_writes : cancellable;
         if (timed_out && cancels) {
             send_cancelled(state, id, std::string("Request timed out"));
         }
@@ -1820,7 +2227,11 @@ struct Client::Impl {
             throw McpError(std::move(*error));
         }
         if (write_error) {
-            std::rethrow_exception(write_error);
+            // The era probe tells a refused write from an answer, so it gets the failure as it is.
+            if (probe) {
+                std::rethrow_exception(write_error);
+            }
+            throw_transport_failure(write_error);
         }
         co_return result;
     }
@@ -1865,11 +2276,17 @@ struct Client::Impl {
         send_cancelled(state, id, reason);
     }
 
-    /// Waits @p time on the strand, ending early when @p cancellation is cancelled.
+    /// Waits @p time on the strand, ending early when @p cancellation is cancelled or the client
+    /// closes.
     static Task<void> pause_unless_cancelled(std::shared_ptr<Impl> state,
                                              std::chrono::milliseconds time,
                                              std::optional<CancellationToken> cancellation) {
+        if (state->closed.load(std::memory_order_acquire)) {
+            co_return;
+        }
         auto timer = std::make_shared<boost::asio::steady_timer>(state->strand, time);
+        std::erase_if(state->poll_pauses, [](const auto& pause) { return pause.expired(); });
+        state->poll_pauses.push_back(timer);
         CancellationRegistration cancellation_registration;
         if (cancellation) {
             const auto& token_state = detail::CancellationAccess::state(*cancellation);
@@ -1908,7 +2325,7 @@ struct Client::Impl {
                 throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
                                "Client transport is closed");
             }
-            throw;
+            throw_transport_failure(std::current_exception());
         }
     }
 
@@ -2098,10 +2515,21 @@ struct Client::Impl {
     static void dispatch_notification(const std::shared_ptr<Impl>& state,
                                       const nlohmann::json& json_message) {
         const auto method = json_message.at("method").get<std::string>();
+        state->response_cache.invalidate(method, json_message);
         if (method == "notifications/cancelled" && end_subscription_from_cancel(state, json_message)) {
             return;
         }
         route_to_subscription(state, method, json_message);
+        if (method == "notifications/progress" && deliver_request_progress(state, json_message)) {
+            return;
+        }
+        // Progress no request in flight claims goes to Client::on_progress, through one bucket for
+        // the client; log messages share another.
+        if ((method == "notifications/progress" && !state->progress_bucket.take()) ||
+            (method == "notifications/message" && !state->log_bucket.take())) {
+            state->dropped_notifications.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         if (method == "notifications/cancelled") {
             if (detail::has_json_value(json_message, "params")) {
                 auto params = json_message.at("params").get<CancelledNotificationParams>();
@@ -2297,14 +2725,27 @@ struct Client::Impl {
         }
     }
 
+    /// The loop of a Client constructed from an Endpoint, for the blocking calls; null otherwise.
+    /// Declared first, as BlockingLoop::owner requires.
+    std::shared_ptr<const detail::BlockingLoop> blocking_loop;
     std::shared_ptr<ITransport> transport;
+    /// The executor the Client was constructed with, as Client::executor() returns it.
+    Executor executor;
     boost::asio::strand<boost::asio::any_io_executor> strand;
     /// How many requests of the server are being answered. Touched on the strand only.
     std::size_t incoming_requests{0};
     /// Memory those requests take, as json_memory_cost() estimates it. Touched on the strand only.
     std::size_t incoming_request_bytes{0};
     boost::asio::steady_timer incoming_requests_wake{strand};
+    /// The pauses between the polls of the tasks being waited for, which closing ends. Touched on
+    /// the strand only.
+    std::vector<std::weak_ptr<boost::asio::steady_timer>> poll_pauses;
     ClientOptions options;
+    detail::ResponseCache response_cache{options.response_cache};
+    /// See ClientOptions::notification_rate_limit.
+    detail::TokenBucket progress_bucket{options.notification_rate_limit};
+    detail::TokenBucket log_bucket{options.notification_rate_limit};
+    std::atomic<std::uint64_t> dropped_notifications{0};
     detail::SerializedTransportWriter writer;
     /// What the transport said of itself; see writes_beside_queue().
     bool overlapping_writes{false};
@@ -2322,6 +2763,9 @@ struct Client::Impl {
 
     mutable std::mutex handlers_mutex;
     std::map<std::string, NotificationCallback, std::less<>> notification_handlers;
+    /// The progress routes of the requests in flight, by the correlation key of their token.
+    std::map<std::string, std::shared_ptr<ProgressRouteState>, std::less<>> progress_routes;
+    std::atomic<int64_t> next_progress_token{1};
     std::map<std::string, RequestHandler, std::less<>> request_handlers;
     std::vector<Root> roots;
     ClientCapabilities client_capabilities;
@@ -2342,9 +2786,10 @@ struct Client::Impl {
         return modern_protocol_version;
     }
 
-    /// What this client tells a modern server it can do: the capabilities given to connect(), plus
-    /// what its registered handlers imply. Read afresh for every request, so a handler registered
-    /// after connect() counts from the next request on.
+    /// What this client tells a server it can do: the capabilities given to connect(), plus what
+    /// its registered handlers imply. A legacy session sends it once, in initialize; a modern one
+    /// reads it afresh for every request, so a handler registered after connect() counts from the
+    /// next request on.
     ClientCapabilities effective_capabilities() const {
         std::lock_guard lock(handlers_mutex);
         auto capabilities = client_capabilities;
@@ -2493,11 +2938,47 @@ struct Client::Impl {
     }
 };
 
-Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_executor& executor,
-               ClientOptions options) {
-    if (!transport) {
-        throw std::invalid_argument("Client transport must not be null");
+struct Client::OwnedLoop {
+    /// An io_context whose pending handlers can be destroyed before it is.
+    class Context final : public boost::asio::io_context {
+       public:
+        using boost::asio::execution_context::shutdown;
+    };
+
+    Context io;
+    /// How long the destructor waits for the loop to finish.
+    std::chrono::milliseconds close_wait{mcp::constants::client::g_CLOSE_WAIT_MS};
+    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work{io.get_executor()};
+    std::promise<void> finished;
+    std::future<void> finished_future = finished.get_future();
+    std::thread thread;
+
+    OwnedLoop() {
+        thread = std::thread([this] {
+            for (;;) {
+                try {
+                    io.run();
+                    break;
+                } catch (...) {
+                    // A handler threw: the client's own work catches its errors, so this is one of
+                    // the application's callbacks. The loop keeps running for the others.
+                }
+            }
+            finished.set_value();
+        });
     }
+
+    OwnedLoop(const OwnedLoop&) = delete;
+    OwnedLoop& operator=(const OwnedLoop&) = delete;
+    OwnedLoop(OwnedLoop&&) = delete;
+    OwnedLoop& operator=(OwnedLoop&&) = delete;
+    ~OwnedLoop() = default;
+};
+
+namespace {
+
+/// @throws std::invalid_argument When @p options holds a value a client cannot work with.
+void check_options(const ClientOptions& options) {
     if (options.request_timeout <= std::chrono::milliseconds::zero()) {
         throw std::invalid_argument("Client request timeout must be positive");
     }
@@ -2514,7 +2995,48 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
     if (options.max_incoming_request_bytes == 0) {
         throw std::invalid_argument("Client incoming request memory limit must be positive");
     }
-    impl_ = std::make_shared<Impl>(std::move(transport), executor, std::move(options));
+    detail::check_rate_limit(options.notification_rate_limit);
+    if (options.response_cache.enabled &&
+        (options.response_cache.max_entries == 0 ||
+         options.response_cache.max_ttl <= std::chrono::milliseconds::zero())) {
+        throw std::invalid_argument("Client response cache entry limit and lifetime must be positive");
+    }
+}
+
+}  // namespace
+
+Client::Client(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options) {
+    start(std::move(transport), executor, std::move(options));
+}
+
+Client::Client(const Endpoint& endpoint, ClientOptions options) : loop_(std::make_shared<OwnedLoop>()) {
+    if (endpoint.close_wait_ > std::chrono::milliseconds::zero()) {
+        loop_->close_wait = std::max(
+            loop_->close_wait, endpoint.close_wait_ + detail::constants::stdio_client::g_KILL_WAIT);
+    }
+    try {
+        // Before the transport, which may start the server's process.
+        check_options(options);
+        const Executor executor = loop_->io.get_executor();
+        start(endpoint.make_transport(executor), executor, std::move(options));
+        impl_->blocking_loop = std::make_shared<const detail::BlockingLoop>(
+            loop_, loop_->io.get_executor(), loop_->thread.get_id());
+    } catch (...) {
+        loop_->work.reset();
+        loop_->io.stop();
+        loop_->thread.join();
+        throw;
+    }
+}
+
+void Client::start(std::shared_ptr<ITransport> transport, const Executor& executor,
+                   ClientOptions options) {
+    if (!transport) {
+        throw std::invalid_argument("Client transport must not be null");
+    }
+    check_options(options);
+    impl_ = std::make_shared<Impl>(std::move(transport), executor.get(), std::move(options));
+    impl_->executor = executor;
     impl_->transport->set_interaction_observer(
         [state = std::weak_ptr<Impl>(impl_)](std::string_view key, bool waiting) {
             if (const auto alive = state.lock()) {
@@ -2526,7 +3048,70 @@ Client::Client(std::shared_ptr<ITransport> transport, const boost::asio::any_io_
         });
 }
 
-Client::~Client() { close(); }
+Executor Client::executor() const { return impl_->executor; }
+
+namespace {
+
+/// The params of a tools/call with JSON arguments; `{}` makes null ones, which are sent as an empty
+/// object.
+CallToolParams json_call_params(const std::string& name, const nlohmann::json& arguments) {
+    CallToolParams call_params;
+    call_params.name = name;
+    call_params.arguments = arguments.is_null() ? nlohmann::json::object() : arguments;
+    return call_params;
+}
+
+}  // namespace
+
+Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments) {
+    // [gcc11-sso: not-a-coroutine]
+    return call_tool_with(json_call_params(name, arguments));
+}
+
+Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments,
+                                       const RequestOptions& request_options) {
+    // [gcc11-sso: not-a-coroutine]
+    return call_tool_with(json_call_params(name, arguments), request_options);
+}
+
+Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool(const std::string& name,
+                                                                  const nlohmann::json& arguments) {
+    // [gcc11-sso: not-a-coroutine]
+    return start_tool_with(json_call_params(name, arguments));
+}
+
+Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool(
+    const std::string& name, const nlohmann::json& arguments, const RequestOptions& request_options) {
+    // [gcc11-sso: not-a-coroutine]
+    return start_tool_with(json_call_params(name, arguments), request_options);
+}
+
+Client::~Client() {
+    close();
+    if (!loop_) {
+        return;
+    }
+    if (loop_->thread.get_id() == std::this_thread::get_id()) {
+        // The thread cannot join itself, and the loop it would wait for is the one it runs.
+        std::fputs(
+            "mcp::Client: a client with its own event loop was destroyed on that loop's "
+            "thread\n",
+            stderr);
+        std::terminate();
+    }
+    loop_->work.reset();
+    if (loop_->finished_future.wait_for(loop_->close_wait) != std::future_status::ready) {
+        loop_->io.stop();
+    }
+    loop_->thread.join();
+    if (impl_->blocking_loop) {
+        impl_->blocking_loop->mark_ended();
+    }
+    // The handlers a stopped loop did not run hold the client's state, which holds the loop:
+    // destroying them frees both.
+    loop_->io.shutdown();
+    impl_.reset();
+}
 
 Task<ConnectResult> Client::connect(std::string_view name, std::string_view version) {
     Implementation info;
@@ -2551,10 +3136,6 @@ Task<ConnectResult> Client::connect(const Implementation& client_info,
         std::lock_guard lock(state->handlers_mutex);
         state->client_info = client_info;
         state->client_capabilities = capabilities;
-        if (state->request_handlers.contains("roots/list") &&
-            !state->client_capabilities.roots.has_value()) {
-            state->client_capabilities.roots = ClientCapabilities::RootsCapability{};
-        }
     }
     return Impl::connect_session(std::move(state));
 }
@@ -2596,6 +3177,12 @@ Task<void> Client::send_notification(std::string_view method,
     return Impl::notification(impl_, method, params);
 }
 
+void Client::clear_response_cache() { impl_->response_cache.clear(); }
+
+std::uint64_t Client::dropped_notifications() const {
+    return impl_->dropped_notifications.load(std::memory_order_relaxed);
+}
+
 std::size_t Client::pending_request_count() const {
     std::lock_guard lock(impl_->pending_requests_mutex);
     return impl_->pending_requests.size();
@@ -2608,9 +3195,15 @@ void Client::close() {
 }
 
 Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor) {
+    return list_tools(cursor, RequestOptions{});
+}
+
+Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor,
+                                         const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     return Impl::accepted_tools(
-        impl_, call_and_parse<ListToolsResult>("tools/list", make_paginated_params(cursor)));
+        impl_, parse_result<ListToolsResult>(Impl::cacheable_request(
+                   impl_, "tools/list", make_paginated_params(cursor), request_options)));
 }
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
@@ -2635,13 +3228,19 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params,
 }
 
 Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(CallToolParams params) {
+    return start_tool_with(std::move(params), RequestOptions{});
+}
+
+Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(
+    CallToolParams params, const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
         throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "Client must connect before sending requests");
     }
-    return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check));
+    return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check),
+                            request_options);
 }
 
 TaskHandle Client::task_handle(std::string id) {
@@ -2714,35 +3313,73 @@ Task<CallToolResult> TaskHandle::result(const RequestOptions& request_options) c
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {
-    return call_and_parse<ListResourcesResult>("resources/list", make_paginated_params(cursor));
+    return list_resources(cursor, RequestOptions{});
+}
+
+Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor,
+                                                 const RequestOptions& request_options) {
+    return parse_result<ListResourcesResult>(Impl::cacheable_request(
+        impl_, "resources/list", make_paginated_params(cursor), request_options));
 }
 
 Task<ReadResourceResult> Client::read_resource(const std::string& uri) {
+    return read_resource(uri, RequestOptions{});
+}
+
+Task<ReadResourceResult> Client::read_resource(const std::string& uri,
+                                               const RequestOptions& request_options) {
     ReadResourceRequestParams params;
     params.uri = uri;
-    return call_and_parse<ReadResourceResult>("resources/read", nlohmann::json(std::move(params)));
+    return parse_result<ReadResourceResult>(Impl::cacheable_request(
+        impl_, "resources/read", nlohmann::json(std::move(params)), request_options));
 }
 
 Task<ListResourceTemplatesResult> Client::list_resource_templates(
     const std::optional<std::string>& cursor) {
-    return call_and_parse<ListResourceTemplatesResult>("resources/templates/list",
-                                                       make_paginated_params(cursor));
+    return list_resource_templates(cursor, RequestOptions{});
+}
+
+Task<ListResourceTemplatesResult> Client::list_resource_templates(
+    const std::optional<std::string>& cursor, const RequestOptions& request_options) {
+    return parse_result<ListResourceTemplatesResult>(Impl::cacheable_request(
+        impl_, "resources/templates/list", make_paginated_params(cursor), request_options));
 }
 
 Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor) {
-    return call_and_parse<ListPromptsResult>("prompts/list", make_paginated_params(cursor));
+    return list_prompts(cursor, RequestOptions{});
 }
 
-Task<GetPromptResult> Client::get_prompt(
-    const std::string& name, const std::optional<std::map<std::string, std::string>>& arguments) {
+Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor,
+                                             const RequestOptions& request_options) {
+    return parse_result<ListPromptsResult>(
+        Impl::cacheable_request(impl_, "prompts/list", make_paginated_params(cursor), request_options));
+}
+
+Task<GetPromptResult> Client::get_prompt(const std::string& name,
+                                         const std::map<std::string, std::string>& arguments) {
+    return get_prompt(name, arguments, RequestOptions{});
+}
+
+Task<GetPromptResult> Client::get_prompt(const std::string& name,
+                                         const std::map<std::string, std::string>& arguments,
+                                         const RequestOptions& request_options) {
     GetPromptRequestParams params;
     params.name = name;
-    params.arguments = arguments;
-    return call_and_parse<GetPromptResult>("prompts/get", nlohmann::json(std::move(params)));
+    if (!arguments.empty()) {
+        params.arguments = arguments;
+    }
+    return parse_result<GetPromptResult>(
+        send_request("prompts/get", nlohmann::json(std::move(params)), request_options));
 }
 
 Task<CompleteResult> Client::complete(const CompleteParams& params) {
-    return call_and_parse<CompleteResult>("completion/complete", nlohmann::json(params));
+    return complete(params, RequestOptions{});
+}
+
+Task<CompleteResult> Client::complete(const CompleteParams& params,
+                                      const RequestOptions& request_options) {
+    return parse_result<CompleteResult>(
+        send_request("completion/complete", nlohmann::json(params), request_options));
 }
 
 Task<void> Client::ping() {
@@ -2815,6 +3452,15 @@ void Client::on_elicitation(std::function<Task<ElicitResult>(const ElicitRequest
         });
 }
 
+void Client::on_sampling(
+    std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler) {
+    on_request("sampling/createMessage",
+               [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
+                   auto result = co_await handler(params.get<CreateMessageRequestParams>());
+                   co_return nlohmann::json(std::move(result));
+               });
+}
+
 void Client::set_roots(const std::vector<Root>& roots, bool notify) {
     auto state = impl_;
     bool should_notify = false;
@@ -2858,6 +3504,255 @@ void Client::on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::j
                    auto result = co_await handler(params);
                    co_return nlohmann::json(std::move(result));
                });
+}
+
+SyncClient Client::sync() {
+    if (!impl_->blocking_loop) {
+        throw std::logic_error(
+            "mcp::Client::sync() needs a client constructed from an Endpoint; a client on the "
+            "application's executor is used through its coroutines");
+    }
+    return SyncClient(*this);
+}
+
+void Client::run(std::function<Task<void>()> body) {
+    if (!body) {
+        throw std::invalid_argument("mcp::Client::run() needs a coroutine");
+    }
+    detail::run_blocking<void>(impl_->blocking_loop, [body = std::move(body)]() -> Task<void> {
+        Task<void> task = body();
+        if (!task.valid()) {
+            throw std::invalid_argument(
+                "mcp::Client::run() needs a coroutine; the function returned an empty Task");
+        }
+        co_await std::move(task);
+    });
+}
+
+SyncSubscription Subscription::sync() const {
+    if (!state_ || !state_->blocking_loop) {
+        throw std::logic_error(
+            "mcp::Subscription::sync() needs a subscription of a client constructed from an "
+            "Endpoint");
+    }
+    return SyncSubscription(*this);
+}
+
+SyncSubscription::SyncSubscription(Subscription subscription)
+    : subscription_(std::move(subscription)) {}
+
+std::optional<SubscriptionEvent> SyncSubscription::next() {
+    return detail::run_blocking<std::optional<SubscriptionEvent>>(
+        subscription_.state_->blocking_loop, [this] { return subscription_.next(); });
+}
+
+void SyncSubscription::close() {
+    detail::run_blocking<void>(subscription_.state_->blocking_loop,
+                               [this] { return subscription_.close(); });
+}
+
+std::shared_ptr<const detail::BlockingLoop> TaskHandle::blocking_loop() const {
+    return std::static_pointer_cast<Client::Impl>(attached_client(client_))->blocking_loop;
+}
+
+SyncTaskHandle TaskHandle::sync() const {
+    if (!blocking_loop()) {
+        throw std::logic_error(
+            "mcp::TaskHandle::sync() needs a task of a client constructed from an Endpoint");
+    }
+    return SyncTaskHandle(*this);
+}
+
+SyncTaskHandle::SyncTaskHandle(TaskHandle handle) : handle_(std::move(handle)) {}
+
+DetailedTask SyncTaskHandle::get(const RequestOptions& request_options) const {
+    return detail::run_blocking<DetailedTask>(handle_.blocking_loop(),
+                                              [&] { return handle_.get(request_options); });
+}
+
+void SyncTaskHandle::update(const nlohmann::json& input_responses,
+                            const RequestOptions& request_options) const {
+    detail::run_blocking<void>(handle_.blocking_loop(),
+                               [&] { return handle_.update(input_responses, request_options); });
+}
+
+void SyncTaskHandle::cancel(const RequestOptions& request_options) const {
+    detail::run_blocking<void>(handle_.blocking_loop(),
+                               [&] { return handle_.cancel(request_options); });
+}
+
+DetailedTask SyncTaskHandle::wait(const RequestOptions& request_options) const {
+    return detail::run_blocking<DetailedTask>(handle_.blocking_loop(),
+                                              [&] { return handle_.wait(request_options); });
+}
+
+CallToolResult SyncTaskHandle::result(const RequestOptions& request_options) const {
+    return detail::run_blocking<CallToolResult>(handle_.blocking_loop(),
+                                                [&] { return handle_.result(request_options); });
+}
+
+SyncClient::SyncClient(Client& client) : client_(&client) {}
+
+ConnectResult SyncClient::connect(std::string_view name, std::string_view version) {
+    return detail::run_blocking<ConnectResult>(client_->impl_->blocking_loop,
+                                               [&] { return client_->connect(name, version); });
+}
+
+ConnectResult SyncClient::connect(const Implementation& client_info,
+                                  const ClientCapabilities& capabilities) {
+    return detail::run_blocking<ConnectResult>(
+        client_->impl_->blocking_loop, [&] { return client_->connect(client_info, capabilities); });
+}
+
+nlohmann::json SyncClient::send_request(std::string_view method,
+                                        const std::optional<nlohmann::json>& params) {
+    return detail::run_blocking<nlohmann::json>(client_->impl_->blocking_loop,
+                                                [&] { return client_->send_request(method, params); });
+}
+
+nlohmann::json SyncClient::send_request(std::string_view method,
+                                        const std::optional<nlohmann::json>& params,
+                                        const RequestOptions& request_options) {
+    return detail::run_blocking<nlohmann::json>(client_->impl_->blocking_loop, [&] {
+        return client_->send_request(method, params, request_options);
+    });
+}
+
+Subscription SyncClient::listen(const SubscriptionFilter& filter) {
+    return detail::run_blocking<Subscription>(client_->impl_->blocking_loop,
+                                              [&] { return client_->listen(filter); });
+}
+
+Subscription SyncClient::listen(const SubscriptionFilter& filter,
+                                const RequestOptions& request_options) {
+    return detail::run_blocking<Subscription>(client_->impl_->blocking_loop,
+                                              [&] { return client_->listen(filter, request_options); });
+}
+
+void SyncClient::send_notification(std::string_view method,
+                                   const std::optional<nlohmann::json>& params) {
+    detail::run_blocking<void>(client_->impl_->blocking_loop,
+                               [&] { return client_->send_notification(method, params); });
+}
+
+void SyncClient::close() { client_->close(); }
+
+CallToolResult SyncClient::call_tool(const std::string& name, const nlohmann::json& arguments) {
+    return detail::run_blocking<CallToolResult>(client_->impl_->blocking_loop,
+                                                [&] { return client_->call_tool(name, arguments); });
+}
+
+CallToolResult SyncClient::call_tool(const std::string& name, const nlohmann::json& arguments,
+                                     const RequestOptions& request_options) {
+    return detail::run_blocking<CallToolResult>(client_->impl_->blocking_loop, [&] {
+        return client_->call_tool(name, arguments, request_options);
+    });
+}
+
+std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::string& name,
+                                                                const nlohmann::json& arguments) {
+    return detail::run_blocking<std::variant<CallToolResult, TaskHandle>>(
+        client_->impl_->blocking_loop, [&] { return client_->start_tool(name, arguments); });
+}
+
+std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::string& name,
+                                                                const nlohmann::json& arguments,
+                                                                const RequestOptions& request_options) {
+    return detail::run_blocking<std::variant<CallToolResult, TaskHandle>>(
+        client_->impl_->blocking_loop,
+        [&] { return client_->start_tool(name, arguments, request_options); });
+}
+
+ListToolsResult SyncClient::list_tools(const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListToolsResult>(client_->impl_->blocking_loop,
+                                                 [&] { return client_->list_tools(cursor); });
+}
+
+ListToolsResult SyncClient::list_tools(const std::optional<std::string>& cursor,
+                                       const RequestOptions& request_options) {
+    return detail::run_blocking<ListToolsResult>(
+        client_->impl_->blocking_loop, [&] { return client_->list_tools(cursor, request_options); });
+}
+
+ListResourcesResult SyncClient::list_resources(const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListResourcesResult>(client_->impl_->blocking_loop,
+                                                     [&] { return client_->list_resources(cursor); });
+}
+
+ListResourcesResult SyncClient::list_resources(const std::optional<std::string>& cursor,
+                                               const RequestOptions& request_options) {
+    return detail::run_blocking<ListResourcesResult>(client_->impl_->blocking_loop, [&] {
+        return client_->list_resources(cursor, request_options);
+    });
+}
+
+ReadResourceResult SyncClient::read_resource(const std::string& uri) {
+    return detail::run_blocking<ReadResourceResult>(client_->impl_->blocking_loop,
+                                                    [&] { return client_->read_resource(uri); });
+}
+
+ReadResourceResult SyncClient::read_resource(const std::string& uri,
+                                             const RequestOptions& request_options) {
+    return detail::run_blocking<ReadResourceResult>(
+        client_->impl_->blocking_loop, [&] { return client_->read_resource(uri, request_options); });
+}
+
+ListResourceTemplatesResult SyncClient::list_resource_templates(
+    const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListResourceTemplatesResult>(
+        client_->impl_->blocking_loop, [&] { return client_->list_resource_templates(cursor); });
+}
+
+ListResourceTemplatesResult SyncClient::list_resource_templates(
+    const std::optional<std::string>& cursor, const RequestOptions& request_options) {
+    return detail::run_blocking<ListResourceTemplatesResult>(client_->impl_->blocking_loop, [&] {
+        return client_->list_resource_templates(cursor, request_options);
+    });
+}
+
+ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cursor) {
+    return detail::run_blocking<ListPromptsResult>(client_->impl_->blocking_loop,
+                                                   [&] { return client_->list_prompts(cursor); });
+}
+
+ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cursor,
+                                           const RequestOptions& request_options) {
+    return detail::run_blocking<ListPromptsResult>(
+        client_->impl_->blocking_loop, [&] { return client_->list_prompts(cursor, request_options); });
+}
+
+GetPromptResult SyncClient::get_prompt(const std::string& name,
+                                       const std::map<std::string, std::string>& arguments) {
+    return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop,
+                                                 [&] { return client_->get_prompt(name, arguments); });
+}
+
+GetPromptResult SyncClient::get_prompt(const std::string& name,
+                                       const std::map<std::string, std::string>& arguments,
+                                       const RequestOptions& request_options) {
+    return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop, [&] {
+        return client_->get_prompt(name, arguments, request_options);
+    });
+}
+
+CompleteResult SyncClient::complete(const CompleteParams& params) {
+    return detail::run_blocking<CompleteResult>(client_->impl_->blocking_loop,
+                                                [&] { return client_->complete(params); });
+}
+
+CompleteResult SyncClient::complete(const CompleteParams& params,
+                                    const RequestOptions& request_options) {
+    return detail::run_blocking<CompleteResult>(
+        client_->impl_->blocking_loop, [&] { return client_->complete(params, request_options); });
+}
+
+void SyncClient::ping() {
+    detail::run_blocking<void>(client_->impl_->blocking_loop, [&] { return client_->ping(); });
+}
+
+void SyncClient::cancel(const RequestId& request_id, const std::optional<std::string>& reason) {
+    detail::run_blocking<void>(client_->impl_->blocking_loop,
+                               [&] { return client_->cancel(request_id, reason); });
 }
 
 }  // namespace mcp

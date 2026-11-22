@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/async.hpp>
 #include <mcp/transport/memory.hpp>
 
 #include <nlohmann/json.hpp>

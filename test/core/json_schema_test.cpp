@@ -1,4 +1,5 @@
 #include <mcp/auth/metadata_policy.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/detail/regex.hpp>
 #include <mcp/protocol/schema.hpp>
 

@@ -14,6 +14,7 @@
 /// and the log level of a request is how a 2026-07-28 client asks for it.
 
 #include <mcp/client/client.hpp>
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
@@ -72,6 +73,7 @@ int main() {
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
+        server_caps.logging = nlohmann::json::object();
 
         Implementation server_info;
         server_info.name = "modern-client-example-server";

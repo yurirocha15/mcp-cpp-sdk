@@ -8,6 +8,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <functional>
+#include <mcp/core/async.hpp>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <utility>

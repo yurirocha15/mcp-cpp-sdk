@@ -23,6 +23,34 @@ Key use cases include:
 - Suggesting valid resource template URI components (e.g., file paths, identifiers).
 - Providing valid options for a configuration prompt.
 
+Using Completions
+-----------------
+
+The completion provider is a coroutine in both modes. It receives the reference
+and the argument being completed, and returns the suggestions:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :start-after: // Completions.
+   :end-before: // Elicitation:
+   :dedent: 4
+
+A client asks for suggestions with ``complete()``:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Completions.
+   :end-before: // Elicitation, sampling and roots:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Completions.
+   :end-before: // Elicitation, sampling and roots:
+   :dedent: 4
+
 Server-side Setup
 -----------------
 
@@ -48,7 +76,7 @@ The ``CompleteParams`` structure provides the context for the completion request
 CompleteResult
 --------------
 
-The server returns a ``CompleteResult`` containing:
+The server returns a ``CompleteResult`` whose ``completion`` member contains:
 
 - ``values``: A list of string suggestions.
 - ``total``: (Optional) The total number of completions available if the list is truncated.

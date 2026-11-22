@@ -4,6 +4,7 @@
 
 #include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
+#include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -277,9 +278,8 @@ class SessionLimitsTest : public ::testing::Test {
    protected:
     asio::io_context io_;
     unsigned short port_{free_port()};
-    mcp::StreamableHttpSessionManager manager_{
-        io_.get_executor(), "127.0.0.1", port_,
-        [](const asio::any_io_executor&) { return make_server(); }};
+    mcp::StreamableHttpSessionManager manager_{io_.get_executor(), "127.0.0.1", port_,
+                                               [](const mcp::Executor&) { return make_server(); }};
 
     template <typename Exchange>
     void run(Exchange exchange) {
@@ -338,9 +338,8 @@ TEST(SessionLimitsThreadsTest, ConcurrentInitializesStayWithinTheLimit) {
     const int thread_count = 8;
     asio::io_context io(thread_count);
     const auto port = free_port();
-    mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", port,
-        [](const asio::any_io_executor&) { return make_server(); });
+    mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", port,
+                                              [](const mcp::Executor&) { return make_server(); });
     manager.set_session_limits({limit, std::chrono::milliseconds::zero()});
     std::atomic<int> answered{0};
     std::atomic<int> created{0};
@@ -392,7 +391,7 @@ TEST(SessionStart, DeeplyNestedInitializeResultKeepsTheSession) {
     asio::io_context io;
     const unsigned short port = free_port();
     mcp::StreamableHttpSessionManager manager(
-        io.get_executor(), "127.0.0.1", port, [](const asio::any_io_executor&) {
+        io.get_executor(), "127.0.0.1", port, [](const mcp::Executor&) {
             json nested = json::object();
             for (int level = 0; level < 200; ++level) {
                 nested = json{{"n", std::move(nested)}};

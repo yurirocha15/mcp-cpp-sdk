@@ -4,7 +4,7 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/export.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
+#include <mcp/core/executor.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -37,6 +37,9 @@ struct ClientCredentialsConfig {
     std::optional<std::string> scope;
     MetadataFetchPolicy policy;  ///< Outbound-request policy for discovery and token requests.
     HostResolver host_resolver;  ///< Optional custom resolver; the system resolver when unset.
+    /// TLS settings for authorization servers; null uses the system's certificate authorities.
+    std::shared_ptr<const TlsClientContext> tls;
+    ProxyOptions proxy;  ///< Proxy for discovery and token requests; none by default.
 };
 
 /**
@@ -61,8 +64,7 @@ class MCP_API ClientCredentialsAuthenticator : public Authenticator {
      * @throws std::invalid_argument When @p token_store is null, `server_url` is empty, or the
      *         client has neither a secret nor a private key.
      */
-    ClientCredentialsAuthenticator(const boost::asio::any_io_executor& executor,
-                                   std::shared_ptr<TokenStore> token_store,
+    ClientCredentialsAuthenticator(const Executor& executor, std::shared_ptr<TokenStore> token_store,
                                    ClientCredentialsConfig config);
     ~ClientCredentialsAuthenticator() override;
 

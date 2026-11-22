@@ -1,6 +1,8 @@
 #include "../detail/accept_retry.hpp"
 #include "../detail/beast_string.hpp"
+#include "../detail/connection.hpp"
 #include "../detail/constants.hpp"
+#include "../detail/host_policy.hpp"
 #include "../detail/http_limits.hpp"
 #include "../detail/http_request_metadata.hpp"
 #include "../detail/modern_methods.hpp"
@@ -8,13 +10,17 @@
 #include "../detail/principal.hpp"
 #include "../detail/scope_challenge.hpp"
 #include "../detail/socket_probe.hpp"
+#include "../detail/tls.hpp"
+#include "../detail/tls_accept.hpp"
 #include "modern_exchange.hpp"
 
+#include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
+#include <mcp/transport/tls.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -56,7 +62,7 @@ struct HttpServerTransport::Impl {
     static constexpr std::size_t g_max_pending_sessionless_requests = 256;
     static constexpr auto g_disconnect_probe_interval = std::chrono::milliseconds(250);
 
-    using Connection = beast::tcp_stream;
+    using Connection = detail::Connection;
 
     struct SharedState {
         explicit SharedState(boost::asio::strand<boost::asio::any_io_executor>& execution_strand)
@@ -615,6 +621,19 @@ struct HttpServerTransport::Impl {
         if (!is_initialize) {
             return make_error_response(request, http::status::bad_request,
                                        "Invalid MCP-Protocol-Version header");
+        }
+        return std::nullopt;
+    }
+
+    /// The 403 for a request whose Host the policy refuses, checked on every request.
+    std::optional<StringResponse> check_host(const StringRequest& request,
+                                             bool loopback_connection) const {
+        std::optional<std::string_view> value;
+        if (request.count(http::field::host) == 1) {
+            value = detail::to_std_string_view(request[http::field::host]);
+        }
+        if (!host_policy.allows(value, loopback_connection)) {
+            return make_error_response(request, http::status::forbidden, "Host not allowed");
         }
         return std::nullopt;
     }
@@ -1352,15 +1371,19 @@ struct HttpServerTransport::Impl {
         }
     }
 
-    /// Origin and bearer checks for the MCP endpoint: they need only the headers, so a request they
-    /// refuse never has its body read. Sets @p principal to what the request is attributed to. The
-    /// metadata document and exempt paths need neither check.
+    /// The Host check of every request, then the Origin and bearer checks for the MCP endpoint:
+    /// they need only the headers, so a request they refuse never has its body read. Sets
+    /// @p principal to what the request is attributed to. The metadata document and exempt paths
+    /// need neither the Origin nor the bearer check.
     Task<std::optional<StringResponse>> refuse_before_body(
         const StringRequest& request, std::string& principal,
-        std::optional<std::vector<std::string>>& token_scopes) const {
+        std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) const {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (state->closed.load(std::memory_order_acquire)) {
             co_return std::nullopt;
+        }
+        if (auto refusal = check_host(request, loopback_connection)) {
+            co_return refusal;
         }
         const auto method = request.method();
         if (method != http::verb::post && method != http::verb::get && method != http::verb::delete_) {
@@ -1416,6 +1439,19 @@ struct HttpServerTransport::Impl {
 
     Task<void> handle_connection(const std::shared_ptr<Connection>& connection) {
         auto& stream = *connection;
+        if (stream.is_tls()) {
+            const auto handshake_timeout = detail::TlsContextAccess::limits(*tls).handshake_timeout;
+            const bool accepted = co_await detail::accept_tls_for_listener(
+                stream, stream.get_executor(), handshake_timeout, pending_handshakes);
+            if (!accepted) {
+                co_return;
+            }
+        }
+        // A connection whose local address cannot be read is treated as a loopback one, so the
+        // stricter Host rule applies.
+        boost::system::error_code endpoint_error;
+        const auto local_endpoint = stream.socket().local_endpoint(endpoint_error);
+        const bool loopback_connection = endpoint_error || detail::is_loopback_endpoint(local_endpoint);
         beast::flat_buffer request_buffer;
         // The start line and fields of the answer being written, kept for the next answer.
         std::vector<char> response_head;
@@ -1426,9 +1462,9 @@ struct HttpServerTransport::Impl {
         std::string principal;
         std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal,
-             &token_scopes](const StringRequest& head) -> Task<std::optional<StringResponse>> {
-            co_return co_await refuse_before_body(head, principal, token_scopes);
+            [this, &principal, &token_scopes,
+             loopback_connection](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            co_return co_await refuse_before_body(head, principal, token_scopes, loopback_connection);
         };
 
         for (;;) {
@@ -1493,8 +1529,7 @@ struct HttpServerTransport::Impl {
             }
         }
 
-        boost::system::error_code shutdown_error;
-        (void)stream.socket().shutdown(boost::asio::ip::tcp::socket::shutdown_send, shutdown_error);
+        detail::finish_sending(stream);
     }
 
     static Task<IncomingMessage> run_read(std::shared_ptr<Impl> impl) {
@@ -1682,6 +1717,12 @@ struct HttpServerTransport::Impl {
 
     bool allow_all_origins{false};
     std::unordered_set<std::string> allowed_origins;
+    /// Set before listen(); read while serving.
+    detail::HostPolicy host_policy;
+    /// The TLS settings of new connections, or null for plain TCP. Set before listen().
+    std::shared_ptr<const TlsServerContext> tls;
+    /// TLS handshakes running, against the context's limit.
+    std::atomic<std::size_t> pending_handshakes{0};
     BearerTokenValidator bearer_token_validator;
     AsyncBearerTokenValidator async_bearer_token_validator;
     std::size_t max_request_body_bytes{mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES};
@@ -1701,9 +1742,9 @@ struct HttpServerTransport::Impl {
     std::atomic<bool> json_only_{false};
 };
 
-HttpServerTransport::HttpServerTransport(const boost::asio::any_io_executor& executor, std::string host,
+HttpServerTransport::HttpServerTransport(const Executor& executor, std::string host,
                                          unsigned short port, std::size_t event_store_capacity)
-    : impl_(std::make_shared<Impl>(executor, std::move(host), port, event_store_capacity)) {}
+    : impl_(std::make_shared<Impl>(executor.get(), std::move(host), port, event_store_capacity)) {}
 
 HttpServerTransport::~HttpServerTransport() {
     try {
@@ -1757,6 +1798,23 @@ void HttpServerTransport::set_allow_all_origins(bool allow_all) {
     std::lock_guard lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->allow_all_origins = allow_all;
+}
+
+void HttpServerTransport::set_allowed_hosts(const std::vector<std::string>& hosts) {
+    detail::HostPolicy policy(hosts);
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->host_policy = std::move(policy);
+}
+
+void HttpServerTransport::set_tls(const TlsServerOptions& options) {
+    set_tls(TlsServerContext::create(options));
+}
+
+void HttpServerTransport::set_tls(std::shared_ptr<const TlsServerContext> context) {
+    std::lock_guard lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->tls = std::move(context);
 }
 
 void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator validator) {
@@ -1958,12 +2016,27 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
             (void)socket.close(ignored);
             continue;
         }
-        auto connection = std::make_shared<Impl::Connection>(std::move(socket));
+        if (impl->tls) {
+            const auto limit = detail::resolved_max_pending_handshakes(
+                detail::TlsContextAccess::limits(*impl->tls).max_pending_handshakes,
+                detail::resolved_max_connections(impl->connection_limits.max_connections));
+            if (!detail::take_handshake_slot(impl->pending_handshakes, limit)) {
+                // As past the connection limit: a client that never finishes its handshake must
+                // not keep others from being accepted.
+                boost::system::error_code ignored;
+                (void)socket.close(ignored);
+                continue;
+            }
+        }
+        auto connection = impl->tls
+                              ? std::make_shared<Impl::Connection>(
+                                    std::move(socket), detail::TlsContextAccess::native(*impl->tls))
+                              : std::make_shared<Impl::Connection>(std::move(socket));
         impl->active_connections.insert(connection);
 
         boost::asio::co_spawn(
             impl->strand,
-            [impl, connection]() -> Task<void> {
+            [impl, connection]() -> boost::asio::awaitable<void> {
                 try {
                     co_await impl->handle_connection(connection);
                 } catch (...) {
@@ -1986,6 +2059,9 @@ std::uint64_t terminated_session_count(const HttpServerTransport& transport) noe
 }
 
 void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
+    if (binding.modern_dispatch && !binding.dispatch_executor) {
+        throw std::invalid_argument("bind_server() needs a dispatch_executor for modern_dispatch");
+    }
     std::lock_guard lock(transport.impl_->configuration_mutex);
     transport.impl_->param_header_check = std::move(binding.param_header_check);
     transport.impl_->served_versions = std::move(binding.served_versions);
@@ -1993,7 +2069,8 @@ void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
         binding.modern_dispatch
             ? std::make_shared<const detail::ModernDispatch>(std::move(binding.modern_dispatch))
             : nullptr;
-    transport.impl_->modern_dispatch_executor = std::move(binding.dispatch_executor);
+    transport.impl_->modern_dispatch_executor =
+        binding.dispatch_executor ? binding.dispatch_executor.get() : boost::asio::any_io_executor();
 }
 
 }  // namespace detail

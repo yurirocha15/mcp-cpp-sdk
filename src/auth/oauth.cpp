@@ -1,10 +1,13 @@
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/async.hpp>
 
 #include "../detail/constants.hpp"
+#include "../detail/http_connect.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/socket_deadline.hpp"
 #include "../detail/spawn_awaitable.hpp"
+#include "../detail/tls.hpp"
 #include "oauth_internal.hpp"
 
 #include <mcp/transport/http_client.hpp>
@@ -444,7 +447,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     struct ParsedUrl {
         std::string scheme;
         std::string host;         ///< Host to resolve; an IPv6 literal without its brackets.
-        std::string host_header;  ///< Host as the Host header carries it.
+        std::string host_header;  ///< The authority as the Host header carries it.
         std::string port;
         std::string path;  ///< Request target: the path and query, never empty.
     };
@@ -454,19 +457,30 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     struct Exchange {
         Exchange(std::shared_ptr<Impl> state, net::strand<net::any_io_executor> executor,
                  std::string target, std::shared_ptr<detail::OAuthScopeState> abort_scope,
-                 MetadataFetchPolicy fetch_policy, HostResolver resolver_hook)
+                 MetadataFetchPolicy fetch_policy, HostResolver resolver_hook,
+                 std::shared_ptr<const TlsClientContext> tls_context, ProxyOptions proxy_options)
             : owner(std::move(state)),
               strand(std::move(executor)),
               url(std::move(target)),
               resolver(strand),
               scope(std::move(abort_scope)),
               policy(std::move(fetch_policy)),
-              host_resolver(std::move(resolver_hook)) {}
+              host_resolver(std::move(resolver_hook)),
+              tls(std::move(tls_context)),
+              proxy(std::move(proxy_options)) {}
 
+        /// Prepares the next hop, on a fresh connection, to the URL just parsed.
         void reset() {
             endpoints.clear();
-            // A redirect is followed on a fresh connection; tcp_stream is not reassignable.
-            stream.emplace(strand);
+            stream.reset();
+            auto next = std::make_shared<mcp::detail::ConnectPlan>();
+            next->host = parsed.host;
+            next->port = parsed.port;
+            next->https = parsed.scheme == "https";
+            next->server_name = mcp::detail::tls_server_name(parsed.host);
+            next->tls = tls;
+            next->proxy = mcp::detail::select_proxy(proxy, next->https, parsed.host, parsed.port);
+            plan = std::move(next);
             buffer.clear();
             parser.emplace();
             parser->body_limit(policy.max_response_bytes);
@@ -482,7 +496,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         std::string url;
         net::ip::tcp::resolver resolver;
         std::vector<net::ip::tcp::endpoint> endpoints;
-        std::optional<beast::tcp_stream> stream;
+        /// How this hop connects: directly or through the proxy, plain or TLS.
+        std::shared_ptr<const mcp::detail::ConnectPlan> plan;
+        std::shared_ptr<mcp::detail::Connection> stream;
         beast::flat_buffer buffer;
         std::optional<http::response_parser<http::string_body>> parser;
         std::string body;
@@ -493,6 +509,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         /// Pinned for this exchange's whole life; see Impl::make_exchange().
         MetadataFetchPolicy policy;
         HostResolver host_resolver;
+        std::shared_ptr<const TlsClientContext> tls;
+        ProxyOptions proxy;
     };
 
     explicit Impl(const net::any_io_executor& executor) : strand(net::make_strand(executor)) {}
@@ -538,7 +556,6 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 throw std::invalid_argument("OAuth HTTP client URL has a malformed IPv6 host");
             }
             host = authority.substr(1, closing - 1);
-            host_header = authority.substr(0, closing + 1);
             if (closing + 1 < authority.size()) {
                 port = authority.substr(closing + 2);
             }
@@ -550,8 +567,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 host = authority.substr(0, colon);
                 port = authority.substr(colon + 1);
             }
-            host_header = host;
         }
+        // The port is named unless it is the scheme's default (RFC 9110 section 7.2).
+        host_header = mcp::detail::authority_of(host, port, scheme == "https");
 
         return {std::move(scheme), std::move(host), std::move(host_header), std::move(port),
                 std::move(path)};
@@ -580,13 +598,28 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     }
 
     static Task<void> connect(const std::shared_ptr<Exchange>& exchange) {
-        if (exchange->parsed.scheme != "http") {
-            throw std::runtime_error(
-                "OAuth over https requires TLS support, which this build does not provide: " +
-                sanitize_for_diagnostics(exchange->url));
-        }
-
-        if (exchange->host_resolver) {
+        const auto plan = exchange->plan;
+        if (plan->proxy) {
+            // The proxy resolves the server's name and connects to it, so only an address the URL
+            // names can be checked here.
+            boost::system::error_code not_an_address;
+            const auto literal = net::ip::make_address(exchange->parsed.host, not_an_address);
+            if (!not_an_address) {
+                enforce_address_policy(
+                    exchange->policy,
+                    {net::ip::tcp::endpoint(
+                        literal, static_cast<unsigned short>(std::stoul(exchange->parsed.port)))});
+            }
+            const auto results = co_await exchange->resolver.async_resolve(
+                plan->proxy->host, plan->proxy->port, net::use_awaitable);
+            for (const auto& entry : results) {
+                exchange->endpoints.push_back(entry.endpoint());
+            }
+            if (exchange->endpoints.empty()) {
+                throw std::runtime_error("No address resolved for the proxy " +
+                                         sanitize_for_diagnostics(plan->proxy->host));
+            }
+        } else if (exchange->host_resolver) {
             const auto port = static_cast<unsigned short>(std::stoul(exchange->parsed.port));
             for (const auto& literal :
                  exchange->host_resolver(exchange->parsed.host, exchange->parsed.port)) {
@@ -606,11 +639,13 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             }
         }
 
-        if (exchange->endpoints.empty()) {
-            throw std::runtime_error("No address resolved for " +
-                                     sanitize_for_diagnostics(exchange->parsed.host));
+        if (!plan->proxy) {
+            if (exchange->endpoints.empty()) {
+                throw std::runtime_error("No address resolved for " +
+                                         sanitize_for_diagnostics(exchange->parsed.host));
+            }
+            enforce_address_policy(exchange->policy, exchange->endpoints);
         }
-        enforce_address_policy(exchange->policy, exchange->endpoints);
 
         // Last look at the abort before a socket exists. An abort_pending() that ran while the
         // lookup was past cancelling found nothing to close. This coroutine holds the client's
@@ -620,15 +655,19 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         throw_if_aborted(exchange);
 
         // Connect only to the addresses this single lookup produced. They are pinned for the
-        // exchange, so a name that resolves differently later cannot redirect it.
-        const mcp::detail::SocketDeadline deadline(
-            exchange->stream->get_executor(), exchange->stream->socket(),
-            std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
-        try {
-            co_await exchange->stream->async_connect(exchange->endpoints, net::use_awaitable);
-        } catch (const boost::system::system_error&) {
-            throw_if_expired(deadline);
-            throw;
+        // exchange, so a name that resolves differently later cannot redirect it. The TLS check
+        // names the URL's host, not the address.
+        exchange->stream = mcp::detail::make_connection(exchange->strand, *plan);
+        co_await mcp::detail::establish(exchange->stream, exchange->endpoints, plan);
+    }
+
+    /// A failed read or write on a TLS connection as the TlsError it is.
+    static void throw_if_tls_failure(const Exchange& exchange, const boost::system::error_code& error) {
+        if (!exchange.stream || !exchange.stream->is_tls()) {
+            return;
+        }
+        if (auto failure = mcp::detail::established_failure(error, exchange.plan->server_name)) {
+            throw TlsError(*failure);
         }
     }
 
@@ -649,8 +688,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             std::chrono::seconds(mcp::detail::constants::http_client::g_TIMEOUT_SECONDS));
         try {
             co_await http::async_write(*exchange->stream, request, net::use_awaitable);
-        } catch (const boost::system::system_error&) {
+        } catch (const boost::system::system_error& error) {
             throw_if_expired(deadline);
+            throw_if_tls_failure(*exchange, error.code());
             throw;
         }
         try {
@@ -670,11 +710,11 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                 // The body is abandoned mid-read rather than buffered to completion.
                 throw MetadataPolicyError(MetadataUrlDecision::eResponseTooLarge, exchange->url);
             }
+            throw_if_tls_failure(*exchange, error.code());
             throw;
         }
 
-        beast::error_code shutdown_error;
-        (void)exchange->stream->socket().shutdown(net::ip::tcp::socket::shutdown_both, shutdown_error);
+        mcp::detail::close_connection(*exchange->stream);
     }
 
     /// RAII membership in `active_exchanges` for the lifetime of one HTTP exchange, so
@@ -807,7 +847,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                             std::shared_ptr<detail::OAuthScopeState> scope) {
         std::lock_guard lock(active_mutex);
         return std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), std::move(scope),
-                                          policy, host_resolver);
+                                          policy, host_resolver, tls, proxy);
     }
 
     /// Run one exchange on the client's strand and hand its outcome back to the caller off it.
@@ -896,6 +936,15 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                                "application/json", std::move(label)));
     }
 
+    /// Host, and the proxy's credentials when the request goes to the proxy itself.
+    template <typename Request>
+    static void set_routing_headers(Request& request, const Exchange& exchange) {
+        request.set(http::field::host, exchange.parsed.host_header);
+        if (exchange.plan->forwards_requests() && !exchange.plan->proxy->authorization.empty()) {
+            request.set(http::field::proxy_authorization, exchange.plan->proxy->authorization);
+        }
+    }
+
     static Task<nlohmann::json> run_get(std::shared_ptr<Exchange> exchange) {
         auto guard = track_exchange(exchange);
 
@@ -909,9 +958,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             exchange->parsed = parse_url(exchange->url);
             exchange->reset();
 
-            http::request<http::empty_body> request(http::verb::get, exchange->parsed.path,
-                                                    mcp::detail::constants::http_client::g_VERSION_11);
-            request.set(http::field::host, exchange->parsed.host_header);
+            http::request<http::empty_body> request(
+                http::verb::get, exchange->plan->request_target(exchange->parsed.path),
+                mcp::detail::constants::http_client::g_VERSION_11);
+            set_routing_headers(request, *exchange);
             request.set(http::field::accept, "application/json");
             co_await exchange_once(exchange, request);
 
@@ -959,9 +1009,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         exchange->parsed = parse_url(exchange->url);
         exchange->reset();
 
-        http::request<http::string_body> request(http::verb::post, exchange->parsed.path,
+        http::request<http::string_body> request(http::verb::post,
+                                                 exchange->plan->request_target(exchange->parsed.path),
                                                  mcp::detail::constants::http_client::g_VERSION_11);
-        request.set(http::field::host, exchange->parsed.host_header);
+        set_routing_headers(request, *exchange);
         request.set(http::field::content_type, content_type);
         request.set(http::field::accept, "application/json");
         if (!authorization.empty()) {
@@ -1002,6 +1053,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// make_exchange().
     MetadataFetchPolicy policy;
     HostResolver host_resolver;
+    std::shared_ptr<const TlsClientContext> tls;
+    ProxyOptions proxy;
     std::vector<std::weak_ptr<Exchange>> active_exchanges;
     /// Set once by abort_pending(); makes the abort sticky so an exchange started afterward is
     /// refused instead of running to completion. Guarded by active_mutex alongside the list above.
@@ -1011,8 +1064,8 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     // consult it, which in practice means never being cleaned up.
 };
 
-OAuthHttpClient::OAuthHttpClient(const net::any_io_executor& executor)
-    : impl_(std::make_shared<Impl>(executor)) {}
+OAuthHttpClient::OAuthHttpClient(const Executor& executor)
+    : impl_(std::make_shared<Impl>(executor.get())) {}
 
 /// Safe to call at any time, including mid-flight: exchanges already running keep what they started
 /// with, and the next one picks up the new value. See configure() below for changing both together.
@@ -1034,6 +1087,16 @@ void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolve
     std::lock_guard lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
     impl_->host_resolver = std::move(resolver);
+}
+
+void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver,
+                                std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy) {
+    mcp::detail::validate_proxy_options(proxy);
+    std::lock_guard lock(impl_->active_mutex);
+    impl_->policy = std::move(policy);
+    impl_->host_resolver = std::move(resolver);
+    impl_->tls = std::move(tls);
+    impl_->proxy = std::move(proxy);
 }
 
 void OAuthHttpClient::abort_pending() { impl_->abort_pending(); }
@@ -1853,7 +1916,7 @@ struct OAuthAuthorizationManager::Impl {
         // One call rather than two, even here where the client has not yet issued a request: the
         // pair method is what a reader should find at a site that installs both. An empty
         // `host_resolver` leaves this client on the executor's system resolver.
-        client->configure(config.policy, config.host_resolver);
+        client->configure(config.policy, config.host_resolver, config.tls, config.proxy);
         return client;
     }
 
@@ -2624,7 +2687,7 @@ bool is_valid_client_metadata_url(const std::string& url) {
 
 }  // namespace
 
-OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor& executor,
+OAuthAuthorizationManager::OAuthAuthorizationManager(const Executor& executor,
                                                      std::shared_ptr<TokenStore> token_store,
                                                      OAuthAuthorizationConfig config,
                                                      AuthorizationCallback callback) {
@@ -2647,7 +2710,7 @@ OAuthAuthorizationManager::OAuthAuthorizationManager(const net::any_io_executor&
             "fragment: " +
             sanitize_for_diagnostics(*metadata_url));
     }
-    impl_ = std::make_shared<Impl>(executor, std::move(token_store), std::move(config),
+    impl_ = std::make_shared<Impl>(executor.get(), std::move(token_store), std::move(config),
                                    std::move(callback));
 }
 
@@ -3186,6 +3249,11 @@ void OAuthClientTransport::close() {
     // transports and outlive this one, so closing it is left to its owner.
     impl_->authenticator->cancel_pending();
     impl_->inner->close();
+}
+
+Task<bool> Authenticator::try_handle_challenge(const std::string& www_authenticate) {
+    static_cast<void>(www_authenticate);
+    co_return false;
 }
 
 }  // namespace mcp::auth

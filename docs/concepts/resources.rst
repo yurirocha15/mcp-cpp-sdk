@@ -9,6 +9,49 @@ In ``mcp-cpp-sdk``, resources can be registered either directly or via templates
 Resources are identified by URIs, which should follow a hierarchical structure
 appropriate for your application.
 
+Using Resources
+---------------
+
+``add_text_resource()`` registers a resource whose contents are the text a
+function returns, read again on each ``resources/read``. In sync mode the
+function returns ``std::string``; in async mode it is a coroutine that returns
+``mcp::Task<std::string>``:
+
+.. literalinclude:: ../../examples/sync/server.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resources.
+   :end-before: // Resource subscriptions:
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/server.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resources.
+   :end-before: // Resource subscriptions:
+   :dedent: 4
+
+The MIME type is ``text/plain`` unless a fourth argument names another. A
+``Resource`` passed in place of the URI and name sets the title, description,
+annotations, icons and size as well.
+
+A client reads a resource with ``read_resource()``. Its ``contents`` hold one
+``TextResourceContents`` or ``BlobResourceContents`` per part:
+
+.. literalinclude:: ../../examples/sync/client.cpp
+   :language: cpp
+   :caption: Sync mode
+   :start-after: // Resources.
+   :end-before: // Prompts.
+   :dedent: 4
+
+.. literalinclude:: ../../examples/async/client.cpp
+   :language: cpp
+   :caption: Async mode
+   :start-after: // Resources.
+   :end-before: // Prompts.
+   :dedent: 4
+
 Static Resources
 ----------------
 
@@ -114,7 +157,7 @@ polling loop or opening a file watch) when a client expresses interest.
    :linenos:
    :caption: Handling resource subscriptions and unsubscriptions.
 
-For more details on how notifications work across the protocol, see :doc:`/index`.
+For more details on subscriptions and the notifications they deliver, see :doc:`subscriptions`.
 
 Resource Change Notifications
 -----------------------------
@@ -146,9 +189,10 @@ again; delivery and refresh timing still depend on the connection and client.
 Resource Capabilities
 ---------------------
 
-To allow clients to discover your resources, ensure you enable the resources
-capability in your server configuration. You can also specify if the server
-supports sending notifications for resource changes.
+A server that has a resource or resource template advertises the resources
+capability on its own. What registration cannot imply, such as subscriptions or
+list-changed notifications, is set in the capabilities the server is constructed
+with, or on ``server.capabilities()`` before it serves:
 
 .. code-block:: cpp
 
