@@ -49,6 +49,8 @@ TEST(TlsConnectionTest, TheIdleCheckDropsLateTicketsAndSeesCloseNotify) {
 
     asio::io_context server_io;
     tcp::acceptor acceptor(server_io, tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    std::promise<void> response_read;
+    auto client_idle = response_read.get_future();
     std::promise<void> send_close_notify;
     auto close_notify_requested = send_close_notify.get_future();
     std::thread server([&] {
@@ -64,7 +66,9 @@ TEST(TlsConnectionTest, TheIdleCheckDropsLateTicketsAndSeesCloseNotify) {
         response.body() = "ok";
         response.prepare_payload();
         http::write(stream, response);
-        // A ticket after the response, which reaches the client while it is idle.
+        // A ticket once the client has read the response, so it reaches the client while it is
+        // idle. Sent with the response, it could be read along with it.
+        client_idle.wait();
         if (SSL_new_session_ticket(stream.native_handle()) == 1) {
             stream.handshake(asio::ssl::stream_base::server);
         }
@@ -92,14 +96,15 @@ TEST(TlsConnectionTest, TheIdleCheckDropsLateTicketsAndSeesCloseNotify) {
     http::response<http::string_body> response;
     http::read(*connection.tls(), buffer, response);
     EXPECT_EQ(response.body(), "ok");
+    response_read.set_value();
 
     // The ticket is waiting on the socket, and the connection is still good for a request.
-    ASSERT_TRUE(wait_readable(connection.socket()));
+    EXPECT_TRUE(wait_readable(connection.socket()));
     EXPECT_FALSE(mcp::detail::closed_by_peer(connection));
     EXPECT_FALSE(mcp::detail::closed_by_peer(connection));
 
     send_close_notify.set_value();
-    ASSERT_TRUE(wait_readable(connection.socket()));
+    EXPECT_TRUE(wait_readable(connection.socket()));
     EXPECT_TRUE(mcp::detail::closed_by_peer(connection));
 
     mcp::detail::close_connection(connection);
