@@ -104,6 +104,8 @@ These changes in behavior need no change to compile:
   sessions of 2025-11-25 and earlier too, as the specification asks.
 - The error for an HTTP response stream that breaks off names the reason without
   the source location that Boost adds to it.
+- The LLDB example returns a command that LLDB fails as a tool error instead of
+  as its output.
 
 ## [0.3.0] - 2026-11-17
 

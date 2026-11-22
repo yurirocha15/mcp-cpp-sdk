@@ -49,13 +49,14 @@ class SBError {
 };
 class SBCommandReturnObject {
    public:
+    bool Succeeded() const { return true; }
     const char* GetOutput() const { return ""; }
     const char* GetError() const { return ""; }
 };
 class SBCommandInterpreter {
    public:
     bool IsValid() const { return true; }
-    bool HandleCommand(const char*, SBCommandReturnObject&) { return true; }
+    void HandleCommand(const char*, SBCommandReturnObject&) {}
 };
 class SBFileSpec {
    public:
@@ -653,8 +654,8 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         co_return mcp::make_tool_error_result("Command interpreter is not valid");
                     }
                     lldb::SBCommandReturnObject result_obj;
-                    bool ok = interp.HandleCommand(args.command.c_str(), result_obj) != 0U;
-                    if (!ok) {
+                    interp.HandleCommand(args.command.c_str(), result_obj);
+                    if (!result_obj.Succeeded()) {
                         co_return mcp::make_tool_error_result(
                             safe_cstr(result_obj.GetError(), "Command failed"));
                     }
