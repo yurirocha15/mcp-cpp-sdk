@@ -1,5 +1,5 @@
 // The proxy rules are internal, so the test program builds src/transport/proxy.cpp itself.
-#include "../../src/detail/net/proxy.hpp"
+#include "mcp/detail/net/proxy.hpp"
 
 #include "mcp/transport/proxy.hpp"
 

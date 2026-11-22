@@ -8,9 +8,9 @@
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
-#include "hang_guard.hpp"
-#include "spawn.hpp"
-#include "tls_test_support.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <boost/asio/post.hpp>
 

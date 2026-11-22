@@ -1,6 +1,6 @@
-#include "../detail/net/tls.hpp"
+#include "mcp/detail/net/tls.hpp"
 
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/address.hpp>

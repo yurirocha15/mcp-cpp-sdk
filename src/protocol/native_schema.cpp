@@ -1,14 +1,14 @@
 #include "native_schema.hpp"
 
-#include "../detail/constants.hpp"
-#include "../detail/text/diagnostic_text.hpp"
-#include "../detail/text/encoding.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/protocol/schema_uri.hpp"
+#include "mcp/detail/text/diagnostic_text.hpp"
+#include "mcp/detail/text/encoding.hpp"
 #include "schema_checker.hpp"
 #include "schema_dialect.hpp"
-#include "schema_uri.hpp"
 #include "schema_values.hpp"
 
-#include "../detail/text/regex.hpp"
+#include "mcp/detail/text/regex.hpp"
 
 #include <algorithm>
 #include <array>

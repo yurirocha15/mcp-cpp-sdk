@@ -1,8 +1,8 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 
-#include "../detail/constants.hpp"
-#include "../detail/json/json_text_scan.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/json_text_scan.hpp"
 
 #include <algorithm>
 #include <array>

@@ -1,8 +1,8 @@
 #include <mcp/core/async.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
-#include "../detail/async/spawn_awaitable.hpp"
-#include "../detail/constants.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/buffer.hpp>

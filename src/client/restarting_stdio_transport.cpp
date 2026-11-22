@@ -1,8 +1,8 @@
 #include "restarting_stdio_transport.hpp"
 
-#include "../detail/async/spawn_awaitable.hpp"
-#include "../detail/constants.hpp"
-#include "../detail/json/jsonrpc_envelope.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/jsonrpc_envelope.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>

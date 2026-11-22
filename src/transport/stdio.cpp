@@ -1,8 +1,8 @@
 #include <mcp/core/async.hpp>
 #include <mcp/transport/stdio.hpp>
-#include "../detail/async/spawn_awaitable.hpp"
-#include "../detail/constants.hpp"
-#include "../detail/net/network_failure.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/network_failure.hpp"
 
 #if defined(_WIN32)
 #include <fcntl.h>

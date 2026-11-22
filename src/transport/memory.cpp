@@ -1,7 +1,7 @@
-#include "../detail/async/fifo.hpp"
-#include "../detail/async/memory_transport_read.hpp"
-#include "../detail/async/spawn_awaitable.hpp"
-#include "../detail/async/strand_executor.hpp"
+#include "mcp/detail/async/fifo.hpp"
+#include "mcp/detail/async/memory_transport_read.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/detail/json_dump.hpp>

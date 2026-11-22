@@ -1,9 +1,9 @@
-#include "../../src/detail/async/strand_executor.hpp"
-#include "../support/spawn.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
+#include "support/spawn.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/transport/transport.hpp>
-#include "../../src/detail/async/serialized_transport_writer.hpp"
+#include "mcp/detail/async/serialized_transport_writer.hpp"
 
 #include <gtest/gtest.h>
 

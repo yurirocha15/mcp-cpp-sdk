@@ -1,8 +1,8 @@
-#include "../detail/json/json_parse.hpp"
+#include "mcp/detail/json/json_parse.hpp"
 
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
-#include "../detail/json/json_text_scan.hpp"
+#include "mcp/detail/json/json_text_scan.hpp"
 
 #include <array>
 #include <clocale>

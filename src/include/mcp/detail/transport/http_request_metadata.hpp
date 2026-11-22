@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../detail/json/peer_json.hpp"
-#include "../detail/net/header_value.hpp"
-#include "../detail/net/param_headers.hpp"
-#include "../detail/protocol/request_meta.hpp"
+#include "mcp/detail/json/peer_json.hpp"
+#include "mcp/detail/net/header_value.hpp"
+#include "mcp/detail/net/param_headers.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/base.hpp>

@@ -1,4 +1,4 @@
-#include "../detail/text/secure_random.hpp"
+#include "mcp/detail/text/secure_random.hpp"
 #include <mcp/core/constants.hpp>
 
 #include <openssl/rand.h>
@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <stdexcept>
 #include <vector>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace encoding = mcp::detail::constants::encoding;
 

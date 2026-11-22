@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../src/detail/text/encoding.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 #include <openssl/bio.h>
 #include <openssl/bn.h>

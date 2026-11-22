@@ -1,6 +1,6 @@
 #pragma once
 
-#include "http_limits.hpp"
+#include "mcp/detail/transport/http_limits.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/transport/http_beast.hpp>

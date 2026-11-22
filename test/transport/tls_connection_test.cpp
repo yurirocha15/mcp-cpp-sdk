@@ -1,12 +1,12 @@
 // The idle check of a kept connection, against a TLS server that sends a session ticket after its
 // response and then a close_notify. The check is internal, so the test includes its header.
-#include "../../src/detail/net/connection.hpp"
+#include "mcp/detail/net/connection.hpp"
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
+#include "support/hang_guard.hpp"
 
-#include "../support/tls_test_support.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>

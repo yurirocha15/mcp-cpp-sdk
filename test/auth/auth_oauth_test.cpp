@@ -31,10 +31,10 @@
 #include <thread>
 #include <vector>
 
-#include "../../src/detail/constants.hpp"
-#include "../../src/detail/text/encoding.hpp"
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 namespace auth_oauth_test {
 

@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include "../constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace mcp::detail::json_text {
 

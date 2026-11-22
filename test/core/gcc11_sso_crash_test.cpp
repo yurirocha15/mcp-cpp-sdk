@@ -22,9 +22,9 @@
  *   F – send_error_response(): Error.message string spans co_await
  */
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

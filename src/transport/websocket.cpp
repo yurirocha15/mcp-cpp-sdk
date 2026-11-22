@@ -2,13 +2,13 @@
 #include <mcp/transport/tls.hpp>
 #include <mcp/transport/websocket.hpp>
 
-#include "../detail/constants.hpp"
-#include "../detail/net/connection.hpp"
-#include "../detail/net/network_failure.hpp"
-#include "../detail/net/socket_deadline.hpp"
-#include "../detail/net/tls.hpp"
-#include "../detail/text/diagnostic_text.hpp"
-#include "host_policy.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/connection.hpp"
+#include "mcp/detail/net/network_failure.hpp"
+#include "mcp/detail/net/socket_deadline.hpp"
+#include "mcp/detail/net/tls.hpp"
+#include "mcp/detail/text/diagnostic_text.hpp"
+#include "mcp/detail/transport/host_policy.hpp"
 #include "tls_accept.hpp"
 
 #include <algorithm>

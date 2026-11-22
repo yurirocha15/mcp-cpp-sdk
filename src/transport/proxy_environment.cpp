@@ -1,7 +1,7 @@
 // ProxyOptions::from_environment(), apart from the proxy rules in proxy.cpp so the tests can build
 // those into their own program.
 
-#include "../detail/net/proxy.hpp"
+#include "mcp/detail/net/proxy.hpp"
 
 #include <algorithm>
 #include <cstdlib>

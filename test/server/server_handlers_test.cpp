@@ -1,9 +1,9 @@
-#include "../test_utils.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/core/runtime.hpp"
 #include "mcp/server/server.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

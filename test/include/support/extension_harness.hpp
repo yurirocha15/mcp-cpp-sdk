@@ -1,7 +1,7 @@
 #pragma once
 
-#include "hang_guard.hpp"
-#include "spawn.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"

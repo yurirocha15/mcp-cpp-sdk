@@ -1,9 +1,9 @@
 #include "modern_exchange.hpp"
 
-#include "../detail/constants.hpp"
-#include "../detail/net/beast_string.hpp"
-#include "../detail/protocol/request_meta.hpp"
-#include "http_request_metadata.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/beast_string.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
+#include "mcp/detail/transport/http_request_metadata.hpp"
 #include "socket_probe.hpp"
 
 #include <mcp/core/async.hpp>

@@ -7,12 +7,12 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
-#include "../support/mcp_server_hosts.hpp"
-#include "../support/tls_test_support.hpp"
+#include "support/hang_guard.hpp"
+#include "support/mcp_server_hosts.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <openssl/rsa.h>
-#include "../test_utils.hpp"
+#include "support/test_utils.hpp"
 
 #include <array>
 #include <boost/asio/io_context.hpp>

@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
+#include "support/hang_guard.hpp"
 
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>

@@ -69,11 +69,10 @@ TESTS = (
     "test/data/*",
     "test/e2e/*",
     "test/headers/*",
+    "test/include/*",
     "test/perf/*",
-    "test/pipe_stream.hpp",
     "test/server/*",
     "test/support/*",
-    "test/test_utils.hpp",
     "test/transport/*",
     "test/tsan.supp",
 )

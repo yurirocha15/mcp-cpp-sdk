@@ -10,10 +10,10 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
-#include "../support/loopback_server.hpp"
-#include "../support/spawn.hpp"
-#include "../support/tls_test_support.hpp"
+#include "support/hang_guard.hpp"
+#include "support/loopback_server.hpp"
+#include "support/spawn.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <openssl/rsa.h>
 #include <openssl/x509.h>

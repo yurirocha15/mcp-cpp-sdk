@@ -3,9 +3,9 @@
  * @brief Tests for OAuth 2.1 integration (Task 19): middleware, bearer extraction, transport wrapper
  */
 
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
+#include "support/test_utils.hpp"
 
 #include <gtest/gtest.h>
 

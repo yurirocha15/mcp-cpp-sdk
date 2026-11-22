@@ -10,7 +10,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace ipv4 = mcp::detail::constants::ipv4;
 

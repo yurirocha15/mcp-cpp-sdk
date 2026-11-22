@@ -1,14 +1,14 @@
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../../src/transport/principal.hpp"
+#include "mcp/detail/transport/principal.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

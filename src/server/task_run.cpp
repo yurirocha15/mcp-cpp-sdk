@@ -1,8 +1,8 @@
 #include "task_run.hpp"
 #include <mcp/core/constants.hpp>
 
-#include "../detail/constants.hpp"
-#include "../detail/protocol/request_meta.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
 #include "mrtr.hpp"
 
 #include <boost/asio/co_spawn.hpp>

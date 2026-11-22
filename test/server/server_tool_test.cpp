@@ -1,11 +1,11 @@
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../../src/protocol/schema_cache.hpp"
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/detail/protocol/schema_cache.hpp"
 #include "mcp/protocol/schema.hpp"
 #include "mcp/server/server.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

@@ -181,6 +181,21 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/modern_exchange.cpp
     src/transport/websocket.cpp)
 
+# The headers the library's sources share live in src/include and are never
+# installed. They share the mcp/ prefix with the public headers, so no path may
+# be in both trees: the include directory searched first would hide the other.
+set(MCP_CPP_SDK_PRIVATE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/include")
+file(
+  GLOB_RECURSE MCP_CPP_SDK_PRIVATE_HEADERS CONFIGURE_DEPENDS
+  RELATIVE "${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}"
+  "${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}/*")
+foreach(header IN LISTS MCP_CPP_SDK_PRIVATE_HEADERS)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include/${header}")
+    message(FATAL_ERROR "src/include/${header} has the include path of "
+                        "the public include/${header}")
+  endif()
+endforeach()
+
 # Configure one installed SDK linkage variant.
 function(mcp_cpp_sdk_configure_library target)
   target_sources(${target} PRIVATE ${MCP_CPP_SDK_SOURCES})
@@ -189,7 +204,8 @@ function(mcp_cpp_sdk_configure_library target)
     ${target}
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
            $<BUILD_INTERFACE:${MCP_CPP_SDK_GENERATED_INCLUDE_DIR}>
-           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE ${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR})
   target_link_libraries(
     ${target} PUBLIC Boost::headers nlohmann_json::nlohmann_json OpenSSL::SSL
                      OpenSSL::Crypto)
@@ -233,10 +249,11 @@ if(MCP_CPP_SDK_BUILD_SHARED)
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # Keeps Beast's error categories and nlohmann_json's exception types shared
     # with the caller; see the headers.
+    set(MCP_CPP_SDK_DETAIL_DIR "${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}/mcp/detail")
     set(MCP_CPP_SDK_BEAST_VISIBILITY_HEADER
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/net/beast_error_visibility.hpp")
+        "${MCP_CPP_SDK_DETAIL_DIR}/net/beast_error_visibility.hpp")
     set(MCP_CPP_SDK_JSON_VISIBILITY_HEADER
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/json/json_error_visibility.hpp")
+        "${MCP_CPP_SDK_DETAIL_DIR}/json/json_error_visibility.hpp")
     target_compile_options(
       mcp-cpp-sdk-shared
       PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}"
@@ -525,6 +542,10 @@ if(BUILD_TESTING)
     ${TEST_SRCS} src/server/sealed_state.cpp src/protocol/schema_uri.cpp
     src/transport/proxy.cpp test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # The tests reach the library's private headers and their own shared ones.
+  target_include_directories(
+    mcp-sdk-tests PRIVATE ${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}
+                          ${CMAKE_CURRENT_SOURCE_DIR}/test/include)
   # Compiled apart from the test program, whose unity build would make Task
   # complete: the sync-mode headers must take synchronous handlers while Task is
   # only declared.

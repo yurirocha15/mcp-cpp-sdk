@@ -8,7 +8,7 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
+#include "support/hang_guard.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>

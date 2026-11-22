@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../detail/net/connection.hpp"
-#include "http_response_write.hpp"
+#include "mcp/detail/net/connection.hpp"
+#include "mcp/detail/transport/http_response_write.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/transport/http_beast.hpp>

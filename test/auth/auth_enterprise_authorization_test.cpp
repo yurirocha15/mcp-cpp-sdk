@@ -4,9 +4,9 @@
  *        grant at the resource authorization server) against a loopback IdP and authorization server.
  */
 
-#include "../support/jwt_test_keys.hpp"
-#include "../support/loopback_server.hpp"
-#include "../support/spawn.hpp"
+#include "support/jwt_test_keys.hpp"
+#include "support/loopback_server.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

@@ -1,14 +1,14 @@
 #pragma once
 
 #include <mcp/core/constants.hpp>
-#include "json_parse.hpp"
+#include "mcp/detail/json/json_parse.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <string>
 #include <string_view>
-#include "../constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace mcp::detail {
 

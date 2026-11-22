@@ -5,7 +5,7 @@
 
 #include <mcp/protocol/schema.hpp>
 
-#include "../support/schema_corpus.hpp"
+#include "support/schema_corpus.hpp"
 
 #include <gtest/gtest.h>
 

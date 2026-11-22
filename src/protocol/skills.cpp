@@ -3,9 +3,9 @@
 
 #include <algorithm>
 #include <set>
-#include "../detail/constants.hpp"
-#include "../detail/text/encoding.hpp"
 #include "cache_hints.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 namespace mcp {
 

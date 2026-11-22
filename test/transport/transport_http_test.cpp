@@ -1,4 +1,4 @@
-#include "../test_utils.hpp"
+#include "support/test_utils.hpp"
 
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
@@ -8,10 +8,10 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
-#include "../support/resolve_gate.hpp"
-#include "../support/spawn.hpp"
-#include "../support/stalling_server.hpp"
+#include "support/hang_guard.hpp"
+#include "support/resolve_gate.hpp"
+#include "support/spawn.hpp"
+#include "support/stalling_server.hpp"
 
 #include <algorithm>
 #include <atomic>

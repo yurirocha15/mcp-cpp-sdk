@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace mcp::auth {
 

@@ -1,8 +1,8 @@
-#include "../../src/detail/net/network_failure.hpp"
+#include "mcp/detail/net/network_failure.hpp"
 
 #include <gtest/gtest.h>
 
-#include "../support/network_error.hpp"
+#include "support/network_error.hpp"
 
 #include <boost/asio/error.hpp>
 #include <boost/beast/core/error.hpp>

@@ -4,10 +4,10 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
-#include "../support/network_error.hpp"
-#include "../support/spawn.hpp"
-#include "../support/tls_test_support.hpp"
+#include "support/hang_guard.hpp"
+#include "support/network_error.hpp"
+#include "support/spawn.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>

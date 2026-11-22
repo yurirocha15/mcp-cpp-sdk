@@ -1,13 +1,13 @@
-#include "../../src/detail/async/strand_executor.hpp"
-#include "../support/extension_harness.hpp"
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
+#include "support/extension_harness.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/core/context.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

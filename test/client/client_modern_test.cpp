@@ -1,8 +1,7 @@
-#include "../pipe_stream.hpp"
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/pipe_stream.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
@@ -10,6 +9,7 @@
 #include "mcp/transport/http_session_manager.hpp"
 #include "mcp/transport/memory.hpp"
 #include "mcp/transport/stdio.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

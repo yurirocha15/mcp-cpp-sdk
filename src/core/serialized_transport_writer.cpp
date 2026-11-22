@@ -1,10 +1,10 @@
-#include "../detail/async/serialized_transport_writer.hpp"
+#include "mcp/detail/async/serialized_transport_writer.hpp"
 #include <mcp/core/async.hpp>
 
-#include "../detail/async/strand_executor.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
 
 #include <mcp/transport/transport.hpp>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>

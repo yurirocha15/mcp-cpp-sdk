@@ -6,8 +6,8 @@
  */
 
 #include <gtest/gtest.h>
-#include "../../src/detail/text/encoding.hpp"
-#include "../support/spawn.hpp"
+#include "mcp/detail/text/encoding.hpp"
+#include "support/spawn.hpp"
 
 #include <algorithm>
 #include <boost/asio/co_spawn.hpp>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../constants.hpp"
-#include "header_value.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/header_value.hpp"
 
 #include <algorithm>
 #include <array>

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 #include <mcp/core/export.hpp>
 

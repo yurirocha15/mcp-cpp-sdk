@@ -4,9 +4,9 @@
  *        OAuth client credentials flow, against a loopback authorization server.
  */
 
-#include "../support/jwt_test_keys.hpp"
-#include "../support/loopback_server.hpp"
-#include "../support/spawn.hpp"
+#include "support/jwt_test_keys.hpp"
+#include "support/loopback_server.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

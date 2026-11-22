@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace mcp::detail {
 

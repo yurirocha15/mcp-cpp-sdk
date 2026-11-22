@@ -1,9 +1,9 @@
 #include <mcp/auth/enterprise_authorization.hpp>
 #include <mcp/core/async.hpp>
 
-#include "../detail/constants.hpp"
-#include "../detail/text/encoding.hpp"
 #include "grant_flow.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/extensions.hpp>

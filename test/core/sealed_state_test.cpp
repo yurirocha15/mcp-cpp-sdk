@@ -1,6 +1,6 @@
-#include "../../src/server/sealed_state.hpp"
-#include "../../src/detail/constants.hpp"
-#include "../../src/detail/text/encoding.hpp"
+#include "mcp/detail/server/sealed_state.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 #include <gtest/gtest.h>
 

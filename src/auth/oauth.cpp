@@ -1,9 +1,9 @@
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 
-#include "../detail/protocol/middleware_rejection.hpp"
-#include "../detail/text/encoding.hpp"
-#include "../detail/text/secure_random.hpp"
+#include "mcp/detail/protocol/middleware_rejection.hpp"
+#include "mcp/detail/text/encoding.hpp"
+#include "mcp/detail/text/secure_random.hpp"
 
 #include <mcp/core/constants.hpp>
 

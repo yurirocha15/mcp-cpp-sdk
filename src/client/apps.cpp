@@ -2,7 +2,7 @@
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 
-#include "../detail/text/encoding.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 #include <stdexcept>
 #include <utility>

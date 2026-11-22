@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace url = mcp::detail::constants::url;
 

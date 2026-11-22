@@ -1,19 +1,19 @@
-#include "../detail/async/memory_transport_read.hpp"
-#include "../detail/async/strand_executor.hpp"
-#include "../detail/constants.hpp"
-#include "../detail/json/jsonrpc_envelope.hpp"
-#include "../detail/json/peer_json.hpp"
-#include "../detail/net/beast_string.hpp"
-#include "../detail/net/connection.hpp"
-#include "../detail/net/tls.hpp"
-#include "../detail/protocol/modern_methods.hpp"
-#include "../server/run_control.hpp"
 #include "accept_retry.hpp"
-#include "host_policy.hpp"
-#include "http_limits.hpp"
-#include "http_request_metadata.hpp"
+#include "mcp/detail/async/memory_transport_read.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/jsonrpc_envelope.hpp"
+#include "mcp/detail/json/peer_json.hpp"
+#include "mcp/detail/net/beast_string.hpp"
+#include "mcp/detail/net/connection.hpp"
+#include "mcp/detail/net/tls.hpp"
+#include "mcp/detail/protocol/modern_methods.hpp"
+#include "mcp/detail/server/run_control.hpp"
+#include "mcp/detail/transport/host_policy.hpp"
+#include "mcp/detail/transport/http_limits.hpp"
+#include "mcp/detail/transport/http_request_metadata.hpp"
+#include "mcp/detail/transport/principal.hpp"
 #include "modern_exchange.hpp"
-#include "principal.hpp"
 #include "scope_challenge.hpp"
 #include "tls_accept.hpp"
 
@@ -25,7 +25,7 @@
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 #include <mcp/transport/tls.hpp>
-#include "../detail/text/secure_random.hpp"
+#include "mcp/detail/text/secure_random.hpp"
 
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>

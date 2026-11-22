@@ -8,8 +8,8 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
-#include "../detail/constants.hpp"
-#include "../detail/text/encoding.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 namespace methods = mcp::constants::methods;
 

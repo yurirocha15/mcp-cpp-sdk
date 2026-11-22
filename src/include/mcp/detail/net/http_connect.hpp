@@ -1,8 +1,8 @@
 #pragma once
 
-#include "connection.hpp"
-#include "network_failure.hpp"
-#include "proxy.hpp"
+#include "mcp/detail/net/connection.hpp"
+#include "mcp/detail/net/network_failure.hpp"
+#include "mcp/detail/net/proxy.hpp"
 
 #include <boost/asio/ip/tcp.hpp>
 

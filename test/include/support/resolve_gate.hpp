@@ -4,7 +4,7 @@
 // resolve_gate.cpp), which is how a test parks a real Asio resolve past its cancel check.
 #ifdef __linux__
 
-#include "hang_guard.hpp"
+#include "support/hang_guard.hpp"
 
 #include <atomic>
 #include <chrono>

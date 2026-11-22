@@ -4,7 +4,7 @@
 // socket_gate.cpp), which is how a test parks an Asio connect at the point its socket is opened.
 #ifdef __linux__
 
-#include "hang_guard.hpp"
+#include "support/hang_guard.hpp"
 
 #include <sys/socket.h>
 #include <atomic>

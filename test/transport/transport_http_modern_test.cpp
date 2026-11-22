@@ -1,10 +1,10 @@
-#include "../test_utils.hpp"
+#include "support/test_utils.hpp"
 
-#include "../../src/transport/http_request_metadata.hpp"
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/detail/transport/http_request_metadata.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

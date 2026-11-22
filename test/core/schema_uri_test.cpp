@@ -1,7 +1,7 @@
 // URI reference resolution (RFC 3986) and JSON Pointer tokens, which schema references are
 // resolved with.
 
-#include "../../src/protocol/schema_uri.hpp"
+#include "mcp/detail/protocol/schema_uri.hpp"
 
 #include <gtest/gtest.h>
 

@@ -1,10 +1,10 @@
 #include <mcp/auth/metadata_policy.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/protocol/schema.hpp>
-#include "../../src/detail/text/regex.hpp"
+#include "mcp/detail/text/regex.hpp"
 
-#include "../../src/detail/constants.hpp"
-#include "../../src/protocol/schema_cache.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/protocol/schema_cache.hpp"
 
 #include <gtest/gtest.h>
 #include <boost/asio/io_context.hpp>

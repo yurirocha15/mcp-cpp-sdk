@@ -1,4 +1,4 @@
-#include "../detail/text/regex.hpp"
+#include "mcp/detail/text/regex.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -9,7 +9,7 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace mcp::detail {
 

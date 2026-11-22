@@ -5,12 +5,12 @@
  * @brief Client::Impl, the state behind a Client, and the helpers it uses. Private to the library.
  */
 
-#include "../detail/async/spawn_awaitable.hpp"
-#include "../detail/constants.hpp"
-#include "../detail/json/peer_json.hpp"
-#include "../detail/protocol/notification_budget.hpp"
-#include "../detail/text/diagnostic_text.hpp"
-#include "response_cache.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/client/response_cache.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/peer_json.hpp"
+#include "mcp/detail/protocol/notification_budget.hpp"
+#include "mcp/detail/text/diagnostic_text.hpp"
 
 #include <mcp/client/client.hpp>
 #include <mcp/core/async.hpp>
@@ -18,7 +18,7 @@
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/tls.hpp>
-#include "../detail/async/serialized_transport_writer.hpp"
+#include "mcp/detail/async/serialized_transport_writer.hpp"
 
 #include <algorithm>
 #include <atomic>

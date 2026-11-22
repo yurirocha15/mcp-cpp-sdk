@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../detail/net/proxy.hpp"
+#include "mcp/detail/net/proxy.hpp"
 
 #include <boost/asio/ip/address_v4.hpp>
 #include <boost/asio/ip/tcp.hpp>

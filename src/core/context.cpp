@@ -1,5 +1,5 @@
 #include <mcp/core/constants.hpp>
-#include "../detail/protocol/notification_budget.hpp"
+#include "mcp/detail/protocol/notification_budget.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>

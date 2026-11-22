@@ -1,9 +1,9 @@
 #include "mrtr.hpp"
 
-#include "../detail/async/spawn_awaitable.hpp"
-#include "../detail/constants.hpp"
-#include "../detail/protocol/request_meta.hpp"
-#include "../detail/text/encoding.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>

@@ -1,5 +1,5 @@
-#include "../../src/detail/net/socket_deadline.hpp"
-#include "../support/hang_guard.hpp"
+#include "mcp/detail/net/socket_deadline.hpp"
+#include "support/hang_guard.hpp"
 
 #include <gtest/gtest.h>
 

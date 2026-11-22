@@ -62,7 +62,7 @@ Follow these naming conventions, which ``.clang-tidy`` enforces with
 * **Variables**: ``lower_case`` (e.g., ``request_id``, ``tool_name``, ``json_result``)
 * **Class members**: ``lower_case_`` with a trailing underscore (e.g., ``transport_``, ``strand_``)
 * **Global variables and namespace-scope constants**: ``g_`` prefix; constants are ``g_UPPER_CASE``
-  (e.g., ``g_INVALID_PARAMS``), declared in ``mcp/core/constants.hpp`` or ``src/detail/constants.hpp``
+  (e.g., ``g_INVALID_PARAMS``), declared in ``mcp/core/constants.hpp`` or ``src/include/mcp/detail/constants.hpp``
 * **Static variables**: ``s_`` prefix (e.g., ``s_cache`` for a function-local static)
 * **Enum values**: ``eCamelCase`` (e.g., ``eServerError``)
 * **Class constants** (static data members): ``lower_case`` (e.g., ``max_repeat_count``)

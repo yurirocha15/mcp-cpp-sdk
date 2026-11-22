@@ -13,9 +13,9 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
-#include "../detail/constants.hpp"
-#include "../detail/text/encoding.hpp"
-#include "../detail/text/secure_random.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
+#include "mcp/detail/text/secure_random.hpp"
 
 namespace mcp::auth {
 

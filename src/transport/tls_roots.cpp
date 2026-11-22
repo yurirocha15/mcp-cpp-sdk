@@ -2,7 +2,7 @@
 // has its own section: the CA bundle files of Linux and the BSDs, the Keychain trust settings on
 // macOS, the ROOT store on Windows. SSL_CERT_FILE and SSL_CERT_DIR, when set, replace them all.
 
-#include "../detail/net/tls.hpp"
+#include "mcp/detail/net/tls.hpp"
 
 #include <openssl/err.h>
 #include <openssl/pem.h>

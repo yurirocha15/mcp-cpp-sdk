@@ -1,8 +1,8 @@
-#include "../../src/detail/async/strand_executor.hpp"
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

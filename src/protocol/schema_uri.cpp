@@ -1,4 +1,4 @@
-#include "schema_uri.hpp"
+#include "mcp/detail/protocol/schema_uri.hpp"
 
 #include <cstddef>
 #include <utility>

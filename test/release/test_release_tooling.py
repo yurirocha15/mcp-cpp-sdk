@@ -144,7 +144,7 @@ class ArtifactTests(unittest.TestCase):
         ).expand(Path("."))
         root = Path(".").resolve()
         names = {path.relative_to(root).as_posix() for path in paths}
-        self.assertIn("test/test_utils.hpp", names)
+        self.assertIn("test/include/support/test_utils.hpp", names)
         self.assertTrue(any(name.startswith("test/core/") for name in names))
         self.assertTrue(any(name.startswith("test/support/") for name in names))
         # The AUR PKGBUILD verifies the source signature with these two files.

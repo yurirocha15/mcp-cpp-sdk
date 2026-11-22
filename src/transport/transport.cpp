@@ -1,4 +1,4 @@
-#include "../detail/net/network_failure.hpp"
+#include "mcp/detail/net/network_failure.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/transport/transport.hpp>
