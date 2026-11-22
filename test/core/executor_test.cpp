@@ -72,7 +72,7 @@ TEST(ExecutorTest, AnEmptyAsioExecutorMakesAnEmptyExecutor) {
 
 TEST(ExecutorTest, ClientReturnsItsConstructorExecutor) {
     boost::asio::io_context io_ctx;
-    auto [client_end, server_end] = mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_end, server_end] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     mcp::Client client(client_end, io_ctx.get_executor());
     EXPECT_EQ(client.executor().get(), boost::asio::any_io_executor(io_ctx.get_executor()));
 }

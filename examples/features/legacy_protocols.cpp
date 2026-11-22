@@ -97,7 +97,7 @@ std::unique_ptr<mcp::Client> make_client(std::shared_ptr<mcp::ITransport> transp
 /// Starts @p server on a new in-memory connection and returns the client's end of it.
 std::shared_ptr<mcp::ITransport> start_server(std::shared_ptr<mcp::Server> server,
                                               const asio::any_io_executor& executor) {
-    auto [client_transport, server_transport] = mcp::create_memory_transport_pair(executor);
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(executor);
     asio::co_spawn(executor, serve(std::move(server), server_transport, executor), asio::detached);
     return client_transport;
 }

@@ -1026,8 +1026,7 @@ TEST_F(ClientCoreTest, ConcurrentRequestsRemainCorrelatedOnMultiThreadedExecutor
     using namespace std::chrono_literals;
 
     constexpr std::size_t request_count = 256;
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     mcp::ClientOptions options;
     // This timeout and the watchdog below only end a run that has gone wrong. They are wide
     // because a sanitizer can stop every thread for seconds while it prepares a report, including

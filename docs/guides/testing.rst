@@ -26,10 +26,10 @@ Key features of MemoryTransport:
 - **Deterministic**: Messages are delivered in order via a shared event loop.
 - **Thread-Safe**: Uses `boost::asio::strand` for internal synchronization.
 
-Using create_memory_transport_pair()
+Using make_memory_transport_pair()
 ------------------------------------
 
-To use MemoryTransport, you should always use the helper function :cpp:func:`mcp::create_memory_transport_pair`. This function creates two connected transport instances where messages written to one are immediately available to the other.
+To use MemoryTransport, you should always use the helper function :cpp:func:`mcp::make_memory_transport_pair`. This function creates two connected transport instances where messages written to one are immediately available to the other.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
@@ -47,7 +47,7 @@ Loopback Test Pattern
 A typical loopback test follows these steps:
 
 1.  Create an `asio::io_context` to manage the event loop.
-2.  Create a MemoryTransport pair using :cpp:func:`mcp::create_memory_transport_pair`.
+2.  Create a MemoryTransport pair using :cpp:func:`mcp::make_memory_transport_pair`.
 3.  Initialize a :cpp:class:`mcp::Server` with the desired tools, resources, and capabilities.
 4.  Initialize a :cpp:class:`mcp::Client` using one half of the transport pair.
 5.  Spawn a coroutine using `asio::co_spawn` to run the server's event loop in the background.
@@ -58,14 +58,14 @@ Here is a simplified example of this pattern. A default ``Client`` and a default
 ``Server`` speak protocol revision 2026-07-28 with each other, so the test
 needs no handshake of its own: ``connect()`` sends one ``server/discover``
 request. The test includes ``<mcp/core/async.hpp>``, ``<mcp/mcp.hpp>``,
-``<mcp/transport/memory.hpp>`` for ``create_memory_transport_pair()``, and the
+``<mcp/transport/memory.hpp>`` for ``make_memory_transport_pair()``, and the
 Boost.Asio headers of ``io_context``, ``co_spawn`` and ``detached``.
 
 .. code-block:: cpp
 
    boost::asio::io_context io_ctx;
    auto [client_transport, server_transport] =
-       mcp::create_memory_transport_pair(io_ctx.get_executor());
+       mcp::make_memory_transport_pair(io_ctx.get_executor());
 
    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, mcp::ServerCapabilities{});
    mcp::Client client(client_transport, io_ctx.get_executor());

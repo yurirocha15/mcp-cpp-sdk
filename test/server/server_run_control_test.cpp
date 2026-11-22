@@ -60,8 +60,7 @@ TEST(ServerRunControlTest, StopEndsRunAndSyncRefusesTheApplicationsExecutor) {
                     [](const nlohmann::json& args) { return args; });
 
     boost::asio::io_context io_ctx;
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     std::atomic<bool> connected{false};
     std::atomic<bool> run_ended{false};
     mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
@@ -95,8 +94,7 @@ TEST(ServerRunControlTest, StopFromAHandlerEndsRun) {
                     });
 
     boost::asio::io_context io_ctx;
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     std::atomic<bool> run_ended{false};
     mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
         co_await server.run(server_transport, io_ctx.get_executor());

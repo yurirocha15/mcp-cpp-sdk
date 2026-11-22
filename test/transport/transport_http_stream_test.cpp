@@ -661,7 +661,7 @@ TEST_F(HttpStreamTest, ResetAfterHalfCloseCancelsTheRequest) {
 // over HTTP without a stream drops its notifications rather than sending them to that session.
 TEST_F(HttpStreamTest, NotificationsStayOffAnotherTransportOfTheSharedServer) {
     std::shared_ptr<mcp::Server> server = make_server();
-    auto [client_end, server_end] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [client_end, server_end] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", 20450,
         [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });

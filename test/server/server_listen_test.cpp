@@ -573,7 +573,7 @@ TEST(ListenConcurrencyTest, NotificationsFromManyThreadsReachTheListener) {
     constexpr int g_per_thread = 100;
     asio::thread_pool pool(g_threads);
     auto server = make_server();
-    auto [client, server_end] = mcp::create_memory_transport_pair(pool.get_executor());
+    auto [client, server_end] = mcp::make_memory_transport_pair(pool.get_executor());
     std::vector<json> received;
     std::atomic<std::size_t> received_count{0};
     std::atomic<bool> run_done{false};

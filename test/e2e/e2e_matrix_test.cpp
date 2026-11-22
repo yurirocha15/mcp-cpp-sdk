@@ -297,7 +297,7 @@ Outcome run_cell(ClientKind client_kind, ServerKind server_kind, TransportKind t
         case TransportKind::eMemory: {
             auto server = make_server(server_kind);
             auto [client_transport, server_transport] =
-                mcp::create_memory_transport_pair(io.get_executor());
+                mcp::make_memory_transport_pair(io.get_executor());
             mcp::Client client(client_transport, io.get_executor(), options);
             mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
@@ -527,7 +527,7 @@ FeatureOutcome run_feature_cell(ClientKind client_kind, ServerKind server_kind,
     switch (transport_kind) {
         case FeatureTransport::eMemory: {
             auto [client_transport, server_transport] =
-                mcp::create_memory_transport_pair(io.get_executor());
+                mcp::make_memory_transport_pair(io.get_executor());
             mcp::Client client(client_transport, io.get_executor(), options);
             answer_elicitations(client);
             mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));

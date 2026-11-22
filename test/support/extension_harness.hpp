@@ -43,8 +43,7 @@ inline void run_modern_client(
     mcp::Server& server, const mcp::ClientCapabilities& capabilities,
     std::function<mcp::Task<void>(mcp::Client&, const mcp::ConnectResult&)> body) {
     boost::asio::io_context io_ctx;
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     boost::asio::steady_timer guard(io_ctx, g_hang_guard);
     bool timed_out = false;
     guard.async_wait([&](const boost::system::error_code& error) {

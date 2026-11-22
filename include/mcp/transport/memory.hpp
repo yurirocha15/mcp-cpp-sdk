@@ -32,7 +32,7 @@ struct MemoryTransportAccess;
  * Queue and pending-read state is serialized by an internal Boost.Asio strand.
  * Concurrent reads use independent wake-up operations and do not cancel each other.
  *
- * @note Always create instances via create_memory_transport_pair(). Never
+ * @note Always create instances via make_memory_transport_pair(). Never
  *       construct MemoryTransport directly unless set_peer() is called before use.
  */
 class MCP_API MemoryTransport final : public ITransport {
@@ -134,7 +134,7 @@ class MCP_API MemoryTransport final : public ITransport {
  * @param executor The executor for both transports.
  * @return A pair of connected transport instances that can exchange in-memory messages.
  */
-MCP_API std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>>
-create_memory_transport_pair(const Executor& executor);
+MCP_API std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>> make_memory_transport_pair(
+    const Executor& executor);
 
 }  // namespace mcp

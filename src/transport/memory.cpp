@@ -330,7 +330,7 @@ void MemoryTransport::set_peer(const std::shared_ptr<MemoryTransport>& peer) {
     state_->set_peer(peer ? peer->state_ : nullptr);
 }
 
-std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>> create_memory_transport_pair(
+std::pair<std::shared_ptr<ITransport>, std::shared_ptr<ITransport>> make_memory_transport_pair(
     const Executor& executor) {
     auto transport_a = std::make_shared<MemoryTransport>(executor);
     auto transport_b = std::make_shared<MemoryTransport>(executor);

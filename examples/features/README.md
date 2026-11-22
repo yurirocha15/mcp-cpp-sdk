@@ -186,12 +186,12 @@ done
 ### 9. Memory Transport (`transport_memory.cpp`)
 
 **What it demonstrates:**
-- `create_memory_transport_pair()` for in-process testing
+- `make_memory_transport_pair()` for in-process testing
 - Direct `ITransport` message exchange over an in-memory bidirectional pair
 - JSON-RPC frames carried through the same `read_message()` / `write_message()` API
 
 **Key APIs:**
-- `create_memory_transport_pair()`
+- `make_memory_transport_pair()`
 - `ITransport::read_message()`
 - `ITransport::write_message()`
 
@@ -356,7 +356,7 @@ Many examples use the loopback pattern for fast, deterministic testing:
 asio::io_context io_ctx;
 
 // Create bidirectional memory transport pair
-auto [server_transport, client_transport] = create_memory_transport_pair(io_ctx.get_executor());
+auto [server_transport, client_transport] = make_memory_transport_pair(io_ctx.get_executor());
 
 // Run server and client in the same process
 asio::co_spawn(io_ctx, server.run(server_transport, io_ctx.get_executor()), asio::detached);

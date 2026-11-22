@@ -400,7 +400,7 @@ process management during testing.
 Creating Transport Pairs
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-You should always use the `create_memory_transport_pair` helper to ensure that
+You should always use the `make_memory_transport_pair` helper to ensure that
 both ends of the transport are correctly linked.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp

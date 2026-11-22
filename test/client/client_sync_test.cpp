@@ -124,7 +124,7 @@ TEST(ClientSyncTest, ABlockingCallOnTheLoopThreadThrows) {
 
 TEST(ClientSyncTest, AClientOnTheApplicationsExecutorRefusesBlockingCalls) {
     boost::asio::io_context io_ctx;
-    auto [client_end, server_end] = mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_end, server_end] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     mcp::Client client(client_end, io_ctx.get_executor());
     EXPECT_THROW(static_cast<void>(client.sync()), std::logic_error);
     EXPECT_THROW(client.run([]() -> mcp::Task<void> { co_return; }), std::logic_error);

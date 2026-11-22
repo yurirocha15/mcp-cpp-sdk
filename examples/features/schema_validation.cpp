@@ -209,9 +209,9 @@ int main() {
         add_tools(*lenient_server);
 
         auto [checking_server_end, checking_client_end] =
-            mcp::create_memory_transport_pair(io_ctx.get_executor());
+            mcp::make_memory_transport_pair(io_ctx.get_executor());
         auto [lenient_server_end, lenient_client_end] =
-            mcp::create_memory_transport_pair(io_ctx.get_executor());
+            mcp::make_memory_transport_pair(io_ctx.get_executor());
 
         asio::co_spawn(io_ctx, serve(checking_server.get(), checking_server_end, io_ctx.get_executor()),
                        asio::detached);

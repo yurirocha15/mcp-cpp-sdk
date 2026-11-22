@@ -654,7 +654,7 @@ TEST(ClientListen, AgainstSdkServerOverMemory) {
     boost::asio::io_context io;
     boost::asio::steady_timer guard(io);
     bool fired = false;
-    auto [client_transport, server_transport] = mcp::create_memory_transport_pair(io.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io.get_executor());
     auto server = make_listen_server();
     mcp::Client client(client_transport, io.get_executor(), modern_options());
     auto outcome = std::make_shared<ListenOutcome>();

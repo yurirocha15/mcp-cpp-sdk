@@ -682,7 +682,7 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromTextItCannotParse) {
         SCOPED_TRACE(malformed);
         mcp::Server server({"validation-server", "1.0"}, mcp::ServerCapabilities{});
         auto [server_transport, client_transport] =
-            mcp::create_memory_transport_pair(io_ctx_.get_executor());
+            mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
         std::vector<nlohmann::json> responses;
         std::exception_ptr server_error;
@@ -714,7 +714,7 @@ TEST_F(ServerCoreTest, ServesMemoryTransportsThatShareTheStrandItRunsOn) {
 
     mcp::Server server({"shared-strand-server", "1.0"}, mcp::ServerCapabilities{});
     const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
-    auto [server_transport, client_transport] = mcp::create_memory_transport_pair(strand);
+    auto [server_transport, client_transport] = mcp::make_memory_transport_pair(strand);
 
     std::vector<nlohmann::json> responses;
     std::exception_ptr server_error;
@@ -952,8 +952,7 @@ TEST_F(ServerCoreTest, SessionTeardownStaysOnConfiguredStrandAcrossRepeatedRuns)
 TEST_F(ServerCoreTest, ReverseRequestResponseCarryingNullErrorIsAccepted) {
     using namespace std::chrono_literals;
 
-    auto [server_transport, client_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [server_transport, client_transport] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     mcp::Server server({"reverse-rpc-server", "1.0"}, mcp::ServerCapabilities{});
 
     std::atomic_bool session_ready{false};
@@ -1012,8 +1011,7 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     using namespace std::chrono_literals;
 
     constexpr std::size_t request_count = 256;
-    auto [server_transport, client_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [server_transport, client_transport] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     mcp::Server server({"reverse-rpc-server", "1.0"}, mcp::ServerCapabilities{});
 
     std::atomic_bool session_ready{false};
@@ -1584,7 +1582,7 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
 
     // Named copies rather than a structured binding: GCC 13 ICEs on capturing a structured binding
     // by copy in a coroutine lambda alongside a by-reference default.
-    auto transport_pair = mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto transport_pair = mcp::make_memory_transport_pair(io_ctx.get_executor());
     auto server_transport = transport_pair.first;
     auto client_transport = transport_pair.second;
     mcp::Server server({"reverse-error-server", "1.0"}, mcp::ServerCapabilities{});

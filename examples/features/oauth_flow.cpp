@@ -628,7 +628,7 @@ int main() {
             });
 
         auto [server_base_transport, client_base_transport] =
-            create_memory_transport_pair(io_ctx.get_executor());
+            make_memory_transport_pair(io_ctx.get_executor());
         auto server_transport =
             std::make_shared<MiddlewareAuthErrorBridgeTransport>(server_base_transport);
 
