@@ -8,6 +8,8 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/hang_guard.hpp"
+
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -98,19 +100,21 @@ http::response<http::string_body> send_json_rpc(beast::tcp_stream& stream,
     return resp;
 }
 
-// Connects once the server accepts connections; the per-test timeout ends a test whose server
-// never does.
+// Connects once the server accepts connections.
 void connect_when_listening(beast::tcp_stream& stream, uint16_t port) {
     const asio::ip::tcp::endpoint endpoint(asio::ip::make_address("127.0.0.1"), port);
-    while (true) {
-        beast::error_code ec;
-        stream.socket().connect(endpoint, ec);
-        if (!ec) {
-            return;
-        }
-        stream.socket().close(ec);
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    EXPECT_TRUE(eventually(
+        [&] {
+            beast::error_code ec;
+            stream.socket().connect(endpoint, ec);
+            if (ec) {
+                stream.socket().close(ec);
+                return false;
+            }
+            return true;
+        },
+        g_hang_guard, std::chrono::milliseconds(10)))
+        << "the server never accepted a connection on port " << port;
 }
 
 // Stops the server and joins its thread when a test throws before its own join, so the joinable
@@ -131,12 +135,10 @@ class ServerThreadGuard {
     std::thread& thread_;
 };
 
-/// The port @p server listens on once run_http() has bound it; the per-test timeout ends a test
-/// whose server never does.
+/// The port @p server listens on once run_http() has bound it.
 uint16_t wait_for_port(const mcp::Server& server) {
-    while (server.bound_port() == 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(eventually([&] { return server.bound_port() != 0; }))
+        << "run_http() never bound its port";
     return server.bound_port();
 }
 
@@ -172,10 +174,16 @@ class StopGuard {
         if (!thread_.joinable()) {
             return;
         }
-        while (!finished_.load()) {
-            server_.stop();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        EXPECT_TRUE(eventually(
+            [this] {
+                if (finished_.load()) {
+                    return true;
+                }
+                server_.stop();
+                return false;
+            },
+            g_hang_guard, std::chrono::milliseconds(10)))
+            << "the server did not stop";
         thread_.join();
     }
 
@@ -398,13 +406,19 @@ TEST_F(ServerHttpTest, RunHttpNotifiesEveryLegacySession) {
 
     // Each client opens the stream that carries such notifications after connecting, so the
     // notification is sent until both have one.
-    while (first_seen.load() == 0 || second_seen.load() == 0) {
-        asio::io_context notify_ctx;
-        auto sent = asio::co_spawn(notify_ctx, server_->notify_tools_list_changed(), asio::use_future);
-        notify_ctx.run();
-        sent.get();
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+    eventually(
+        [&] {
+            if (first_seen.load() != 0 && second_seen.load() != 0) {
+                return true;
+            }
+            asio::io_context notify_ctx;
+            auto sent =
+                asio::co_spawn(notify_ctx, server_->notify_tools_list_changed(), asio::use_future);
+            notify_ctx.run();
+            sent.get();
+            return false;
+        },
+        g_hang_guard, std::chrono::milliseconds(20));
     EXPECT_GT(first_seen.load(), 0);
     EXPECT_GT(second_seen.load(), 0);
 
@@ -479,9 +493,7 @@ TEST_F(ServerHttpTest, StopEndsRunHttpWhileAHandlerStillRuns) {
         }
     });
 
-    while (!handler_started.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(eventually([&] { return handler_started.load(); }));
     server_->stop();
     server_thread.join();
     EXPECT_TRUE(finished.load());
@@ -590,10 +602,15 @@ TEST_F(ServerHttpTest, SyncNotifiesTheSessionsOfRunHttpFromAnotherThread) {
         "refused");
     // The client opens the stream that carries such notifications after connecting, so the
     // notification is sent until it has one.
-    while (seen.load() == 0) {
-        server_->sync().notify_tools_list_changed();
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+    eventually(
+        [&] {
+            if (seen.load() != 0) {
+                return true;
+            }
+            server_->sync().notify_tools_list_changed();
+            return false;
+        },
+        g_hang_guard, std::chrono::milliseconds(20));
     EXPECT_GT(seen.load(), 0);
 
     client.close();
@@ -782,16 +799,16 @@ TEST_F(ServerHttpTest, AServerServedByAManagerIsStoppedAndRefusesBlockingCalls) 
     std::thread loop([&io_ctx] { io_ctx.run(); });
 
     // listen() joins the server's runs once its coroutine starts on the loop.
-    bool refused = false;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!refused && std::chrono::steady_clock::now() < deadline) {
-        try {
-            server_->sync().notify_tools_list_changed();
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        } catch (const std::logic_error&) {
-            refused = true;
-        }
-    }
+    const bool refused = eventually(
+        [&] {
+            try {
+                server_->sync().notify_tools_list_changed();
+                return false;
+            } catch (const std::logic_error&) {
+                return true;
+            }
+        },
+        std::chrono::seconds(10));
     EXPECT_TRUE(refused);
     server_->stop();
     loop.join();
@@ -810,9 +827,7 @@ TEST_F(ServerHttpTest, ANotificationReachesTheSessionsAfterOneThatCannotTakeIt) 
     mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", 0, *server_);
     asio::co_spawn(io_ctx, manager.listen(), asio::detached);
     std::thread loop([&io_ctx] { io_ctx.run(); });
-    while (failing->written.load() == 0) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    EXPECT_TRUE(eventually([&] { return failing->written.load() != 0; }));
 
     std::mutex received_mutex;
     std::condition_variable received_changed;

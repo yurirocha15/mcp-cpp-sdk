@@ -2914,11 +2914,7 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
 
     // Wait until the discovery fetch has connected to the stalling server (a fixed head start is
     // not enough under sanitizer slowdown), then close from a thread that never runs the io_context.
-    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (stalling.accepted() < 1 && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    const bool reached_stall = stalling.accepted() >= 1;
+    const bool reached_stall = eventually([&] { return stalling.accepted() >= 1; });
     transport->close();
     resource_server.close();
 
@@ -6088,10 +6084,7 @@ TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsS
         });
     }
 
-    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (completed.load() < request_count && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    eventually([&] { return completed.load() >= request_count; });
     stop_writing.store(true);
     writer.join();
     server.close();

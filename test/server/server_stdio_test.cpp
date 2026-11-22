@@ -317,16 +317,12 @@ class StdioServerProcess {
     /// The child's wait status, or nullopt when it is still running after g_hang_guard: a bound for
     /// reporting a hang, not a measure of how fast it should be.
     std::optional<int> wait_for_exit() {
-        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
-        while (std::chrono::steady_clock::now() < give_up) {
-            int status = 0;
-            if (::waitpid(child_, &status, WNOHANG) == child_) {
-                reaped_ = true;
-                return status;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        int status = 0;
+        if (!eventually([&] { return ::waitpid(child_, &status, WNOHANG) == child_; })) {
+            return std::nullopt;
         }
-        return std::nullopt;
+        reaped_ = true;
+        return status;
     }
 
    private:

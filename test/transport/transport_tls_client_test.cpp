@@ -156,9 +156,8 @@ class PlainServer {
                               });
             finished_ = true;
         });
-        while (server_->bound_port() == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
+        EXPECT_TRUE(eventually([this] { return server_->bound_port() != 0; }))
+            << "run_http() never bound its port";
         port_ = server_->bound_port();
     }
 
@@ -166,10 +165,16 @@ class PlainServer {
     PlainServer& operator=(const PlainServer&) = delete;
 
     ~PlainServer() {
-        while (!finished_.load()) {
-            server_->stop();
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        EXPECT_TRUE(eventually(
+            [this] {
+                if (finished_.load()) {
+                    return true;
+                }
+                server_->stop();
+                return false;
+            },
+            g_hang_guard, std::chrono::milliseconds(10)))
+            << "the server did not stop";
         thread_.join();
     }
 
@@ -427,10 +432,8 @@ TEST(TlsClientTest, AClientEndsItsConnectionsWithCloseNotify) {
     {
         const TlsFront front(front_for(certs().server), server.port());
         greet(https_url(front.port()), with_tls(trusting(certs().ca)), mcp::ClientProtocol::legacy());
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (std::chrono::steady_clock::now() < deadline && front.close_notifies() == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
+        eventually([&] { return front.close_notifies() != 0; }, std::chrono::seconds(10),
+                   std::chrono::milliseconds(20));
         close_notifies = front.close_notifies();
     }
     EXPECT_GE(close_notifies, 1);

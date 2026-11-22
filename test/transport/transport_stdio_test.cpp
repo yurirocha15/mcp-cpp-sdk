@@ -344,16 +344,12 @@ TEST_F(StdioTransportTest, RejectsASecondOutstandingRead) {
     std::thread first_runner([this]() { io_ctx_.run(); });
     std::thread second_runner([this]() { io_ctx_.run(); });
 
-    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    bool one_completed = false;
-    while (std::chrono::steady_clock::now() < deadline) {
-        one_completed = first.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready ||
-                        second.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
-        if (one_completed) {
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    const bool one_completed = eventually(
+        [&] {
+            return first.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready ||
+                   second.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+        },
+        g_hang_guard, std::chrono::milliseconds(1));
 
     input_buffer.feed("accepted\n");
     input_buffer.close();

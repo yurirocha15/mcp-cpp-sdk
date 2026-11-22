@@ -4,6 +4,8 @@
 
 #include <gtest/gtest.h>
 
+#include "../support/hang_guard.hpp"
+
 #include "../support/tls_test_support.hpp"
 
 #include <boost/asio/io_context.hpp>
@@ -30,15 +32,12 @@ using tcp = asio::ip::tcp;
 
 /// Waits until @p socket has bytes to read; false after two seconds.
 bool wait_readable(tcp::socket& socket) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (std::chrono::steady_clock::now() < deadline) {
-        boost::system::error_code error;
-        if (socket.available(error) > 0 || error) {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return false;
+    return eventually(
+        [&] {
+            boost::system::error_code error;
+            return socket.available(error) > 0 || static_cast<bool>(error);
+        },
+        std::chrono::seconds(2));
 }
 
 }  // namespace

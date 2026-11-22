@@ -1580,10 +1580,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
 
     stop.store(true);
     writer.join();
-    const auto drain_deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (in_flight.load() > 0 && std::chrono::steady_clock::now() < drain_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    eventually([&] { return in_flight.load() == 0; });
     ASSERT_EQ(in_flight.load(), 0u) << "an exchange never completed; the run proves nothing";
     work.reset();
     client_ctx.stop();
