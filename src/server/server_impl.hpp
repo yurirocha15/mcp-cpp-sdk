@@ -1274,7 +1274,17 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     static Task<void> run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransport> transport,
                           boost::asio::any_io_executor executor);
+    /// Serves @p session until its transport ends: registers it, reads it, then ends it.
     Task<void> run_session(std::shared_ptr<Session> session);
+    /// The read loop of @p session: reads each message and starts its dispatch, until the
+    /// transport closes.
+    Task<void> read_session(std::shared_ptr<Session> session);
+    /// A message read while @p session is at its limit: a request is refused, and anything else,
+    /// such as an answer to the server's own request, is dispatched in place.
+    Task<void> handle_past_limit(Session& session, nlohmann::json json_msg);
+    /// Ends @p session once its read loop has: stops its work, closes its transport and waits for
+    /// its dispatches.
+    Task<void> end_session(std::shared_ptr<Session> session);
     /// Whether a message of @p message_bytes must not start another dispatch in the background.
     bool session_is_full(const Session& session, std::size_t message_bytes) const;
     /// Writes @p answer, made by the read loop itself, without holding up reading while it can.

@@ -282,12 +282,16 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     // The next client on a reused Server starts from the default, not from what the last one chose.
     log_level.store(g_default_log_level, std::memory_order_relaxed);
 
+    co_await read_session(session);
+    co_await end_session(session);
+}
+
+Task<void> Server::Impl::read_session(std::shared_ptr<Session> session) {
     try {
         for (;;) {
             nlohmann::json json_msg;
             std::shared_ptr<const std::string> principal;
             bool parse_failed = false;
-            std::size_t message_bytes = 0;
             try {
                 if (session->memory_transport) {
                     auto message = co_await detail::MemoryTransportAccess::read_json_until_closed(
@@ -314,23 +318,11 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
                     *session, std::make_shared<const std::string>(make_parse_error_wire()));
                 continue;
             }
-            message_bytes = detail::json_memory_cost(json_msg);
+            const std::size_t message_bytes = detail::json_memory_cost(json_msg);
             // Past the limit nothing is left running in the background, so reading stops when the
             // peer stops taking answers. Answers to the server's own requests still get through.
             if (session_is_full(*session, message_bytes)) {
-                if (is_identified_request(json_msg)) {
-                    co_await answer_from_read_loop(
-                        *session,
-                        std::make_shared<const std::string>(make_error_wire(
-                            json_msg.at("id").get<RequestId>(),
-                            mcp::constants::jsonrpc::g_INTERNAL_ERROR, "Too many requests in flight")));
-                } else {
-                    try {
-                        co_await dispatch_on_strand(std::move(json_msg));
-                    } catch (...) {
-                        // A failed message must not end the session.
-                    }
-                }
+                co_await handle_past_limit(*session, std::move(json_msg));
                 continue;
             }
             session->active_dispatches.fetch_add(1, std::memory_order_relaxed);
@@ -358,7 +350,24 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     } catch (const std::exception&) {
         // Closing a transport is the normal way to stop a session.
     }
+}
 
+Task<void> Server::Impl::handle_past_limit(Session& session, nlohmann::json json_msg) {
+    if (is_identified_request(json_msg)) {
+        co_await answer_from_read_loop(
+            session, std::make_shared<const std::string>(make_error_wire(
+                         json_msg.at("id").get<RequestId>(), mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                         "Too many requests in flight")));
+        co_return;
+    }
+    try {
+        co_await dispatch_on_strand(std::move(json_msg));
+    } catch (...) {
+        // A failed message must not end the session.
+    }
+}
+
+Task<void> Server::Impl::end_session(std::shared_ptr<Session> session) {
     // Teardown below can fail — a transport may throw from close, and the drain wait rethrows any
     // error that is not cancellation. Whichever way it ends, the session must be unregistered, or
     // every later run() is refused for the lifetime of this Server.
