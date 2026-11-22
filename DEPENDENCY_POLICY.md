@@ -11,16 +11,16 @@ The installed SDK has three direct dependencies:
 | --- | --- | --- |
 | Boost | 1.74 | Asio executors, coroutines, and networking |
 | nlohmann/json | 3.10.5 | JSON and JSON-RPC serialization |
-| OpenSSL | 3.0 | Cryptographic randomness and OAuth helper primitives |
+| OpenSSL | 3.0 | TLS, cryptographic randomness, and OAuth helper primitives |
 
 The minimum versions in `CMakeLists.txt` are the source of truth. CI must test
 those floors on at least one supported platform before a stable release. The
 latest stable dependency versions are tested periodically to detect upcoming
 compatibility problems.
 
-The SDK's built-in HTTP transports currently use plaintext HTTP. OpenSSL is
-not used to provide TLS transport; deployments that leave a loopback or trusted
-network boundary must use a TLS-terminating proxy or a custom TLS transport.
+The built-in HTTP and WebSocket transports speak TLS through OpenSSL, as clients
+(`https://`, `wss://`) and as servers. Clients trust the operating system's
+certificate authorities by default, and those `TlsClientOptions` names.
 
 Build, test, documentation, and release-only dependencies do not become part
 of the public link interface. Their exact versions should be locked where the
