@@ -1,5 +1,4 @@
 #include "accept_retry.hpp"
-#include "mcp/detail/async/memory_transport_read.hpp"
 #include "mcp/detail/async/strand_executor.hpp"
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/json/jsonrpc_envelope.hpp"
@@ -13,6 +12,7 @@
 #include "mcp/detail/transport/http_limits.hpp"
 #include "mcp/detail/transport/http_request_metadata.hpp"
 #include "mcp/detail/transport/principal.hpp"
+#include "mcp/detail/transport/session_pipe.hpp"
 #include "modern_exchange.hpp"
 #include "scope_challenge.hpp"
 #include "tls_accept.hpp"
@@ -23,7 +23,6 @@
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
-#include <mcp/transport/memory.hpp>
 #include <mcp/transport/tls.hpp>
 #include "mcp/detail/text/secure_random.hpp"
 
@@ -127,7 +126,8 @@ struct SessionRuntime {
     /// The principal of the request that created the session. Only it may use the session.
     std::string principal;
 
-    std::shared_ptr<MemoryTransport> client_transport;
+    /// What the session's Server reads the client's messages from and writes its own to.
+    std::shared_ptr<detail::SessionPipe> pipe;
 
     mutable std::mutex protocol_mutex;
     std::string negotiated_protocol_version{
@@ -527,16 +527,30 @@ struct StreamableHttpSessionManager::Impl {
         // loop also waits for a request in place, not through a coroutine spawned onto another
         // strand for every read.
         auto session_strand = detail::make_strand_executor(executor);
-        auto client_mem = std::make_shared<MemoryTransport>(conn_strand);
-        auto server_mem = std::make_shared<MemoryTransport>(session_strand);
-        client_mem->set_peer(server_mem);
-        server_mem->set_peer(client_mem);
         auto server = build_server(executor);
 
         auto runtime =
             std::make_shared<detail_session_mgr::SessionRuntime>(session_id, event_store_capacity);
-        runtime->client_transport = client_mem;
         runtime->principal = std::move(principal);
+        // What the server writes is routed as it is written; the pipe holds the session weakly,
+        // so a session the client ended routes nothing more.
+        const std::weak_ptr<detail_session_mgr::SessionRuntime> weak_runtime = runtime;
+        runtime->pipe = std::make_shared<detail::SessionPipe>(
+            session_strand,
+            [weak_runtime, json_only = json_only_mode_,
+             max_queued = stream_options_.max_queued_notifications,
+             counters = stream_counters_](std::string message, const std::string* related_request) {
+                if (auto session = weak_runtime.lock()) {
+                    dispatch_response_to_pending(session.get(), std::move(message),
+                                                 json_only->load(std::memory_order_acquire),
+                                                 related_request, max_queued, *counters);
+                }
+            },
+            [weak_runtime] {
+                if (auto session = weak_runtime.lock()) {
+                    end_streams(*session);
+                }
+            });
 
         std::size_t max_sessions = 0;
         {
@@ -546,33 +560,24 @@ struct StreamableHttpSessionManager::Impl {
         {
             std::unique_lock lock(sessions_mutex_);
             if (closed.load(std::memory_order_acquire)) {
-                client_mem->close();
+                runtime->pipe->close();
                 return nullptr;
             }
             // at_session_limit() checked before the session was built, without this lock, so
             // initializes that arrive together on several threads can all pass it.
             if (sessions.size() >= max_sessions) {
-                client_mem->close();
+                runtime->pipe->close();
                 return nullptr;
             }
             sessions.emplace(session_id, runtime);
         }
 
-        std::shared_ptr<ITransport> server_transport = server_mem;
-        auto server_exec = session_strand;
-
         boost::asio::co_spawn(
             conn_strand,
-            [srv = std::move(server), transport = std::move(server_transport),
-             exec = server_exec]() mutable -> boost::asio::awaitable<void> {
+            [srv = std::move(server), transport = std::shared_ptr<ITransport>(runtime->pipe),
+             exec = session_strand]() mutable -> boost::asio::awaitable<void> {
                 co_await srv->run(std::move(transport), exec);
             },
-            boost::asio::detached);
-
-        boost::asio::co_spawn(
-            conn_strand,
-            read_outbound_messages(runtime, json_only_mode_, stream_options_.max_queued_notifications,
-                                   stream_counters_),
             boost::asio::detached);
         return runtime;
     }
@@ -650,8 +655,8 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         end_streams(*session);
-        if (session->client_transport) {
-            session->client_transport->close();
+        if (session->pipe) {
+            session->pipe->close();
         }
     }
 
@@ -1468,7 +1473,7 @@ struct StreamableHttpSessionManager::Impl {
             co_return std::get<StringResponse>(session_var);
         }
         auto session = std::get<std::shared_ptr<detail_session_mgr::SessionRuntime>>(session_var);
-        if (session == nullptr || session->client_transport == nullptr) {
+        if (session == nullptr || session->pipe == nullptr) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
         }
@@ -1504,7 +1509,7 @@ struct StreamableHttpSessionManager::Impl {
                     request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
                     "initialize must be a request");
             }
-            co_await session->client_transport->write_json(std::move(request_json));
+            session->pipe->deliver(std::move(request_json));
             auto response =
                 detail_session_mgr::make_empty_json_response(request, http::status::accepted);
             response.set("Mcp-Session-Id", session->session_id);
@@ -1528,7 +1533,7 @@ struct StreamableHttpSessionManager::Impl {
                     timer_signal, std::nullopt, {}, false, std::to_string(++session->streams)});
         }
 
-        co_await session->client_transport->write_json(std::move(request_json));
+        session->pipe->deliver(std::move(request_json));
 
         // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
         // request of the server's own reaches it while the handler waits for the answer.
@@ -1841,28 +1846,6 @@ struct StreamableHttpSessionManager::Impl {
         }
     }
 
-    static Task<void> read_outbound_messages(
-        std::shared_ptr<detail_session_mgr::SessionRuntime> session,
-        std::shared_ptr<std::atomic<bool>> json_only_mode, std::size_t max_queued,
-        std::shared_ptr<detail::StreamCounters> counters) {
-        try {
-            for (;;) {
-                auto message = co_await detail::MemoryTransportAccess::read_related_until_closed(
-                    *session->client_transport);
-                if (!message) {
-                    break;
-                }
-                dispatch_response_to_pending(session.get(), std::move(message->message),
-                                             json_only_mode->load(std::memory_order_acquire),
-                                             message->related_request.get(), max_queued, *counters);
-            }
-        } catch (...) {
-            // Any other failure ends the loop too, and releases the waiters below.
-            (void)0;
-        }
-        end_streams(*session);
-    }
-
     static detail_session_mgr::PendingResult consume_pending_response(
         detail_session_mgr::SessionRuntime* session, const std::string& request_id_key) {
         std::lock_guard lock(session->response_mutex);
@@ -2163,8 +2146,8 @@ void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl)
         for (const auto& timer : timers) {
             Impl::signal_timer(timer);
         }
-        if (session->client_transport) {
-            session->client_transport->close();
+        if (session->pipe) {
+            session->pipe->close();
         }
     }
 

@@ -217,6 +217,7 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
         }
     } unbinder{session->transport};
     session->memory_transport = dynamic_cast<MemoryTransport*>(session->transport.get());
+    session->session_pipe = dynamic_cast<detail::SessionPipe*>(session->transport.get());
     // HttpServerTransport is the one transport that can end a session (on HTTP DELETE) and start a
     // new one while run() keeps reading from it, so its count of ended sessions tells a new client
     // apart from the one that initialized. Other transports never end a session this way. A
@@ -296,6 +297,12 @@ Task<void> Server::Impl::read_session(std::shared_ptr<Session> session) {
                 if (session->memory_transport) {
                     auto message = co_await detail::MemoryTransportAccess::read_json_until_closed(
                         *session->memory_transport);
+                    if (!message) {
+                        break;
+                    }
+                    json_msg = std::move(*message);
+                } else if (session->session_pipe != nullptr) {
+                    auto message = co_await session->session_pipe->next_message();
                     if (!message) {
                         break;
                     }

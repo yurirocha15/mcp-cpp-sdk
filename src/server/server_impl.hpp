@@ -19,6 +19,7 @@
 #include "mcp/detail/server/run_control.hpp"
 #include "mcp/detail/text/diagnostic_text.hpp"
 #include "mcp/detail/text/encoding.hpp"
+#include "mcp/detail/transport/session_pipe.hpp"
 #include "mrtr.hpp"
 #include "task_run.hpp"
 
@@ -756,6 +757,8 @@ struct Server::PendingRequest {
 struct Server::Session {
     std::shared_ptr<ITransport> transport;
     MemoryTransport* memory_transport = nullptr;
+    /// The transport, when a StreamableHttpSessionManager hands this session its messages as JSON.
+    detail::SessionPipe* session_pipe = nullptr;
     const HttpServerTransport* http_transport = nullptr;
     std::unique_ptr<boost::asio::any_io_executor> strand;
     std::shared_ptr<detail::SerializedTransportWriter> writer;

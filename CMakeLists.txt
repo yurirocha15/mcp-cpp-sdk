@@ -180,6 +180,7 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/transport.cpp
     src/transport/stdio_client.cpp
     src/transport/memory.cpp
+    src/transport/session_pipe.cpp
     src/transport/http_types.cpp
     src/transport/http_server.cpp
     src/transport/http_client.cpp
@@ -525,6 +526,7 @@ if(BUILD_TESTING)
       test/transport/transport_http_stream_test.cpp
       test/transport/transport_http_listen_test.cpp
       test/transport/transport_memory_test.cpp
+      test/transport/session_pipe_test.cpp
       test/transport/socket_deadline_test.cpp
       test/transport/transport_accept_retry_test.cpp
       test/transport/transport_http_limits_test.cpp
@@ -546,13 +548,14 @@ if(BUILD_TESTING)
       test/core/json_peer_input_matrix_test.cpp
       test/support/spawn.cpp
       test/support/test_timeout.cpp)
-  # The sealed-state codec, the schema URI resolver and the proxy rules are
-  # internal and not exported from the shared library, so their tests build the
-  # sources themselves.
+  # The sealed-state codec, the schema URI resolver, the proxy rules and the
+  # session pipe are internal and not exported from the shared library, so their
+  # tests build the sources themselves.
   add_executable(
     mcp-sdk-tests
     ${TEST_SRCS} src/server/sealed_state.cpp src/protocol/schema_uri.cpp
-    src/transport/proxy.cpp test/support/schema_corpus.cpp)
+    src/transport/proxy.cpp src/transport/session_pipe.cpp
+    test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
   # The tests reach the library's private headers and their own shared ones.
   target_include_directories(
