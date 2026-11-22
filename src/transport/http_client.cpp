@@ -2,6 +2,7 @@
 #include "../detail/diagnostic_text.hpp"
 #include "../detail/header_value.hpp"
 #include "../detail/http_connect.hpp"
+#include "../detail/network_failure.hpp"
 #include "../detail/param_headers.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/proxy.hpp"
@@ -510,8 +511,13 @@ struct HttpClientTransport::Impl {
         }
 
         const auto connection_plan = current_plan();
-        auto resolved_endpoints = co_await state->resolver.async_resolve(
-            connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
+        net::ip::tcp::resolver::results_type resolved_endpoints;
+        try {
+            resolved_endpoints = co_await state->resolver.async_resolve(
+                connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            throw detail::ConnectFailure(error.code());
+        }
         // A close() that ran while the resolve could no longer be cancelled found no socket to
         // cancel either. From here to the socket opening inside the connect nothing suspends, so a
         // later close() runs on the strand after it and closes that socket.
@@ -835,7 +841,8 @@ struct HttpClientTransport::Impl {
                     co_await state.timer.async_wait(net::use_awaitable);
                 } catch (const boost::system::system_error& error) {
                     if (error.code() != net::error::operation_aborted) {
-                        throw;
+                        throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                      "HttpClientTransport");
                     }
                 }
             }
@@ -893,7 +900,8 @@ struct HttpClientTransport::Impl {
                 co_await state.operation_timer.async_wait(net::use_awaitable);
             } catch (const boost::system::system_error& error) {
                 if (error.code() != net::error::operation_aborted) {
-                    throw;
+                    throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                  "HttpClientTransport");
                 }
             }
             if (state.closed.load(std::memory_order_acquire)) {
@@ -940,7 +948,8 @@ struct HttpClientTransport::Impl {
             // A refused request leaves nothing to reuse: the next one opens a new connection.
             impl->reset_connection();
             complete_operation(impl->state);
-            throw;
+            std::rethrow_exception(
+                detail::as_transport_failure(std::current_exception(), "HttpClientTransport"));
         }
     }
 
@@ -1022,7 +1031,8 @@ struct HttpClientTransport::Impl {
                 co_await state.operation_timer.async_wait(net::use_awaitable);
             } catch (const boost::system::system_error& error) {
                 if (error.code() != net::error::operation_aborted) {
-                    throw;
+                    throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                  "HttpClientTransport");
                 }
             }
             if (state.closed.load(std::memory_order_acquire)) {
@@ -1047,7 +1057,8 @@ struct HttpClientTransport::Impl {
         } catch (...) {
             impl->reset_connection();
             complete_operation(impl->state);
-            throw;
+            std::rethrow_exception(
+                detail::as_transport_failure(std::current_exception(), "HttpClientTransport"));
         }
         complete_operation(impl->state);
         start_listening(impl, std::move(bearer_token_provider));
@@ -1094,12 +1105,14 @@ struct HttpClientTransport::Impl {
             end_call(shared, *call);
             if (failure) {
                 if (shared.closed.load(std::memory_order_acquire) || call->cancelled) {
-                    throw boost::system::system_error(net::error::operation_aborted);
+                    throw detail::network_failure(net::error::operation_aborted,
+                                                  TransportError::Kind::eIo, "HttpClientTransport");
                 }
                 if (timed_out) {
-                    throw boost::system::system_error(beast::error::timeout);
+                    throw detail::network_failure(beast::error::timeout, TransportError::Kind::eIo,
+                                                  "HttpClientTransport");
                 }
-                std::rethrow_exception(failure);
+                std::rethrow_exception(detail::as_transport_failure(failure, "HttpClientTransport"));
             }
             if (forgotten) {
                 if (shared.session_id == *session) {
@@ -1131,6 +1144,11 @@ struct HttpClientTransport::Impl {
                 co_await modern_read(impl, call);
             } catch (...) {
                 failure = std::current_exception();
+            }
+            // The response deadline ends a stream that stays quiet by closing its socket, which the
+            // read reports as cancelled; the reader learns that it timed out.
+            if (failure && call->deadline && call->deadline->expired()) {
+                failure = std::make_exception_ptr(boost::system::system_error(beast::error::timeout));
             }
             impl->remember_last_event_id(call->decoder);
             if (call->final_message || !call->expects_response || call->cancelled ||
@@ -1638,8 +1656,14 @@ struct HttpClientTransport::Impl {
         call->stream = shared.take_connection(connection_plan);
         if (!call->stream) {
             net::ip::tcp::resolver resolver(impl->strand);
-            auto endpoints = co_await resolver.async_resolve(
-                connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
+            net::ip::tcp::resolver::results_type endpoints;
+            try {
+                endpoints = co_await resolver.async_resolve(connection_plan->connect_host(),
+                                                            connection_plan->connect_port(),
+                                                            net::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                throw detail::ConnectFailure(error.code());
+            }
             throw_if_unavailable(shared, *call);
             call->stream = detail::make_connection(impl->strand, *connection_plan);
             co_await detail::establish(call->stream, endpoints_of(endpoints), connection_plan);
@@ -1894,14 +1918,11 @@ struct HttpClientTransport::Impl {
         enqueue_message(std::move(text));
     }
 
-    /// The text of the error a reader gets for @p failure. A connection's failure is described by
-    /// its error code, as a failed call's McpError describes it, without the source location that
-    /// Boost puts in what().
+    /// The text of the error a reader gets for @p failure: what() of the TransportError a failed
+    /// write would have thrown for it.
     static std::string describe(const std::exception_ptr& failure) {
         try {
-            std::rethrow_exception(failure);
-        } catch (const boost::system::system_error& error) {
-            return "The connection to the server failed: " + error.code().message();
+            std::rethrow_exception(detail::as_transport_failure(failure, "HttpClientTransport"));
         } catch (const std::exception& error) {
             return error.what();
         } catch (...) {
@@ -2007,7 +2028,7 @@ struct HttpClientTransport::Impl {
                 }
                 co_return;
             }
-            std::rethrow_exception(failure);
+            std::rethrow_exception(detail::as_transport_failure(failure, "HttpClientTransport"));
         }
         if (streaming) {
             co_return;

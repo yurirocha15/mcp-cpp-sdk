@@ -1,6 +1,7 @@
 #include <mcp/core/async.hpp>
 #include <mcp/transport/stdio.hpp>
 #include "../detail/constants.hpp"
+#include "../detail/network_failure.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
 #if defined(_WIN32)
@@ -786,7 +787,7 @@ struct StdioTransport::Impl {
             co_await shared_state->read_signal.async_wait(
                 boost::asio::redirect_error(boost::asio::use_awaitable, error));
             if (error && error != boost::asio::error::operation_aborted) {
-                throw boost::system::system_error(error);
+                throw detail::network_failure(error, TransportError::Kind::eIo, "StdioTransport");
             }
         }
     }

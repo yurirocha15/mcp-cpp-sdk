@@ -43,7 +43,10 @@ Additionally, the SDK defines MCP-specific codes used throughout the library:
   A failure the transport detects itself is an ``mcp::TransportError``, whose ``kind()`` says
   whether the transport was closed, could not connect or start the server, failed to read or
   write, or received what it cannot carry; a TLS failure is an ``mcp::TlsError``, which derives
-  from it. An error of the network library stays a ``boost::system::system_error``.
+  from it. The built-in transports report the network library's errors as ``TransportError`` too,
+  with the error, such as ``std::errc::connection_refused``, in ``code()``. An
+  ``mcp::auth::OAuthClientTransport`` passes on a failed authorization as its authenticator
+  reports it, such as an ``mcp::auth::MetadataPolicyError``.
 
 The codes ``-32020`` to ``-32022`` belong to protocol revision 2026-07-28. See `Protocol Errors`_.
 

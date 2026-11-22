@@ -5,6 +5,7 @@
 #include "../detail/encoding.hpp"
 #include "../detail/http_connect.hpp"
 #include "../detail/middleware_rejection.hpp"
+#include "../detail/network_failure.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/socket_deadline.hpp"
 #include "../detail/spawn_awaitable.hpp"
@@ -2990,7 +2991,10 @@ struct OAuthClientTransport::Impl {
                 }
             } catch (...) {
                 erase_pending(operation);
-                throw;
+                // A network error on the way to the authorization server leaves as the
+                // transport's; the authenticator's own failures go on as they are.
+                std::rethrow_exception(mcp::detail::as_transport_failure(std::current_exception(),
+                                                                         "OAuthClientTransport"));
             }
             if (!authorized) {
                 break;

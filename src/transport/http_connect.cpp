@@ -2,6 +2,7 @@
 
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/network_failure.hpp"
 #include "../detail/socket_deadline.hpp"
 #include "../detail/tls.hpp"
 
@@ -57,11 +58,9 @@ Task<void> establish(std::shared_ptr<Connection> connection,
                                   std::chrono::seconds(constants::http_client::g_TIMEOUT_SECONDS));
     try {
         co_await net::async_connect(connection->socket(), endpoints, net::use_awaitable);
-    } catch (const boost::system::system_error&) {
-        if (deadline.expired()) {
-            throw boost::system::system_error(beast::error::timeout);
-        }
-        throw;
+    } catch (const boost::system::system_error& error) {
+        throw ConnectFailure(deadline.expired() ? boost::system::error_code(beast::error::timeout)
+                                                : error.code());
     }
     // The wait for a response has a long limit, so this is what finds a peer that vanished.
     boost::system::error_code keep_alive_error;
@@ -85,11 +84,9 @@ Task<void> establish(std::shared_ptr<Connection> connection,
             co_await http::async_write(connection->tcp(), tunnel->request, net::use_awaitable);
             co_await http::async_read_header(connection->tcp(), tunnel->buffer, tunnel->parser,
                                              net::use_awaitable);
-        } catch (const boost::system::system_error&) {
-            if (deadline.expired()) {
-                throw boost::system::system_error(beast::error::timeout);
-            }
-            throw;
+        } catch (const boost::system::system_error& error) {
+            throw ConnectFailure(deadline.expired() ? boost::system::error_code(beast::error::timeout)
+                                                    : error.code());
         }
         const auto status = tunnel->parser.get().result_int();
         if (status < 200 || status > 299) {

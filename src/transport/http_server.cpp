@@ -2,6 +2,7 @@
 #include "../detail/connection.hpp"
 #include "../detail/constants.hpp"
 #include "../detail/modern_methods.hpp"
+#include "../detail/network_failure.hpp"
 #include "../detail/peer_json.hpp"
 #include "../detail/request_meta.hpp"
 #include "../detail/tls.hpp"
@@ -166,25 +167,25 @@ struct HttpServerTransport::Impl {
         (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
             throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to open HTTP acceptor: " + ec.message());
+                                 "Failed to open HTTP acceptor: " + ec.message(), ec);
         }
 
         (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
             throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to set reuse_address: " + ec.message());
+                                 "Failed to set reuse_address: " + ec.message(), ec);
         }
 
         (void)acceptor.bind(endpoint, ec);
         if (ec) {
             throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to bind HTTP acceptor: " + ec.message());
+                                 "Failed to bind HTTP acceptor: " + ec.message(), ec);
         }
 
         (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
             throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to listen on HTTP acceptor: " + ec.message());
+                                 "Failed to listen on HTTP acceptor: " + ec.message(), ec);
         }
     }
 
@@ -1564,7 +1565,8 @@ struct HttpServerTransport::Impl {
                     co_await state.timer.async_wait(boost::asio::use_awaitable);
                 } catch (const boost::system::system_error& error) {
                     if (error.code() != boost::asio::error::operation_aborted) {
-                        throw;
+                        throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                      "HttpServerTransport");
                     }
                 }
             }
@@ -1769,7 +1771,7 @@ unsigned short HttpServerTransport::port() const {
     const auto endpoint = impl_->acceptor.local_endpoint(ec);
     if (ec) {
         throw TransportError(TransportError::Kind::eConnect,
-                             "Failed to query HTTP acceptor endpoint: " + ec.message());
+                             "Failed to query HTTP acceptor endpoint: " + ec.message(), ec);
     }
     return endpoint.port();
 }
@@ -1999,7 +2001,10 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
                 co_return;
             }
             if (!detail::accept_failure_can_pass(err.code())) {
-                throw;
+                throw TransportError(
+                    TransportError::Kind::eConnect,
+                    "HttpServerTransport could not accept a connection: " + err.code().message(),
+                    err.code());
             }
             retry = true;
         }

@@ -41,6 +41,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -84,6 +85,32 @@ TEST_F(HttpTransportTest, AnAddressItCannotBindIsAConnectFailure) {
         EXPECT_STREQ(error.what(), "Invalid bind address: not-an-address");
     }
     EXPECT_EQ(kind, mcp::TransportError::Kind::eConnect);
+}
+
+TEST_F(HttpTransportTest, AClientWhoseServerRefusesTheConnectionGetsAConnectFailure) {
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+    acceptor.close();
+
+    std::optional<mcp::TransportError> failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::HttpClientTransport client(io_ctx_.get_executor(),
+                                        "http://127.0.0.1:" + std::to_string(port) + "/mcp");
+        try {
+            co_await client.write_message(
+                R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})");
+        } catch (const mcp::TransportError& error) {
+            failure = error;
+        }
+    });
+    io_ctx_.run();
+
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->kind(), mcp::TransportError::Kind::eConnect) << failure->what();
+    EXPECT_EQ(failure->code(), std::errc::connection_refused) << failure->what();
+    EXPECT_NE(std::string(failure->what()).find("HttpClientTransport could not connect: "),
+              std::string::npos)
+        << failure->what();
 }
 
 TEST_F(HttpTransportTest, PendingServerReadOwnsImplementationAfterTransportDestruction) {
@@ -706,27 +733,26 @@ TEST_F(HttpTransportTest, ClientCloseCancelsInFlightPostAfterSessionInitializati
 
             const nlohmann::json pending_request = {
                 {"jsonrpc", "2.0"}, {"method", "tools/list"}, {"id", 2}};
-            mcp_test::spawn_then(write_signal->get_executor(),
-                                 client->write_message(pending_request.dump()),
-                                 [client, test_state, write_signal](std::exception_ptr error) {
-                                     test_state->write_completed = true;
-                                     test_state->write_outcome = "no error";
-                                     if (error) {
-                                         try {
-                                             std::rethrow_exception(error);
-                                         } catch (const boost::system::system_error& system_error) {
-                                             test_state->write_cancelled =
-                                                 system_error.code() == asio::error::operation_aborted;
-                                             test_state->write_outcome =
-                                                 "system_error: " + system_error.code().message();
-                                         } catch (const std::exception& other) {
-                                             test_state->write_outcome = other.what();
-                                         } catch (...) {
-                                             test_state->write_outcome = "unknown exception";
-                                         }
-                                     }
-                                     write_signal->cancel();
-                                 });
+            mcp_test::spawn_then(
+                write_signal->get_executor(), client->write_message(pending_request.dump()),
+                [client, test_state, write_signal](std::exception_ptr error) {
+                    test_state->write_completed = true;
+                    test_state->write_outcome = "no error";
+                    if (error) {
+                        try {
+                            std::rethrow_exception(error);
+                        } catch (const mcp::TransportError& transport_error) {
+                            test_state->write_cancelled =
+                                transport_error.kind() == mcp::TransportError::Kind::eClosed;
+                            test_state->write_outcome = transport_error.what();
+                        } catch (const std::exception& other) {
+                            test_state->write_outcome = other.what();
+                        } catch (...) {
+                            test_state->write_outcome = "unknown exception";
+                        }
+                    }
+                    write_signal->cancel();
+                });
 
             if (!test_state->post_received) {
                 try {
@@ -3020,9 +3046,9 @@ TEST_F(HttpTransportTest, CloseBetweenTwoSocketOperationsEndsTheWrite) {
     ASSERT_NE(failure, nullptr) << "a write cut short by close() must report an error";
     try {
         std::rethrow_exception(failure);
-    } catch (const boost::system::system_error& error) {
-        EXPECT_EQ(error.code(), asio::error::operation_aborted)
-            << "the write ended with: " << error.code().message();
+    } catch (const mcp::TransportError& error) {
+        EXPECT_EQ(error.kind(), mcp::TransportError::Kind::eClosed)
+            << "the write ended with: " << error.what();
     } catch (const std::exception& other) {
         ADD_FAILURE() << "the write ended with: " << other.what();
     }

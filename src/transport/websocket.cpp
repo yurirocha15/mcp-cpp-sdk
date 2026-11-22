@@ -5,6 +5,7 @@
 #include "../detail/connection.hpp"
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/network_failure.hpp"
 #include "../detail/socket_deadline.hpp"
 #include "../detail/tls.hpp"
 #include "host_policy.hpp"
@@ -148,7 +149,7 @@ class SerializedWriteGate {
             if (waiter->granted) {
                 release();
             }
-            throw boost::system::system_error(error);
+            throw detail::network_failure(error, TransportError::Kind::eIo, transport_name_);
         }
         if (!waiter->granted) {
             require_open(closed_, transport_name_);
@@ -281,9 +282,15 @@ struct WebSocketServerTransport::Impl {
         }
         try {
             co_await read_and_answer_upgrade(state);
+        } catch (const boost::system::system_error& error) {
+            throw detail::network_failure(deadline && deadline->expired()
+                                              ? boost::system::error_code(beast::error::timeout)
+                                              : error.code(),
+                                          TransportError::Kind::eConnect, "WebSocketServerTransport");
         } catch (...) {
             if (deadline && deadline->expired()) {
-                throw boost::system::system_error(beast::error::timeout);
+                throw detail::network_failure(beast::error::timeout, TransportError::Kind::eConnect,
+                                              "WebSocketServerTransport");
             }
             throw;
         }
@@ -349,7 +356,8 @@ struct WebSocketServerTransport::Impl {
         co_await waiter->signal.async_wait(asio::redirect_error(asio::use_awaitable, error));
         remove_waiter(state->handshake_waiters, waiter);
         if (error && error != asio::error::operation_aborted) {
-            throw boost::system::system_error(error);
+            throw detail::network_failure(error, TransportError::Kind::eConnect,
+                                          "WebSocketServerTransport");
         }
 
         throw_if_closed(state);
@@ -400,7 +408,12 @@ struct WebSocketServerTransport::Impl {
 
         co_await ensure_handshake(state);
         beast::flat_buffer buffer;
-        co_await state->ws.async_read(buffer, asio::use_awaitable);
+        try {
+            co_await state->ws.async_read(buffer, asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                          "WebSocketServerTransport");
+        }
         co_return beast::buffers_to_string(buffer.data());
     }
 
@@ -417,6 +430,13 @@ struct WebSocketServerTransport::Impl {
         }
         try {
             co_await state->ws.async_write(asio::buffer(message), asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            const bool timed_out = deadline && deadline->expired();
+            deadline.reset();
+            state->write_gate.release();
+            throw detail::network_failure(
+                timed_out ? boost::system::error_code(beast::error::timeout) : error.code(),
+                TransportError::Kind::eIo, "WebSocketServerTransport");
         } catch (...) {
             deadline.reset();
             state->write_gate.release();
@@ -582,7 +602,8 @@ struct WebSocketClientTransport::Impl {
         co_await waiter->signal.async_wait(asio::redirect_error(asio::use_awaitable, error));
         remove_waiter(state->connection_waiters, waiter);
         if (error && error != asio::error::operation_aborted) {
-            throw boost::system::system_error(error);
+            throw detail::network_failure(error, TransportError::Kind::eConnect,
+                                          "WebSocketClientTransport");
         }
 
         throw_if_closed(state);
@@ -663,17 +684,32 @@ struct WebSocketClientTransport::Impl {
             throw_if_closed(state);
             state->ws->read_message_max(state->max_message_bytes.load(std::memory_order_acquire));
             state->connection_state = ConnectionState::eConnected;
+        } catch (const boost::system::system_error& error) {
+            const bool timed_out = deadline && deadline->expired();
+            deadline.reset();
+            fail_connection(
+                state, std::make_exception_ptr(detail::network_failure(
+                           timed_out ? boost::system::error_code(beast::error::timeout) : error.code(),
+                           TransportError::Kind::eConnect, "WebSocketClientTransport")));
         } catch (...) {
             const bool timed_out = deadline && deadline->expired();
             deadline.reset();
-            state->connect_error =
-                timed_out ? std::make_exception_ptr(boost::system::system_error(beast::error::timeout))
-                          : std::current_exception();
-            state->connection_state = ConnectionState::eFailed;
-            notify_connection_waiters(state);
-            std::rethrow_exception(state->connect_error);
+            fail_connection(state, timed_out
+                                       ? std::make_exception_ptr(detail::network_failure(
+                                             beast::error::timeout, TransportError::Kind::eConnect,
+                                             "WebSocketClientTransport"))
+                                       : std::current_exception());
         }
         notify_connection_waiters(state);
+    }
+
+    /// Records the connection's @p failure for the calls waiting on it and throws it.
+    [[noreturn]] static void fail_connection(const std::shared_ptr<Impl>& state,
+                                             std::exception_ptr failure) {
+        state->connect_error = std::move(failure);
+        state->connection_state = ConnectionState::eFailed;
+        notify_connection_waiters(state);
+        std::rethrow_exception(state->connect_error);
     }
 
     static Task<void> handshake_tls(std::shared_ptr<Impl> state) {
@@ -705,7 +741,12 @@ struct WebSocketClientTransport::Impl {
 
         co_await ensure_connected(state);
         beast::flat_buffer buffer;
-        co_await state->ws->async_read(buffer, asio::use_awaitable);
+        try {
+            co_await state->ws->async_read(buffer, asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                          "WebSocketClientTransport");
+        }
         co_return beast::buffers_to_string(buffer.data());
     }
 
@@ -715,6 +756,10 @@ struct WebSocketClientTransport::Impl {
         co_await state->write_gate.acquire();
         try {
             co_await state->ws->async_write(asio::buffer(message), asio::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            state->write_gate.release();
+            throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                          "WebSocketClientTransport");
         } catch (...) {
             state->write_gate.release();
             throw;

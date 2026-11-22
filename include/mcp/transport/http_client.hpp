@@ -185,7 +185,7 @@ class MCP_API HttpClientTransport final : public ITransport {
     /**
      * @brief Dequeue the next MCP message received from the server.
      *
-     * @throws std::runtime_error If the transport is closed.
+     * @throws TransportError If the transport is closed.
      */
     Task<std::string> read_message() override;
 
@@ -194,7 +194,8 @@ class MCP_API HttpClientTransport final : public ITransport {
      *
      * @param message Serialized JSON-RPC message body.
      *
-     * @throws std::runtime_error On transport closure or HTTP error.
+     * @throws TransportError When the transport is closed or the request cannot reach the server.
+     * @throws HttpStatusError When the server answers with an HTTP error status.
      */
     Task<void> write_message(std::string_view message) override;
 

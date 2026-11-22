@@ -1,6 +1,7 @@
 #pragma once
 
 #include "connection.hpp"
+#include "network_failure.hpp"
 #include "proxy.hpp"
 
 #include <boost/asio/ip/tcp.hpp>
@@ -45,9 +46,9 @@ std::shared_ptr<Connection> make_connection(const boost::asio::any_io_executor& 
 /// tunnel through the proxy to an https server, and runs the TLS handshake. Bounded by the client
 /// timeout as a whole.
 /// @throws TlsError When the handshake fails.
-/// @throws boost::system::system_error With beast::error::timeout when the time runs out before
-///         the handshake starts, or with the connect error.
-/// @throws std::runtime_error When the proxy refuses the tunnel.
+/// @throws ConnectFailure With beast::error::timeout when the time runs out before the handshake
+///         starts, or with the connect error.
+/// @throws TransportError When the proxy refuses the tunnel.
 Task<void> establish(std::shared_ptr<Connection> connection,
                      std::vector<boost::asio::ip::tcp::endpoint> endpoints,
                      std::shared_ptr<const ConnectPlan> plan);

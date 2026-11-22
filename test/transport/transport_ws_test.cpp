@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "../support/hang_guard.hpp"
+#include "../support/network_error.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/spawn.hpp"
 #include "../support/stalling_server.hpp"
@@ -39,6 +40,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -209,6 +211,57 @@ TEST_F(WebSocketTransportTest, ReadAndWriteMultipleMessages) {
     EXPECT_EQ(results[0], "msg1");
     EXPECT_EQ(results[1], json_rpc);
     EXPECT_EQ(results[2], "msg3");
+}
+
+TEST_F(WebSocketTransportTest, AConnectionNothingAcceptsIsAConnectFailureWithItsCode) {
+    tcp::acceptor acceptor(io_ctx_, tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto port = acceptor.local_endpoint().port();
+    acceptor.close();
+
+    std::optional<mcp::TransportError> failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
+                                                std::to_string(port));
+        try {
+            co_await transport.write_message("hello");
+        } catch (const mcp::TransportError& error) {
+            failure = error;
+        }
+    });
+    io_ctx_.run();
+
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->kind(), mcp::TransportError::Kind::eConnect) << failure->what();
+    EXPECT_EQ(failure->code(), std::errc::connection_refused) << failure->what();
+}
+
+TEST_F(WebSocketTransportTest, APeerThatClosesTheConnectionEndsTheReadAsClosed) {
+    tcp::acceptor acceptor(io_ctx_, tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+    const auto port = acceptor.local_endpoint().port();
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+        mcp::WebSocketServerTransport transport(std::move(socket));
+        co_await transport.read_message();
+        transport.close();
+    });
+
+    std::optional<mcp::TransportError> failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::WebSocketClientTransport transport(io_ctx_.get_executor(), "127.0.0.1",
+                                                std::to_string(port));
+        co_await transport.write_message("hello");
+        try {
+            co_await transport.read_message();
+        } catch (const mcp::TransportError& error) {
+            failure = error;
+        }
+    });
+    io_ctx_.run_for(g_hang_guard);
+
+    ASSERT_TRUE(failure.has_value());
+    EXPECT_EQ(failure->kind(), mcp::TransportError::Kind::eClosed) << failure->what();
+    EXPECT_TRUE(failure->code()) << failure->what();
 }
 
 TEST_F(WebSocketTransportTest, CloseIsIdempotent) {
@@ -520,8 +573,9 @@ TEST_F(WebSocketTransportTest, StalledHandshakeFailsAfterTheConnectTimeout) {
     auto result = mcp_test::spawn_future(io_ctx_, [&]() -> mcp::Task<bool> {
         try {
             co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
-        } catch (const boost::system::system_error& error) {
-            co_return error.code() == boost::beast::error::timeout;
+        } catch (const mcp::TransportError& error) {
+            co_return mcp_test::is_network_error(error, mcp::TransportError::Kind::eConnect,
+                                                 boost::beast::error::timeout);
         }
         co_return false;
     });
@@ -550,8 +604,9 @@ TEST_F(WebSocketTransportTest, ConnectTimeoutTooLongForTheClockMeansNoLimit) {
     auto result = mcp_test::spawn_future(io_ctx_, [&]() -> mcp::Task<void> {
         try {
             co_await transport.write_message(R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
-        } catch (const boost::system::system_error& error) {
-            timed_out = error.code() == boost::beast::error::timeout;
+        } catch (const mcp::TransportError& error) {
+            timed_out = mcp_test::is_network_error(error, mcp::TransportError::Kind::eConnect,
+                                                   boost::beast::error::timeout);
             throw;
         }
     });
@@ -606,8 +661,10 @@ TEST_F(WebSocketTransportTest, ConnectTimeoutPassingBetweenTwoHandshakeReadsRepo
     try {
         result.get();
         ADD_FAILURE() << "the handshake succeeded";
-    } catch (const boost::system::system_error& error) {
-        EXPECT_EQ(error.code(), boost::beast::error::timeout) << error.code().message();
+    } catch (const mcp::TransportError& error) {
+        EXPECT_TRUE(mcp_test::is_network_error(error, mcp::TransportError::Kind::eConnect,
+                                               boost::beast::error::timeout))
+            << error.what();
     }
 }
 
@@ -794,17 +851,19 @@ TEST(WebSocketLimitsTest, APeerThatNeverUpgradesFailsTheRead) {
     auto transport = std::make_shared<mcp::WebSocketServerTransport>(std::move(sockets.server));
     transport->set_handshake_timeout(50ms);
 
-    std::optional<boost::system::error_code> failure;
+    std::optional<mcp::TransportError> failure;
     run_until_done(io, [&]() -> mcp::Task<void> {
         try {
             co_await transport->read_message();
-        } catch (const boost::system::system_error& error) {
-            failure = error.code();
+        } catch (const mcp::TransportError& error) {
+            failure = error;
         }
     });
 
     ASSERT_TRUE(failure.has_value());
-    EXPECT_EQ(*failure, boost::beast::error::timeout);
+    EXPECT_TRUE(mcp_test::is_network_error(*failure, mcp::TransportError::Kind::eConnect,
+                                           boost::beast::error::timeout))
+        << failure->what();
 }
 
 namespace {
@@ -912,7 +971,7 @@ TEST(WebSocketLimitsTest, MessageLimitIsSettableOnBothEnds) {
 
     const std::string large(20U * 1024U * 1024U, 'x');
     std::optional<std::string> received;
-    bool server_refused = false;
+    std::optional<mcp::TransportError::Kind> server_refused;
     run_until_done(
         io,
         [&]() -> mcp::Task<void> {
@@ -924,8 +983,8 @@ TEST(WebSocketLimitsTest, MessageLimitIsSettableOnBothEnds) {
                 co_await server->write_message(large);
                 try {
                     co_await server->read_message();
-                } catch (const std::exception&) {
-                    server_refused = true;
+                } catch (const mcp::TransportError& error) {
+                    server_refused = error.kind();
                 }
             });
             co_await client->write_message("hello");
@@ -946,7 +1005,8 @@ TEST(WebSocketLimitsTest, MessageLimitIsSettableOnBothEnds) {
         });
 
     EXPECT_EQ(received, large);
-    EXPECT_TRUE(server_refused);
+    // A message over the limit is the peer's doing, not a failed read.
+    EXPECT_EQ(server_refused, mcp::TransportError::Kind::eProtocol);
 }
 
 TEST(WebSocketOriginTest, AnUpgradeFromAnOriginNotAllowedIsRefused) {

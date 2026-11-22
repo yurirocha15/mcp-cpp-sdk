@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace mcp {
@@ -16,13 +17,14 @@ class HttpServerTransport;
 class StdioTransport;
 
 /**
- * @brief A failure the transport itself detects: it is closed, it could not be set up, a read or
- * write failed, or the peer sent what the transport cannot carry.
+ * @brief A failure of a transport: it is closed, it could not be set up, a read or write failed, or
+ * the peer sent what the transport cannot carry.
  *
- * @details A TLS failure is a TlsError, which derives from this class. An error the network library
- * reports while connecting, reading or writing keeps its own exception,
- * `boost::system::system_error` with its error code. A Client call whose transport fails throws
- * McpError with mcp::constants::jsonrpc::g_CONNECTION_CLOSED and the transport's exception nested.
+ * @details The built-in transports throw it for what they detect themselves and for the errors the
+ * network library reports while they connect, read or write; code() holds the error code of the
+ * latter. A TLS failure is a TlsError, which derives from this class. A Client call whose transport
+ * fails throws McpError with mcp::constants::jsonrpc::g_CONNECTION_CLOSED and the transport's
+ * exception nested.
  */
 class MCP_API TransportError : public std::runtime_error {
    public:
@@ -34,13 +36,26 @@ class MCP_API TransportError : public std::runtime_error {
         eProtocol,  ///< The peer sent what the transport cannot carry, such as a message too large.
     };
 
-    TransportError(Kind kind, const std::string& message) : std::runtime_error(message), kind_(kind) {}
+    /**
+     * @param kind What failed.
+     * @param message What went wrong, for a log.
+     * @param code The error the operating system or network library reported, if one did.
+     */
+    TransportError(Kind kind, const std::string& message, std::error_code code = {})
+        : std::runtime_error(message), kind_(kind), code_(code) {}
 
     /** @return What failed. */
     [[nodiscard]] Kind kind() const noexcept { return kind_; }
 
+    /**
+     * @return The error the operating system or network library reported, such as
+     *         `std::errc::connection_refused`; empty for a failure the transport detected itself.
+     */
+    [[nodiscard]] std::error_code code() const noexcept { return code_; }
+
    private:
     Kind kind_;
+    std::error_code code_;
 };
 
 /**
@@ -85,7 +100,7 @@ class MCP_API ITransport {
      * @brief Read the next serialized MCP message from the transport.
      *
      * @return A task that resolves to the next complete JSON-RPC message.
-     * @throws TransportError If the transport is closed while waiting.
+     * @throws TransportError If the transport is closed while waiting, or the read fails.
      */
     virtual Task<std::string> read_message() = 0;
 
@@ -100,7 +115,7 @@ class MCP_API ITransport {
      *
      * @return A task that resolves to the next message; the default reads read_message() and
      *         gives it an empty principal.
-     * @throws TransportError If the transport is closed while waiting.
+     * @throws TransportError If the transport is closed while waiting, or the read fails.
      */
     virtual Task<IncomingMessage> read_incoming();
 
@@ -109,7 +124,7 @@ class MCP_API ITransport {
      *
      * @param message The complete JSON-RPC message to send.
      * @return A task that completes once the message has been accepted by the transport.
-     * @throws TransportError If the transport is closed.
+     * @throws TransportError If the transport is closed, or the write fails.
      */
     virtual Task<void> write_message(std::string_view message) = 0;
 
@@ -126,7 +141,7 @@ class MCP_API ITransport {
      * @param related_request The id of the client request, as JSON text, such as `7` or `"seven"`.
      * @return A task that completes once the message has been accepted by the transport; the
      *         default writes it with write_message().
-     * @throws TransportError If the transport is closed.
+     * @throws TransportError If the transport is closed, or the write fails.
      */
     virtual Task<void> write_related_message(std::string_view message,
                                              std::string_view related_request);

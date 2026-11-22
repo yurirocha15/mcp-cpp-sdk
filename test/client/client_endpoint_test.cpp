@@ -29,6 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -507,7 +508,13 @@ TEST(ClientEndpointTest, AnHttpConnectionThatFailsThrowsMcpError) {
     } catch (const mcp::McpError& error) {
         EXPECT_EQ(error.code(), mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
         EXPECT_FALSE(error.data().has_value());
-        EXPECT_THROW(std::rethrow_if_nested(error), boost::system::system_error);
+        try {
+            std::rethrow_if_nested(error);
+            ADD_FAILURE() << "the transport's exception is not nested";
+        } catch (const mcp::TransportError& transport_error) {
+            EXPECT_EQ(transport_error.kind(), mcp::TransportError::Kind::eConnect);
+            EXPECT_EQ(transport_error.code(), std::errc::connection_refused) << transport_error.what();
+        }
     }
 }
 

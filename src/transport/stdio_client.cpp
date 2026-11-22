@@ -995,7 +995,8 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                                          "The server process closed its standard output");
                 }
                 throw TransportError(TransportError::Kind::eIo,
-                                     "Cannot read from the server: " + self->read_error.message());
+                                     "Cannot read from the server: " + self->read_error.message(),
+                                     self->read_error);
             }
             boost::system::error_code error;
             const auto count = co_await self->stdout_pipe.async_read_some(
@@ -1030,7 +1031,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                 throw TransportError(TransportError::Kind::eClosed, "transport closed");
             }
             throw TransportError(TransportError::Kind::eIo,
-                                 "Cannot write to the server: " + error.message());
+                                 "Cannot write to the server: " + error.message(), error);
         }
     }
 

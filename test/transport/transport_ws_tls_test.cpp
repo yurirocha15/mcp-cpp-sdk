@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include "../support/hang_guard.hpp"
+#include "../support/network_error.hpp"
 #include "../support/spawn.hpp"
 #include "../support/tls_test_support.hpp"
 
@@ -243,8 +244,10 @@ TEST(WebSocketTlsTest, APeerThatClosesGetsTheClosingHandshakeAndCloseNotify) {
     ASSERT_TRUE(ending);
     try {
         std::rethrow_exception(ending);
-    } catch (const boost::system::system_error& closed) {
-        EXPECT_EQ(closed.code(), beast::websocket::error::closed) << closed.code().message();
+    } catch (const mcp::TransportError& closed) {
+        EXPECT_TRUE(mcp_test::is_network_error(closed, mcp::TransportError::Kind::eClosed,
+                                               beast::websocket::error::closed))
+            << closed.what();
     } catch (const std::exception& other) {
         ADD_FAILURE() << other.what();
     }

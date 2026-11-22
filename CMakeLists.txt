@@ -463,6 +463,7 @@ if(BUILD_TESTING)
       test/server/server_run_control_test.cpp
       test/transport/transport_stdio_test.cpp
       test/transport/transport_stdio_client_test.cpp
+      test/transport/network_failure_test.cpp
       test/transport/transport_ws_test.cpp
       test/transport/transport_http_test.cpp
       test/transport/transport_http_resumability_test.cpp

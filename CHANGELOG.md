@@ -33,7 +33,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `ClientOptions::response_cache` lets a `Client` answer list and `read_resource()` calls from earlier results while their `ttlMs` lasts; `RequestOptions::cache_mode` refreshes or bypasses it.
 - `Server::set_notification_rate_limit()` and `ClientOptions::notification_rate_limit` cap the progress and log notifications each request sends or delivers; there is no limit by default.
 - The documentation lists which parts of the specification the SDK implements and marks the features protocol revision 2026-07-28 deprecates.
-- The built-in transports throw `TransportError` for failures they detect; its `kind()` tells a closed transport, a failed connection or launch, a failed read or write and a peer's protocol error apart.
+- The built-in transports throw `TransportError` for their failures, network errors included; `kind()` tells closed, connect, I/O and protocol failures apart; `code()` holds a network error's code.
 - `mcp::constants::methods` names the JSON-RPC methods the SDK sends and handles, such as `g_TOOLS_CALL`.
 
 ### Changed
@@ -99,7 +99,8 @@ Code written for 0.3.0 needs these changes to compile with this release:
 
 These changes in behavior need no change to compile:
 
-- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows those.
+- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows the transport's exception.
+- Catch `TransportError` where code caught `boost::system::system_error` from a built-in transport's read or write; `code()` holds the error code.
 - Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
 
 ### Fixed
