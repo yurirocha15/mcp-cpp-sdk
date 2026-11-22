@@ -120,6 +120,7 @@ declare -A SERVICE_NAME=(
     [cpp]="cpp-server"
     [ours-comparable]="ours-comparable-server"
     [ours-coroutines]="ours-coroutines-server"
+    [ours-sync]="ours-sync-server"
     [python]="python-server"
     [go]="go-server"
     [rust]="rust-server"
@@ -137,6 +138,7 @@ declare -A CONTAINER_NAME=(
     [cpp]="mcp-cpp-server"
     [ours-comparable]="mcp-ours-comparable-server"
     [ours-coroutines]="mcp-ours-coroutines-server"
+    [ours-sync]="mcp-ours-sync-server"
     [python]="mcp-python-server"
     [go]="mcp-go-server"
     [rust]="mcp-rust-server"
@@ -154,6 +156,7 @@ declare -A MCP_URL=(
     [cpp]="http://localhost:8080/mcp"
     [ours-comparable]="http://localhost:8089/mcp"
     [ours-coroutines]="http://localhost:8098/mcp"
+    [ours-sync]="http://localhost:8099/mcp"
     [python]="http://localhost:8081/mcp"
     [go]="http://localhost:8082/mcp"
     [rust]="http://localhost:8083/mcp"
@@ -171,6 +174,7 @@ declare -A HEALTH_URL=(
     [cpp]="http://localhost:8080/health"
     [ours-comparable]="http://localhost:8089/mcp"
     [ours-coroutines]="http://localhost:8098/mcp"
+    [ours-sync]="http://localhost:8099/mcp"
     [python]="http://localhost:8081/health"
     [go]="http://localhost:8082/health"
     [rust]="http://localhost:8083/health"
@@ -188,6 +192,7 @@ declare -A HEALTH_KIND=(
     [cpp]="get"
     [ours-comparable]="mcp"
     [ours-coroutines]="mcp"
+    [ours-sync]="mcp"
     [python]="get"
     [go]="get"
     [rust]="get"
@@ -205,6 +210,7 @@ declare -A EXPECTED_SERVER_TYPE=(
     [cpp]="cpp"
     [ours-comparable]="cpp-sdk"
     [ours-coroutines]="cpp-sdk"
+    [ours-sync]="cpp-sdk"
     [hkr04]="cpp-sdk"
     [fastmcpp]="cpp-sdk"
     [cxxmcp]="cpp-sdk"
@@ -215,7 +221,8 @@ declare -A EXPECTED_SERVER_TYPE=(
 )
 
 ALL_MCP_SERVICES=(
-    cpp-server ours-comparable-server ours-coroutines-server python-server go-server rust-server
+    cpp-server ours-comparable-server ours-coroutines-server ours-sync-server python-server go-server
+    rust-server
     hkr04-server fastmcpp-server cxxmcp-server neumann-server
     hkr04-nodelay-server fastmcpp-nodelay-server cxxmcp-nodelay-server neumann-nodelay-server
 )
@@ -246,7 +253,8 @@ register_session_mode() {
 # switch for a mode has no key for it.
 CPP_SDK_SERVERS=(ours-comparable-stateful ours-comparable-stateless ours-comparable-modern hkr04 fastmcpp cxxmcp cxxmcp-modern neumann)
 NODELAY_SERVERS=(hkr04-nodelay fastmcpp-nodelay cxxmcp-nodelay cxxmcp-nodelay-modern neumann-nodelay)
-VARIANT_SERVERS=(ours-coroutines-stateful ours-coroutines-stateless ours-coroutines-modern)
+VARIANT_SERVERS=(ours-coroutines-stateful ours-coroutines-stateless ours-coroutines-modern
+    ours-sync-stateful ours-sync-stateless ours-sync-modern)
 BASELINE_SERVERS=(python-stateless python-modern go-stateless go-stateful go-modern rust-stateless rust-stateful rust-modern)
 FULL_SERVERS=("${CPP_SDK_SERVERS[@]}" "${VARIANT_SERVERS[@]}" "${NODELAY_SERVERS[@]}" "${BASELINE_SERVERS[@]}")
 
@@ -257,13 +265,14 @@ declare -A REQUIRE_SUPPLEMENTAL=(
     [hkr04-nodelay]=1
     [ours-comparable]=1
     [ours-coroutines]=1
+    [ours-sync]=1
     [hkr04]=1
     [fastmcpp]=1
     [cxxmcp]=1
     [neumann]=1
 )
 
-for sdk in ours-comparable ours-coroutines; do
+for sdk in ours-comparable ours-coroutines ours-sync; do
     register_session_mode "$sdk" stateful
     register_session_mode "$sdk" stateless
 done
@@ -292,7 +301,7 @@ register_modern() {
         REQUIRE_SUPPLEMENTAL[$key]="${REQUIRE_SUPPLEMENTAL[$sdk]}"
     fi
 }
-for sdk in ours-comparable ours-coroutines python go rust cxxmcp cxxmcp-nodelay; do
+for sdk in ours-comparable ours-coroutines ours-sync python go rust cxxmcp cxxmcp-nodelay; do
     register_modern "$sdk"
 done
 
@@ -318,8 +327,9 @@ Usage:
   ./run.sh cpp-sdks         # the comparable C++ SDKs
   ./run.sh baseline         # Python, Go, and Rust baselines
   ./run.sh all              # all corrected C++ and language baselines
-  ./run.sh full             # C++ SDKs, ours-coroutines, their TCP_NODELAY builds, and baselines
+  ./run.sh full             # C++ SDKs, ours-coroutines, ours-sync, their TCP_NODELAY builds, and baselines
   ./run.sh ours-comparable-stateful ours-coroutines-stateful  # thread-based and coroutine-based workload of this SDK
+  ./run.sh ours-comparable-stateful ours-sync-stateful        # the same workload in async mode and in sync mode
   ./run.sh python-stateless go-stateful rust-stateless        # selected servers
   ./run.sh hkr04,cxxmcp     # selected servers (comma-separated)
 
@@ -1115,6 +1125,7 @@ for server in "${selected_servers[@]}"; do
         hkr04-nodelay|fastmcpp-nodelay|cxxmcp-nodelay|cxxmcp-nodelay-modern|neumann-nodelay) ;;
         ours-comparable-stateful|ours-comparable-stateless|ours-comparable-modern) ;;
         ours-coroutines-stateful|ours-coroutines-stateless|ours-coroutines-modern) ;;
+        ours-sync-stateful|ours-sync-stateless|ours-sync-modern) ;;
         python-stateless|python-modern|rust-stateful|rust-stateless|rust-modern) ;;
         go-stateful|go-stateless|go-modern) ;;
         gopher-mcp)

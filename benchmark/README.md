@@ -39,8 +39,8 @@ cd benchmark
 # Run the language baselines as a diagnostic (not a publishable ranking).
 ./run.sh baseline
 
-# Run the C++ SDKs, ours-coroutines, their TCP_NODELAY builds, and the language
-# baselines in one counterbalanced run.
+# Run the C++ SDKs, ours-coroutines, ours-sync, their TCP_NODELAY builds, and the
+# language baselines in one counterbalanced run.
 ./run.sh full
 
 # Run selected servers.
@@ -48,6 +48,9 @@ cd benchmark
 
 # Compare this SDK's thread-based and coroutine-based workloads.
 ./run.sh ours-comparable-stateful ours-coroutines-stateful
+
+# Compare this SDK's async mode and sync mode on the same workload.
+./run.sh ours-comparable-stateful ours-sync-stateful
 ```
 
 The publishable C++ comparison uses the production defaults: three measured
@@ -94,6 +97,10 @@ requires an explicit action.
 of this SDK's adapter whose tool handlers are C++20 coroutines; see
 [Coroutine workload](#coroutine-workload). Select it by name or through `full`.
 
+`ours-sync-stateful` and `ours-sync-stateless` (host port 8099) are not part of `cpp-sdks`
+either. They serve the shared workload through this SDK's sync mode; see
+[Sync mode workload](#sync-mode-workload). Select them by name or through `full`.
+
 External source repositories and exact commits are recorded in
 `alternatives/sources.tsv`. The adapters use each SDK's public API. They do not
 copy, vendor, patch, or bypass another SDK's protocol or server implementation.
@@ -120,14 +127,14 @@ Both keys of an SDK start the same container.
 
 | SDK | Stateful | Stateless |
 |---|---|---|
-| this SDK (threads, coroutines) | `ours-comparable-stateful`, `ours-coroutines-stateful` | `ours-comparable-stateless`, `ours-coroutines-stateless` |
+| this SDK (threads, coroutines, sync mode) | `ours-comparable-stateful`, `ours-coroutines-stateful`, `ours-sync-stateful` | `ours-comparable-stateless`, `ours-coroutines-stateless`, `ours-sync-stateless` |
 | Rust (`rmcp`) | `rust-stateful` | `rust-stateless` |
 | Go | `go-stateful` | `go-stateless` |
 | Python | none | `python-stateless` |
 | hkr04, FastMCPP, cxxmcp, Neumann and their TCP_NODELAY builds | `hkr04`, `fastmcpp`, `cxxmcp`, `neumann` (and `-nodelay`) | none |
 
 Protocol `2026-07-28` runs under the names `ours-comparable-modern`, `ours-coroutines-modern`,
-`python-modern`, `go-modern` and `rust-modern`. They start the same containers, request that
+`ours-sync-modern`, `python-modern`, `go-modern` and `rust-modern`. They start the same containers, request that
 revision through `alternatives/benchmark_modern.js` and the verifier's `--protocol-version
 2026-07-28` (a `server/discover` check, then self-contained requests), and show `sessionless` in the
 Mode column. Every request of `benchmark_modern.js` carries its own id, built from the number of the virtual user
@@ -258,8 +265,22 @@ the peer while idle.
 Because the two builds run different application code, `ours-coroutines` is
 reported next to `ours-comparable` and is never ranked against the other SDKs'
 shared-workload adapters. The build is chosen with the `OURS_MODEL` build
-argument of `alternatives/Dockerfile.ours` (`threads`, the default, or
-`coroutines`).
+argument of `alternatives/Dockerfile.ours` (`threads`, the default, `coroutines`
+or `sync`).
+
+## Sync mode workload
+
+`ours-sync` runs the shared `benchmark_workload` that `ours-comparable` runs,
+written as a sync mode program (`alternatives/adapters/ours_sync.cpp`): one
+`Server` constructed with a name and version, plain-function tool handlers that
+return the workload's JSON text, a 50-thread `Runtime` passed to
+`set_handler_executor()`, and `run_http()`. The two builds differ in what sync
+mode decides for the program: `run_http()` runs the server's event loop on the
+calling thread alone, where `ours-comparable` runs it on two I/O threads, and it
+serves every session with the one `Server`, where `ours-comparable` builds a
+`Server` per session. Both pass the same `upstream-v2-strict-mcp-v1` and
+`adapter-exact-v1` checks, and `ours-sync` is reported next to `ours-comparable`
+like `ours-coroutines`.
 
 ## Protocol revision 2026-07-28
 
