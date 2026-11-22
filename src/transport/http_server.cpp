@@ -254,7 +254,7 @@ struct HttpServerTransport::Impl {
         return format_www_authenticate(effective);
     }
 
-    bool is_unauthenticated_path(const StringRequest& request) const {
+    bool is_unauthenticated_path(const detail::RequestHead& request) const {
         if (unauthenticated_paths.empty()) {
             return false;
         }
@@ -281,17 +281,18 @@ struct HttpServerTransport::Impl {
         response.keep_alive(keep_alive);
     }
 
-    static StringResponse make_json_response(const StringRequest& request, http::status status_code,
-                                             std::string body) {
+    static StringResponse make_json_response(const detail::RequestHead& request,
+                                             http::status status_code, std::string body) {
         StringResponse response{status_code, request.version()};
-        set_common_headers(response, request.keep_alive());
+        set_common_headers(response, detail::keeps_alive(request));
         response.set(http::field::content_type, "application/json");
         response.body() = std::move(body);
         response.prepare_payload();
         return response;
     }
 
-    static StringResponse make_error_response(const StringRequest& request, http::status status_code,
+    static StringResponse make_error_response(const detail::RequestHead& request,
+                                              http::status status_code,
                                               std::string_view error_message) {
         nlohmann::json error_body = {{"error", std::string(error_message)}};
         return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
@@ -633,7 +634,7 @@ struct HttpServerTransport::Impl {
     }
 
     /// The 403 for a request whose Host the policy refuses, checked on every request.
-    std::optional<StringResponse> check_host(const StringRequest& request,
+    std::optional<StringResponse> check_host(const detail::RequestHead& request,
                                              bool loopback_connection) const {
         std::optional<std::string_view> value;
         if (request.count(http::field::host) == 1) {
@@ -645,7 +646,7 @@ struct HttpServerTransport::Impl {
         return std::nullopt;
     }
 
-    std::optional<StringResponse> check_origin(const StringRequest& request) const {
+    std::optional<StringResponse> check_origin(const detail::RequestHead& request) const {
         const auto origin_header_it = request.find(http::field::origin);
         if (origin_header_it != request.end() &&
             !is_origin_allowed(detail::to_std_string_view(origin_header_it->value()))) {
@@ -656,7 +657,7 @@ struct HttpServerTransport::Impl {
 
     /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
     std::optional<StringResponse> serve_protected_resource_metadata(
-        const StringRequest& request) const {
+        const detail::RequestHead& request) const {
         if (!protected_resource_metadata.has_value() || request.method() != http::verb::get) {
             return std::nullopt;
         }
@@ -689,7 +690,7 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    StringResponse make_unauthorized_response(const StringRequest& request) const {
+    StringResponse make_unauthorized_response(const detail::RequestHead& request) const {
         auto response =
             make_error_response(request, http::status::unauthorized, "Invalid bearer token");
         response.set(http::field::www_authenticate, www_authenticate_value);
@@ -699,12 +700,12 @@ struct HttpServerTransport::Impl {
     /// A validator that throws has failed to decide. That is the server's failure, not the
     /// client's, so it is answered 500 rather than with a challenge that would send the client into
     /// re-authorization.
-    static StringResponse make_validator_failure_response(const StringRequest& request) {
+    static StringResponse make_validator_failure_response(const detail::RequestHead& request) {
         return make_error_response(request, http::status::internal_server_error,
                                    "Bearer token validation failed");
     }
 
-    static std::string_view request_authorization(const StringRequest& request) {
+    static std::string_view request_authorization(const detail::RequestHead& request) {
         const auto authorization_it = request.find(http::field::authorization);
         return authorization_it == request.end() ? std::string_view{} : header_value(authorization_it);
     }
@@ -723,7 +724,7 @@ struct HttpServerTransport::Impl {
     ///          header. With an async one, the decision belongs to check_authorization_async and
     ///          this returns no refusal and no principal; keeping the two apart leaves the far
     ///          more common synchronous path free of a coroutine frame and of copying the token.
-    Authorization check_authorization(const StringRequest& request) const {
+    Authorization check_authorization(const detail::RequestHead& request) const {
         const auto authorization = request_authorization(request);
         if (async_bearer_token_validator) {
             return {};
@@ -750,7 +751,7 @@ struct HttpServerTransport::Impl {
     }
 
     /// @brief Run the bearer check against an async validator. Only entered when one is installed.
-    Task<Authorization> check_authorization_async(const StringRequest& request) const {
+    Task<Authorization> check_authorization_async(const detail::RequestHead& request) const {
         const auto authorization = request_authorization(request);
         const auto token = http_bearer_token(authorization);
         if (token.empty()) {
@@ -1383,7 +1384,7 @@ struct HttpServerTransport::Impl {
     /// @p principal to what the request is attributed to. The metadata document and exempt paths
     /// need neither the Origin nor the bearer check.
     Task<std::optional<StringResponse>> refuse_before_body(
-        const StringRequest& request, std::string& principal,
+        const detail::RequestHead& request, std::string& principal,
         std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) const {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (state->closed.load(std::memory_order_acquire)) {
@@ -1469,8 +1470,8 @@ struct HttpServerTransport::Impl {
         std::string principal;
         std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal, &token_scopes,
-             loopback_connection](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            [this, &principal, &token_scopes, loopback_connection](
+                const detail::RequestHead& head) -> Task<std::optional<StringResponse>> {
             co_return co_await refuse_before_body(head, principal, token_scopes, loopback_connection);
         };
 

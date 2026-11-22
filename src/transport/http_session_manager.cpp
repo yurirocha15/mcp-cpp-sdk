@@ -226,18 +226,18 @@ inline bool session_accepts_version(std::string_view version, std::string_view n
     return version == negotiated || is_legacy_protocol_version(version);
 }
 
-inline StringResponse make_json_response(const StringRequest& request, http::status status_code,
+inline StringResponse make_json_response(const detail::RequestHead& request, http::status status_code,
                                          std::string body) {
     StringResponse response{status_code, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
     response.set(http::field::content_type, "application/json");
-    response.keep_alive(request.keep_alive());
+    response.keep_alive(detail::keeps_alive(request));
     response.body() = std::move(body);
     response.prepare_payload();
     return response;
 }
 
-inline StringResponse make_error_response(const StringRequest& request, http::status status_code,
+inline StringResponse make_error_response(const detail::RequestHead& request, http::status status_code,
                                           std::string_view error_message) {
     nlohmann::json error_body = nlohmann::json::object();
     error_body["error"] = std::string(error_message);
@@ -720,8 +720,8 @@ struct StreamableHttpSessionManager::Impl {
         // The scopes the bearer token validator reported for the request being served.
         std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal_id, &token_scopes,
-             loopback_connection](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            [this, &principal_id, &token_scopes, loopback_connection](
+                const detail::RequestHead& head) -> Task<std::optional<StringResponse>> {
             co_return co_await refuse_before_body(head, principal_id, token_scopes,
                                                   loopback_connection);
         };
@@ -827,7 +827,7 @@ struct StreamableHttpSessionManager::Impl {
         return response;
     }
 
-    bool is_unauthenticated_path(const StringRequest& request) const {
+    bool is_unauthenticated_path(const detail::RequestHead& request) const {
         if (unauthenticated_paths_.empty()) {
             return false;
         }
@@ -837,7 +837,7 @@ struct StreamableHttpSessionManager::Impl {
 
     /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
     std::optional<StringResponse> serve_protected_resource_metadata(
-        const StringRequest& request) const {
+        const detail::RequestHead& request) const {
         if (!protected_resource_metadata_.has_value() || request.method() != http::verb::get) {
             return std::nullopt;
         }
@@ -849,7 +849,7 @@ struct StreamableHttpSessionManager::Impl {
                                                       protected_resource_metadata_body_);
     }
 
-    static std::string_view request_authorization(const StringRequest& request) {
+    static std::string_view request_authorization(const detail::RequestHead& request) {
         const auto authorization_it = request.find(http::field::authorization);
         if (authorization_it == request.end()) {
             return {};
@@ -861,7 +861,7 @@ struct StreamableHttpSessionManager::Impl {
     /// has its body read. Sets @p principal_id to the principal the validator names, if it names
     /// one.
     Task<std::optional<StringResponse>> refuse_before_body(
-        const StringRequest& request, std::optional<std::string>& principal_id,
+        const detail::RequestHead& request, std::optional<std::string>& principal_id,
         std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (closed.load(std::memory_order_acquire)) {

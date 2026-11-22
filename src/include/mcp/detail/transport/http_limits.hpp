@@ -155,6 +155,21 @@ struct ArrivingStringBody {
 
 using RequestParser = boost::beast::http::request_parser<ArrivingStringBody>;
 
+/// A request's start line and fields without its body. The checks made before the body is read
+/// take the parser's own, so a request is not copied to be checked.
+using RequestHead = boost::beast::http::request_header<>;
+
+/// Whether the request with @p head asks to keep its connection open, by the rule
+/// message::keep_alive() applies, which Beast does not offer for a header alone.
+inline bool keeps_alive(const RequestHead& head) {
+    namespace http = boost::beast::http;
+    const auto connection = head.find(http::field::connection);
+    if (head.version() < 11) {
+        return connection != head.end() && http::token_list{connection->value()}.exists("keep-alive");
+    }
+    return connection == head.end() || !http::token_list{connection->value()}.exists("close");
+}
+
 /// The request @p parser has read, moved out of it.
 inline StringRequest take_request(RequestParser& parser) {
     auto request = parser.release();
@@ -212,8 +227,7 @@ inline Task<void> write_final_response(Connection& stream, StringResponse respon
     }
 }
 
-inline StringResponse make_limit_response(const StringRequest& request,
-                                          boost::beast::http::status status,
+inline StringResponse make_limit_response(const RequestHead& request, boost::beast::http::status status,
                                           const std::string& message) {
     StringResponse response{status, request.version()};
     response.set(boost::beast::http::field::server, "mcp-cpp-sdk");
@@ -250,7 +264,7 @@ inline Task<void> refuse_unreadable_request(Connection& stream,
 
 /// What a server checks on a request's headers alone, before its body is read: an answer that
 /// refuses it, or nothing to go on.
-using RefuseBeforeBody = std::function<Task<std::optional<StringResponse>>(const StringRequest&)>;
+using RefuseBeforeBody = std::function<Task<std::optional<StringResponse>>(const RequestHead&)>;
 
 /// Reads one request into @p parser within @p limits. The headers are read first and given to
 /// @p refuse_before_body, so a request that is refused never has its body read or held; then the
@@ -294,7 +308,7 @@ inline Task<bool> read_request_within_limits(Connection& stream, boost::beast::f
         co_await refuse_unreadable_request(stream, unreadable);
         co_return false;
     }
-    const StringRequest head{parser.get().base()};
+    const RequestHead& head = parser.get().base();
     if (declared_too_large) {
         stream.expires_never();
         auto too_large_response =
@@ -391,8 +405,8 @@ inline Task<bool> read_buffered_request(Connection& stream, boost::beast::flat_b
     if (parse_error == http::error::body_limit) {
         // The parser cannot resynchronize after a truncated body, so the connection ends with
         // this answer rather than reading another request from it.
-        auto too_large = make_limit_response(StringRequest{parser.get().base()},
-                                             http::status::payload_too_large, "Request body too large");
+        auto too_large = make_limit_response(parser.get().base(), http::status::payload_too_large,
+                                             "Request body too large");
         co_await write_final_response(stream, std::move(too_large));
         co_return false;
     }
@@ -403,7 +417,7 @@ inline Task<bool> read_buffered_request(Connection& stream, boost::beast::flat_b
     if (parse_error || !parser.is_done()) {
         co_return false;
     }
-    const StringRequest head{parser.get().base()};
+    const RequestHead& head = parser.get().base();
     if (auto refusal = co_await refuse_before_body(head)) {
         co_await write_final_response(stream, std::move(*refusal));
         co_return false;

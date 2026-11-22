@@ -770,6 +770,22 @@ TEST(HttpListenerLimits, DefaultConnectionLimitLeavesDescriptorsFree) {
 #endif
 }
 
+// The checks made before the body read only the parser's header, and the answers they build keep
+// the connection open exactly when the whole request would.
+TEST(RequestHead, KeepsAliveAsTheWholeRequestDecides) {
+    for (const unsigned version : {10U, 11U}) {
+        for (const std::string connection :
+             {"", "close", "keep-alive", "Keep-Alive, Upgrade", "upgrade, close", "upgrade"}) {
+            mcp::StringRequest request{http::verb::post, "/mcp", version};
+            if (!connection.empty()) {
+                request.set(http::field::connection, connection);
+            }
+            EXPECT_EQ(mcp::detail::keeps_alive(request.base()), request.keep_alive())
+                << "HTTP/" << version / 10 << "." << version % 10 << ", Connection: " << connection;
+        }
+    }
+}
+
 TEST_F(SessionLimitsTest, ConnectionLimitsMustAllowARequest) {
     EXPECT_THROW(manager_.set_connection_limits({0, std::chrono::seconds(1), 0, 1}),
                  std::invalid_argument);
