@@ -1,6 +1,7 @@
 #include "benchmark_workload.hpp"
 
 #include "benchmark_schemas.hpp"
+#include "workload_support.hpp"
 
 #include <curl/curl.h>
 #include <hiredis/hiredis.h>
@@ -9,7 +10,6 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
-#include <cstdlib>
 #include <ctime>
 #include <functional>
 #include <future>
@@ -28,11 +28,6 @@ namespace mcp_benchmark {
 namespace {
 
 using Json = nlohmann::json;
-
-std::string env_or(const char* name, const char* fallback) {
-    const char* value = std::getenv(name);
-    return value && *value ? value : fallback;
-}
 
 class ThreadPool {
    public:
@@ -375,24 +370,6 @@ class RedisClient {
     mutable std::mutex mutex_;
     mutable std::vector<redisContext*> idle_;
 };
-
-std::string number(double value) {
-    std::ostringstream out;
-    out << std::setprecision(15) << value;
-    return out.str();
-}
-
-int user_number(const std::string& user_id) {
-    const auto dash = user_id.rfind('-');
-    if (dash == std::string::npos) {
-        return 42;
-    }
-    try {
-        return std::stoi(user_id.substr(dash + 1));
-    } catch (...) {
-        return 42;
-    }
-}
 
 }  // namespace
 

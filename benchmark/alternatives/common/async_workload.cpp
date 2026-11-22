@@ -1,4 +1,5 @@
 #include "async_workload.hpp"
+#include "workload_support.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
@@ -7,7 +8,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <memory>
@@ -29,11 +29,6 @@ using asio::ip::tcp;
 using Json = nlohmann::json;
 template <class T>
 using Awaitable = asio::awaitable<T>;
-
-std::string env_or(const char* name, const char* fallback) {
-    const char* value = std::getenv(name);
-    return value && *value ? value : fallback;
-}
 
 struct HostPort {
     std::string host;
@@ -277,24 +272,6 @@ class AsyncRedis {
     HostPort endpoint_;
     IdlePool<RedisConnection> pool_;
 };
-
-std::string number(double value) {
-    std::ostringstream out;
-    out << std::setprecision(15) << value;
-    return out.str();
-}
-
-int user_number(const std::string& user_id) {
-    const auto dash = user_id.rfind('-');
-    if (dash == std::string::npos) {
-        return 42;
-    }
-    try {
-        return std::stoi(user_id.substr(dash + 1));
-    } catch (...) {
-        return 42;
-    }
-}
 
 Json recent_history(const std::vector<std::string>& history) {
     Json recent = Json::array();
