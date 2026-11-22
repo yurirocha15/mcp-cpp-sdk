@@ -1331,6 +1331,26 @@ struct OAuthDiscoveryClient::Impl {
         /// accept everything that parsed, which is the contract of the overloads that take no
         /// acceptor.
         std::function<void(const Metadata&)> accept;
+        /// Why each URL tried so far gave no document, for the error when none does.
+        std::vector<std::string> misses;
+
+        /// Records why @p url gave no document: @p failure, led by the URL unless it names it.
+        void miss(const std::string& url, const std::exception& failure) {
+            auto reason = sanitize_for_diagnostics(failure.what());
+            const auto where = sanitize_for_diagnostics(url);
+            misses.push_back(reason.find(where) == std::string::npos ? where + ": " + reason
+                                                                     : std::move(reason));
+        }
+
+        /// The error for a discovery in which no URL gave a document: @p summary and the misses.
+        [[nodiscard]] std::runtime_error failure(std::string summary) const {
+            summary += " for " + sanitize_for_diagnostics(cache_key);
+            for (std::size_t index = 0; index < misses.size(); ++index) {
+                summary += index == 0 ? ": " : "; ";
+                summary += misses[index];
+            }
+            return std::runtime_error(summary);
+        }
     };
 
     Impl(std::shared_ptr<OAuthHttpClient> client, std::chrono::seconds ttl)
@@ -1453,15 +1473,15 @@ struct OAuthDiscoveryClient::Impl {
     static Task<ProtectedResourceMetadata> run_protected_discovery(
         std::shared_ptr<DiscoveryOperation<ProtectedResourceMetadata>> operation) {
         while (operation->next_url < operation->urls.size()) {
+            const auto& url = operation->urls[operation->next_url++];
             try {
-                const auto index = operation->next_url++;
-                operation->response =
-                    co_await operation->owner->http_client->get_json(operation->urls[index]);
+                operation->response = co_await operation->owner->http_client->get_json(url);
                 operation->metadata = operation->response.get<ProtectedResourceMetadata>();
             } catch (const MetadataPolicyError&) {
                 // A refused target is a security decision, not a candidate that missed.
                 throw;
-            } catch (...) {
+            } catch (const std::exception& error) {
+                operation->miss(url, error);
                 continue;
             }
 
@@ -1482,17 +1502,15 @@ struct OAuthDiscoveryClient::Impl {
             }
             co_return *operation->metadata;
         }
-        throw std::runtime_error("Failed to discover protected resource metadata for " +
-                                 sanitize_for_diagnostics(operation->cache_key));
+        throw operation->failure("Failed to discover protected resource metadata");
     }
 
     static Task<AuthServerMetadata> run_auth_discovery(
         std::shared_ptr<DiscoveryOperation<AuthServerMetadata>> operation) {
         while (operation->next_url < operation->urls.size()) {
+            const auto& url = operation->urls[operation->next_url++];
             try {
-                const auto index = operation->next_url++;
-                operation->response =
-                    co_await operation->owner->http_client->get_json(operation->urls[index]);
+                operation->response = co_await operation->owner->http_client->get_json(url);
                 operation->metadata = operation->response.get<AuthServerMetadata>();
 
                 std::lock_guard lock(operation->owner->cache_mutex);
@@ -1504,12 +1522,12 @@ struct OAuthDiscoveryClient::Impl {
             } catch (const MetadataPolicyError&) {
                 // A refused target is a security decision, not a candidate that missed.
                 throw;
-            } catch (...) {
+            } catch (const std::exception& error) {
+                operation->miss(url, error);
                 continue;
             }
         }
-        throw std::runtime_error("Failed to discover authorization server metadata for " +
-                                 sanitize_for_diagnostics(operation->cache_key));
+        throw operation->failure("Failed to discover authorization server metadata");
     }
 
     std::shared_ptr<OAuthHttpClient> http_client;
@@ -1677,6 +1695,7 @@ struct OAuthAuthenticator::Impl {
                                                  std::move(*operation->new_token));
             co_return true;
         } catch (...) {
+            // A refresh that fails leaves the stored token as it is and reports false.
             co_return false;
         }
     }
@@ -2556,6 +2575,7 @@ struct OAuthAuthorizationManager::Impl {
         } catch (const MetadataPolicyError&) {
             throw;
         } catch (...) {
+            // A refresh that fails leaves the stored token as it is and reports false.
             co_return false;
         }
     }

@@ -5940,6 +5940,9 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_NE(client_failure.find("Failed to discover protected resource metadata"), std::string::npos)
         << client_failure;
     EXPECT_NE(client_failure.find("/mcp"), std::string::npos) << client_failure;
+    // It also says why each guess missed.
+    EXPECT_NE(client_failure.find("/.well-known/oauth-protected-resource"), std::string::npos)
+        << client_failure;
 }
 
 // A server that is told what resource it represents advertises where its metadata lives, so the

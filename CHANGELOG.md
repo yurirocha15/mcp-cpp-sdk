@@ -68,6 +68,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - With a `StdioRestartPolicy`, `Endpoint::stdio()` sends each open `subscriptions/listen` request to the restarted server, so its `Subscription` goes on.
 - Tool registration throws for a name that is empty, longer than 128 characters or holds characters other than ASCII letters, digits, `_`, `-` and `.`.
 - `Context::sample_llm()` refuses an `includeContext` other than "none" for a client that did not declare `sampling.context`.
+- An OAuth metadata discovery that finds no document says in its error why each well-known URL it tried failed.
 
 ### Removed
 

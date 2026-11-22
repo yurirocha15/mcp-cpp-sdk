@@ -985,6 +985,60 @@ TEST_F(DiscoveryTest, DiscoverAuthServerFallsBackToOIDC) {
     EXPECT_EQ(result.issuer, "http://127.0.0.1:" + std::to_string(port));
 }
 
+TEST_F(DiscoveryTest, FailureNamesWhyEachWellKnownUrlMissed) {
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        // oauth-authorization-server answers 404; openid-configuration answers a document whose
+        // issuer is not a string.
+        for (int answer = 0; answer < 2; ++answer) {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            beast::tcp_stream stream(std::move(socket));
+            beast::flat_buffer buffer;
+            http::request<http::string_body> req;
+            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+
+            http::response<http::string_body> res{
+                answer == 0 ? http::status::not_found : http::status::ok, req.version()};
+            if (answer == 1) {
+                res.set(http::field::content_type, "application/json");
+                res.body() = R"({"issuer":42})";
+            }
+            res.prepare_payload();
+            co_await http::async_write(stream, res, asio::use_awaitable);
+
+            beast::error_code ec;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+        }
+    });
+
+    std::string failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+        http_client->set_metadata_policy(loopback_policy(port));
+        mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
+        try {
+            (void)co_await discovery.discover_auth_server("http://127.0.0.1:" + std::to_string(port));
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+    });
+
+    io_ctx_.run();
+
+    const auto base = "http://127.0.0.1:" + std::to_string(port);
+    EXPECT_EQ(failure.rfind("Failed to discover authorization server metadata for " + base + ": ", 0),
+              0U)
+        << failure;
+    // The 404's own message names its URL; the bad document's reason is led by the URL.
+    EXPECT_NE(failure.find(base + "/.well-known/oauth-authorization-server failed with status 404"),
+              std::string::npos)
+        << failure;
+    EXPECT_NE(failure.find("; " + base + "/.well-known/openid-configuration: "), std::string::npos)
+        << failure;
+}
+
 TEST_F(DiscoveryTest, CacheHitSkipsNetworkCall) {
     constexpr unsigned short port = 18105;
 
