@@ -1,7 +1,6 @@
 #pragma once
 
 #include <mcp/core/async_fwd.hpp>
-#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -91,8 +90,8 @@ class MCP_API SerializedTransportWriter {
     [[nodiscard]] Task<void> written() const;
 
     /// Bytes of the messages queued or being written, each counted with
-    /// mcp::constants::transport_writer::g_QUEUED_MESSAGE_OVERHEAD: what waits on a peer that reads
-    /// slowly.
+    /// mcp::detail::constants::transport_writer::g_QUEUED_MESSAGE_OVERHEAD: what waits on a peer that
+    /// reads slowly.
     [[nodiscard]] std::size_t queued_bytes() const noexcept;
 
    private:

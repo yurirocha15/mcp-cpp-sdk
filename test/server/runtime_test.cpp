@@ -1,6 +1,6 @@
 #include "mcp/core/runtime.hpp"
+#include "../../src/detail/runtime_access.hpp"
 #include "mcp/core/async.hpp"
-#include "mcp/detail/runtime_access.hpp"
 
 #include <gtest/gtest.h>
 #include <atomic>

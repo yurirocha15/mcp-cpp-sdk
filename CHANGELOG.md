@@ -76,6 +76,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `<mcp/core/core.hpp>`; `Task` is in `<mcp/core/async.hpp>`.
 - `mcp::TransportFactory`; transports are constructed with `Runtime::executor()`. The deprecated `make_*_transport()` functions remain.
 - The `mcp::auth::net` alias of `boost::asio`.
+- The installed headers no longer declare the JSON parser, the regular expression engine, the serialized transport writer, the executor access, the secure random helpers or the OAuth encoders.
 
 ### Migrating from 0.3.0
 

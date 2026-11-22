@@ -1,4 +1,4 @@
-#include <mcp/detail/regex.hpp>
+#include "../../src/detail/regex.hpp"
 
 #include <gtest/gtest.h>
 

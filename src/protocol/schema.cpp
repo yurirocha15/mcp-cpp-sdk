@@ -1,9 +1,9 @@
 #include <mcp/protocol/schema.hpp>
 
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/regex.hpp>
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/regex.hpp"
 #include "native_schema.hpp"
 #include "schema_cache.hpp"
 #include "schema_checker.hpp"

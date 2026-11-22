@@ -20,12 +20,12 @@
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/secure_random.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 #include <mcp/transport/tls.hpp>
+#include "../detail/secure_random.hpp"
 
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>

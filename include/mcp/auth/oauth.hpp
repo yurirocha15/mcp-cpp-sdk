@@ -27,20 +27,6 @@
 
 namespace mcp::auth {
 
-namespace detail {
-MCP_API std::string base64_encode(const unsigned char* data, std::size_t len);
-MCP_API std::string base64url_encode(const unsigned char* data, std::size_t len);
-
-/// SHA-256 via OpenSSL EVP interface.
-MCP_API std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> sha256(
-    const std::string& input);
-
-MCP_API std::string generate_random_string(std::size_t length);
-MCP_API std::string url_encode(const std::string& value);
-MCP_API std::string build_form_body(const KeyValuePairList& params);
-
-}  // namespace detail
-
 /**
  * @brief PKCE verifier and challenge values for OAuth authorization flows.
  */

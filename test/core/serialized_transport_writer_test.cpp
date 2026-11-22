@@ -2,8 +2,8 @@
 #include "../support/spawn.hpp"
 
 #include <mcp/core/async.hpp>
-#include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/transport/transport.hpp>
+#include "../../src/detail/serialized_transport_writer.hpp"
 
 #include <gtest/gtest.h>
 

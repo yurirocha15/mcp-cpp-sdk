@@ -1,10 +1,10 @@
+#include "../detail/serialized_transport_writer.hpp"
 #include <mcp/core/async.hpp>
-#include <mcp/detail/serialized_transport_writer.hpp>
 
 #include "../detail/strand_executor.hpp"
 
-#include <mcp/core/constants.hpp>
 #include <mcp/transport/transport.hpp>
+#include "../detail/constants.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -26,7 +26,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace transport_writer = mcp::constants::transport_writer;
+namespace transport_writer = mcp::detail::constants::transport_writer;
 
 namespace mcp::detail {
 

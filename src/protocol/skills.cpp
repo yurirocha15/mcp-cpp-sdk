@@ -1,13 +1,11 @@
-#include <mcp/auth/oauth.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/skills.hpp>
 
 #include <algorithm>
 #include <set>
 #include "../detail/constants.hpp"
+#include "../detail/encoding.hpp"
 #include "cache_hints.hpp"
-
-namespace encoding = mcp::detail::constants::encoding;
 
 namespace mcp {
 
@@ -159,15 +157,8 @@ std::string path_problem(std::string_view relative) {
 }  // namespace
 
 std::string sha256_digest(std::string_view bytes) {
-    const auto digest = auth::detail::sha256(std::string(bytes));
-    std::string text(mcp::detail::constants::skills::g_DIGEST_PREFIX);
-    text.reserve(mcp::detail::constants::skills::g_DIGEST_PREFIX.size() +
-                 mcp::detail::constants::skills::g_DIGEST_HEX_LENGTH);
-    for (const auto byte : digest) {
-        text.push_back(encoding::g_HEX_DIGITS[byte >> 4]);
-        text.push_back(encoding::g_HEX_DIGITS[byte & 0x0F]);
-    }
-    return text;
+    return std::string(mcp::detail::constants::skills::g_DIGEST_PREFIX) +
+           mcp::detail::hex_encode(mcp::detail::digest_bytes(mcp::detail::sha256(bytes)));
 }
 
 bool is_valid_skill_name(std::string_view name) {

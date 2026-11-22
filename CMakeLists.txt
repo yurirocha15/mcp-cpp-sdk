@@ -98,6 +98,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/context.cpp
     src/core/runtime.cpp
     src/core/regex.cpp
+    src/core/encoding.cpp
     src/core/secure_random.cpp
     src/core/json_dump.cpp
     src/core/json_parse.cpp
@@ -437,6 +438,7 @@ if(BUILD_TESTING)
       test/core/tasks_test.cpp
       test/core/regex_test.cpp
       test/core/sealed_state_test.cpp
+      test/core/encoding_test.cpp
       test/core/serialized_transport_writer_test.cpp
       test/core/strand_executor_test.cpp
       test/server/roots_test.cpp

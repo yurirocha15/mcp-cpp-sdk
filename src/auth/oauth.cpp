@@ -2,6 +2,7 @@
 #include <mcp/core/async.hpp>
 
 #include "../detail/constants.hpp"
+#include "../detail/encoding.hpp"
 #include "../detail/http_connect.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/peer_json.hpp"
@@ -17,7 +18,7 @@
 
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/secure_random.hpp>
+#include "../detail/secure_random.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -67,123 +68,6 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace net = boost::asio;
 
-namespace detail {
-
-std::string base64_encode(const unsigned char* data, std::size_t len) {
-    std::string result;
-    result.reserve(((len + 2) / 3) * 4);
-
-    for (std::size_t i = 0; i < len; i += 3) {
-        unsigned int value = static_cast<unsigned int>(data[i])
-                             << mcp::detail::constants::encoding::g_SHIFT_16;
-        if (i + 1 < len) {
-            value |= static_cast<unsigned int>(data[i + 1])
-                     << mcp::detail::constants::encoding::g_SHIFT_8;
-        }
-        if (i + 2 < len) {
-            value |= static_cast<unsigned int>(data[i + 2]);
-        }
-
-        result.push_back(mcp::detail::constants::encoding::g_BASE64_ALPHABET
-                             [(value >> mcp::detail::constants::encoding::g_SHIFT_18) &
-                              mcp::detail::constants::encoding::g_MASK_0X3F]);
-        result.push_back(mcp::detail::constants::encoding::g_BASE64_ALPHABET
-                             [(value >> mcp::detail::constants::encoding::g_SHIFT_12) &
-                              mcp::detail::constants::encoding::g_MASK_0X3F]);
-        result.push_back((i + 1 < len) ? mcp::detail::constants::encoding::g_BASE64_ALPHABET
-                                             [(value >> mcp::detail::constants::encoding::g_SHIFT_6) &
-                                              mcp::detail::constants::encoding::g_MASK_0X3F]
-                                       : '=');
-        result.push_back((i + 2 < len) ? mcp::detail::constants::encoding::g_BASE64_ALPHABET
-                                             [value & mcp::detail::constants::encoding::g_MASK_0X3F]
-                                       : '=');
-    }
-
-    return result;
-}
-
-std::string base64url_encode(const unsigned char* data, std::size_t len) {
-    auto encoded = base64_encode(data, len);
-
-    for (auto& ch : encoded) {
-        if (ch == '+') {
-            ch = '-';
-        } else if (ch == '/') {
-            ch = '_';
-        }
-    }
-    encoded.erase(std::remove(encoded.begin(), encoded.end(), '='), encoded.end());
-    return encoded;
-}
-
-std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> sha256(
-    const std::string& input) {
-    std::array<unsigned char, mcp::constants::oauth::g_SHA256_DIGEST_LENGTH> digest{};
-    unsigned int digest_len = 0;
-
-    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
-    if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1 ||
-        EVP_DigestUpdate(context.get(), input.data(), input.size()) != 1 ||
-        EVP_DigestFinal_ex(context.get(), digest.data(), &digest_len) != 1) {
-        throw std::runtime_error("OpenSSL SHA-256 failed");
-    }
-
-    return digest;
-}
-
-std::string generate_random_string(std::size_t length) {
-    static const std::size_t s_charset_size =
-        mcp::detail::constants::encoding::g_UNRESERVED_CHARS.size();
-    static const auto s_bias_limit =
-        static_cast<unsigned char>((256 / s_charset_size) * s_charset_size);
-
-    std::string result;
-    result.reserve(length);
-    while (result.size() < length) {
-        unsigned char byte = 0;
-        if (RAND_bytes(&byte, 1) != 1) {
-            throw std::runtime_error("RAND_bytes failed");
-        }
-        if (byte < s_bias_limit) {
-            result.push_back(
-                mcp::detail::constants::encoding::g_UNRESERVED_CHARS[byte % s_charset_size]);
-        }
-    }
-    return result;
-}
-
-std::string url_encode(const std::string& value) {
-    std::string result;
-    result.reserve(value.size() * 3);
-
-    for (unsigned char ch : value) {
-        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
-            ch == '-' || ch == '_' || ch == '.' || ch == '~') {
-            result.push_back(static_cast<char>(ch));
-        } else {
-            result.push_back('%');
-            result.push_back(mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER
-                                 [ch >> mcp::detail::constants::encoding::g_SHIFT_4]);
-            result.push_back(mcp::detail::constants::encoding::g_HEX_DIGITS_UPPER
-                                 [ch & mcp::detail::constants::encoding::g_MASK_0X0F]);
-        }
-    }
-    return result;
-}
-
-std::string build_form_body(const KeyValuePairList& params) {
-    std::string body;
-    for (const auto& [key, value] : params) {
-        if (!body.empty()) {
-            body.push_back('&');
-        }
-        body += url_encode(key) + "=" + url_encode(value);
-    }
-    return body;
-}
-
-}  // namespace detail
-
 PkcePair generate_pkce_pair(std::size_t verifier_length) {
     if (verifier_length < mcp::constants::oauth::g_MIN_VERIFIER_LENGTH ||
         verifier_length > mcp::constants::oauth::g_MAX_VERIFIER_LENGTH) {
@@ -191,11 +75,11 @@ PkcePair generate_pkce_pair(std::size_t verifier_length) {
     }
 
     PkcePair pair;
-    pair.code_verifier = detail::generate_random_string(verifier_length);
+    pair.code_verifier = mcp::detail::generate_random_string(verifier_length);
     pair.challenge_method = "S256";
 
-    const auto hash = detail::sha256(pair.code_verifier);
-    pair.code_challenge = detail::base64url_encode(hash.data(), hash.size());
+    pair.code_challenge = mcp::detail::base64url_encode(
+        mcp::detail::digest_bytes(mcp::detail::sha256(pair.code_verifier)));
     return pair;
 }
 
@@ -910,10 +794,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     Task<TokenResponse> post_token_request(std::string token_endpoint, const KeyValuePairList& params,
                                            std::string authorization,
                                            std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
-        return on_strand(strand,
-                         run_post(make_exchange(std::move(token_endpoint), std::move(scope)),
-                                  std::make_shared<std::string>(detail::build_form_body(params)),
-                                  std::move(authorization)));
+        return on_strand(strand, run_post(make_exchange(std::move(token_endpoint), std::move(scope)),
+                                          std::make_shared<std::string>(mcp::detail::form_body(params)),
+                                          std::move(authorization)));
     }
 
     Task<nlohmann::json> post_form(std::string url, const KeyValuePairList& params,
@@ -921,7 +804,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
                                    std::shared_ptr<detail::OAuthScopeState> scope = nullptr) {
         return on_strand(strand,
                          run_post_json(make_exchange(std::move(url), std::move(scope)),
-                                       std::make_shared<std::string>(detail::build_form_body(params)),
+                                       std::make_shared<std::string>(mcp::detail::form_body(params)),
                                        "application/x-www-form-urlencoded", "Token request",
                                        std::move(authorization)));
     }
@@ -1103,20 +986,6 @@ void OAuthHttpClient::abort_pending() { impl_->abort_pending(); }
 
 namespace {
 
-/// application/x-www-form-urlencoded encoding, which RFC 6749 section 2.3.1 applies to the client
-/// identifier and secret before they are joined for HTTP Basic: a space becomes `+`.
-std::string form_encode(const std::string& value) {
-    std::string result;
-    std::size_t start = 0;
-    for (auto space = value.find(' '); space != std::string::npos; space = value.find(' ', start)) {
-        result += detail::url_encode(value.substr(start, space - start));
-        result.push_back('+');
-        start = space + 1;
-    }
-    result += detail::url_encode(value.substr(start));
-    return result;
-}
-
 /// Place the client secret where the negotiated method says it belongs, and nowhere else.
 ///
 /// @return The `Authorization` header value, empty when the secret does not travel in a header.
@@ -1129,11 +998,8 @@ std::string apply_client_authentication(const OAuthConfig& config, KeyValuePairL
         return {};
     }
     if (method && *method == "client_secret_basic") {
-        const auto credentials =
-            form_encode(config.client_id) + ":" + form_encode(*config.client_secret);
-        return "Basic " +
-               detail::base64_encode(reinterpret_cast<const unsigned char*>(credentials.data()),
-                                     credentials.size());
+        return "Basic " + mcp::detail::base64_encode(mcp::detail::form_value(config.client_id) + ":" +
+                                                     mcp::detail::form_value(*config.client_secret));
     }
     params.emplace_back("client_secret", *config.client_secret);
     return {};
@@ -2159,7 +2025,7 @@ struct OAuthAuthorizationManager::Impl {
             params.emplace_back("resource", *request.resource);
         }
         request.authorization_url =
-            append_query(auth_server.authorization_endpoint, detail::build_form_body(params));
+            append_query(auth_server.authorization_endpoint, mcp::detail::form_body(params));
         return request;
     }
 

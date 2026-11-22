@@ -1,5 +1,6 @@
 #include "sealed_state.hpp"
 #include "../detail/constants.hpp"
+#include "../detail/encoding.hpp"
 
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
@@ -14,7 +15,6 @@
 #include <memory>
 #include <stdexcept>
 
-namespace encoding = mcp::detail::constants::encoding;
 namespace sealed_token = mcp::detail::constants::sealed_token;
 
 namespace mcp::detail::sealed_state {
@@ -68,61 +68,6 @@ int to_int(std::size_t value) { return static_cast<int>(value); }
 }  // namespace
 
 SealKey::~SealKey() { OPENSSL_cleanse(secret_.data(), secret_.size()); }
-
-std::string base64url_encode(std::string_view bytes) {
-    std::string out;
-    out.reserve((bytes.size() * 4 + 2) / 3);
-    std::size_t i = 0;
-    for (; i + 3 <= bytes.size(); i += 3) {
-        const unsigned v = (static_cast<unsigned char>(bytes[i]) << 16U) |
-                           (static_cast<unsigned char>(bytes[i + 1]) << 8U) |
-                           static_cast<unsigned char>(bytes[i + 2]);
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 18U) & 63U];
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 12U) & 63U];
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 6U) & 63U];
-        out += encoding::g_BASE64URL_ALPHABET[v & 63U];
-    }
-    const std::size_t rest = bytes.size() - i;
-    if (rest == 1) {
-        const unsigned v = static_cast<unsigned char>(bytes[i]) << 16U;
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 18U) & 63U];
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 12U) & 63U];
-    } else if (rest == 2) {
-        const unsigned v = (static_cast<unsigned char>(bytes[i]) << 16U) |
-                           (static_cast<unsigned char>(bytes[i + 1]) << 8U);
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 18U) & 63U];
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 12U) & 63U];
-        out += encoding::g_BASE64URL_ALPHABET[(v >> 6U) & 63U];
-    }
-    return out;
-}
-
-std::optional<std::string> base64url_decode(std::string_view text) {
-    if (text.size() % 4 == 1) {
-        return std::nullopt;
-    }
-    std::string out;
-    out.reserve(text.size() * 3 / 4);
-    unsigned acc = 0;
-    unsigned bits = 0;
-    for (const char c : text) {
-        const std::size_t pos = encoding::g_BASE64URL_ALPHABET.find(c);
-        if (pos == std::string_view::npos) {
-            return std::nullopt;
-        }
-        acc = (acc << 6U) | static_cast<unsigned>(pos);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out += static_cast<char>((acc >> bits) & 0xFFU);
-            acc &= (1U << bits) - 1U;
-        }
-    }
-    if (acc != 0) {
-        return std::nullopt;
-    }
-    return out;
-}
 
 Codec::Codec(std::vector<SealKey> keys, std::size_t max_token_chars)
     : keys_(std::move(keys)), max_token_chars_(max_token_chars) {

@@ -87,12 +87,6 @@ struct OpenResult {
     [[nodiscard]] explicit operator bool() const noexcept { return error == OpenError::eNone; }
 };
 
-/// Canonical unpadded base64url (RFC 4648 section 5). The decoder rejects padding, other
-/// characters, a length that is 1 mod 4, and non-zero trailing bits, so one byte string has exactly
-/// one accepted spelling.
-std::string base64url_encode(std::string_view bytes);
-std::optional<std::string> base64url_decode(std::string_view text);
-
 /// A key ring: `keys[0]` seals, every key opens. Immutable once built, so one codec can be used from
 /// any number of threads; rotating keys means building a new codec.
 class Codec {

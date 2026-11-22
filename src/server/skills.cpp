@@ -1,4 +1,3 @@
-#include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/skills.hpp>
@@ -9,6 +8,7 @@
 #include <stdexcept>
 #include <utility>
 #include "../detail/constants.hpp"
+#include "../detail/encoding.hpp"
 
 namespace mcp::skills {
 
@@ -284,10 +284,7 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
                         TextResourceContents{uri, bytes, mime_type, std::nullopt});
                 } else {
                     result.contents.emplace_back(BlobResourceContents{
-                        uri,
-                        auth::detail::base64_encode(
-                            reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size()),
-                        mime_type, std::nullopt});
+                        uri, mcp::detail::base64_encode(bytes), mime_type, std::nullopt});
                 }
                 return nlohmann::json(result);
             });

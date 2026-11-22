@@ -1,7 +1,7 @@
 #pragma once
 
 #include <mcp/core/constants.hpp>
-#include <mcp/detail/json_parse.hpp>
+#include "json_parse.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -12,7 +12,7 @@
 
 namespace mcp::detail {
 
-static_assert(mcp::constants::json_parse::g_MAX_FAST_DEPTH >=
+static_assert(mcp::detail::constants::json_parse::g_MAX_FAST_DEPTH >=
                   mcp::detail::constants::peer_json::g_MAX_DEPTH,
               "every document parse_peer_json() accepts is within the fast parser's nesting");
 

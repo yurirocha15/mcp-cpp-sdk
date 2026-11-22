@@ -17,10 +17,10 @@
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/tls.hpp>
+#include "../detail/secure_random.hpp"
 
 #include <algorithm>
 #include <atomic>

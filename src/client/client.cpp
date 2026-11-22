@@ -9,9 +9,9 @@
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/transport/http_client.hpp>
 #include <mcp/transport/tls.hpp>
+#include "../detail/serialized_transport_writer.hpp"
 
 #include <algorithm>
 #include <atomic>

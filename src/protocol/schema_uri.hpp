@@ -30,9 +30,6 @@ std::string resolve_uri(std::string_view base, std::string_view reference);
 /// @p uri without its fragment, and the fragment ("" when there is none).
 std::pair<std::string, std::string> split_fragment(std::string_view uri);
 
-/// @p text with every `%XX` escape decoded; nothing when an escape is malformed.
-std::optional<std::string> percent_decode(std::string_view text);
-
 /// The reference tokens of the JSON Pointer @p pointer (RFC 6901), unescaped; nothing when it is
 /// not one. "" is the whole document.
 std::optional<std::vector<std::string>> json_pointer_tokens(std::string_view pointer);

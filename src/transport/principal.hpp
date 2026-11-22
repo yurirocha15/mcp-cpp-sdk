@@ -1,7 +1,8 @@
 #pragma once
 
-#include <mcp/auth/oauth.hpp>
 #include <mcp/transport/http_types.hpp>
+
+#include "../detail/encoding.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -23,17 +24,9 @@ inline std::string request_principal(const std::optional<std::string>& validator
     if (authorization.empty()) {
         return {};
     }
-    constexpr std::string_view hex_digits = "0123456789abcdef";
     auto token = http_bearer_token(authorization);
     token.remove_prefix(std::min(token.find_first_not_of(' '), token.size()));
-    const auto digest = auth::detail::sha256(std::string(token.empty() ? authorization : token));
-    std::string principal = "h:";
-    principal.reserve(2 + digest.size() * 2);
-    for (const unsigned char byte : digest) {
-        principal += hex_digits[byte >> 4U];
-        principal += hex_digits[byte & 0x0FU];
-    }
-    return principal;
+    return "h:" + hex_encode(digest_bytes(sha256(token.empty() ? authorization : token)));
 }
 
 }  // namespace mcp::detail

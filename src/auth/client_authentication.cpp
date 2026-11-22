@@ -14,6 +14,8 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include "../detail/constants.hpp"
+#include "../detail/encoding.hpp"
+#include "../detail/secure_random.hpp"
 
 namespace mcp::auth {
 
@@ -66,10 +68,6 @@ std::vector<std::string> algorithms_for(EVP_PKEY* key) {
         return {"ES256"};
     }
     throw std::invalid_argument("The private key must be an RSA key or an EC key on P-256");
-}
-
-std::string encode(std::string_view bytes) {
-    return detail::base64url_encode(reinterpret_cast<const unsigned char*>(bytes.data()), bytes.size());
 }
 
 /// Converts the DER ECDSA signature OpenSSL produces into the fixed-width R || S of RFC 7518.
@@ -175,10 +173,12 @@ std::string sign_client_assertion(const PrivateKeyJwtConfig& config, const std::
         {"aud", config.audience ? *config.audience : audience},
         {"iat", issued_at},
         {"exp", issued_at + config.lifetime.count()},
-        {"jti",
-         detail::generate_random_string(mcp::detail::constants::client_authentication::g_JTI_LENGTH)}};
-    const auto signing_input = encode(header.dump()) + "." + encode(claims.dump());
-    return signing_input + "." + encode(sign(key.get(), algorithm, signing_input));
+        {"jti", mcp::detail::generate_random_string(
+                    mcp::detail::constants::client_authentication::g_JTI_LENGTH)}};
+    const auto signing_input = mcp::detail::base64url_encode(header.dump()) + "." +
+                               mcp::detail::base64url_encode(claims.dump());
+    return signing_input + "." +
+           mcp::detail::base64url_encode(sign(key.get(), algorithm, signing_input));
 }
 
 std::string authenticate_token_request(const ClientAuthentication& credentials,
@@ -248,21 +248,9 @@ std::string authenticate_token_request(const ClientAuthentication& credentials,
             params.emplace_back("client_secret", *credentials.client_secret);
             return {};
         }
-        // RFC 6749 section 2.3.1: both values are form-encoded before they are joined.
-        const auto encoded = [](const std::string& value) {
-            std::string result;
-            for (const char character : value) {
-                if (character == ' ') {
-                    result += '+';
-                } else {
-                    result += detail::url_encode(std::string(1, character));
-                }
-            }
-            return result;
-        };
-        const auto joined = encoded(credentials.client_id) + ":" + encoded(*credentials.client_secret);
-        return "Basic " + detail::base64_encode(reinterpret_cast<const unsigned char*>(joined.data()),
-                                                joined.size());
+        return "Basic " +
+               mcp::detail::base64_encode(mcp::detail::form_value(credentials.client_id) + ":" +
+                                          mcp::detail::form_value(*credentials.client_secret));
     }
     if (method == "none") {
         params.emplace_back("client_id", credentials.client_id);

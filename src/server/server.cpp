@@ -1,5 +1,6 @@
 #include "../detail/constants.hpp"
 #include "../detail/diagnostic_text.hpp"
+#include "../detail/encoding.hpp"
 #include "../detail/memory_transport_read.hpp"
 #include "../detail/middleware_rejection.hpp"
 #include "../detail/modern_methods.hpp"
@@ -14,18 +15,17 @@
 #include "run_control.hpp"
 #include "task_run.hpp"
 
-#include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/secure_random.hpp>
-#include <mcp/detail/serialized_transport_writer.hpp>
 #include <mcp/protocol/extensions.hpp>
 #include <mcp/protocol/schema.hpp>
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/memory.hpp>
 #include <mcp/transport/stdio.hpp>
+#include "../detail/secure_random.hpp"
+#include "../detail/serialized_transport_writer.hpp"
 
 // GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
@@ -72,7 +72,7 @@
 #include <vector>
 
 namespace sealed_token = mcp::detail::constants::sealed_token;
-namespace transport_writer = mcp::constants::transport_writer;
+namespace transport_writer = mcp::detail::constants::transport_writer;
 
 namespace mcp {
 
@@ -3738,14 +3738,12 @@ void Server::set_mrtr_options(MrtrOptions options) {
                     throw std::invalid_argument("a sealing key must be at least 32 bytes");
                 }
                 // The master key and its id are one-way derivations of the supplied secret.
-                auto secret = auth::detail::sha256(material);
-                std::string secret_bytes(secret.begin(), secret.end());
-                const auto id = auth::detail::sha256(secret_bytes);
+                auto secret = mcp::detail::sha256(material);
+                const auto id = mcp::detail::sha256(mcp::detail::digest_bytes(secret));
                 std::array<std::uint8_t, sealed_token::g_KID_SIZE> kid{};
                 std::copy_n(id.begin(), kid.size(), kid.begin());
                 keys.emplace_back(kid, secret);
                 OPENSSL_cleanse(secret.data(), secret.size());
-                OPENSSL_cleanse(secret_bytes.data(), secret_bytes.size());
             }
             codec = std::make_shared<const detail::sealed_state::Codec>(std::move(keys),
                                                                         options.max_state_bytes);

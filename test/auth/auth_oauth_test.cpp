@@ -32,12 +32,11 @@
 #include <vector>
 
 #include "../../src/detail/constants.hpp"
+#include "../../src/detail/encoding.hpp"
 #include "../support/hang_guard.hpp"
 #include "../support/spawn.hpp"
 
 namespace auth_oauth_test {
-
-namespace encoding = mcp::detail::constants::encoding;
 
 namespace {
 
@@ -45,18 +44,6 @@ namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using json = nlohmann::json;
-
-// Known SHA-256 test vector: SHA-256("") =
-// e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-std::string hex_encode(const unsigned char* data, std::size_t len) {
-    std::string result;
-    result.reserve(len * 2);
-    for (std::size_t i = 0; i < len; ++i) {
-        result.push_back(encoding::g_HEX_DIGITS[data[i] >> 4]);
-        result.push_back(encoding::g_HEX_DIGITS[data[i] & 0x0F]);
-    }
-    return result;
-}
 
 using AcceptorCallback =
     std::function<asio::awaitable<void>(asio::ip::tcp::socket, asio::ip::tcp::acceptor&)>;
@@ -79,61 +66,6 @@ mcp::auth::MetadataFetchPolicy loopback_policy(unsigned short port) {
 
 }  // namespace
 
-TEST(AuthSha256Test, EmptyString) {
-    auto hash = mcp::auth::detail::sha256("");
-    auto hex = hex_encode(hash.data(), hash.size());
-    EXPECT_EQ(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-}
-
-TEST(AuthSha256Test, Abc) {
-    auto hash = mcp::auth::detail::sha256("abc");
-    auto hex = hex_encode(hash.data(), hash.size());
-    EXPECT_EQ(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-}
-
-TEST(AuthSha256Test, LongerString) {
-    auto hash = mcp::auth::detail::sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
-    auto hex = hex_encode(hash.data(), hash.size());
-    EXPECT_EQ(hex, "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
-}
-
-TEST(AuthBase64Test, BasicEncode) {
-    std::string input = "Hello";
-    auto encoded = mcp::auth::detail::base64_encode(
-        reinterpret_cast<const unsigned char*>(input.data()), input.size());
-    EXPECT_EQ(encoded, "SGVsbG8=");
-}
-
-TEST(AuthBase64Test, EmptyInput) {
-    auto encoded = mcp::auth::detail::base64_encode(nullptr, 0);
-    EXPECT_EQ(encoded, "");
-}
-
-TEST(AuthBase64UrlTest, NoPaddingAndCharReplacement) {
-    unsigned char data[] = {0xfb, 0xff, 0xfe};
-    auto encoded = mcp::auth::detail::base64url_encode(data, 3);
-    EXPECT_EQ(encoded.find('+'), std::string::npos);
-    EXPECT_EQ(encoded.find('/'), std::string::npos);
-    EXPECT_EQ(encoded.find('='), std::string::npos);
-}
-
-TEST(AuthUrlEncodeTest, ReservedChars) {
-    auto encoded = mcp::auth::detail::url_encode("hello world&foo=bar");
-    EXPECT_EQ(encoded, "hello%20world%26foo%3Dbar");
-}
-
-TEST(AuthUrlEncodeTest, UnreservedCharsPassThrough) {
-    auto encoded = mcp::auth::detail::url_encode("abc-._~123");
-    EXPECT_EQ(encoded, "abc-._~123");
-}
-
-TEST(AuthFormBodyTest, BuildsCorrectly) {
-    auto body = mcp::auth::detail::build_form_body({{"grant_type", "authorization_code"},
-                                                    {"code", "abc123"},
-                                                    {"redirect_uri", "http://localhost"}});
-    EXPECT_EQ(body, "grant_type=authorization_code&code=abc123&redirect_uri=http%3A%2F%2Flocalhost");
-}
-
 TEST(AuthPkceTest, GeneratesPairWithCorrectProperties) {
     auto pair = mcp::auth::generate_pkce_pair();
     EXPECT_GE(pair.code_verifier.size(), 43);
@@ -151,9 +83,8 @@ TEST(AuthPkceTest, GeneratesPairWithCorrectProperties) {
 
 TEST(AuthPkceTest, ChallengeMatchesSha256OfVerifier) {
     auto pair = mcp::auth::generate_pkce_pair(43);
-    auto hash = mcp::auth::detail::sha256(pair.code_verifier);
-    auto expected_challenge = mcp::auth::detail::base64url_encode(hash.data(), hash.size());
-    EXPECT_EQ(pair.code_challenge, expected_challenge);
+    const auto hash = mcp::detail::sha256(pair.code_verifier);
+    EXPECT_EQ(pair.code_challenge, mcp::detail::base64url_encode(mcp::detail::digest_bytes(hash)));
 }
 
 TEST(AuthPkceTest, RejectsInvalidLength) {

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../../src/detail/base64_decode.hpp"
+#include "../../src/detail/encoding.hpp"
 
 #include <openssl/bio.h>
 #include <openssl/bn.h>
@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace mcp_test {
 
@@ -51,18 +52,8 @@ inline EVP_PKEY* shared_ec_key() {
 }
 
 /// Decodes a base64url segment of a compact JWS.
-inline std::string base64url_decode(std::string text) {
-    for (auto& character : text) {
-        if (character == '-') {
-            character = '+';
-        } else if (character == '_') {
-            character = '/';
-        }
-    }
-    while (text.size() % 4 != 0) {
-        text.push_back('=');
-    }
-    auto decoded = mcp::detail::base64_decode(text);
+inline std::string base64url_decode(std::string_view text) {
+    auto decoded = mcp::detail::base64url_decode(text);
     if (!decoded) {
         throw std::runtime_error("not base64url");
     }

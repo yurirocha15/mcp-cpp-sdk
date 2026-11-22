@@ -1,4 +1,4 @@
-#include <mcp/detail/regex.hpp>
+#include "../detail/regex.hpp"
 
 #include <algorithm>
 #include <cstdint>

@@ -13,6 +13,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "../../src/detail/encoding.hpp"
 #include "../support/spawn.hpp"
 
 #include <boost/asio/co_spawn.hpp>
@@ -127,10 +128,7 @@ std::string token_endpoint_url(unsigned short port) {
 
 /// The `client_secret_basic` header for credentials that need no encoding.
 std::string expected_basic_header(const std::string& client_id, const std::string& client_secret) {
-    const auto credentials = client_id + ":" + client_secret;
-    return "Basic " +
-           mcp::auth::detail::base64_encode(reinterpret_cast<const unsigned char*>(credentials.data()),
-                                            credentials.size());
+    return "Basic " + mcp::detail::base64_encode(client_id + ":" + client_secret);
 }
 
 /// Unwrap an `std::exception_ptr` captured from the exchange into its `what()` text.
@@ -219,9 +217,8 @@ TEST(AuthTokenEndpointAuthWireTest, ClientSecretPostPutsTheSecretOnlyInTheFormBo
     EXPECT_TRUE(outcome.recorded.authorization.empty());
 
     // The secret is present exactly once, as the `client_secret` form parameter.
-    EXPECT_NE(
-        outcome.recorded.body.find("client_secret=" + mcp::auth::detail::url_encode(client_secret)),
-        std::string::npos);
+    EXPECT_NE(outcome.recorded.body.find("client_secret=" + mcp::detail::percent_encode(client_secret)),
+              std::string::npos);
     EXPECT_EQ(outcome.recorded.target.find(client_secret), std::string::npos);
 }
 

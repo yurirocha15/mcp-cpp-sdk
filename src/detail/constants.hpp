@@ -25,26 +25,12 @@ inline constexpr std::string_view g_UNRESERVED_CHARS =
 inline constexpr std::string_view g_BASE64_ALPHABET =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-/// Bit positions and masks of the base64 six-bit groups.
-inline constexpr int g_SHIFT_4 = 4;
-
-inline constexpr int g_SHIFT_6 = 6;
-
-inline constexpr int g_SHIFT_8 = 8;
-
-inline constexpr int g_SHIFT_12 = 12;
-
-inline constexpr int g_SHIFT_16 = 16;
-
-inline constexpr int g_SHIFT_18 = 18;
-
-inline constexpr unsigned int g_MASK_0X3F = 0x3F;
-
-inline constexpr unsigned int g_MASK_0X0F = 0x0F;
-
 /// URL-safe base64 alphabet, with `-` and `_`.
 inline constexpr std::string_view g_BASE64URL_ALPHABET =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// Size of a SHA-256 digest, in bytes.
+inline constexpr std::size_t g_SHA256_DIGEST_LENGTH = 32;
 
 }  // namespace encoding
 
@@ -259,6 +245,16 @@ inline constexpr std::array<char, 0x80> g_ESCAPES = [] {
 }();
 
 }  // namespace json_dump
+
+/// Bounds of the JSON parsing helpers.
+namespace json_parse {
+
+/// The deepest nesting of arrays and objects parse_json_fast() reads itself, one recursion per
+/// level; a document nested this deep parses on a thread with a 256 KiB stack, also when built
+/// with AddressSanitizer. Deeper text is left to nlohmann::json, whose parser keeps its own stack.
+inline constexpr std::size_t g_MAX_FAST_DEPTH = 128;
+
+}  // namespace json_parse
 
 /// Unicode code point bounds of the regular expression engine.
 namespace regex {
@@ -480,5 +476,16 @@ namespace stdio_restart {
 inline constexpr std::string_view g_RENAMED_REQUEST_PREFIX = "mcp-cpp-sdk-restart-";
 
 }  // namespace stdio_restart
+
+/// Accounting constants of the serialized transport writer.
+namespace transport_writer {
+
+/// What queued_bytes() counts for each queued message besides its text: an allowance for the memory
+/// the queue holds per message (the shared text, the operation with its timer, the queue slot and
+/// the posted handler). A bound on queued_bytes() then bounds memory even when the messages are
+/// small.
+inline constexpr std::size_t g_QUEUED_MESSAGE_OVERHEAD = 512;
+
+}  // namespace transport_writer
 
 }  // namespace mcp::detail::constants

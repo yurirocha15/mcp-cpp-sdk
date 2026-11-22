@@ -309,9 +309,6 @@ inline constexpr std::size_t g_MIN_VERIFIER_LENGTH = 43;
 /// Longest PKCE code verifier, in characters (RFC 7636).
 inline constexpr std::size_t g_MAX_VERIFIER_LENGTH = 128;
 
-/// Size of a SHA-256 digest, in bytes.
-inline constexpr std::size_t g_SHA256_DIGEST_LENGTH = 32;
-
 /// Length of the PKCE code verifiers the client generates, in characters.
 inline constexpr std::size_t g_DEFAULT_VERIFIER_LENGTH = 64;
 
@@ -345,26 +342,5 @@ namespace http_server {
 inline constexpr std::size_t g_DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 
 }  // namespace http_server
-
-/// Bounds of the JSON parsing helpers.
-namespace json_parse {
-
-/// The deepest nesting of arrays and objects parse_json_fast() reads itself, one recursion per
-/// level; a document nested this deep parses on a thread with a 256 KiB stack, also when built
-/// with AddressSanitizer. Deeper text is left to nlohmann::json, whose parser keeps its own stack.
-inline constexpr std::size_t g_MAX_FAST_DEPTH = 128;
-
-}  // namespace json_parse
-
-/// Accounting constants of the serialized transport writer.
-namespace transport_writer {
-
-/// What queued_bytes() counts for each queued message besides its text: an allowance for the memory
-/// the queue holds per message (the shared text, the operation with its timer, the queue slot and
-/// the posted handler). A bound on queued_bytes() then bounds memory even when the messages are
-/// small.
-inline constexpr std::size_t g_QUEUED_MESSAGE_OVERHEAD = 512;
-
-}  // namespace transport_writer
 
 }  // namespace mcp::constants

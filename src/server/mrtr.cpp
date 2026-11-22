@@ -1,9 +1,9 @@
 #include "mrtr.hpp"
 
 #include "../detail/constants.hpp"
+#include "../detail/encoding.hpp"
 #include "../detail/spawn_awaitable.hpp"
 
-#include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
@@ -438,9 +438,7 @@ std::string mrtr_principal_digest(std::string_view principal) {
     if (principal.empty()) {
         return {};
     }
-    const auto digest = auth::detail::sha256(std::string(principal));
-    return sealed_state::base64url_encode(
-        {reinterpret_cast<const char*>(digest.data()), digest.size()});
+    return base64url_encode(digest_bytes(sha256(principal)));
 }
 
 std::string mrtr_seal_state(const sealed_state::Codec& codec, const MrtrSealedState& state) {
@@ -449,7 +447,7 @@ std::string mrtr_seal_state(const sealed_state::Codec& codec, const MrtrSealedSt
                                     {"e", state.expires_ms},
                                     {"p", state.principal_digest},
                                     {"m", state.method},
-                                    {"d", sealed_state::base64url_encode(state.params_digest)},
+                                    {"d", base64url_encode(state.params_digest)},
                                     {"r", state.round},
                                     {"k", state.asked},
                                     {"a", state.answers}};
@@ -473,7 +471,7 @@ std::optional<MrtrSealedState> mrtr_open_state(const sealed_state::Codec& codec,
         state.expires_ms = payload.at("e").get<std::int64_t>();
         state.principal_digest = payload.at("p").get<std::string>();
         state.method = payload.at("m").get<std::string>();
-        auto digest = sealed_state::base64url_decode(payload.at("d").get<std::string>());
+        auto digest = base64url_decode(payload.at("d").get<std::string>());
         if (!digest) {
             return std::nullopt;
         }
@@ -501,8 +499,7 @@ std::string mrtr_params_digest(const nlohmann::json& params) {
     salient.erase("_meta");
     salient.erase("inputResponses");
     salient.erase("requestState");
-    const auto digest = auth::detail::sha256(mcp::detail::dump_json(salient));
-    return {reinterpret_cast<const char*>(digest.data()), digest.size()};
+    return std::string(digest_bytes(sha256(dump_json(salient))));
 }
 
 }  // namespace mcp::detail

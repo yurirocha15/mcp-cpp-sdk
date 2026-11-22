@@ -42,6 +42,7 @@
 // Reach-in for retained-state assertions; see the header. Not a public SDK header.
 #include "../../src/auth/oauth_internal.hpp"
 #include "../../src/detail/constants.hpp"
+#include "../../src/detail/encoding.hpp"
 #include "../support/hang_guard.hpp"
 #include "../support/resolve_gate.hpp"
 #include "../support/socket_gate.hpp"
@@ -301,7 +302,7 @@ TEST(AuthAuthorizationManagerTest, CompletesChallengeDiscoveryAuthorizeAndTokenE
     EXPECT_NE(fixture.authorization_url.find("code_challenge="), std::string::npos);
     EXPECT_NE(fixture.authorization_url.find("response_type=code"), std::string::npos);
     EXPECT_EQ(query_value(fixture.authorization_url, "resource"),
-              mcp::auth::detail::url_encode(base + "/mcp"));
+              mcp::detail::percent_encode(base + "/mcp"));
 
     const auto& token_body = server.bodies()[2];
     EXPECT_NE(token_body.find("grant_type=authorization_code"), std::string::npos);
@@ -4928,8 +4929,7 @@ InjectedSecretOutcome try_injected_secret(
         // the base64 Authorization header under client_secret_basic; check both spellings so
         // this cannot pass merely because the auth method changed.
         const std::string basic_credentials = "application-held-client:" + std::string(secret);
-        const auto basic_header = mcp::auth::detail::base64_encode(
-            reinterpret_cast<const unsigned char*>(basic_credentials.data()), basic_credentials.size());
+        const auto basic_header = mcp::detail::base64_encode(basic_credentials);
         const auto contains_secret = [&](const std::vector<std::string>& recorded) {
             return std::any_of(recorded.begin(), recorded.end(), [&](const std::string& value) {
                 return value.find(secret) != std::string::npos ||
