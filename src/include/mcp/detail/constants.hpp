@@ -108,6 +108,15 @@ inline constexpr std::size_t g_MAX_READ_AHEAD = 64 * 1024;
 
 }  // namespace modern_exchange
 
+/// Memory for the requests an HTTP server reads.
+namespace http_request {
+
+/// Bytes each connection keeps for the header fields of the request it reads; a larger header
+/// takes heap memory past them.
+inline constexpr std::size_t g_HEADER_ARENA_BYTES = 4096;
+
+}  // namespace http_request
+
 /// Descriptors, buffer sizes and limits of the stdio transport.
 namespace stdio {
 

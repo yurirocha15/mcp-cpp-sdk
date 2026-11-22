@@ -2,6 +2,7 @@
 
 #include "mcp/detail/net/connection.hpp"
 #include "mcp/detail/transport/http_response_write.hpp"
+#include "mcp/detail/transport/incoming_request.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/transport/http_beast.hpp>
@@ -25,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -153,27 +155,21 @@ struct ArrivingStringBody {
     };
 };
 
-using RequestParser = boost::beast::http::request_parser<ArrivingStringBody>;
+/// Reads a request whose fields are allocated from a HeaderArena.
+using RequestParser = boost::beast::http::request_parser<ArrivingStringBody, ArenaAllocator<char>>;
 
-/// A request's start line and fields without its body. The checks made before the body is read
-/// take the parser's own, so a request is not copied to be checked.
-using RequestHead = boost::beast::http::request_header<>;
-
-/// Whether the request with @p head asks to keep its connection open, by the rule
-/// message::keep_alive() applies, which Beast does not offer for a header alone.
-inline bool keeps_alive(const RequestHead& head) {
-    namespace http = boost::beast::http;
-    const auto connection = head.find(http::field::connection);
-    if (head.version() < 11) {
-        return connection != head.end() && http::token_list{connection->value()}.exists("keep-alive");
-    }
-    return connection == head.end() || !http::token_list{connection->value()}.exists("close");
+/// A parser for the next request on a connection, its fields allocated from @p arena. Releases the
+/// arena first: the request read before it must be gone.
+inline RequestParser make_request_parser(HeaderArena& arena) {
+    arena.release();
+    return RequestParser(std::piecewise_construct, std::make_tuple(),
+                         std::make_tuple(ArenaAllocator<char>(arena)));
 }
 
 /// The request @p parser has read, moved out of it.
-inline StringRequest take_request(RequestParser& parser) {
+inline IncomingRequest take_request(RequestParser& parser) {
     auto request = parser.release();
-    return StringRequest(std::move(request.base()), std::move(request.body()));
+    return IncomingRequest(std::move(request.base()), std::move(request.body()));
 }
 
 /// Starts the deadline for reading one request and returns it, or clears it and returns nothing when

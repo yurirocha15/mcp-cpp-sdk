@@ -166,7 +166,7 @@ struct ModernStart {
 /// executor of @p start, and returns the exchange the connection writes the answer from. The
 /// answer becomes an SSE stream only if the client accepts one, the transport is not JSON-only and
 /// a notification arrives before the response.
-std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& request,
+std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& request,
                                                       nlohmann::json request_json,
                                                       std::string principal, const ModernStart& start,
                                                       ModernDispatchRef dispatch);
@@ -185,7 +185,8 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& reque
 ///
 /// @return Whether the connection may carry another request.
 Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& buffer,
-                                 const StringRequest& request, std::shared_ptr<ModernExchange> exchange,
+                                 const IncomingRequest& request,
+                                 std::shared_ptr<ModernExchange> exchange,
                                  bool& client_finished_sending, const ModernServing& serving,
                                  std::vector<char>& response_head);
 
