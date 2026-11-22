@@ -3063,21 +3063,10 @@ CallToolParams json_call_params(const std::string& name, const nlohmann::json& a
 
 }  // namespace
 
-Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments) {
-    // [gcc11-sso: not-a-coroutine]
-    return call_tool_with(json_call_params(name, arguments));
-}
-
 Task<CallToolResult> Client::call_tool(const std::string& name, const nlohmann::json& arguments,
                                        const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     return call_tool_with(json_call_params(name, arguments), request_options);
-}
-
-Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool(const std::string& name,
-                                                                  const nlohmann::json& arguments) {
-    // [gcc11-sso: not-a-coroutine]
-    return start_tool_with(json_call_params(name, arguments));
 }
 
 Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool(
@@ -3141,11 +3130,6 @@ Task<ConnectResult> Client::connect(const Implementation& client_info,
 }
 
 Task<nlohmann::json> Client::send_request(std::string_view method,
-                                          const std::optional<nlohmann::json>& params) {
-    return send_request(method, params, {});
-}
-
-Task<nlohmann::json> Client::send_request(std::string_view method,
                                           const std::optional<nlohmann::json>& params,
                                           const RequestOptions& request_options) {
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
@@ -3153,10 +3137,6 @@ Task<nlohmann::json> Client::send_request(std::string_view method,
                        "Client must connect before sending requests");
     }
     return Impl::request(impl_, method, params, request_options);
-}
-
-Task<Subscription> Client::listen(const SubscriptionFilter& filter) {
-    return listen(filter, RequestOptions{});
 }
 
 Task<Subscription> Client::listen(const SubscriptionFilter& filter,
@@ -3194,20 +3174,12 @@ void Client::close() {
     }
 }
 
-Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor) {
-    return list_tools(cursor, RequestOptions{});
-}
-
 Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& cursor,
                                          const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     return Impl::accepted_tools(
         impl_, parse_result<ListToolsResult>(Impl::cacheable_request(
                    impl_, "tools/list", make_paginated_params(cursor), request_options)));
-}
-
-Task<CallToolResult> Client::call_tool_with(CallToolParams params) {
-    return call_tool_with(std::move(params), RequestOptions{});
 }
 
 Task<CallToolResult> Client::call_tool_with(CallToolParams params,
@@ -3225,10 +3197,6 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params,
     return checked_call_result(
         send_request("tools/call", nlohmann::json(std::move(params)), request_options),
         std::move(check));
-}
-
-Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(CallToolParams params) {
-    return start_tool_with(std::move(params), RequestOptions{});
 }
 
 Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(
@@ -3312,18 +3280,10 @@ Task<CallToolResult> TaskHandle::result(const RequestOptions& request_options) c
     return task_result(std::move(finished), std::move(check));
 }
 
-Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor) {
-    return list_resources(cursor, RequestOptions{});
-}
-
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor,
                                                  const RequestOptions& request_options) {
     return parse_result<ListResourcesResult>(Impl::cacheable_request(
         impl_, "resources/list", make_paginated_params(cursor), request_options));
-}
-
-Task<ReadResourceResult> Client::read_resource(const std::string& uri) {
-    return read_resource(uri, RequestOptions{});
 }
 
 Task<ReadResourceResult> Client::read_resource(const std::string& uri,
@@ -3335,29 +3295,15 @@ Task<ReadResourceResult> Client::read_resource(const std::string& uri,
 }
 
 Task<ListResourceTemplatesResult> Client::list_resource_templates(
-    const std::optional<std::string>& cursor) {
-    return list_resource_templates(cursor, RequestOptions{});
-}
-
-Task<ListResourceTemplatesResult> Client::list_resource_templates(
     const std::optional<std::string>& cursor, const RequestOptions& request_options) {
     return parse_result<ListResourceTemplatesResult>(Impl::cacheable_request(
         impl_, "resources/templates/list", make_paginated_params(cursor), request_options));
-}
-
-Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor) {
-    return list_prompts(cursor, RequestOptions{});
 }
 
 Task<ListPromptsResult> Client::list_prompts(const std::optional<std::string>& cursor,
                                              const RequestOptions& request_options) {
     return parse_result<ListPromptsResult>(
         Impl::cacheable_request(impl_, "prompts/list", make_paginated_params(cursor), request_options));
-}
-
-Task<GetPromptResult> Client::get_prompt(const std::string& name,
-                                         const std::map<std::string, std::string>& arguments) {
-    return get_prompt(name, arguments, RequestOptions{});
 }
 
 Task<GetPromptResult> Client::get_prompt(const std::string& name,
@@ -3370,10 +3316,6 @@ Task<GetPromptResult> Client::get_prompt(const std::string& name,
     }
     return parse_result<GetPromptResult>(
         send_request("prompts/get", nlohmann::json(std::move(params)), request_options));
-}
-
-Task<CompleteResult> Client::complete(const CompleteParams& params) {
-    return complete(params, RequestOptions{});
 }
 
 Task<CompleteResult> Client::complete(const CompleteParams& params,
@@ -3605,22 +3547,11 @@ ConnectResult SyncClient::connect(const Implementation& client_info,
 }
 
 nlohmann::json SyncClient::send_request(std::string_view method,
-                                        const std::optional<nlohmann::json>& params) {
-    return detail::run_blocking<nlohmann::json>(client_->impl_->blocking_loop,
-                                                [&] { return client_->send_request(method, params); });
-}
-
-nlohmann::json SyncClient::send_request(std::string_view method,
                                         const std::optional<nlohmann::json>& params,
                                         const RequestOptions& request_options) {
     return detail::run_blocking<nlohmann::json>(client_->impl_->blocking_loop, [&] {
         return client_->send_request(method, params, request_options);
     });
-}
-
-Subscription SyncClient::listen(const SubscriptionFilter& filter) {
-    return detail::run_blocking<Subscription>(client_->impl_->blocking_loop,
-                                              [&] { return client_->listen(filter); });
 }
 
 Subscription SyncClient::listen(const SubscriptionFilter& filter,
@@ -3637,22 +3568,11 @@ void SyncClient::send_notification(std::string_view method,
 
 void SyncClient::close() { client_->close(); }
 
-CallToolResult SyncClient::call_tool(const std::string& name, const nlohmann::json& arguments) {
-    return detail::run_blocking<CallToolResult>(client_->impl_->blocking_loop,
-                                                [&] { return client_->call_tool(name, arguments); });
-}
-
 CallToolResult SyncClient::call_tool(const std::string& name, const nlohmann::json& arguments,
                                      const RequestOptions& request_options) {
     return detail::run_blocking<CallToolResult>(client_->impl_->blocking_loop, [&] {
         return client_->call_tool(name, arguments, request_options);
     });
-}
-
-std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::string& name,
-                                                                const nlohmann::json& arguments) {
-    return detail::run_blocking<std::variant<CallToolResult, TaskHandle>>(
-        client_->impl_->blocking_loop, [&] { return client_->start_tool(name, arguments); });
 }
 
 std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::string& name,
@@ -3663,20 +3583,10 @@ std::variant<CallToolResult, TaskHandle> SyncClient::start_tool(const std::strin
         [&] { return client_->start_tool(name, arguments, request_options); });
 }
 
-ListToolsResult SyncClient::list_tools(const std::optional<std::string>& cursor) {
-    return detail::run_blocking<ListToolsResult>(client_->impl_->blocking_loop,
-                                                 [&] { return client_->list_tools(cursor); });
-}
-
 ListToolsResult SyncClient::list_tools(const std::optional<std::string>& cursor,
                                        const RequestOptions& request_options) {
     return detail::run_blocking<ListToolsResult>(
         client_->impl_->blocking_loop, [&] { return client_->list_tools(cursor, request_options); });
-}
-
-ListResourcesResult SyncClient::list_resources(const std::optional<std::string>& cursor) {
-    return detail::run_blocking<ListResourcesResult>(client_->impl_->blocking_loop,
-                                                     [&] { return client_->list_resources(cursor); });
 }
 
 ListResourcesResult SyncClient::list_resources(const std::optional<std::string>& cursor,
@@ -3686,21 +3596,10 @@ ListResourcesResult SyncClient::list_resources(const std::optional<std::string>&
     });
 }
 
-ReadResourceResult SyncClient::read_resource(const std::string& uri) {
-    return detail::run_blocking<ReadResourceResult>(client_->impl_->blocking_loop,
-                                                    [&] { return client_->read_resource(uri); });
-}
-
 ReadResourceResult SyncClient::read_resource(const std::string& uri,
                                              const RequestOptions& request_options) {
     return detail::run_blocking<ReadResourceResult>(
         client_->impl_->blocking_loop, [&] { return client_->read_resource(uri, request_options); });
-}
-
-ListResourceTemplatesResult SyncClient::list_resource_templates(
-    const std::optional<std::string>& cursor) {
-    return detail::run_blocking<ListResourceTemplatesResult>(
-        client_->impl_->blocking_loop, [&] { return client_->list_resource_templates(cursor); });
 }
 
 ListResourceTemplatesResult SyncClient::list_resource_templates(
@@ -3710,21 +3609,10 @@ ListResourceTemplatesResult SyncClient::list_resource_templates(
     });
 }
 
-ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cursor) {
-    return detail::run_blocking<ListPromptsResult>(client_->impl_->blocking_loop,
-                                                   [&] { return client_->list_prompts(cursor); });
-}
-
 ListPromptsResult SyncClient::list_prompts(const std::optional<std::string>& cursor,
                                            const RequestOptions& request_options) {
     return detail::run_blocking<ListPromptsResult>(
         client_->impl_->blocking_loop, [&] { return client_->list_prompts(cursor, request_options); });
-}
-
-GetPromptResult SyncClient::get_prompt(const std::string& name,
-                                       const std::map<std::string, std::string>& arguments) {
-    return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop,
-                                                 [&] { return client_->get_prompt(name, arguments); });
 }
 
 GetPromptResult SyncClient::get_prompt(const std::string& name,
@@ -3733,11 +3621,6 @@ GetPromptResult SyncClient::get_prompt(const std::string& name,
     return detail::run_blocking<GetPromptResult>(client_->impl_->blocking_loop, [&] {
         return client_->get_prompt(name, arguments, request_options);
     });
-}
-
-CompleteResult SyncClient::complete(const CompleteParams& params) {
-    return detail::run_blocking<CompleteResult>(client_->impl_->blocking_loop,
-                                                [&] { return client_->complete(params); });
 }
 
 CompleteResult SyncClient::complete(const CompleteParams& params,

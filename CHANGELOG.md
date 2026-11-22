@@ -71,6 +71,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Context::sample_llm()` refuses an `includeContext` other than "none" for a client that did not declare `sampling.context`.
 - An OAuth metadata discovery that finds no document says in its error why each well-known URL it tried failed.
 - `RequestContext` is declared in `<mcp/transport/request_context.hpp>`, and the transport, auth and `Context` headers no longer include server or transport headers they do not use.
+- Each `Client` call and its `Client::sync()` twin take `RequestOptions` as a last parameter that defaults to none, in place of a second overload.
 - `create_memory_transport_pair()` is named `make_memory_transport_pair()`, like the other factory functions.
 
 ### Removed

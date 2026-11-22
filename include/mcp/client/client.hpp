@@ -825,19 +825,14 @@ class MCP_API Client {
      *
      * @param method JSON-RPC method name.
      * @param params Optional parameters for the request.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the result JSON object.
      * @throws McpError If the peer returns an error response or the request times out.
      */
     // [gcc11-sso: string_view]
     Task<nlohmann::json> send_request(std::string_view method,
-                                      const std::optional<nlohmann::json>& params);
-
-    /**
-     * @brief Send a JSON-RPC request with per-request runtime options.
-     */
-    Task<nlohmann::json> send_request(std::string_view method,
                                       const std::optional<nlohmann::json>& params,
-                                      const RequestOptions& request_options);
+                                      const RequestOptions& request_options = {});
 
     /**
      * @brief Open a subscriptions/listen stream (protocol revision 2026-07-28 and later).
@@ -851,6 +846,8 @@ class MCP_API Client {
      * The handlers registered with on_notification() still run for these notifications as well.
      *
      * @param filter The notification types wanted.
+     * @param request_options Per-request options; RequestOptions::timeout bounds the wait for the
+     *        acknowledgment.
      * @return A task that resolves to the open stream.
      * @throws McpError mcp::constants::jsonrpc::g_METHOD_NOT_FOUND when the session is not modern (a
      * legacy session, or connect() has not finished), mcp::constants::jsonrpc::g_INVALID_REQUEST before
@@ -859,10 +856,8 @@ class MCP_API Client {
      * error (for example mcp::constants::jsonrpc::g_INVALID_PARAMS for a malformed filter,
      * mcp::constants::jsonrpc::g_METHOD_NOT_FOUND for a server or transport without streams).
      */
-    Task<Subscription> listen(const SubscriptionFilter& filter);
-
-    /** @brief As above, with a per-request deadline for the acknowledgment. */
-    Task<Subscription> listen(const SubscriptionFilter& filter, const RequestOptions& request_options);
+    Task<Subscription> listen(const SubscriptionFilter& filter,
+                              const RequestOptions& request_options = {});
 
     /**
      * @brief Send a JSON-RPC notification (no response expected).
@@ -902,18 +897,21 @@ class MCP_API Client {
      * @tparam Args A JsonSerializable type for the tool arguments.
      * @param name The name of the tool to call.
      * @param arguments The arguments to pass to the tool.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's CallToolResult.
      * @throws StructuredContentError when the result's `structuredContent` does not conform to
      *         the tool's output schema (see ClientOptions::validate_tool_schemas).
+     * @throws McpError with mcp::constants::jsonrpc::g_REQUEST_CANCELLED for a cancelled call.
      */
     template <JsonSerializable Args, typename Self = Client>
         requires(!std::same_as<Args, nlohmann::json>)
-    auto call_tool(const std::string& name, const Args& arguments) {
+    auto call_tool(const std::string& name, const Args& arguments,
+                   const RequestOptions& request_options = {}) {
         // [gcc11-sso: not-a-coroutine]
         CallToolParams call_params;
         call_params.name = name;
         call_params.arguments = nlohmann::json(arguments);
-        return static_cast<Self*>(this)->call_tool_with(std::move(call_params));
+        return static_cast<Self*>(this)->call_tool_with(std::move(call_params), request_options);
     }
 
     /**
@@ -924,32 +922,8 @@ class MCP_API Client {
      * `nlohmann::json arguments{{"a", 1}, {"b", 2}}; co_await client.call_tool("add", arguments);`:
      * GCC 12 and 13 crash on a braced list inside a co_await (see the README's compiler notes).
      */
-    Task<CallToolResult> call_tool(const std::string& name, const nlohmann::json& arguments);
-
-    /**
-     * @brief Call a tool with per-request options, such as a deadline or a CancellationToken.
-     *
-     * @details As call_tool() above. A cancelled call throws McpError with
-     * mcp::constants::jsonrpc::g_REQUEST_CANCELLED.
-     */
-    template <JsonSerializable Args, typename Self = Client>
-        requires(!std::same_as<Args, nlohmann::json>)
-    auto call_tool(const std::string& name, const Args& arguments,
-                   const RequestOptions& request_options) {
-        // [gcc11-sso: not-a-coroutine]
-        CallToolParams call_params;
-        call_params.name = name;
-        call_params.arguments = nlohmann::json(arguments);
-        return static_cast<Self*>(this)->call_tool_with(std::move(call_params), request_options);
-    }
-
-    /**
-     * @brief Call a tool with JSON arguments and per-request options.
-     *
-     * @details As call_tool() above.
-     */
     Task<CallToolResult> call_tool(const std::string& name, const nlohmann::json& arguments,
-                                   const RequestOptions& request_options);
+                                   const RequestOptions& request_options = {});
 
     /**
      * @brief Call a tool, taking a task if the server starts one (protocol revision 2026-07-28).
@@ -958,29 +932,15 @@ class MCP_API Client {
      * to. The server decides whether the call becomes a task.
      *
      * @tparam Args A JsonSerializable type for the tool arguments.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return The tool's result when the server ran the call to its end, or a TaskHandle when it
      *         answered with a task. A legacy session always gets the result.
      * @throws StructuredContentError as call_tool() does for a result.
      */
     template <JsonSerializable Args, typename Self = Client>
         requires(!std::same_as<Args, nlohmann::json>)
-    auto start_tool(const std::string& name, const Args& arguments) {
-        // [gcc11-sso: not-a-coroutine]
-        CallToolParams call_params;
-        call_params.name = name;
-        call_params.arguments = nlohmann::json(arguments);
-        return static_cast<Self*>(this)->start_tool_with(std::move(call_params));
-    }
-
-    /**
-     * @brief Start a tool call with per-request options.
-     *
-     * @details As start_tool() above.
-     */
-    template <JsonSerializable Args, typename Self = Client>
-        requires(!std::same_as<Args, nlohmann::json>)
     auto start_tool(const std::string& name, const Args& arguments,
-                    const RequestOptions& request_options) {
+                    const RequestOptions& request_options = {}) {
         // [gcc11-sso: not-a-coroutine]
         CallToolParams call_params;
         call_params.name = name;
@@ -993,13 +953,9 @@ class MCP_API Client {
      *
      * @details As start_tool() above, with the arguments as call_tool() takes JSON ones.
      */
-    Task<std::variant<CallToolResult, TaskHandle>> start_tool(const std::string& name,
-                                                              const nlohmann::json& arguments);
-
-    /// As start_tool() above, with per-request options.
-    Task<std::variant<CallToolResult, TaskHandle>> start_tool(const std::string& name,
-                                                              const nlohmann::json& arguments,
-                                                              const RequestOptions& request_options);
+    Task<std::variant<CallToolResult, TaskHandle>> start_tool(
+        const std::string& name, const nlohmann::json& arguments,
+        const RequestOptions& request_options = {});
 
     /**
      * @brief A handle to a task by its id, for a task started earlier.
@@ -1015,62 +971,52 @@ class MCP_API Client {
      * Tools whose schemas cannot be used are left out (see ClientOptions::validate_tool_schemas).
      *
      * @param cursor Optional pagination cursor.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's ListToolsResult.
      */
-    Task<ListToolsResult> list_tools(const std::optional<std::string>& cursor = std::nullopt);
-
-    /// @brief As list_tools() above, with per-request options.
-    Task<ListToolsResult> list_tools(const std::optional<std::string>& cursor,
-                                     const RequestOptions& request_options);
+    Task<ListToolsResult> list_tools(const std::optional<std::string>& cursor = std::nullopt,
+                                     const RequestOptions& request_options = {});
 
     /**
      * @brief List available resources from the server.
      *
      * @param cursor Optional pagination cursor.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's ListResourcesResult.
      */
-    Task<ListResourcesResult> list_resources(const std::optional<std::string>& cursor = std::nullopt);
-
-    /// @brief As list_resources() above, with per-request options.
-    Task<ListResourcesResult> list_resources(const std::optional<std::string>& cursor,
-                                             const RequestOptions& request_options);
+    Task<ListResourcesResult> list_resources(const std::optional<std::string>& cursor = std::nullopt,
+                                             const RequestOptions& request_options = {});
 
     /**
      * @brief Read a resource from the server by URI.
      *
      * @param uri The URI of the resource to read.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's ReadResourceResult.
      */
-    Task<ReadResourceResult> read_resource(const std::string& uri);
-
-    /// @brief As read_resource() above, with per-request options.
     Task<ReadResourceResult> read_resource(const std::string& uri,
-                                           const RequestOptions& request_options);
+                                           const RequestOptions& request_options = {});
 
     /**
      * @brief List available resource templates from the server.
      *
      * @param cursor Optional pagination cursor.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's ListResourceTemplatesResult.
      */
     Task<ListResourceTemplatesResult> list_resource_templates(
-        const std::optional<std::string>& cursor = std::nullopt);
-
-    /// @brief As list_resource_templates() above, with per-request options.
-    Task<ListResourceTemplatesResult> list_resource_templates(const std::optional<std::string>& cursor,
-                                                              const RequestOptions& request_options);
+        const std::optional<std::string>& cursor = std::nullopt,
+        const RequestOptions& request_options = {});
 
     /**
      * @brief List available prompts from the server.
      *
      * @param cursor Optional pagination cursor.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's ListPromptsResult.
      */
-    Task<ListPromptsResult> list_prompts(const std::optional<std::string>& cursor = std::nullopt);
-
-    /// @brief As list_prompts() above, with per-request options.
-    Task<ListPromptsResult> list_prompts(const std::optional<std::string>& cursor,
-                                         const RequestOptions& request_options);
+    Task<ListPromptsResult> list_prompts(const std::optional<std::string>& cursor = std::nullopt,
+                                         const RequestOptions& request_options = {});
 
     /**
      * @brief Get a specific prompt from the server.
@@ -1079,26 +1025,22 @@ class MCP_API Client {
      * @param arguments The arguments that fill in the prompt, by name; the request carries none
      *        when the map is empty. As for call_tool(), build them in a variable before the
      *        co_await.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's GetPromptResult.
      */
     Task<GetPromptResult> get_prompt(const std::string& name,
-                                     const std::map<std::string, std::string>& arguments = {});
-
-    /// @brief As get_prompt() above, with per-request options.
-    Task<GetPromptResult> get_prompt(const std::string& name,
-                                     const std::map<std::string, std::string>& arguments,
-                                     const RequestOptions& request_options);
+                                     const std::map<std::string, std::string>& arguments = {},
+                                     const RequestOptions& request_options = {});
 
     /**
      * @brief Request completions from the server.
      *
      * @param params The completion parameters.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
      * @return A task that resolves to the server's CompleteResult.
      */
-    Task<CompleteResult> complete(const CompleteParams& params);
-
-    /// @brief As complete() above, with per-request options.
-    Task<CompleteResult> complete(const CompleteParams& params, const RequestOptions& request_options);
+    Task<CompleteResult> complete(const CompleteParams& params,
+                                  const RequestOptions& request_options = {});
 
     /**
      * @brief Send a ping request to the connected server.
@@ -1223,11 +1165,10 @@ class MCP_API Client {
     friend class SyncClient;
     friend class TaskHandle;
 
-    Task<CallToolResult> call_tool_with(CallToolParams params);
-    Task<CallToolResult> call_tool_with(CallToolParams params, const RequestOptions& request_options);
-    Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(CallToolParams params);
+    Task<CallToolResult> call_tool_with(CallToolParams params,
+                                        const RequestOptions& request_options = {});
     Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(
-        CallToolParams params, const RequestOptions& request_options);
+        CallToolParams params, const RequestOptions& request_options = {});
 
     void start(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options);
 
@@ -1296,81 +1237,52 @@ class MCP_API SyncClient {
     /// As Client::connect().
     ConnectResult connect(const Implementation& client_info, const ClientCapabilities& capabilities);
     /// As Client::send_request().
-    nlohmann::json send_request(std::string_view method, const std::optional<nlohmann::json>& params);
-    /// As Client::send_request().
     nlohmann::json send_request(std::string_view method, const std::optional<nlohmann::json>& params,
-                                const RequestOptions& request_options);
+                                const RequestOptions& request_options = {});
     /// As Client::listen(); read the stream through Subscription::sync().
-    Subscription listen(const SubscriptionFilter& filter);
-    /// As Client::listen().
-    Subscription listen(const SubscriptionFilter& filter, const RequestOptions& request_options);
+    Subscription listen(const SubscriptionFilter& filter, const RequestOptions& request_options = {});
     /// As Client::send_notification().
     void send_notification(std::string_view method, const std::optional<nlohmann::json>& params);
     /// As Client::close().
     void close();
 
     /// As Client::call_tool().
-    CallToolResult call_tool(const std::string& name, const nlohmann::json& arguments);
-    /// As Client::call_tool().
     CallToolResult call_tool(const std::string& name, const nlohmann::json& arguments,
-                             const RequestOptions& request_options);
-    /// As Client::call_tool(), with arguments of a type that converts to JSON.
-    template <JsonSerializable Args>
-        requires(!std::same_as<Args, nlohmann::json>)
-    CallToolResult call_tool(const std::string& name, const Args& arguments) {
-        return call_tool(name, nlohmann::json(arguments));
-    }
+                             const RequestOptions& request_options = {});
     /// As Client::call_tool(), with arguments of a type that converts to JSON.
     template <JsonSerializable Args>
         requires(!std::same_as<Args, nlohmann::json>)
     CallToolResult call_tool(const std::string& name, const Args& arguments,
-                             const RequestOptions& request_options) {
+                             const RequestOptions& request_options = {}) {
         return call_tool(name, nlohmann::json(arguments), request_options);
     }
     /// As Client::start_tool(); follow a task through TaskHandle::sync().
     std::variant<CallToolResult, TaskHandle> start_tool(const std::string& name,
-                                                        const nlohmann::json& arguments);
-    /// As Client::start_tool().
-    std::variant<CallToolResult, TaskHandle> start_tool(const std::string& name,
                                                         const nlohmann::json& arguments,
-                                                        const RequestOptions& request_options);
+                                                        const RequestOptions& request_options = {});
 
     /// As Client::list_tools().
-    ListToolsResult list_tools(const std::optional<std::string>& cursor = std::nullopt);
-    /// As Client::list_tools().
-    ListToolsResult list_tools(const std::optional<std::string>& cursor,
-                               const RequestOptions& request_options);
+    ListToolsResult list_tools(const std::optional<std::string>& cursor = std::nullopt,
+                               const RequestOptions& request_options = {});
     /// As Client::list_resources().
-    ListResourcesResult list_resources(const std::optional<std::string>& cursor = std::nullopt);
-    /// As Client::list_resources().
-    ListResourcesResult list_resources(const std::optional<std::string>& cursor,
-                                       const RequestOptions& request_options);
+    ListResourcesResult list_resources(const std::optional<std::string>& cursor = std::nullopt,
+                                       const RequestOptions& request_options = {});
     /// As Client::read_resource().
-    ReadResourceResult read_resource(const std::string& uri);
-    /// As Client::read_resource().
-    ReadResourceResult read_resource(const std::string& uri, const RequestOptions& request_options);
+    ReadResourceResult read_resource(const std::string& uri,
+                                     const RequestOptions& request_options = {});
     /// As Client::list_resource_templates().
     ListResourceTemplatesResult list_resource_templates(
-        const std::optional<std::string>& cursor = std::nullopt);
-    /// As Client::list_resource_templates().
-    ListResourceTemplatesResult list_resource_templates(const std::optional<std::string>& cursor,
-                                                        const RequestOptions& request_options);
+        const std::optional<std::string>& cursor = std::nullopt,
+        const RequestOptions& request_options = {});
     /// As Client::list_prompts().
-    ListPromptsResult list_prompts(const std::optional<std::string>& cursor = std::nullopt);
-    /// As Client::list_prompts().
-    ListPromptsResult list_prompts(const std::optional<std::string>& cursor,
-                                   const RequestOptions& request_options);
+    ListPromptsResult list_prompts(const std::optional<std::string>& cursor = std::nullopt,
+                                   const RequestOptions& request_options = {});
     /// As Client::get_prompt().
     GetPromptResult get_prompt(const std::string& name,
-                               const std::map<std::string, std::string>& arguments = {});
-    /// As Client::get_prompt().
-    GetPromptResult get_prompt(const std::string& name,
-                               const std::map<std::string, std::string>& arguments,
-                               const RequestOptions& request_options);
+                               const std::map<std::string, std::string>& arguments = {},
+                               const RequestOptions& request_options = {});
     /// As Client::complete().
-    CompleteResult complete(const CompleteParams& params);
-    /// As Client::complete().
-    CompleteResult complete(const CompleteParams& params, const RequestOptions& request_options);
+    CompleteResult complete(const CompleteParams& params, const RequestOptions& request_options = {});
     /// As Client::ping().
     void ping();
     /// As Client::cancel().
