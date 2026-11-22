@@ -247,13 +247,6 @@ class RedisClient {
         return values;
     }
 
-    std::int64_t integer(const std::vector<std::string>& args) const {
-        Reply reply = command(args);
-        return reply.value && reply.value->type == REDIS_REPLY_INTEGER ? reply.value->integer : 0;
-    }
-
-    void discard(const std::vector<std::string>& args) const { (void)command(args); }
-
     /// Sends @p commands in one round trip and returns the integer reply of the first.
     std::int64_t pipeline_first_integer(const std::vector<std::vector<std::string>>& commands) const {
         Lease connection{*this, acquire()};

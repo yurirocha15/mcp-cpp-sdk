@@ -379,8 +379,8 @@ class AsyncWorkload::Impl {
         std::string product_path = "/products/" + std::to_string(product_id);
         auto fetched =
             co_await (redis_.string_array(std::move(lrange)) && http_.get(std::move(product_path)));
-        auto& history = std::get<0>(fetched);
-        auto& product_body = std::get<1>(fetched);
+        const auto& history = std::get<0>(fetched);
+        const auto& product_body = std::get<1>(fetched);
         (void)product_body;
         Json recent = recent_history(history);
         Json result = {

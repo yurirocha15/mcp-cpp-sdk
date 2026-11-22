@@ -189,7 +189,6 @@ class SBDebugger {
     bool IsValid() const { return true; }
     SBCommandInterpreter GetCommandInterpreter() const { return {}; }
     SBTarget CreateTarget(const char*) const { return {}; }
-    SBListener GetListener() const { return {}; }
     unsigned int GetNumTargets() const { return 0; }
     SBTarget GetTargetAtIndex(unsigned int) const { return {}; }
 };
