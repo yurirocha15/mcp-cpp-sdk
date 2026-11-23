@@ -648,7 +648,6 @@ TEST_F(LegacyStreamTest, SessionManagerResumesAStreamTheClientLeft) {
     EXPECT_EQ(text_of(result), "done-r") << result;
 }
 
-// HttpServerTransport streams the answer to a POST the same way.
 // A response that comes while the stream writes is sent once the write ends, not held until the
 // next keep-alive comment.
 TEST_F(LegacyStreamTest, SessionManagerSendsWhatCameWhileItWrote) {
@@ -665,6 +664,7 @@ TEST_F(LegacyStreamTest, SessionManagerSendsWhatCameWhileItWrote) {
     expect_log_then_result(flooded);
 }
 
+// HttpServerTransport streams the answer to a POST the same way.
 TEST_F(LegacyStreamTest, HttpServerTransportSendsTheServersRequestWhileTheToolWaits) {
     auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = transport->port();

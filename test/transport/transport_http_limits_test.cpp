@@ -372,15 +372,23 @@ TEST(SessionLimitsThreadsTest, ConcurrentInitializesStayWithinTheLimit) {
 
 TEST_F(SessionLimitsTest, InitializeThatFailsKeepsNoSession) {
     std::size_t after_bad_params = 1;
+    std::size_t after_numeric_version = 1;
     std::size_t after_notification = 1;
+    Reply numeric_version;
     Reply notification;
     run([&]() -> mcp::Task<void> {
         co_await post_only(bad_initialize());
         after_bad_params = manager_.session_count();
+        auto initialize = make_initialize_request("1");
+        initialize["params"]["protocolVersion"] = 20251125;
+        numeric_version = co_await post(initialize);
+        after_numeric_version = manager_.session_count();
         notification = co_await post(initialize_notification());
         after_notification = manager_.session_count();
     });
     EXPECT_EQ(after_bad_params, 0u);
+    EXPECT_NE(numeric_version.body.find("\"error\""), std::string::npos) << numeric_version.body;
+    EXPECT_EQ(after_numeric_version, 0u);
     EXPECT_EQ(after_notification, 0u);
     EXPECT_EQ(notification.status, 400u);
 }
