@@ -47,6 +47,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::add_raw_tool()` takes any coroutine JSON handler, with or without the request's `Context`.
 - `set_custom_request_handler()` is a free function in `<mcp/transport/http_beast.hpp>`, where `StringRequest` and `StringResponse` moved from `http_types.hpp`.
 - `ITransport` and `auth::Authenticator` are exported from the library.
+- The OAuth, client and server types have headers of their own, such as `<mcp/client/subscription.hpp>`; `<mcp/auth/oauth.hpp>`, `<mcp/client/client.hpp>` and `<mcp/server/server.hpp>` include them all.
 - `Client::get_prompt()` and its blocking twin take the arguments as a `std::map`, empty for none, so `{{"name", "Ada"}}` is accepted.
 - A `Client` call whose transport fails throws `McpError` (`g_CONNECTION_CLOSED`), with an HTTP status in `data()` and the transport's exception nested unless a response stream broke off.
 - `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
