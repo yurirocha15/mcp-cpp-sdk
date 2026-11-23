@@ -23,7 +23,10 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace auth_client_credentials_test {
 
@@ -226,6 +229,43 @@ TEST(ClientCredentialsTest, ARefusedProtectedResourceIsNeverFollowed) {
     EXPECT_TRUE(refused);
     // Only the resource document was fetched: no authorization server request, no credentials sent.
     EXPECT_EQ(fixture.server.targets().size(), 1U);
+}
+
+// RFC 9728 section 3.3: the resource a document names identifies the configured server when it is
+// that URL, or a prefix of it on the same origin that ends where a path segment of the server URL
+// ends. A query or fragment, a longer path, or a path that only shares characters with the
+// server's does not, and nothing the document names is fetched.
+TEST(ClientCredentialsTest, TheResourceIdentifiesTheServerOnlyByAWholePathPrefix) {
+    const std::vector<std::pair<std::string, bool>> cases = {
+        {"", true},
+        {"/", true},
+        {"/mcp/", true},
+        {"/mc", false},
+        {"/mcp/tools", false},
+        {"/other", false},
+        {"/mcp?tenant=1", false},
+        {"/mcp#top", false},
+    };
+    for (const auto& [path, identifies] : cases) {
+        SCOPED_TRACE(path);
+        Fixture fixture;
+        fixture.prm_override = {{"resource", fixture.base + path}};
+        fixture.serve(3);
+        bool handled = false;
+        std::string failure;
+        fixture.run(fixture.config(), [&](auto& authenticator, auto&) -> mcp::Task<void> {
+            try {
+                handled = co_await authenticator.try_handle_challenge(fixture.challenge());
+            } catch (const std::runtime_error& error) {
+                failure = error.what();
+            }
+        });
+        EXPECT_EQ(handled, identifies) << failure;
+        if (!identifies) {
+            EXPECT_NE(failure.find("does not identify"), std::string::npos) << failure;
+            EXPECT_EQ(fixture.server.targets().size(), 1U);
+        }
+    }
 }
 
 TEST(ClientCredentialsTest, AServerThatListsOtherGrantsOnlyIsRefusedBeforeAnyCredentialIsSent) {

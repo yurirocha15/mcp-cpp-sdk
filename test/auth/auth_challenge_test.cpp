@@ -9,6 +9,7 @@
 #include <mcp/auth/challenge.hpp>
 #include <mcp/auth/metadata_policy.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace auth_challenge_test {
@@ -132,6 +133,23 @@ TEST(AuthChallengeParserTest, DiscardsTrailingDamageAfterAnUnterminatedQuotedStr
     EXPECT_FALSE(challenges[0].realm.has_value());
 }
 
+TEST(AuthChallengeParserTest, ReadsErrorUriAndStopsWhereATokenIsMissing) {
+    const auto challenges = mcp::auth::parse_www_authenticate(
+        R"(Bearer error="invalid_token", error_uri="https://as.test/errors/1", =bad, scope="s")");
+    ASSERT_EQ(challenges.size(), 1U);
+    EXPECT_EQ(challenges[0].error, "invalid_token");
+    EXPECT_EQ(challenges[0].error_uri, "https://as.test/errors/1");
+    // Where a parameter name is required and none is written, the rest of the header is unreadable.
+    EXPECT_FALSE(challenges[0].scope.has_value());
+    EXPECT_EQ(challenges[0].parameters.size(), 2U);
+}
+
+TEST(AuthChallengeParserTest, AQuotedStringEndingInABackslashIsUnterminated) {
+    const auto challenges = mcp::auth::parse_www_authenticate("Bearer realm=\"r\\");
+    ASSERT_EQ(challenges.size(), 1U);
+    EXPECT_FALSE(challenges[0].realm.has_value());
+}
+
 TEST(AuthChallengeParserTest, SelectsTheFirstBearerChallenge) {
     const auto challenges = mcp::auth::parse_www_authenticate(
         R"(Basic realm="legacy", Bearer realm="one", Bearer realm="two")");
@@ -166,6 +184,17 @@ TEST(AuthAuthorizationResponseParseTest, IgnoresTheFragmentComponent) {
         mcp::auth::parse_authorization_response("http://127.0.0.1/cb?code=abc#state=spoofed");
     EXPECT_EQ(response.code, "abc");
     EXPECT_FALSE(response.state.has_value());
+}
+
+// A '%' that does not start two hex digits is kept as written, and a field without '=' carries no
+// value, so neither hides the fields around it.
+TEST(AuthAuthorizationResponseParseTest, KeepsMalformedEscapesAndSkipsFieldsWithoutAValue) {
+    const auto response = mcp::auth::parse_authorization_response(
+        "http://127.0.0.1/cb?code=50%zz%4&iss&state=s1&error_uri=https%3A%2F%2Fas.test%2Fe");
+    EXPECT_EQ(response.code, "50%zz%4");
+    EXPECT_FALSE(response.iss.has_value());
+    EXPECT_EQ(response.state, "s1");
+    EXPECT_EQ(response.error_uri, "https://as.test/e");
 }
 
 // The RFC 9207 Section 2.4 decision table as adopted by MCP: four rows over
@@ -545,6 +574,41 @@ TEST(AuthMetadataPolicyTest, RejectsBlockedAddressesWrittenAsUrlLiterals) {
     for (const auto& item : cases) {
         EXPECT_EQ(mcp::auth::validate_metadata_url(allow_origin(item.origin), item.url), item.expected)
             << item.url;
+    }
+}
+
+// The special-purpose ranges of RFC 6890 that no metadata document lives at are refused, and the
+// addresses just outside each range are not.
+TEST(AuthMetadataPolicyTest, RefusesSpecialPurposeRangesUpToTheirEdges) {
+    using Decision = mcp::auth::MetadataUrlDecision;
+    const std::vector<std::pair<const char*, Decision>> cases = {
+        {"255.255.255.255", Decision::eAddressMulticast},
+        {"240.0.0.1", Decision::eAddressReserved},
+        {"192.0.0.8", Decision::eAddressReserved},
+        {"192.0.2.1", Decision::eAddressReserved},
+        {"198.18.0.1", Decision::eAddressReserved},
+        {"198.19.255.255", Decision::eAddressReserved},
+        {"198.51.100.7", Decision::eAddressReserved},
+        {"203.0.113.9", Decision::eAddressReserved},
+        {"100.127.255.255", Decision::eAddressReserved},
+        {"172.31.255.255", Decision::eAddressPrivate},
+        {"::", Decision::eAddressReserved},
+        {"ff02::1", Decision::eAddressMulticast},
+        {"fec0::1", Decision::eAddressPrivate},
+        {"fd12:3456::1", Decision::eAddressPrivate},
+        {"192.0.1.1", Decision::eAllowed},
+        {"192.0.3.1", Decision::eAllowed},
+        {"198.17.255.255", Decision::eAllowed},
+        {"198.20.0.1", Decision::eAllowed},
+        {"198.51.101.1", Decision::eAllowed},
+        {"203.0.114.1", Decision::eAllowed},
+        {"100.128.0.1", Decision::eAllowed},
+        {"172.32.0.1", Decision::eAllowed},
+        {"223.255.255.255", Decision::eAllowed},
+    };
+    const mcp::auth::MetadataFetchPolicy policy;
+    for (const auto& [address, expected] : cases) {
+        EXPECT_EQ(mcp::auth::validate_metadata_address(policy, address), expected) << address;
     }
 }
 
