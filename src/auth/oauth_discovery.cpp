@@ -1,4 +1,4 @@
-#include <mcp/auth/oauth.hpp>
+#include <mcp/auth/oauth_discovery.hpp>
 #include <mcp/core/async.hpp>
 
 #include <chrono>
@@ -29,6 +29,67 @@ namespace {
 using detail::sanitize_for_diagnostics;
 
 }  // namespace
+
+void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) {
+    metadata = ProtectedResourceMetadata{};
+    metadata.raw = json;
+    if (json.contains("resource")) {
+        json.at("resource").get_to(metadata.resource);
+    }
+    if (json.contains("authorization_servers")) {
+        json.at("authorization_servers").get_to(metadata.authorization_servers);
+    }
+    if (json.contains("scopes_supported")) {
+        metadata.scopes_supported = json.at("scopes_supported").get<std::vector<std::string>>();
+    }
+}
+
+void from_json(const nlohmann::json& json, AuthServerMetadata& metadata) {
+    metadata = AuthServerMetadata{};
+    metadata.raw = json;
+    if (json.contains("issuer")) {
+        json.at("issuer").get_to(metadata.issuer);
+    }
+    if (json.contains("authorization_endpoint")) {
+        json.at("authorization_endpoint").get_to(metadata.authorization_endpoint);
+    }
+    if (json.contains("token_endpoint")) {
+        json.at("token_endpoint").get_to(metadata.token_endpoint);
+    }
+    if (json.contains("revocation_endpoint")) {
+        metadata.revocation_endpoint = json.at("revocation_endpoint").get<std::string>();
+    }
+    if (json.contains("registration_endpoint")) {
+        metadata.registration_endpoint = json.at("registration_endpoint").get<std::string>();
+    }
+    if (json.contains("scopes_supported")) {
+        metadata.scopes_supported = json.at("scopes_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("response_types_supported")) {
+        metadata.response_types_supported =
+            json.at("response_types_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("grant_types_supported")) {
+        metadata.grant_types_supported =
+            json.at("grant_types_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("code_challenge_methods_supported")) {
+        metadata.code_challenge_methods_supported =
+            json.at("code_challenge_methods_supported").get<std::vector<std::string>>();
+    }
+    if (json.contains("authorization_response_iss_parameter_supported")) {
+        metadata.authorization_response_iss_parameter_supported =
+            json.at("authorization_response_iss_parameter_supported").get<bool>();
+    }
+    if (json.contains("client_id_metadata_document_supported")) {
+        metadata.client_id_metadata_document_supported =
+            json.at("client_id_metadata_document_supported").get<bool>();
+    }
+    if (json.contains("token_endpoint_auth_methods_supported")) {
+        metadata.token_endpoint_auth_methods_supported =
+            json.at("token_endpoint_auth_methods_supported").get<std::vector<std::string>>();
+    }
+}
 
 struct OAuthDiscoveryClient::Impl {
     struct UrlComponents {

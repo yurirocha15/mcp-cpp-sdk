@@ -1,4 +1,5 @@
-#include <mcp/auth/oauth.hpp>
+#include <mcp/auth/challenge.hpp>
+#include <mcp/auth/oauth_client_transport.hpp>
 #include <mcp/core/async.hpp>
 
 #include "mcp/detail/json/peer_json.hpp"

@@ -1,4 +1,4 @@
-#include <mcp/auth/oauth.hpp>
+#include <mcp/auth/oauth_authenticator.hpp>
 #include <mcp/core/async.hpp>
 
 #include <memory>

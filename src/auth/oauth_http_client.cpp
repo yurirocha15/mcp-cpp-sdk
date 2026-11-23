@@ -1,4 +1,4 @@
-#include <mcp/auth/oauth.hpp>
+#include <mcp/auth/oauth_http_client.hpp>
 #include <mcp/core/async.hpp>
 
 #include "mcp/detail/async/spawn_awaitable.hpp"
