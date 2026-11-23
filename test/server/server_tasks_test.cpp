@@ -1157,6 +1157,34 @@ TEST_F(TasksTest, APrincipalCannotHoldMoreTasksThanTheLimit) {
     EXPECT_EQ(other_principal["result"]["resultType"], "task") << other_principal;
 }
 
+// The store has limits of its own. A store that holds no more tasks for a principal refuses the
+// call even below the server's limit, and a finished task of that principal makes room for the
+// next one, which is then no longer found.
+TEST_F(TasksTest, AStoreAtItsLimitRefusesATaskUntilAFinishedOneMakesRoom) {
+    mcp::InMemoryTaskStoreOptions store_options;
+    store_options.max_tasks_per_owner = 1;
+    mcp::TaskOptions options;
+    options.store = std::make_shared<mcp::InMemoryTaskStore>(store_options);
+    enable(options);
+    json refused;
+    json evicted;
+    std::string third;
+    run([&]() -> mcp::Task<void> {
+        const auto first = co_await start("gated", tasks_client(), "alice");
+        const json again = call_tool(2, "gated");
+        refused = co_await send(again, "alice");
+        release_ = true;
+        co_await task_in_status(first, "completed", tasks_client(), "alice");
+        third = co_await start("echo", tasks_client(), "alice");
+        const json lookup = task_request(3, "tasks/get", first);
+        evicted = co_await send(lookup, "alice");
+    });
+    EXPECT_EQ(refused["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << refused;
+    EXPECT_EQ(refused["error"]["message"], "Too many tasks for this principal") << refused;
+    EXPECT_FALSE(third.empty());
+    EXPECT_EQ(evicted["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS) << evicted;
+}
+
 TEST_F(TasksTest, ACancelledTaskKeepsItsSlotUntilItsHandlerReturns) {
     mcp::TaskOptions options;
     options.max_tasks_per_principal = 2;
