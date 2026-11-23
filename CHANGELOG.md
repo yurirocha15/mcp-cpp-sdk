@@ -76,6 +76,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `RequestContext` is declared in `<mcp/transport/request_context.hpp>`, and the transport, auth and `Context` headers no longer include server or transport headers they do not use.
 - Each `Client` call and its `Client::sync()` twin take `RequestOptions` as a last parameter that defaults to none, in place of a second overload.
 - `create_memory_transport_pair()` is named `make_memory_transport_pair()`, like the other factory functions.
+- HTTP servers allocate less for each request, and `StreamableHttpSessionManager` sessions reach their `Server` without memory transports.
 
 ### Removed
 
