@@ -62,6 +62,17 @@ TEST(ClientEndpointTest, RefusesAnEmptyCommandOrFactory) {
     EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio(mcp::StdioProcessOptions{})),
                  std::invalid_argument);
     EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio({})), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio(std::vector<std::string>{"", "serve"})),
+                 std::invalid_argument);
+    const mcp::StdioRestartPolicy restart{.max_restarts = 1};
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio(std::vector<std::string>{}, restart)),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(mcp::Endpoint::stdio(std::vector<std::string>{"", "serve"}, restart)),
+        std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio({}, restart)), std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(mcp::Endpoint::stdio(mcp::StdioProcessOptions{}, restart)),
+                 std::invalid_argument);
     EXPECT_THROW(static_cast<void>(mcp::Endpoint::custom({})), std::invalid_argument);
     const auto null_transport = mcp::Endpoint::custom(
         [](const mcp::Executor&) -> std::shared_ptr<mcp::ITransport> { return nullptr; });
@@ -370,15 +381,38 @@ TEST(ClientEndpointTest, ARefusedListenRequestIsNotSentToTheRestartedServer) {
     EXPECT_EQ(answered, (std::vector<json>{1, 3, 4}));
 }
 
-// Restarts are opt-in: without a policy, a server that fails closes the client.
+// Restarts are opt-in: without a policy, or with one that allows no restarts, a server that fails
+// closes the client.
 TEST(ClientEndpointTest, AServerThatFailsIsNotRestartedWithoutAPolicy) {
-    mcp::Client client(mcp::Endpoint::stdio(test_server()));
-    client.sync().connect("endpoint-test", "1.0");
-    EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
-              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
-    EXPECT_EQ(failure_code([&] { static_cast<void>(client.sync().list_tools()); }),
-              mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    const std::vector<mcp::Endpoint> endpoints = {
+        mcp::Endpoint::stdio(test_server()),
+        mcp::Endpoint::stdio(test_server(), {.delay = std::chrono::milliseconds(10)})};
+    for (const auto& endpoint : endpoints) {
+        mcp::Client client(endpoint);
+        client.sync().connect("endpoint-test", "1.0");
+        EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+                  mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+        EXPECT_EQ(failure_code([&] { static_cast<void>(client.sync().list_tools()); }),
+                  mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    }
     EXPECT_EQ(mcp::StdioRestartPolicy{}.max_restarts, 0U);
+}
+
+// A command given as a list starts again as the same program with the same arguments.
+TEST(ClientEndpointTest, ARestartedCommandKeepsItsArguments) {
+    const mcp::StdioRestartPolicy policy{.max_restarts = 1, .delay = std::chrono::milliseconds(10)};
+    const std::vector<mcp::Endpoint> endpoints = {
+        mcp::Endpoint::stdio(std::vector<std::string>{MCP_TEST_STDIO_SERVER, "serve", "again"}, policy),
+        mcp::Endpoint::stdio({MCP_TEST_STDIO_SERVER, "serve", "again"}, policy)};
+    for (const auto& endpoint : endpoints) {
+        mcp::Client client(endpoint);
+        client.sync().connect("endpoint-test", "1.0");
+        EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+                  mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+        const auto result = client.sync().call_tool("args", json::object());
+        ASSERT_TRUE(result.structuredContent.has_value());
+        EXPECT_EQ(result.structuredContent->at("args"), (json{"serve", "again"}));
+    }
 }
 
 // A subscription and a task handle may outlive their client: their blocking calls then fail as a

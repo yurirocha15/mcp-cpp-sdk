@@ -25,7 +25,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -479,6 +482,114 @@ TEST(StdioClientTransport, LaunchFailuresAreReportedByTheConstructor) {
     empty.command.clear();
     EXPECT_THROW(mcp::StdioClientTransport(harness.io.get_executor(), empty), std::invalid_argument);
 }
+
+#if !defined(_WIN32)
+namespace {
+
+/// Sets this process's PATH and working directory for the life of the object, then restores both.
+class ScopedSearch {
+   public:
+    ScopedSearch(const std::string& path, const std::filesystem::path& directory)
+        : saved_directory_(std::filesystem::current_path()) {
+        if (const char* saved = std::getenv("PATH"); saved != nullptr) {
+            saved_path_ = saved;
+        }
+        set_parent_variable("PATH", path.c_str());
+        std::filesystem::current_path(directory);
+    }
+    ScopedSearch(const ScopedSearch&) = delete;
+    ScopedSearch& operator=(const ScopedSearch&) = delete;
+    ~ScopedSearch() {
+        std::error_code ignored;
+        std::filesystem::current_path(saved_directory_, ignored);
+        if (saved_path_) {
+            set_parent_variable("PATH", saved_path_->c_str());
+        } else {
+            ::unsetenv("PATH");
+        }
+    }
+
+   private:
+    std::filesystem::path saved_directory_;
+    std::optional<std::string> saved_path_;
+};
+
+}  // namespace
+
+// A command without a '/' is looked up in the directories of PATH in order, as execvp does: a
+// directory that does not hold it is passed over, and an empty entry stands for the working
+// directory.
+TEST(StdioClientTransport, ACommandWithoutASlashIsFoundInPath) {
+    const auto server = std::filesystem::absolute(MCP_TEST_STDIO_SERVER);
+    const auto directory = server.parent_path();
+    const auto missing =
+        (std::filesystem::temp_directory_path() / "mcp-sdk-no-such-directory").string();
+    struct Search {
+        std::string path;
+        std::filesystem::path working_directory;
+    };
+    const std::vector<Search> searches = {
+        {missing + ":" + directory.string(), std::filesystem::temp_directory_path()},
+        {missing + "::" + missing, directory},
+    };
+    for (const auto& search : searches) {
+        SCOPED_TRACE(search.path);
+        auto options = server_options("serve", {"found"});
+        options.command = server.filename().string();
+        json reported;
+        {
+            const ScopedSearch scoped(search.path, search.working_directory);
+            Harness harness;
+            harness.run([&]() -> mcp::Task<void> {
+                auto transport =
+                    std::make_shared<mcp::StdioClientTransport>(harness.io.get_executor(), options);
+                mcp::Client client(transport, harness.io.get_executor());
+                co_await client.connect("stdio-client-test", "1.0");
+                reported = co_await call(client, "args");
+                client.close();
+                co_await transport->shutdown();
+            });
+        }
+        EXPECT_EQ(reported["args"], json::array({"serve", "found"}));
+    }
+}
+
+// Each line of the server's standard error reaches the callback without the CR of a CRLF line end,
+// and a callback that throws does not stop the lines after it.
+TEST(StdioClientTransport, StderrLinesLoseTheirCarriageReturnAndOutliveAThrowingCallback) {
+    Harness harness;
+    std::mutex mutex;
+    std::vector<std::string> lines;
+    auto options = server_options();
+    options.stderr_mode = mcp::StderrMode::eCapture;
+    options.on_stderr_line = [&](std::string_view line) {
+        std::lock_guard lock(mutex);
+        lines.emplace_back(line);
+        if (lines.size() == 1) {
+            throw std::runtime_error("the log sink is gone");
+        }
+    };
+    bool seen = false;
+    harness.run([&]() -> mcp::Task<void> {
+        auto transport =
+            std::make_shared<mcp::StdioClientTransport>(harness.io.get_executor(), options);
+        mcp::Client client(transport, harness.io.get_executor());
+        co_await client.connect("stdio-client-test", "1.0");
+        co_await call(client, "log", arg("text", "written on Windows\r"));
+        co_await call(client, "log", arg("text", "last line"));
+        client.close();
+        co_await transport->shutdown();
+        seen = co_await wait_until([&] {
+            std::lock_guard lock(mutex);
+            return lines.size() >= 3;
+        });
+    });
+    EXPECT_TRUE(seen);
+    std::lock_guard lock(mutex);
+    EXPECT_EQ(lines,
+              (std::vector<std::string>{"test server started", "written on Windows", "last line"}));
+}
+#endif
 
 TEST(StdioClientTransport, LineLongerThanTheLimitFailsTheRead) {
     Harness harness;

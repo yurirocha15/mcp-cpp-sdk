@@ -29,6 +29,7 @@
 #include <mutex>
 #include <optional>
 #include <ostream>
+#include <stdexcept>
 #include <streambuf>
 #include <string>
 #include <string_view>
@@ -456,6 +457,108 @@ TEST(ClientListen, ErrorBeforeAcknowledgmentFailsListen) {
         }
     });
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_INVALID_PARAMS);
+}
+
+// A notification belongs to a stream only when its `_meta` names the stream by the exact request
+// id, type included. Anything else on the connection is neither an event of the stream nor its end,
+// and a stream that has ended takes nothing more.
+TEST(ClientListen, NotificationsThatDoNotNameTheStreamAreNotItsEvents) {
+    Harness harness;
+    mcp::SubscriptionFilter tools;
+    tools.toolsListChanged = true;
+    const std::string method = "notifications/tools/list_changed";
+
+    std::vector<json> events;
+    std::optional<mcp::SubscriptionEnd> end;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("listen-client", "1.0");
+        auto stream = co_await harness.client->listen(tools);
+        const json id = stream.id();
+        const json bare = {{"jsonrpc", "2.0"}, {"method", method}};
+        const json named = {{"_meta", {{std::string(g_subscription_key), id}}}};
+        auto positional = bare;
+        positional["params"] = json::array({named});
+        auto meta_not_object = bare;
+        meta_not_object["params"] = {{"_meta", "not an object"}};
+        auto meta_without_id = bare;
+        meta_without_id["params"] = {{"_meta", json::object()}};
+
+        harness.deliver(bare);
+        harness.deliver(positional);
+        harness.deliver(meta_not_object);
+        harness.deliver(meta_without_id);
+        harness.deliver(notification_of(json{{"id", id}}, method));
+        harness.deliver(notification_of(1.5, method));
+        harness.deliver(notification_of(std::stoll(id.get<std::string>()), method));
+        harness.deliver(notification_of(id, method, {{"n", 1}}));
+        harness.deliver(closing_result(id));
+        harness.deliver(notification_of(id, method, {{"n", 2}}));
+
+        for (;;) {
+            auto event = co_await stream.next();
+            if (!event) {
+                break;
+            }
+            events.push_back(event->params.value("n", json()));
+        }
+        end = stream.end_reason();
+    });
+
+    EXPECT_EQ(events, std::vector<json>{1});
+    EXPECT_EQ(end, mcp::SubscriptionEnd::eServerClosed);
+}
+
+// The answer that ends a stream may be an error. One whose `error` is not a JSON-RPC error object
+// still ends the stream, as failed, with an error that says the object was malformed.
+TEST(ClientListen, MalformedErrorAnswerFailsTheStream) {
+    Harness harness;
+    mcp::SubscriptionFilter tools;
+    tools.toolsListChanged = true;
+
+    std::optional<mcp::SubscriptionEnd> end;
+    std::optional<mcp::Error> error;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("listen-client", "1.0");
+        auto stream = co_await harness.client->listen(tools);
+        harness.deliver({{"jsonrpc", "2.0"},
+                         {"id", json(stream.id())},
+                         {"error", {{"code", "not a number"}, {"message", "closing"}}}});
+        co_await drain(stream);
+        end = stream.end_reason();
+        error = stream.end_error();
+    });
+
+    EXPECT_EQ(end, mcp::SubscriptionEnd::eFailed);
+    ASSERT_TRUE(error.has_value());
+    EXPECT_EQ(error->code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_EQ(error->message.rfind("Malformed JSON-RPC error object", 0), 0u) << error->message;
+}
+
+// A timeout that has already run out cannot wait for an acknowledgment, so listen() refuses it
+// before the request is written.
+TEST(ClientListen, NonPositiveTimeoutIsRefusedBeforeTheRequestIsSent) {
+    Harness harness;
+    mcp::SubscriptionFilter tools;
+    tools.toolsListChanged = true;
+
+    std::vector<std::string> refusals;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("listen-client", "1.0");
+        const std::vector<std::chrono::milliseconds> timeouts{std::chrono::milliseconds(0),
+                                                              std::chrono::milliseconds(-1)};
+        for (const auto timeout : timeouts) {
+            mcp::RequestOptions options;
+            options.timeout = timeout;
+            try {
+                co_await harness.client->listen(tools, options);
+            } catch (const std::invalid_argument& error) {
+                refusals.emplace_back(error.what());
+            }
+        }
+    });
+
+    EXPECT_EQ(refusals, std::vector<std::string>(2, "Request timeout must be positive"));
+    EXPECT_TRUE(harness.with_method("subscriptions/listen").empty());
 }
 
 // No acknowledgment: listen() times out, and the half-open stream is cancelled at the server.

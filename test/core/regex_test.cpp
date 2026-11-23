@@ -113,6 +113,16 @@ TEST(Regex, Escapes) {
     EXPECT_TRUE(matches("^\\t\\n\\v\\f\\r$", "\t\n\v\f\r"));
     EXPECT_TRUE(matches("^\\/\\.\\*\\?\\+\\(\\)\\[\\]\\{\\}\\|\\^\\$\\\\$", "/.*?+()[]{}|^$\\"));
     EXPECT_TRUE(matches(std::string("^\\0$").c_str(), std::string(1, '\0')));
+    // An escaped '-' is a literal, inside a class and out.
+    EXPECT_TRUE(matches("^a\\-b$", "a-b"));
+    EXPECT_TRUE(matches("^[\\-x]+$", "-x-"));
+    EXPECT_FALSE(matches("^[\\-x]+$", "w"));
+    // A high surrogate joins only a low surrogate that follows it; any other \u escape after it
+    // stands alone, so the class below holds the surrogate and 'A' as two members.
+    EXPECT_TRUE(matches("^[\\uD83D\\u0041]$", "A"));
+    EXPECT_FALSE(matches("^\\uD83D\\u0041$",
+                         "\xf0\x9f\x98\x80"
+                         "A"));
 }
 
 TEST(Regex, Groups) {
@@ -124,6 +134,11 @@ TEST(Regex, Groups) {
 TEST(Regex, InvalidUtf8InputReadsAsReplacementCharacter) {
     EXPECT_TRUE(matches("^.$", "\xff"));
     EXPECT_TRUE(matches("^\\uFFFD$", "\xc3"));
+    // A lead byte followed by a byte that does not continue it reads as one replacement
+    // character, and the byte after it is read on its own.
+    EXPECT_TRUE(matches("^\\uFFFD\\($",
+                        "\xc3"
+                        "("));
     EXPECT_TRUE(matches("^a.b$",
                         "a\xed\xa0\x80"
                         "b") == false);  // three replacement characters
