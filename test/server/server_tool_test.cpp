@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -1066,6 +1067,32 @@ TEST_F(ServerToolOutputTest, NonConformingStructuredContentIsAnInternalError) {
     EXPECT_NE(message.find("outputSchema"), std::string::npos) << message;
     EXPECT_NE(message.find("/size"), std::string::npos) << message;
     EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);
+}
+
+// The error names each violation the check finds, at its place in the result.
+TEST_F(ServerToolOutputTest, NonConformingStructuredContentNamesEachViolation) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    mcp::Tool tool;
+    tool.name = "pair";
+    tool.inputSchema = {{"type", "object"}};
+    tool.outputSchema = nlohmann::json::parse(R"({
+        "type": "object",
+        "properties": {"count": {"type": "integer"}, "label": {"type": "string"}}
+    })");
+    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+        return mcp::make_tool_structured_result(nlohmann::json{{"count", "three"}, {"label", 3}});
+    });
+
+    auto responses = call_tool(setup, "pair");
+
+    ASSERT_EQ(responses.size(), 2U);
+    ASSERT_TRUE(responses[1].contains("error")) << responses[1];
+    const auto message = responses[1].at("error").at("message").get<std::string>();
+    const auto count_at = message.find("/count: ");
+    const auto label_at = message.find("/label: ");
+    ASSERT_NE(count_at, std::string::npos) << message;
+    ASSERT_NE(label_at, std::string::npos) << message;
+    EXPECT_NE(message.find("; ", std::min(count_at, label_at)), std::string::npos) << message;
 }
 
 TEST_F(ServerToolOutputTest, ConformingStructuredContentIsReturned) {

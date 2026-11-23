@@ -3297,8 +3297,9 @@ TEST_F(HttpTransportTest, ANewSessionDoesNotReceiveTheEndedSessionsSubscriptionU
 }
 
 // A handler still running when its client ends the session sends nothing more: neither its log
-// messages nor its result reach the next client. The request it was answering is told the session
-// ended instead of waiting for an answer that will not come.
+// messages, its own requests nor its result reach the next client, and a request it makes fails at
+// once. The request it was answering is told the session ended instead of waiting for an answer
+// that will not come.
 TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
@@ -3308,6 +3309,7 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     gate.expires_at(std::chrono::steady_clock::time_point::max());
     bool tool_started = false;
     bool tool_finished = false;
+    std::string request_error;
     server.add_tool<nlohmann::json, mcp::CallToolResult>(
         "slow", "Answers once the test opens the gate", nlohmann::json{{"type", "object"}},
         [&](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
@@ -3315,6 +3317,11 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
             boost::system::error_code ignored;
             co_await gate.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
             co_await context.log_info("late-log-from-the-first-session");
+            try {
+                (void)co_await context.request_roots();
+            } catch (const std::exception& error) {
+                request_error = error.what();
+            }
             tool_finished = true;
             co_return mcp::make_tool_text_result("late-result-from-the-first-session");
         });
@@ -3394,6 +3401,8 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     EXPECT_EQ(first_call.status, 500U) << first_call.body;
     ASSERT_FALSE(second_init_event.empty());
     EXPECT_EQ(replay.body.find("first-session"), std::string::npos) << replay.body;
+    EXPECT_EQ(replay.body.find("roots/list"), std::string::npos) << replay.body;
+    EXPECT_EQ(request_error, "the client ended the session this request belongs to");
 }
 
 // The log level is chosen by a client for its session. A client that starts a new session after

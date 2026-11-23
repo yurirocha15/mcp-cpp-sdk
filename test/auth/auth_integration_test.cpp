@@ -414,6 +414,56 @@ TEST(AuthClientTransportTest, NoResponseRequestsAreEvictedAtConfiguredBound) {
     EXPECT_EQ(authenticator->refresh_count(), 1);
 }
 
+// The requests kept for a replay are bounded in bytes as well as in number. A request larger than the
+// whole budget is not kept, so its refusal reaches the caller as it came, and one that does not fit
+// beside the requests kept evicts the oldest.
+TEST(AuthClientTransportTest, PendingRequestsAreBoundedInBytes) {
+    asio::io_context io;
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
+    auto authenticator = std::make_shared<RotatingAuthenticator>();
+    mcp::auth::OAuthClientTransportOptions options;
+    options.max_pending_request_bytes = 600;
+    options.pending_request_ttl = std::chrono::hours(1);
+    mcp::auth::OAuthClientTransport transport(inner, authenticator, options);
+
+    const auto make_request = [](std::string_view id, std::size_t pad) {
+        return json{{"jsonrpc", "2.0"},
+                    {"id", id},
+                    {"method", "tools/list"},
+                    {"params", {{"pad", std::string(pad, 'x')}}}}
+            .dump();
+    };
+    for (const auto* id : {"big", "A", "B"}) {
+        inner->enqueue_message(
+            make_error_response(id, mcp::constants::jsonrpc::g_UNAUTHORIZED, "Unauthorized").dump());
+    }
+    inner->enqueue_message(make_result_response("B", json{{"ok", true}}).dump());
+
+    std::vector<std::string> responses;
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        co_await transport.write_message(make_request("big", 700));
+        co_await transport.write_message(make_request("A", 250));
+        co_await transport.write_message(make_request("B", 250));
+        for (int i = 0; i < 3; ++i) {
+            responses.push_back(co_await transport.read_message());
+        }
+    });
+    io.run();
+
+    ASSERT_EQ(responses.size(), 3U);
+    EXPECT_EQ(json::parse(responses[0]).at("id"), "big");
+    EXPECT_EQ(json::parse(responses[0]).at("error").at("code"),
+              mcp::constants::jsonrpc::g_UNAUTHORIZED);
+    EXPECT_EQ(json::parse(responses[1]).at("id"), "A");
+    EXPECT_EQ(json::parse(responses[1]).at("error").at("code"),
+              mcp::constants::jsonrpc::g_UNAUTHORIZED);
+    EXPECT_EQ(json::parse(responses[2]).at("id"), "B");
+    EXPECT_TRUE(json::parse(responses[2]).contains("result")) << responses[2];
+    ASSERT_EQ(inner->written().size(), 4U);
+    EXPECT_EQ(json::parse(inner->written().back()).at("id"), "B");
+    EXPECT_EQ(authenticator->refresh_count(), 1);
+}
+
 TEST(AuthClientTransportTest, PendingReplayCorrelationExpires) {
     asio::io_context io;
     auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
