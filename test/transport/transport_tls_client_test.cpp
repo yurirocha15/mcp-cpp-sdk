@@ -687,14 +687,24 @@ TEST(TlsClientRootsDeathTest, TheEnvironmentNamesTheSystemAuthorities) {
 }
 
 // A host name written with a trailing dot is the same name; the certificate is checked, and the
-// server name sent, without it.
+// server name sent, without it. The proxy reaches the server whatever name the client uses, so
+// nothing resolves the name.
 TEST(TlsClientTest, AHostWithATrailingDotIsCheckedWithoutIt) {
-    const PlainServer server;
+    const PlainServer server({"mcp.example.test"});
     const TlsFront front(front_for(certs().server), server.port());
-    greet(https_url(front.port(), "localhost."), with_tls(trusting(certs().ca)));
+    const TestProxy proxy(front.port());
+    mcp::ProxyOptions proxy_options;
+    proxy_options.https_proxy = "http://127.0.0.1:" + std::to_string(proxy.port());
+    const auto options = trusting(certs().ca);
+
+    greet("https://mcp.example.test./mcp", [&](mcp::HttpClientTransport& transport) {
+        transport.set_tls(options);
+        transport.set_proxy(proxy_options);
+    });
+
     ASSERT_FALSE(front.server_names().empty());
     for (const auto& name : front.server_names()) {
-        EXPECT_EQ(name, "localhost");
+        EXPECT_EQ(name, "mcp.example.test");
     }
 }
 
