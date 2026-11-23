@@ -13,11 +13,15 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/use_awaitable.hpp>
+#include <chrono>
+#include <functional>
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace client_elicitation_test {
 
@@ -273,5 +277,151 @@ INSTANTIATE_TEST_SUITE_P(Eras, ElicitationValidation, ::testing::Bool(),
                          [](const ::testing::TestParamInfo<bool>& info) {
                              return info.param ? std::string("Modern") : std::string("Legacy");
                          });
+
+namespace {
+
+/// Hands everything to the transport it wraps and keeps a copy of each message in either direction.
+class RecordingTransport final : public mcp::ITransport {
+   public:
+    explicit RecordingTransport(std::shared_ptr<mcp::ITransport> inner) : inner_(std::move(inner)) {}
+
+    mcp::Task<std::string> read_message() override {
+        auto message = co_await inner_->read_message();
+        read.push_back(json::parse(message));
+        co_return message;
+    }
+
+    mcp::Task<void> write_message(std::string_view message) override {
+        written.push_back(json::parse(message));
+        return inner_->write_message(message);
+    }
+
+    void close() override { inner_->close(); }
+
+    std::vector<json> read;
+    std::vector<json> written;
+
+   private:
+    std::shared_ptr<mcp::ITransport> inner_;
+};
+
+// Waits with no time limit of its own: sanitizer builds run many times slower, so a wait that never
+// ends is left to the hang guard.
+mcp::Task<void> wait_until(std::function<bool()> condition) {
+    auto executor = co_await boost::asio::this_coro::executor;
+    while (!condition()) {
+        boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
+        co_await timer.async_wait(boost::asio::use_awaitable);
+    }
+}
+
+mcp::ElicitRequestParams name_question() {
+    mcp::ElicitRequestFormParams params;
+    params.message = "Your name?";
+    params.requestedSchema =
+        json::parse(R"({"type":"object","properties":{"name":{"type":"string"}}})");
+    return params;
+}
+
+}  // namespace
+
+// A server that stops waiting for its own request tells the client with notifications/cancelled.
+// Both peers number their requests from 1, so the id it names can be that of a request the client
+// is waiting on, which goes on and gets its answer.
+TEST(ElicitationTimeoutTest, TheServersCancelLeavesTheClientsRequestWithTheSameId) {
+    boost::asio::io_context io;
+    auto [client_end, server_end] = mcp::make_memory_transport_pair(io.get_executor());
+    auto recorder = std::make_shared<RecordingTransport>(client_end);
+
+    mcp::ServerCapabilities capabilities;
+    capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"asking", "1.0"}, capabilities);
+    server.set_reverse_request_timeout(std::chrono::milliseconds(50));
+    server.add_tool<json, json>(
+        "ask_twice", "Asks twice and counts the questions left unanswered", json{{"type", "object"}},
+        [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+            const auto question = std::make_shared<const mcp::ElicitRequestParams>(name_question());
+            int unanswered = 0;
+            for (int ask = 0; ask < 2; ++ask) {
+                try {
+                    static_cast<void>(co_await ctx.elicit(*question));
+                } catch (const std::exception&) {
+                    ++unanswered;
+                }
+            }
+            co_return json{{"unanswered", unanswered}};
+        });
+
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    options.request_timeout = g_hang_guard;
+    mcp::Client client(recorder, io.get_executor(), options);
+    // The questions are answered only once the call is over, after the server stopped waiting.
+    auto released = std::make_shared<bool>(false);
+    auto answered = std::make_shared<int>(0);
+    client.on_elicitation(
+        [released, answered](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
+            std::function<bool()> call_over = [released] { return *released; };
+            co_await wait_until(std::move(call_over));
+            ++*answered;
+            mcp::ElicitResult answer;
+            answer.action = mcp::ElicitAction::eDecline;
+            co_return answer;
+        });
+
+    boost::asio::steady_timer guard(io, g_hang_guard);
+    bool fired = false;
+    guard.async_wait([&](const boost::system::error_code& error) {
+        if (!error) {
+            fired = true;
+            io.stop();
+        }
+    });
+    json outcome;
+    std::string failure;
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            co_await server.run(server_end, io.get_executor());
+        } catch (...) {
+        }
+    });
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        try {
+            // The elicitation handler makes the client declare elicitation.
+            co_await client.connect("test-client", "1.0");
+            try {
+                outcome = co_await call(client, "ask_twice", json::object());
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            *released = true;
+            std::function<bool()> both_answered = [answered] { return *answered == 2; };
+            co_await wait_until(std::move(both_answered));
+        } catch (const std::exception& error) {
+            ADD_FAILURE() << "unexpected exception: " << error.what();
+        }
+        client.close();
+        server_end->close();
+        guard.cancel();
+    });
+    io.run();
+    ASSERT_FALSE(fired) << "the test did not finish";
+
+    json call_id;
+    for (const auto& message : recorder->written) {
+        if (message.value("method", "") == "tools/call") {
+            call_id = message.at("id");
+        }
+    }
+    ASSERT_FALSE(call_id.is_null());
+    bool named = false;
+    for (const auto& message : recorder->read) {
+        named = named || (message.value("method", "") == "notifications/cancelled" &&
+                          message.at("params").at("requestId") == call_id);
+    }
+    ASSERT_TRUE(named) << "no cancel named the id of the client's call";
+    EXPECT_EQ(failure, "");
+    EXPECT_EQ(outcome, json::parse(R"({"unanswered":2})"));
+}
 
 }  // namespace client_elicitation_test

@@ -119,6 +119,8 @@ These changes in behavior need no change to compile:
 - A message for a stream of a 2025-11-25 or earlier session that comes while the
   stream writes is sent once the write ends, instead of with the next keep-alive
   comment.
+- A client's request no longer fails when the server cancels a request of its
+  own that has the same id, as it does for an elicitation it stops waiting for.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

@@ -675,19 +675,12 @@ void Client::Impl::dispatch_notification(const std::shared_ptr<Impl>& state,
         return;
     }
     if (method == methods::g_NOTIFICATIONS_CANCELLED) {
+        // Unless it ends a listen (above), a server's cancel names a request the server sent. The
+        // peers number their requests independently, so its id may also be that of one of the
+        // client's own requests, which it does not concern. Request handlers cannot be stopped, so
+        // the notification is only checked.
         if (detail::has_json_value(json_message, "params")) {
-            auto params = json_message.at("params").get<CancelledNotificationParams>();
-            const auto id_key = params.requestId.correlation_key();
-
-            std::lock_guard lock(state->pending_requests_mutex);
-            auto iter = state->pending_requests.find(id_key);
-            if (iter != state->pending_requests.end() &&
-                std::chrono::steady_clock::now() < iter->second->deadline) {
-                iter->second->error =
-                    Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED, "Request cancelled by server"};
-                iter->second->completed = true;
-                signal_pending_request(*iter->second);
-            }
+            static_cast<void>(json_message.at("params").get<CancelledNotificationParams>());
         }
         return;
     }
