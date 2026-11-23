@@ -1,4 +1,5 @@
 #include <mcp/protocol/apps.hpp>
+#include <mcp/protocol/base.hpp>
 
 #include <stdexcept>
 #include <string>
@@ -69,10 +70,10 @@ void from_json(const nlohmann::json& json_obj, ResourcePermissions& permissions)
     if (!json_obj.is_object()) {
         return;
     }
-    permissions.camera = json_obj.contains("camera");
-    permissions.microphone = json_obj.contains("microphone");
-    permissions.geolocation = json_obj.contains("geolocation");
-    permissions.clipboardWrite = json_obj.contains("clipboardWrite");
+    permissions.camera = mcp::detail::has_json_value(json_obj, "camera");
+    permissions.microphone = mcp::detail::has_json_value(json_obj, "microphone");
+    permissions.geolocation = mcp::detail::has_json_value(json_obj, "geolocation");
+    permissions.clipboardWrite = mcp::detail::has_json_value(json_obj, "clipboardWrite");
 }
 
 void to_json(nlohmann::json& json_obj, const ResourceMeta& meta) {

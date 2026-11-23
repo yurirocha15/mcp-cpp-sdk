@@ -105,7 +105,7 @@ void from_json(const nlohmann::json& json_obj, SamplingMessage& msg) {
     msg = SamplingMessage{};
     json_obj.at("role").get_to(msg.role);
     json_obj.at("content").get_to(msg.content);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         msg.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -154,7 +154,7 @@ void from_json(const nlohmann::json& json_obj, CreateMessageRequestParams& param
     if (detail::has_json_value(json_obj, "stopSequences")) {
         params.stopSequences = json_obj.at("stopSequences").get<std::vector<std::string>>();
     }
-    if (json_obj.contains("modelPreferences")) {
+    if (detail::has_json_value(json_obj, "modelPreferences")) {
         params.modelPreferences = json_obj.at("modelPreferences").get<ModelPreferences>();
     }
     if (detail::has_json_value(json_obj, "includeContext")) {
@@ -163,13 +163,13 @@ void from_json(const nlohmann::json& json_obj, CreateMessageRequestParams& param
     if (detail::has_json_value(json_obj, "tools")) {
         params.tools = json_obj.at("tools").get<std::vector<Tool>>();
     }
-    if (json_obj.contains("toolChoice")) {
+    if (detail::has_json_value(json_obj, "toolChoice")) {
         params.toolChoice = json_obj.at("toolChoice").get<ToolChoice>();
     }
-    if (json_obj.contains("metadata")) {
+    if (detail::has_json_value(json_obj, "metadata")) {
         params.metadata = json_obj.at("metadata").get<nlohmann::json>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -200,10 +200,10 @@ void from_json(const nlohmann::json& json_obj, CreateMessageResult& result) {
     json_obj.at("role").get_to(result.role);
     json_obj.at("content").get_to(result.content);
     json_obj.at("model").get_to(result.model);
-    if (json_obj.contains("stopReason")) {
+    if (detail::has_json_value(json_obj, "stopReason")) {
         result.stopReason = json_obj.at("stopReason").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }

@@ -113,6 +113,9 @@ These changes in behavior need no change to compile:
   page.
 - Registering a resource template whose variable list ends with a comma, such as
   `{a,}`, throws `std::invalid_argument`, as one that starts with a comma does.
+- An optional member a peer sends as `null` reads as absent in every protocol
+  type: `"instructions": null` no longer fails a legacy `connect()`, and
+  `"tools": null` no longer declares tools.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

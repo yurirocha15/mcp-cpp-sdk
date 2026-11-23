@@ -1,4 +1,5 @@
 #include "mcp/protocol/protocol.hpp"
+#include "mcp/protocol/apps.hpp"
 #include "mcp/protocol/base.hpp"
 #include "mcp/protocol/capabilities.hpp"
 #include "mcp/protocol/completion.hpp"
@@ -19,6 +20,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <initializer_list>
 #include <mcp/core/constants.hpp>
 #include <string>
 #include <string_view>
@@ -2591,6 +2593,97 @@ TEST(ProtocolTest, CallToolParamsStillRejectsNonObjectArguments) {
     // representable and a null there can only be malformed. This must NOT become acceptance.
     EXPECT_THROW((void)(json{{"name", "add"}, {"arguments", nullptr}}).get<mcp::CallToolParams>(),
                  std::invalid_argument);
+}
+
+namespace {
+
+/// Decodes @p control with each of @p members set to null, and checks that the result writes back
+/// as the control's does, so each null member read as absent.
+template <typename T>
+void expect_null_members_read_as_absent(const json& control,
+                                        std::initializer_list<const char*> members) {
+    json with_nulls = control;
+    for (const char* member : members) {
+        with_nulls[member] = nullptr;
+    }
+    SCOPED_TRACE(with_nulls.dump());
+    T decoded{};
+    ASSERT_NO_THROW(decoded = with_nulls.get<T>());
+    EXPECT_EQ(json(decoded), json(control.get<T>()));
+}
+
+}  // namespace
+
+// A peer that writes an absent optional member as null means what one that leaves it out means.
+// The member reads as absent and is not written back, whether it holds an object, a string or a
+// capability: a server that sends "tools": null has not declared tools.
+TEST(ProtocolTest, NullOptionalMembersReadAsAbsentInEveryMessage) {
+    const json text = {{"type", "text"}, {"text", "hi"}};
+    expect_null_members_read_as_absent<mcp::PaginatedRequestParams>(json::object(), {"_meta"});
+    expect_null_members_read_as_absent<mcp::CompleteParams>(
+        {{"ref", {{"type", "ref/prompt"}, {"name", "p"}}},
+         {"argument", {{"name", "a"}, {"value", "v"}}}},
+        {"context", "_meta"});
+    expect_null_members_read_as_absent<mcp::CompleteResult>(
+        {{"completion", {{"values", json::array()}}}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ResourceLink>(
+        {{"type", "resource_link"}, {"uri", "file:///a"}, {"name", "a"}}, {"_meta", "annotations"});
+    expect_null_members_read_as_absent<mcp::EmbeddedResource>(
+        {{"type", "resource"}, {"resource", {{"uri", "file:///a"}, {"text", "t"}}}},
+        {"_meta", "annotations"});
+    expect_null_members_read_as_absent<mcp::ToolUseContent>(
+        {{"type", "tool_use"}, {"id", "use-1"}, {"name", "lookup"}, {"input", json::object()}},
+        {"_meta"});
+    expect_null_members_read_as_absent<mcp::ElicitRequestURLParams>(
+        {{"mode", "url"}, {"message", "Sign in"}, {"url", "https://example.com/login"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ElicitRequestFormParams>(
+        {{"mode", "form"},
+         {"message", "Name?"},
+         {"requestedSchema", {{"type", "object"}, {"properties", json::object()}}}},
+        {"_meta"});
+    expect_null_members_read_as_absent<mcp::ElicitResult>({{"action", "decline"}},
+                                                          {"content", "_meta"});
+    expect_null_members_read_as_absent<mcp::ListResourcesRequest>({{"method", "resources/list"}},
+                                                                  {"params"});
+    expect_null_members_read_as_absent<mcp::ListResourcesResult>({{"resources", json::array()}},
+                                                                 {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListResourceTemplatesRequest>(
+        {{"method", "resources/templates/list"}}, {"params"});
+    expect_null_members_read_as_absent<mcp::ListResourceTemplatesResult>(
+        {{"resourceTemplates", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::Prompt>({{"name", "p"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::GetPromptRequestParams>({{"name", "p"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::GetPromptResult>({{"messages", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListPromptsRequest>({{"method", "prompts/list"}},
+                                                                {"params"});
+    expect_null_members_read_as_absent<mcp::ListPromptsResult>({{"prompts", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListToolsRequest>({{"method", "tools/list"}}, {"params"});
+    expect_null_members_read_as_absent<mcp::ListToolsResult>({{"tools", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::Root>({{"uri", "file:///r"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListRootsResult>({{"roots", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::SamplingMessage>({{"role", "user"}, {"content", text}},
+                                                             {"_meta"});
+    expect_null_members_read_as_absent<mcp::CreateMessageRequestParams>(
+        {{"messages", json::array()}, {"maxTokens", 1}},
+        {"modelPreferences", "toolChoice", "metadata", "_meta"});
+    expect_null_members_read_as_absent<mcp::CreateMessageResult>(
+        {{"role", "assistant"}, {"content", text}, {"model", "m"}}, {"stopReason", "_meta"});
+    expect_null_members_read_as_absent<mcp::ClientCapabilities>(
+        json::object(), {"elicitation", "experimental", "roots", "sampling"});
+    expect_null_members_read_as_absent<mcp::ClientCapabilities::ElicitationCapability>(json::object(),
+                                                                                       {"form", "url"});
+    expect_null_members_read_as_absent<mcp::ClientCapabilities::SamplingCapability>(
+        json::object(), {"context", "tools"});
+    expect_null_members_read_as_absent<mcp::ServerCapabilities>(
+        json::object(), {"completions", "experimental", "logging", "prompts", "resources", "tools"});
+    expect_null_members_read_as_absent<mcp::InitializeResult>(
+        {{"protocolVersion", "2025-11-25"},
+         {"capabilities", json::object()},
+         {"serverInfo", {{"name", "s"}, {"version", "1"}}}},
+        {"instructions"});
+    expect_null_members_read_as_absent<mcp::DiscoverRequest>(json::object(), {"_meta"});
+    expect_null_members_read_as_absent<mcp::apps::ResourcePermissions>(
+        json::object(), {"camera", "microphone", "geolocation", "clipboardWrite"});
 }
 
 TEST(PeerJsonTest, CountsNestingOutsideStringsOnly) {

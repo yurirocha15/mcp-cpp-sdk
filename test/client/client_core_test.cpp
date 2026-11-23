@@ -769,6 +769,49 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
     EXPECT_TRUE(*init_result.capabilities.tools->listChanged);
 }
 
+// A server that writes its absent members as null has connected, without instructions and without
+// the capabilities it wrote as null.
+TEST_F(ClientCoreTest, ConnectReadsNullMembersOfTheInitializeResultAsAbsent) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    auto init_result_json = make_initialize_result();
+    init_result_json["instructions"] = nullptr;
+    init_result_json["capabilities"] = {
+        {"tools", nullptr}, {"logging", nullptr}, {"prompts", {{"listChanged", nullptr}}}};
+
+    raw_transport->set_on_write(
+        [raw_transport, init_result_json = std::move(init_result_json)](std::string_view msg) {
+            auto json_msg = nlohmann::json::parse(msg);
+            if (json_msg.contains("id")) {
+                auto id = json_msg["id"].get<std::string>();
+                raw_transport->enqueue_message(make_result_response(id, init_result_json).dump());
+            }
+        });
+
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+
+    std::optional<mcp::ConnectResult> init_result;
+    std::string failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            init_result = co_await client.connect("test-client", "0.1");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        raw_transport->close();
+    });
+
+    io_ctx_.run();
+
+    ASSERT_TRUE(init_result.has_value()) << failure;
+    EXPECT_FALSE(init_result->instructions.has_value());
+    EXPECT_FALSE(init_result->capabilities.tools.has_value());
+    EXPECT_FALSE(init_result->capabilities.logging.has_value());
+    ASSERT_TRUE(init_result->capabilities.prompts.has_value());
+    EXPECT_FALSE(init_result->capabilities.prompts->listChanged.has_value());
+}
+
 TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();

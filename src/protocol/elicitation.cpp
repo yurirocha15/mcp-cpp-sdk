@@ -401,7 +401,7 @@ void from_json(const nlohmann::json& json_obj, ElicitRequestURLParams& params) {
     if (detail::has_json_value(json_obj, "elicitationId")) {
         params.elicitationId = json_obj.at("elicitationId").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -422,7 +422,7 @@ void from_json(const nlohmann::json& json_obj, ElicitRequestFormParams& params) 
     }
     json_obj.at("message").get_to(params.message);
     json_obj.at("requestedSchema").get_to(params.requestedSchema);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -495,10 +495,10 @@ void to_json(nlohmann::json& json_obj, const ElicitResult& result) {
 void from_json(const nlohmann::json& json_obj, ElicitResult& result) {
     result = ElicitResult{};
     json_obj.at("action").get_to(result.action);
-    if (json_obj.contains("content")) {
+    if (detail::has_json_value(json_obj, "content")) {
         result.content = json_obj.at("content").get<nlohmann::json>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
