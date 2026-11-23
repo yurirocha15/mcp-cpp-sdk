@@ -43,7 +43,7 @@ ALLOWED_USES: dict[tuple[str, str], int] = {
     ("include/mcp/protocol/capabilities.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 3,
     ("include/mcp/protocol/capabilities.hpp", "is_supported_protocol_version"): 1,
     # Every version the SDK knows is a valid pin.
-    ("src/client/client.cpp", "is_supported_protocol_version"): 1,
+    ("src/client/client_protocol.cpp", "is_supported_protocol_version"): 1,
     # A version the SDK does not implement is answered -32022 before other headers are checked.
     ("src/include/mcp/detail/transport/http_request_metadata.hpp", "is_supported_protocol_version"): 1,
     # The versions named before Server::run() says which it serves: all of them.

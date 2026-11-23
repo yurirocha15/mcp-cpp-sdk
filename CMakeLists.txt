@@ -140,6 +140,12 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/client_credentials.cpp
     src/auth/enterprise_authorization.cpp
     src/client/client.cpp
+    src/client/cancellation_token.cpp
+    src/client/client_protocol.cpp
+    src/client/error.cpp
+    src/client/subscription.cpp
+    src/client/sync_client.cpp
+    src/client/task_handle.cpp
     src/client/client_connect.cpp
     src/client/client_input.cpp
     src/client/client_listen.cpp
