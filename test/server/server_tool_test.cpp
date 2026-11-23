@@ -360,23 +360,57 @@ TEST_F(ServerToolTest, RawToolAcceptsCompleteCallToolResult) {
 }
 
 TEST_F(ServerToolTest, RawToolRejectsIncompleteCallToolResult) {
-    mcp::ServerCapabilities caps;
-    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-    ServerSetup setup(io_ctx_, std::move(caps));
+    const std::vector<std::pair<nlohmann::json, std::string>> cases = {
+        {{{"message", "not a CallToolResult"}},
+         "Raw tool result must be a CallToolResult object with content"},
+        {nlohmann::json("just text"), "Raw tool result must be a CallToolResult object with content"},
+        {{{"content", nlohmann::json::array()}, {"_meta", "owner"}},
+         "CallToolResult _meta must be a JSON object"},
+    };
+    for (const auto& [result, message] : cases) {
+        SCOPED_TRACE(result.dump());
+        boost::asio::io_context io_ctx;
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        ServerSetup setup(io_ctx, std::move(caps));
 
-    mcp::Tool tool;
-    tool.name = "invalid-raw";
-    tool.inputSchema = {{"type", "object"}};
-    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
-        return {{"message", "not a CallToolResult"}};
-    });
+        mcp::Tool tool;
+        tool.name = "invalid-raw";
+        tool.inputSchema = {{"type", "object"}};
+        setup.server.add_raw_tool(tool,
+                                  [result](const nlohmann::json&) -> nlohmann::json { return result; });
 
-    auto responses = call_tool(setup, "invalid-raw");
+        auto responses = call_tool(setup, "invalid-raw", io_ctx);
 
-    ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
-    EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("CallToolResult"),
-              std::string::npos);
+        ASSERT_EQ(responses.size(), 2);
+        EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+        EXPECT_EQ(responses[1]["error"]["message"], message);
+    }
+}
+
+// A value that is neither an object nor a string becomes the text of the result, as JSON, and no
+// structuredContent, which before 2026-07-28 must be an object.
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningAScalarOrListAnswersWithItsText) {
+    const std::vector<nlohmann::json> values = {nlohmann::json(42), nlohmann::json::array({1, "a"}),
+                                                nlohmann::json(true), nlohmann::json(nullptr)};
+    for (const auto& value : values) {
+        SCOPED_TRACE(value.dump());
+        boost::asio::io_context io_ctx;
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        ServerSetup setup(io_ctx, std::move(caps));
+
+        setup.server.add_tool("fetch", "Returns a value", nlohmann::json{{"type", "object"}},
+                              [value](const nlohmann::json&) -> nlohmann::json { return value; });
+
+        auto responses = call_tool(setup, "fetch", io_ctx);
+
+        ASSERT_EQ(responses.size(), 2);
+        ASSERT_TRUE(responses[1].contains("result")) << responses[1];
+        EXPECT_EQ(responses[1]["result"]["content"],
+                  nlohmann::json::array({{{"type", "text"}, {"text", value.dump()}}}));
+        EXPECT_FALSE(responses[1]["result"].contains("structuredContent"));
+    }
 }
 
 namespace {
