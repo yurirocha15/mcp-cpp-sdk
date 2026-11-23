@@ -62,7 +62,7 @@ services:
       context: ..
       dockerfile: benchmark/cpp/Dockerfile
     container_name: mcp-cpp-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8080:8080"
     environment:
@@ -91,7 +91,7 @@ services:
       context: ..
       dockerfile: benchmark/alternatives/Dockerfile.ours
     container_name: mcp-ours-comparable-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8089:8080"
     environment:
@@ -119,9 +119,37 @@ services:
       args:
         OURS_MODEL: coroutines
     container_name: mcp-ours-coroutines-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8098:8080"
+    environment:
+      - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
+      - PORT=8080
+      - REDIS_URL=redis://redis:6379
+      - API_SERVICE_URL=http://api-service:8100
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+    depends_on:
+      redis:
+        condition: service_healthy
+      api-service:
+        condition: service_healthy
+    networks:
+      - mcp-network
+
+  ours-sync-server:
+    build:
+      context: ..
+      dockerfile: benchmark/alternatives/Dockerfile.ours
+      args:
+        OURS_MODEL: sync
+    container_name: mcp-ours-sync-server
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
+    ports:
+      - "8099:8080"
     environment:
       - MCP_SESSION_MODE=${MCP_SESSION_MODE:-}
       - PORT=8080
@@ -146,7 +174,7 @@ services:
       context: ./baselines/python-server
       dockerfile: Dockerfile
     container_name: mcp-python-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8081:8082"
     environment:
@@ -176,7 +204,7 @@ services:
       context: ./baselines/go-server
       dockerfile: Dockerfile
     container_name: mcp-go-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8082:8081"
     environment:
@@ -206,7 +234,7 @@ services:
       context: ./baselines/rust-server
       dockerfile: Dockerfile
     container_name: mcp-rust-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8083:8095"
     environment:
@@ -239,7 +267,7 @@ services:
       args:
         SDK_NAME: hkr04
     container_name: mcp-hkr04-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8084:8080"
     environment:
@@ -266,7 +294,7 @@ services:
       args:
         SDK_NAME: fastmcpp
     container_name: mcp-fastmcpp-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8085:8080"
     environment:
@@ -293,7 +321,7 @@ services:
       args:
         SDK_NAME: cxxmcp
     container_name: mcp-cxxmcp-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8086:8080"
     environment:
@@ -320,7 +348,7 @@ services:
       args:
         SDK_NAME: neumann
     container_name: mcp-neumann-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8087:8080"
     environment:
@@ -348,7 +376,7 @@ services:
         SDK_NAME: hkr04
         HTTPLIB_TCP_NODELAY: "ON"
     container_name: mcp-hkr04-nodelay-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8094:8080"
     environment:
@@ -376,7 +404,7 @@ services:
         SDK_NAME: fastmcpp
         HTTPLIB_TCP_NODELAY: "ON"
     container_name: mcp-fastmcpp-nodelay-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8095:8080"
     environment:
@@ -404,7 +432,7 @@ services:
         SDK_NAME: cxxmcp
         HTTPLIB_TCP_NODELAY: "ON"
     container_name: mcp-cxxmcp-nodelay-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8096:8080"
     environment:
@@ -432,7 +460,7 @@ services:
         SDK_NAME: neumann
         HTTPLIB_TCP_NODELAY: "ON"
     container_name: mcp-neumann-nodelay-server
-    cpuset: "${BENCHMARK_CPUSET:-}"
+    cpuset: "${BENCHMARK_TARGET_CPUSET:-}"
     ports:
       - "8097:8080"
     environment:

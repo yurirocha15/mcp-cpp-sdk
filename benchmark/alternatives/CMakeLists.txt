@@ -33,7 +33,7 @@ endif()
 set(BENCHMARK_OURS_MODEL
     "threads"
     CACHE STRING
-          "Tool handler model of the ours adapter: threads or coroutines")
+          "Tool handler model of the ours adapter: threads, coroutines or sync")
 
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
@@ -85,8 +85,13 @@ if(BENCHMARK_SDK STREQUAL "ours")
     add_executable(alternative-benchmark-server adapters/ours.cpp)
     target_link_libraries(alternative-benchmark-server
                           PRIVATE mcp-cpp-sdk benchmark-workload)
+  elseif(BENCHMARK_OURS_MODEL STREQUAL "sync")
+    add_executable(alternative-benchmark-server adapters/ours_sync.cpp)
+    target_link_libraries(alternative-benchmark-server
+                          PRIVATE mcp-cpp-sdk benchmark-workload)
   else()
-    message(FATAL_ERROR "BENCHMARK_OURS_MODEL must be threads or coroutines")
+    message(
+      FATAL_ERROR "BENCHMARK_OURS_MODEL must be threads, coroutines or sync")
   endif()
 elseif(BENCHMARK_SDK STREQUAL "hkr04")
   set(MCP_BUILD_TESTS

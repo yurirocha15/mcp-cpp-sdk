@@ -16,6 +16,7 @@ from benchmark import benchmark_order
 from benchmark import capture_container
 from benchmark import capture_environment
 from benchmark import collect_stats
+from benchmark import cpu_partition
 from benchmark import select_median_run
 from benchmark import summarize_collector_failures
 from benchmark import validate_resource_headroom
@@ -64,6 +65,66 @@ class CounterbalancedOrderTests(unittest.TestCase):
                     ),
                     f"{first} never runs before {second}",
                 )
+
+
+class CpuPartitionTests(unittest.TestCase):
+    @staticmethod
+    def smt_siblings(cores: int) -> dict[int, frozenset[int]]:
+        # The layout of this kernel's numbering on SMT hosts: CPU n and n + cores share a core.
+        return {
+            cpu: frozenset({cpu % cores, cpu % cores + cores}) for cpu in range(2 * cores)
+        }
+
+    def test_the_server_gets_one_thread_of_each_of_the_two_highest_cores(self) -> None:
+        cpus = set(range(24))
+        result = cpu_partition.partition(cpus, self.smt_siblings(12), 2)
+
+        self.assertEqual(result["target"], [10, 11])
+        self.assertEqual(result["reserved"], [22, 23])
+        self.assertEqual(result["shared"], list(range(10)) + list(range(12, 22)))
+
+    def test_without_smt_nothing_is_reserved(self) -> None:
+        cpus = set(range(8))
+        siblings = {cpu: frozenset({cpu}) for cpu in cpus}
+        result = cpu_partition.partition(cpus, siblings, 2)
+
+        self.assertEqual(result["target"], [6, 7])
+        self.assertEqual(result["reserved"], [])
+        self.assertEqual(result["shared"], list(range(6)))
+
+    def test_only_the_affinity_set_is_split(self) -> None:
+        # CPU 14, the other thread of CPU 2's core, is outside the set: CPU 2 is a core of its own
+        # to the partition, and nothing outside the set is reserved.
+        cpus = {0, 1, 2, 12, 13}
+        result = cpu_partition.partition(cpus, self.smt_siblings(12), 2)
+
+        self.assertEqual(result["target"], [0, 1])
+        self.assertEqual(result["reserved"], [12, 13])
+        self.assertEqual(result["shared"], [2])
+
+    def test_a_host_without_a_core_to_share_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            cpu_partition.partition({0, 1, 12, 13}, self.smt_siblings(12), 2)
+
+    def test_cpu_lists_round_trip(self) -> None:
+        self.assertEqual(cpu_partition.parse_cpu_list("0-3,8,10-11\n"), {0, 1, 2, 3, 8, 10, 11})
+        self.assertEqual(cpu_partition.format_cpu_list({11, 2, 3}), "2,3,11")
+        with self.assertRaises(ValueError):
+            cpu_partition.parse_cpu_list("4-2")
+
+    def test_siblings_are_read_from_sysfs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for cpu, siblings in ((0, "0,2"), (2, "0,2"), (1, "1")):
+                topology = root / f"cpu{cpu}" / "topology"
+                topology.mkdir(parents=True)
+                (topology / "thread_siblings_list").write_text(siblings + "\n")
+            result = cpu_partition.read_siblings({0, 1, 2, 3}, root)
+
+        self.assertEqual(result[0], frozenset({0, 2}))
+        self.assertEqual(result[1], frozenset({1}))
+        # A CPU without topology files counts as a core of its own.
+        self.assertEqual(result[3], frozenset({3}))
 
 
 class MedianRunTests(unittest.TestCase):
