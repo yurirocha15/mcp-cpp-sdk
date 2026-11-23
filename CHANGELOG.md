@@ -116,6 +116,9 @@ These changes in behavior need no change to compile:
 - An optional member a peer sends as `null` reads as absent in every protocol
   type: `"instructions": null` no longer fails a legacy `connect()`, and
   `"tools": null` no longer declares tools.
+- A message for a stream of a 2025-11-25 or earlier session that comes while the
+  stream writes is sent once the write ends, instead of with the next keep-alive
+  comment.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

@@ -137,20 +137,32 @@ class Exchange {
         (void)stream_.socket().close(ignored);
     }
 
+    /// Gives the connection a small receive buffer, so that the server's write of a large event
+    /// waits until the event is read. Called before open().
+    void shrink_receive_buffer() {
+        stream_.socket().open(asio::ip::tcp::v4());
+        stream_.socket().set_option(asio::socket_base::receive_buffer_size(4096));
+    }
+
     [[nodiscard]] unsigned status() const { return status_; }
     [[nodiscard]] const std::string& content_type() const { return content_type_; }
     [[nodiscard]] const std::string& session_id() const { return session_id_; }
     [[nodiscard]] const std::string& last_id() const { return last_id_; }
+    /// The SSE comments, such as keep-alives, read so far.
+    [[nodiscard]] std::size_t comments() const { return comments_; }
 
    private:
     std::optional<Event> take_event() {
         for (;;) {
-            const auto end = text_.find("\n\n");
+            // The search goes on where the last one stopped, so a large event is scanned once.
+            const auto end = text_.find("\n\n", searched_);
             if (end == std::string::npos) {
+                searched_ = text_.empty() ? 0 : text_.size() - 1;
                 return std::nullopt;
             }
             const auto block = text_.substr(0, end);
             text_.erase(0, end + 2);
+            searched_ = 0;
             Event event;
             bool has_field = false;
             std::size_t offset = 0;
@@ -174,6 +186,9 @@ class Exchange {
             if (has_field) {
                 return event;
             }
+            if (block.starts_with(":")) {
+                ++comments_;
+            }
         }
     }
 
@@ -181,6 +196,8 @@ class Exchange {
     beast::flat_buffer buffer_;
     http::response_parser<http::buffer_body> parser_;
     std::string text_;
+    std::size_t searched_{0};
+    std::size_t comments_{0};
     unsigned status_{0};
     std::string content_type_;
     std::string session_id_;
@@ -307,8 +324,8 @@ struct Shared {
     }
 };
 
-/// A server whose `ask` tool asks the client for a name, and whose `wait` tool logs its tag, then
-/// waits until released.
+/// A server whose `ask` tool asks the client for a name, whose `wait` tool logs its tag, then waits
+/// until released, and whose `flood` tool logs a message of `size` bytes, then waits until released.
 std::unique_ptr<mcp::Server> make_server(const std::shared_ptr<Shared>& shared) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{true};
@@ -333,11 +350,59 @@ std::unique_ptr<mcp::Server> make_server(const std::shared_ptr<Shared>& shared) 
             co_await wait_until([shared] { return shared->released.load(); });
             co_return mcp::make_tool_text_result("done-" + tag);
         });
+    server->add_tool<json, mcp::CallToolResult>(
+        "flood", "Logs a large message, then waits until released", json{{"type", "object"}},
+        [shared](mcp::Context& context, json arguments) -> mcp::Task<mcp::CallToolResult> {
+            const std::string text(arguments.value("size", std::size_t{0}), 'x');
+            co_await context.log_info(text);
+            co_await wait_until([shared] { return shared->released.load(); });
+            co_return mcp::make_tool_text_result("flooded");
+        });
     {
         std::lock_guard lock(shared->mutex);
         shared->servers.push_back(server.get());
     }
     return server;
+}
+
+/// The size of the log of the `flood` tool: large enough that the server's write of it waits until a
+/// client with a shrunk receive buffer reads it.
+constexpr std::size_t g_flood_bytes = std::size_t{8} << 20U;
+
+/// What the stream of a `flood` call carried: its messages and the comments among them.
+struct Flooded {
+    std::vector<json> messages;
+    std::size_t comments{0};
+};
+
+/// Calls `flood` on a connection with a shrunk receive buffer and releases the tool once the stream
+/// is open, so that the result comes while the server's write of the log waits for this client.
+mcp::Task<Flooded> call_flood(asio::any_io_executor executor, unsigned short port,
+                              std::shared_ptr<Shared> shared) {
+    const auto session = co_await start_session(executor, port);
+    auto exchange = std::make_shared<Exchange>(executor);
+    exchange->shrink_receive_buffer();
+    const auto body = call_tool(2, "flood", json{{"size", g_flood_bytes}}).dump();
+    const auto headers = session_headers(session);
+    co_await exchange->open(port, http::verb::post, body, headers);
+    shared->released = true;
+    // Gives the result time to come before the log is read.
+    asio::steady_timer settle(executor, std::chrono::milliseconds(200));
+    co_await settle.async_wait(asio::use_awaitable);
+    Flooded flooded;
+    flooded.messages = co_await rest_of(exchange);
+    flooded.comments = exchange->comments();
+    co_return flooded;
+}
+
+/// Checks that @p flooded carried the log, then the result, and no keep-alive comment before them.
+void expect_log_then_result(const Flooded& flooded) {
+    ASSERT_EQ(flooded.messages.size(), 2U);
+    const auto& log = flooded.messages[0];
+    EXPECT_EQ(log.value("method", std::string()), "notifications/message");
+    EXPECT_EQ(log.value(json::json_pointer("/params/data"), std::string()).size(), g_flood_bytes);
+    EXPECT_EQ(text_of(flooded.messages[1]), "flooded") << flooded.messages[1];
+    EXPECT_EQ(flooded.comments, 0U);
 }
 
 class LegacyStreamTest : public ::testing::Test {
@@ -584,6 +649,22 @@ TEST_F(LegacyStreamTest, SessionManagerResumesAStreamTheClientLeft) {
 }
 
 // HttpServerTransport streams the answer to a POST the same way.
+// A response that comes while the stream writes is sent once the write ends, not held until the
+// next keep-alive comment.
+TEST_F(LegacyStreamTest, SessionManagerSendsWhatCameWhileItWrote) {
+    constexpr unsigned short port = 19458;
+    auto manager = make_manager(port);
+    Flooded flooded;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            flooded = co_await call_flood(executor, port, shared_);
+        },
+        [&] { manager->close(); });
+
+    expect_log_then_result(flooded);
+}
+
 TEST_F(LegacyStreamTest, HttpServerTransportSendsTheServersRequestWhileTheToolWaits) {
     auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     const auto port = transport->port();
@@ -679,6 +760,25 @@ TEST_F(LegacyStreamTest, HttpServerTransportSendsWhatBelongsToNoRequestOnlyOnALo
     ASSERT_EQ(second_rest.size(), 1U);
     EXPECT_EQ(text_of(first_rest[0]), "done-a") << first_rest[0];
     EXPECT_EQ(text_of(second_rest[0]), "done-b") << second_rest[0];
+}
+
+// HttpServerTransport also sends a response that comes while the stream writes once the write ends.
+TEST_F(LegacyStreamTest, HttpServerTransportSendsWhatCameWhileItWrote) {
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = transport->port();
+    auto server = make_server(shared_);
+    mcp_test::spawn_detached(io_ctx_, transport->listen());
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); });
+    Flooded flooded;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            flooded = co_await call_flood(executor, port, shared_);
+        },
+        [&] { transport->close(); });
+
+    expect_log_then_result(flooded);
 }
 
 // A Client over HttpClientTransport answers the server's request while its call waits, sends calls

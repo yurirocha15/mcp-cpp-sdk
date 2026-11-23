@@ -1245,6 +1245,7 @@ struct HttpServerTransport::Impl {
             }
             bool finished = false;
             bool session_ended = false;
+            bool wrote = false;
             std::optional<std::string> response_body;
             std::optional<std::string> session_header;
             SseEventList* waiting = nullptr;
@@ -1328,6 +1329,7 @@ struct HttpServerTransport::Impl {
                     co_return false;
                 }
                 stream_open = true;
+                wrote = true;
             }
 
             if (!events.empty()) {
@@ -1348,6 +1350,7 @@ struct HttpServerTransport::Impl {
                     detach_stream(*legacy);
                     co_return false;
                 }
+                wrote = true;
             }
 
             if (finished) {
@@ -1356,6 +1359,12 @@ struct HttpServerTransport::Impl {
                     stream, http::make_chunk_last(),
                     boost::asio::redirect_error(boost::asio::use_awaitable, error));
                 co_return !error && request.keep_alive();
+            }
+
+            // A signal that comes while a write is suspended finds no wait to cancel, so after a
+            // write the stream looks for events again before it waits.
+            if (wrote) {
+                continue;
             }
 
             // An open stream carries a comment now and then, which keeps intermediaries from
