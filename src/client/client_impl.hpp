@@ -689,6 +689,87 @@ struct Client::Impl {
 
     static void check_complete(const nlohmann::json& result);
 
+    static Task<void> discard_result(Task<nlohmann::json> request_task);
+
+    static void start_read_loop(const std::shared_ptr<Impl>& state);
+
+    static void request_close(const std::shared_ptr<Impl>& state, std::string message);
+
+    static std::string request_correlation_key(int64_t id);
+
+    static Task<nlohmann::json> send_request_wire(std::shared_ptr<Impl> state,
+                                                  std::shared_ptr<const std::string> wire, int64_t id,
+                                                  std::chrono::milliseconds timeout, bool probe,
+                                                  bool cancellable,
+                                                  std::optional<CancellationToken> cancellation);
+
+    /// Sends `notifications/cancelled` for the request @p id, unless the client is closed. Nothing
+    /// waits for the write, and a write that fails changes nothing for the caller.
+    static void send_cancelled(const std::shared_ptr<Impl>& state, int64_t id,
+                               std::optional<std::string> reason);
+
+    /// Runs on the strand when the CancellationToken of the request @p id is cancelled: ends the
+    /// request's wait with g_REQUEST_CANCELLED and tells the server, unless it already ended.
+    static void cancel_request(const std::shared_ptr<Impl>& state, int64_t id,
+                               const std::optional<std::string>& reason);
+
+    /// Waits @p time on the strand, ending early when @p cancellation is cancelled or the client
+    /// closes.
+    static Task<void> pause_unless_cancelled(std::shared_ptr<Impl> state,
+                                             std::chrono::milliseconds time,
+                                             std::optional<CancellationToken> cancellation);
+
+    static Task<void> notification(std::shared_ptr<Impl> state, std::string_view method,
+                                   const std::optional<nlohmann::json>& params);
+
+    static Task<void> send_notification_wire(std::shared_ptr<Impl> state,
+                                             std::shared_ptr<const std::string> wire);
+
+    /// Two failure classes meet in this loop and only one is fatal. read_message() failing means the
+    /// transport can no longer produce messages, so the session ends: pending requests fail and the
+    /// transport closes; it is the only statement inside the outer try for that reason. A failure
+    /// after it concerns one message already off the wire: it is reported through on_protocol_error
+    /// and dropped, and the loop continues.
+    static Task<void> read_loop(std::shared_ptr<Impl> state);
+
+    /// Decodes and routes one received message. Never throws: an unusable message is reported
+    /// and dropped so that a single bad message cannot end the session.
+    static void dispatch_message(const std::shared_ptr<Impl>& state, const std::string& raw);
+
+    static void report_protocol_error(const std::shared_ptr<Impl>& state, int code,
+                                      std::string message);
+
+    static void dispatch_response(const std::shared_ptr<Impl>& state,
+                                  const nlohmann::json& json_message);
+
+    static void dispatch_notification(const std::shared_ptr<Impl>& state,
+                                      const nlohmann::json& json_message);
+
+    static Task<void> dispatch_incoming_request(std::shared_ptr<Impl> state,
+                                                nlohmann::json json_message);
+
+    static std::string make_result_wire(const RequestId& id, nlohmann::json result);
+
+    static std::string make_error_wire(const RequestId& id, int code, std::string message);
+
+    /// Whether request `id` is still waiting on a deadline that has not come: the timer woke because
+    /// the deadline was paused or resumed, not because it fired or the request finished.
+    static bool deadline_moved(const std::shared_ptr<Impl>& state, int64_t id);
+
+    /// The transport says the write of request `key` waits for a person, such as an OAuth consent
+    /// prompt. The prompt's time is the user's, so the request's deadline stops until it ends. Runs
+    /// on the strand, which owns the request's timer.
+    static void on_interaction(const std::shared_ptr<Impl>& state, std::string_view key, bool waiting);
+
+    static void signal_pending_request(PendingRequest& pending_request);
+
+    static void complete_request_write(const std::shared_ptr<Impl>& state, const std::string& id_key,
+                                       std::exception_ptr write_error);
+
+    static void erase_pending_request(const std::shared_ptr<Impl>& state, const std::string& id_key);
+
+    static void fail_pending_requests(const std::shared_ptr<Impl>& state, const Error& error);
+
     /// The requests whose answer may be an input_required result.
     static bool supports_input_required(std::string_view method);
 
@@ -789,9 +870,6 @@ struct Client::Impl {
     /// The connection ended: every open stream ends without the server's closing result.
     static void end_subscriptions(const std::shared_ptr<Impl>& state, const Error& error);
 
-    static Task<void> notification(std::shared_ptr<Impl> state, std::string_view method,
-                                   const std::optional<nlohmann::json>& params);
-
     /// What the probe learned. `discover` is set for eDiscover and `error` for the error kinds; a
     /// probe the transport failed has neither.
     struct ProbeOutcome {
@@ -887,88 +965,10 @@ struct Client::Impl {
 
     static Task<ConnectResult> connect_session(std::shared_ptr<Impl> state);
 
-    static Task<void> discard_result(Task<nlohmann::json> request_task);
-
-    static void start_read_loop(const std::shared_ptr<Impl>& state);
-
-    static void request_close(const std::shared_ptr<Impl>& state, std::string message);
-
-    static std::string request_correlation_key(int64_t id);
-
-    static Task<nlohmann::json> send_request_wire(std::shared_ptr<Impl> state,
-                                                  std::shared_ptr<const std::string> wire, int64_t id,
-                                                  std::chrono::milliseconds timeout, bool probe,
-                                                  bool cancellable,
-                                                  std::optional<CancellationToken> cancellation);
-
-    /// Sends `notifications/cancelled` for the request @p id, unless the client is closed. Nothing
-    /// waits for the write, and a write that fails changes nothing for the caller.
-    static void send_cancelled(const std::shared_ptr<Impl>& state, int64_t id,
-                               std::optional<std::string> reason);
-
-    /// Runs on the strand when the CancellationToken of the request @p id is cancelled: ends the
-    /// request's wait with g_REQUEST_CANCELLED and tells the server, unless it already ended.
-    static void cancel_request(const std::shared_ptr<Impl>& state, int64_t id,
-                               const std::optional<std::string>& reason);
-
-    /// Waits @p time on the strand, ending early when @p cancellation is cancelled or the client
-    /// closes.
-    static Task<void> pause_unless_cancelled(std::shared_ptr<Impl> state,
-                                             std::chrono::milliseconds time,
-                                             std::optional<CancellationToken> cancellation);
-
-    static Task<void> send_notification_wire(std::shared_ptr<Impl> state,
-                                             std::shared_ptr<const std::string> wire);
-
-    /// Two failure classes meet in this loop and only one is fatal. read_message() failing means the
-    /// transport can no longer produce messages, so the session ends: pending requests fail and the
-    /// transport closes; it is the only statement inside the outer try for that reason. A failure
-    /// after it concerns one message already off the wire: it is reported through on_protocol_error
-    /// and dropped, and the loop continues.
-    static Task<void> read_loop(std::shared_ptr<Impl> state);
-
-    /// Decodes and routes one received message. Never throws: an unusable message is reported
-    /// and dropped so that a single bad message cannot end the session.
-    static void dispatch_message(const std::shared_ptr<Impl>& state, const std::string& raw);
-
     /// A line the client cannot decode while it waits for the era probe's answer is that answer: a
     /// server that replies to server/discover with plain text is not a modern one, and waiting out
     /// the probe timeout would only delay the fallback.
     static void fail_probe(const std::shared_ptr<Impl>& state);
-
-    static void report_protocol_error(const std::shared_ptr<Impl>& state, int code,
-                                      std::string message);
-
-    static void dispatch_response(const std::shared_ptr<Impl>& state,
-                                  const nlohmann::json& json_message);
-
-    static void dispatch_notification(const std::shared_ptr<Impl>& state,
-                                      const nlohmann::json& json_message);
-
-    static Task<void> dispatch_incoming_request(std::shared_ptr<Impl> state,
-                                                nlohmann::json json_message);
-
-    static std::string make_result_wire(const RequestId& id, nlohmann::json result);
-
-    static std::string make_error_wire(const RequestId& id, int code, std::string message);
-
-    /// Whether request `id` is still waiting on a deadline that has not come: the timer woke because
-    /// the deadline was paused or resumed, not because it fired or the request finished.
-    static bool deadline_moved(const std::shared_ptr<Impl>& state, int64_t id);
-
-    /// The transport says the write of request `key` waits for a person, such as an OAuth consent
-    /// prompt. The prompt's time is the user's, so the request's deadline stops until it ends. Runs
-    /// on the strand, which owns the request's timer.
-    static void on_interaction(const std::shared_ptr<Impl>& state, std::string_view key, bool waiting);
-
-    static void signal_pending_request(PendingRequest& pending_request);
-
-    static void complete_request_write(const std::shared_ptr<Impl>& state, const std::string& id_key,
-                                       std::exception_ptr write_error);
-
-    static void erase_pending_request(const std::shared_ptr<Impl>& state, const std::string& id_key);
-
-    static void fail_pending_requests(const std::shared_ptr<Impl>& state, const Error& error);
 
     /// The loop of a Client constructed from an Endpoint, for the blocking calls; null otherwise.
     /// Declared first, as BlockingLoop::owner requires.

@@ -1269,9 +1269,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     void abandon_session_work(const std::shared_ptr<Session>& session);
     /// Fails the server's own requests that are still waiting for an answer.
     static void abandon_pending_requests(Session& session);
+
     /// Returns once no request of @p session is running.
     static Task<void> wait_for_dispatches(Session& session);
-
     static Task<void> run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransport> transport,
                           boost::asio::any_io_executor executor);
     /// Serves @p session until its transport ends: registers it, reads it, then ends it.
@@ -1294,7 +1294,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> notify_resource_updated(const std::string& uri);
     Task<void> dispatch_on_strand(nlohmann::json json_msg,
                                   std::shared_ptr<const std::string> principal = nullptr);
-    Task<void> dispatch_request(nlohmann::json json_msg, std::shared_ptr<const std::string> principal);
     /// dispatch_request_wire() for a request that belongs to no session, refused past the
     /// in-flight limits. The request counts until its work ends, even when its client has gone:
     /// a 2026-07-28 handler counts while it runs, not while it is parked, and again when it goes
@@ -1311,6 +1310,37 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// server weakly, so a transport that outlives it answers with an error.
     static Task<std::string> dispatch_for_http(std::weak_ptr<Impl> weak, nlohmann::json json_msg,
                                                RequestContext request_context);
+    void dispatch_notification(const nlohmann::json& json_msg);
+    void dispatch_response(const nlohmann::json& json_msg);
+    /// Sends a request to the client. @p related_request, when set, is the id as JSON text of the
+    /// client request whose handler asks (see RequestScope::related_request).
+    Task<nlohmann::json> send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
+                                      const std::string& method,
+                                      const std::optional<nlohmann::json>& params,
+                                      std::shared_ptr<const std::string> related_request = nullptr);
+    static Task<nlohmann::json> await_reverse_response(
+        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
+        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
+        std::shared_ptr<const std::string> related_request);
+    static Task<nlohmann::json> await_reverse_response_on_strand(
+        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
+        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
+        std::shared_ptr<const std::string> related_request);
+    /// Writes @p wire to the session, as related to @p related_request when that is set.
+    static Task<void> write_to_session(const Session& session, std::shared_ptr<const std::string> wire,
+                                       const std::shared_ptr<const std::string>& related_request);
+    Task<void> send_notification(const std::string& method,
+                                 const std::optional<nlohmann::json>& params);
+    /// send_notification() as part of a notification to every session sharing the registry: a
+    /// session that cannot take it, such as one closing meanwhile, misses it without stopping the
+    /// notification of the others.
+    Task<void> send_broadcast(const std::string& method);
+    /// notify_resource_updated() in the same way.
+    Task<void> broadcast_resource_updated(const std::string& uri);
+    Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
+                                                 std::shared_ptr<const std::string> uri);
+
+    Task<void> dispatch_request(nlohmann::json json_msg, std::shared_ptr<const std::string> principal);
     /// @p checked_modern, when set, says that the caller found the envelope valid and whether the
     /// request names its protocol version in _meta.
     Task<std::string> dispatch_request_wire(
@@ -1323,41 +1353,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::optional<bool> checked_modern = std::nullopt);
     Task<std::string> dispatch_modern_wire(const nlohmann::json& json_msg, std::string_view method,
                                            RequestScope scope);
-    /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
-    /// client for input: the request is then answered input_required, and a retry carrying its
-    /// requestState resumes the handler.
-    Task<std::string> dispatch_mrtr(const nlohmann::json& json_msg, std::string_view method,
-                                    RequestScope scope);
-    Task<std::string> serve_mrtr_method(const nlohmann::json& json_msg, const RequestScope& scope);
-    /// What a retry's `Mcp-Param-*` headers disagree with, for the method that mirrors arguments.
-    std::optional<std::string> retry_header_mismatch(const nlohmann::json& json_msg,
-                                                     std::string_view method,
-                                                     const RequestScope& scope) const;
-    /// Serves a request of that kind for a client that declared no capability for answering a
-    /// request for input: the handler runs in the request, and a question it asks is refused as a
-    /// parked handler's would be.
-    Task<std::string> serve_without_parking(const nlohmann::json& json_msg, RequestScope scope);
-    static Task<void> run_mrtr_handler(std::shared_ptr<Impl> impl,
-                                       std::shared_ptr<detail::MrtrEntry> entry,
-                                       std::shared_ptr<const nlohmann::json> message,
-                                       RequestScope scope);
-    /// Files @p entry under a new requestState, giving up older handlers past the limits.
-    std::string park(const std::shared_ptr<detail::MrtrEntry>& entry,
-                     const std::shared_ptr<const std::string>& principal, std::string_view method,
-                     std::string digest, std::size_t bytes);
-    /// The state of a sealed retry, or nothing when the retry is refused. Counts the outcome.
-    std::optional<detail::MrtrSealedState> open_sealed_state(
-        const detail::sealed_state::Codec& codec, const MrtrOptions& options, const std::string& token,
-        const std::shared_ptr<const std::string>& principal, std::string_view method,
-        const std::string& digest);
-    /// Takes the handler filed under @p token for a retry, or returns null when the retry may not
-    /// resume it.
-    std::shared_ptr<detail::MrtrEntry> take_parked(const std::string& token,
-                                                   const std::shared_ptr<const std::string>& principal,
-                                                   std::string_view method, const std::string& digest);
-    void evict_parked(const std::string& token, MrtrEvictionReason reason);
-    void finish_eviction(ParkedRequest victim, MrtrEvictionReason reason, const MrtrOptions& options);
-    void abandon_all_parked();
     /// Where the notifications of a request go, given how it arrived. Sets @p transport and
     /// @p epoch to the session's transport and session when that is the route.
     MessageSender notification_route(std::shared_ptr<std::atomic<bool>> cancelled,
@@ -1366,9 +1361,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                      const std::shared_ptr<Session>& session, ITransport** transport,
                                      std::uint64_t* epoch,
                                      std::shared_ptr<const std::string> related_request = nullptr);
-    void dispatch_notification(const nlohmann::json& json_msg);
-    void dispatch_response(const nlohmann::json& json_msg);
-
     Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg, bool update_lifecycle);
     Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
@@ -1383,7 +1375,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                                  const RequestScope& scope);
     Task<std::string> handle_resource_templates_list_wire(const nlohmann::json& json_msg,
                                                           const RequestScope& scope);
-    Task<std::string> handle_listen_wire(const nlohmann::json& json_msg, const RequestScope& scope);
     Task<std::string> handle_subscribe_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_unsubscribe_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_prompts_list_wire(const nlohmann::json& json_msg,
@@ -1392,23 +1383,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                               const RequestScope& scope);
     Task<std::string> handle_set_level_wire(const nlohmann::json& json_msg);
     Task<std::string> handle_complete_wire(const nlohmann::json& json_msg, const RequestScope& scope);
-    /// Serves tasks/get, tasks/update and tasks/cancel.
-    Task<std::string> handle_task_wire(const nlohmann::json& json_msg, std::string_view method,
-                                       const RequestScope& scope);
-    /// The answer to a task request; sets @p changed to the task's new state when the request
-    /// changed it.
-    std::string serve_task_request(const nlohmann::json& json_msg, std::string_view method,
-                                   const RequestScope& scope,
-                                   std::shared_ptr<const TaskRecord>& changed);
-    /// Creates the task for a tools/call of a client that declared the tasks extension, starts its
-    /// handler apart from the request, and returns the answer carrying the task's handle.
-    /// The task's handler is called with @p arguments.
-    std::string start_task(const nlohmann::json& json_msg, const RequestScope& scope,
-                           const CallToolView& call, const nlohmann::json& arguments,
-                           const boost::asio::any_io_executor& executor);
-    /// Whether @p owner or the server as a whole already runs as many task handlers as the limits
-    /// allow. The caller holds task_runs_mutex.
-    bool task_limit_reached_locked(const std::string& owner) const;
     /// Runs the task preparation of @p tool, through the middleware when there is any, in the
     /// context of the request @p scope. Sets @p prepared to what the preparation returned; it
     /// stays empty when the preparation did not run to its end, in which case the returned
@@ -1423,23 +1397,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<nlohmann::json> call_task_preparation(const ToolRegistration& tool, Context& ctx,
                                                const nlohmann::json& arguments,
                                                std::optional<TaskPreparation>& prepared);
-    /// Runs the handler of a task and records its outcome.
-    static Task<void> run_task_worker(std::shared_ptr<Impl> impl, std::shared_ptr<detail::TaskRun> run,
-                                      CallToolParams params,
-                                      std::shared_ptr<const RequestMetadata> request_meta,
-                                      std::shared_ptr<const std::string> principal,
-                                      std::optional<std::chrono::milliseconds> ttl);
-    /// The notifications/tasks message that tells @p listener the state of @p record.
-    static std::shared_ptr<const std::string> task_notification_wire(const TaskRecord& record,
-                                                                     const Listener& listener);
-    /// Sends the state of a task to the subscriptions/listen streams that asked for it.
-    static Task<void> notify_task(std::shared_ptr<Impl> impl, std::shared_ptr<const TaskRecord> record);
-    static Task<void> notify_task_if_alive(std::weak_ptr<Impl> impl,
-                                           std::shared_ptr<const TaskRecord> record);
-    /// Cancels the handlers of the tasks that run in this process.
-    void abandon_tasks();
-    [[nodiscard]] static std::string missing_tasks_extension_wire(const RequestId& id);
-
     Task<nlohmann::json> invoke_tool_impl(CallToolParams params,
                                           std::shared_ptr<std::atomic<bool>> cancelled,
                                           std::optional<ProgressToken> progress_token,
@@ -1501,47 +1458,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
     /// validates them before the request reaches the server.
     detail::ParamHeaderCheck make_param_header_check();
-
-    /// Sends a request to the client. @p related_request, when set, is the id as JSON text of the
-    /// client request whose handler asks (see RequestScope::related_request).
-    Task<nlohmann::json> send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
-                                      const std::string& method,
-                                      const std::optional<nlohmann::json>& params,
-                                      std::shared_ptr<const std::string> related_request = nullptr);
-    static Task<nlohmann::json> await_reverse_response(
-        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
-        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
-        std::shared_ptr<const std::string> related_request);
-    static Task<nlohmann::json> await_reverse_response_on_strand(
-        std::shared_ptr<Session> session, std::shared_ptr<const std::string> wire, std::int64_t id,
-        std::chrono::milliseconds timeout, std::shared_ptr<std::atomic<bool>> cancelled,
-        std::shared_ptr<const std::string> related_request);
-    /// Writes @p wire to the session, as related to @p related_request when that is set.
-    static Task<void> write_to_session(const Session& session, std::shared_ptr<const std::string> wire,
-                                       const std::shared_ptr<const std::string>& related_request);
-    Task<void> send_notification(const std::string& method,
-                                 const std::optional<nlohmann::json>& params);
-    /// send_notification() as part of a notification to every session sharing the registry: a
-    /// session that cannot take it, such as one closing meanwhile, misses it without stopping the
-    /// notification of the others.
-    Task<void> send_broadcast(const std::string& method);
-    /// notify_resource_updated() in the same way.
-    Task<void> broadcast_resource_updated(const std::string& uri);
-    /// Sends the notification for @p topic on every open subscriptions/listen stream that opted in
-    /// to it; @p uri names the resource of a resources/updated.
-    Task<void> notify_listeners(ListenTopic topic, std::shared_ptr<const std::string> uri);
-    /// Ends the streams of @p reason's kind: all of them, or those of @p session, or the one of
-    /// @p session whose request id is @p key.
-    void end_listeners(ListenEnd reason, const std::shared_ptr<Session>& session = nullptr,
-                       const std::string* key = nullptr);
-    void remove_listener(const std::shared_ptr<Listener>& listener);
-    /// Whether the session gets the plain list-changed notifications of 2025-11-25 and earlier. A
-    /// session that only serves 2026-07-28 requests gets what its streams opted in to instead.
-    [[nodiscard]] bool legacy_broadcast_wanted() const;
-    static Task<void> wait_for_listener_end(std::shared_ptr<Listener> listener);
-    Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
-                                                 std::shared_ptr<const std::string> uri);
-
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
     static std::string make_result_wire(const RequestId& id, nlohmann::json result);
     /// The response to a request: for a 2026-07-28 request, @p result with the members that
@@ -1567,6 +1483,90 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                                        std::string requested) const;
     std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
     [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
+
+    /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
+    /// client for input: the request is then answered input_required, and a retry carrying its
+    /// requestState resumes the handler.
+    Task<std::string> dispatch_mrtr(const nlohmann::json& json_msg, std::string_view method,
+                                    RequestScope scope);
+    Task<std::string> serve_mrtr_method(const nlohmann::json& json_msg, const RequestScope& scope);
+    /// What a retry's `Mcp-Param-*` headers disagree with, for the method that mirrors arguments.
+    std::optional<std::string> retry_header_mismatch(const nlohmann::json& json_msg,
+                                                     std::string_view method,
+                                                     const RequestScope& scope) const;
+    /// Serves a request of that kind for a client that declared no capability for answering a
+    /// request for input: the handler runs in the request, and a question it asks is refused as a
+    /// parked handler's would be.
+    Task<std::string> serve_without_parking(const nlohmann::json& json_msg, RequestScope scope);
+    static Task<void> run_mrtr_handler(std::shared_ptr<Impl> impl,
+                                       std::shared_ptr<detail::MrtrEntry> entry,
+                                       std::shared_ptr<const nlohmann::json> message,
+                                       RequestScope scope);
+    /// Files @p entry under a new requestState, giving up older handlers past the limits.
+    std::string park(const std::shared_ptr<detail::MrtrEntry>& entry,
+                     const std::shared_ptr<const std::string>& principal, std::string_view method,
+                     std::string digest, std::size_t bytes);
+    /// The state of a sealed retry, or nothing when the retry is refused. Counts the outcome.
+    std::optional<detail::MrtrSealedState> open_sealed_state(
+        const detail::sealed_state::Codec& codec, const MrtrOptions& options, const std::string& token,
+        const std::shared_ptr<const std::string>& principal, std::string_view method,
+        const std::string& digest);
+    /// Takes the handler filed under @p token for a retry, or returns null when the retry may not
+    /// resume it.
+    std::shared_ptr<detail::MrtrEntry> take_parked(const std::string& token,
+                                                   const std::shared_ptr<const std::string>& principal,
+                                                   std::string_view method, const std::string& digest);
+    void evict_parked(const std::string& token, MrtrEvictionReason reason);
+    void finish_eviction(ParkedRequest victim, MrtrEvictionReason reason, const MrtrOptions& options);
+    void abandon_all_parked();
+
+    /// Serves tasks/get, tasks/update and tasks/cancel.
+    Task<std::string> handle_task_wire(const nlohmann::json& json_msg, std::string_view method,
+                                       const RequestScope& scope);
+    /// The answer to a task request; sets @p changed to the task's new state when the request
+    /// changed it.
+    std::string serve_task_request(const nlohmann::json& json_msg, std::string_view method,
+                                   const RequestScope& scope,
+                                   std::shared_ptr<const TaskRecord>& changed);
+    /// Creates the task for a tools/call of a client that declared the tasks extension, starts its
+    /// handler apart from the request, and returns the answer carrying the task's handle.
+    /// The task's handler is called with @p arguments.
+    std::string start_task(const nlohmann::json& json_msg, const RequestScope& scope,
+                           const CallToolView& call, const nlohmann::json& arguments,
+                           const boost::asio::any_io_executor& executor);
+    /// Whether @p owner or the server as a whole already runs as many task handlers as the limits
+    /// allow. The caller holds task_runs_mutex.
+    bool task_limit_reached_locked(const std::string& owner) const;
+    /// Runs the handler of a task and records its outcome.
+    static Task<void> run_task_worker(std::shared_ptr<Impl> impl, std::shared_ptr<detail::TaskRun> run,
+                                      CallToolParams params,
+                                      std::shared_ptr<const RequestMetadata> request_meta,
+                                      std::shared_ptr<const std::string> principal,
+                                      std::optional<std::chrono::milliseconds> ttl);
+    /// The notifications/tasks message that tells @p listener the state of @p record.
+    static std::shared_ptr<const std::string> task_notification_wire(const TaskRecord& record,
+                                                                     const Listener& listener);
+    /// Sends the state of a task to the subscriptions/listen streams that asked for it.
+    static Task<void> notify_task(std::shared_ptr<Impl> impl, std::shared_ptr<const TaskRecord> record);
+    static Task<void> notify_task_if_alive(std::weak_ptr<Impl> impl,
+                                           std::shared_ptr<const TaskRecord> record);
+    /// Cancels the handlers of the tasks that run in this process.
+    void abandon_tasks();
+    [[nodiscard]] static std::string missing_tasks_extension_wire(const RequestId& id);
+
+    Task<std::string> handle_listen_wire(const nlohmann::json& json_msg, const RequestScope& scope);
+    /// Sends the notification for @p topic on every open subscriptions/listen stream that opted in
+    /// to it; @p uri names the resource of a resources/updated.
+    Task<void> notify_listeners(ListenTopic topic, std::shared_ptr<const std::string> uri);
+    /// Ends the streams of @p reason's kind: all of them, or those of @p session, or the one of
+    /// @p session whose request id is @p key.
+    void end_listeners(ListenEnd reason, const std::shared_ptr<Session>& session = nullptr,
+                       const std::string* key = nullptr);
+    void remove_listener(const std::shared_ptr<Listener>& listener);
+    /// Whether the session gets the plain list-changed notifications of 2025-11-25 and earlier. A
+    /// session that only serves 2026-07-28 requests gets what its streams opted in to instead.
+    [[nodiscard]] bool legacy_broadcast_wanted() const;
+    static Task<void> wait_for_listener_end(std::shared_ptr<Listener> listener);
 };
 
 }  // namespace mcp
