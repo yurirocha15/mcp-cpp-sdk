@@ -922,6 +922,55 @@ TEST(AuthMetadataRedirectTest, FollowsARelativeRedirectWhoseQueryNamesAUrl) {
     EXPECT_EQ(server.targets()[1], "/moved?from=http://example.com/");
 }
 
+// A Location that is a relative path resolves against the directory of the URL that answered,
+// without that URL's query, and against the root when the URL has no path (RFC 3986 section 5.2).
+TEST(AuthMetadataRedirectTest, FollowsPathRelativeRedirectsFromTheAnsweringDirectory) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+
+    server.set_handler([](const http::request<http::string_body>& request) {
+        const auto redirect = [](const char* location) {
+            http::response<http::string_body> response{http::status::found, 11};
+            response.set(http::field::location, location);
+            return response;
+        };
+        if (request.target() == "/meta/prm?tenant=1") {
+            return redirect("moved.json");
+        }
+        if (request.target() == "/meta/moved.json") {
+            return redirect("final.json?v=2");
+        }
+        if (request.target() == "/") {
+            return redirect("start.json");
+        }
+        return json_response({{"ok", true}});
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
+
+    std::string failure;
+    json nested;
+    json rooted;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        client.set_metadata_policy(loopback_policy(server.origin()));
+        try {
+            nested = co_await client.get_json(server.base_url() + "/meta/prm?tenant=1");
+            rooted = co_await client.get_json(server.base_url());
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        server.close();
+    });
+
+    io_ctx.run();
+
+    EXPECT_EQ(failure, "");
+    EXPECT_EQ(nested, json({{"ok", true}}));
+    EXPECT_EQ(rooted, json({{"ok", true}}));
+    EXPECT_EQ(server.targets(), (std::vector<std::string>{"/meta/prm?tenant=1", "/meta/moved.json",
+                                                          "/meta/final.json?v=2", "/", "/start.json"}));
+}
+
 TEST(AuthMetadataSizeCapTest, RejectsAnOversizedMetadataResponse) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
