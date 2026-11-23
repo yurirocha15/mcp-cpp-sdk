@@ -1,6 +1,6 @@
-#include "../detail/tls.hpp"
+#include "mcp/detail/net/tls.hpp"
 
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 #include <boost/asio/error.hpp>
 #include <boost/asio/ip/address.hpp>
@@ -400,7 +400,7 @@ void prepare_client_ssl(SSL* ssl, const std::string& server_name) {
         // An address is checked against the certificate's IP addresses, and RFC 6066 allows no
         // address in SNI.
         if (X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), server_name.c_str()) != 1) {
-            throw TlsError(TlsError::Kind::eHandshakeFailed,
+            throw TlsError(TlsError::Reason::eHandshakeFailed,
                            "TLS to " + server_name + " failed: the address cannot be checked");
         }
         return;
@@ -411,7 +411,7 @@ void prepare_client_ssl(SSL* ssl, const std::string& server_name) {
     if (SSL_set1_host(ssl, server_name.c_str()) != 1 ||
         SSL_set_tlsext_host_name(ssl, const_cast<char*>(server_name.c_str())) != 1) {
         ERR_clear_error();
-        throw TlsError(TlsError::Kind::eHandshakeFailed,
+        throw TlsError(TlsError::Reason::eHandshakeFailed,
                        "TLS to " + server_name + " failed: the host name cannot be checked");
     }
 }
@@ -436,60 +436,60 @@ struct HandshakeSides {
 TlsError verification_failure(SSL* ssl, const HandshakeSides& sides) {
     const long result = ssl != nullptr ? SSL_get_verify_result(ssl) : X509_V_OK;
     const std::string detail = X509_verify_cert_error_string(result);
-    TlsError::Kind kind = TlsError::Kind::eUntrustedCertificate;
+    TlsError::Reason reason = TlsError::Reason::eUntrustedCertificate;
     std::string what = "the " + sides.peer + " certificate is not trusted";
     switch (result) {
         case X509_V_ERR_CERT_HAS_EXPIRED:
         case X509_V_ERR_CERT_NOT_YET_VALID:
-            kind = TlsError::Kind::eExpiredCertificate;
+            reason = TlsError::Reason::eExpiredCertificate;
             what = "the " + sides.peer + " certificate " +
                    (result == X509_V_ERR_CERT_HAS_EXPIRED ? "has expired" : "is not valid yet");
             break;
         case X509_V_ERR_HOSTNAME_MISMATCH:
         case X509_V_ERR_IP_ADDRESS_MISMATCH:
-            kind = TlsError::Kind::eHostnameMismatch;
+            reason = TlsError::Reason::eHostnameMismatch;
             what = "the certificate does not name " + sides.host;
             break;
         default:
             break;
     }
-    return {kind, sides.prefix + what + " (" + detail + ")"};
+    return {reason, sides.prefix + what + " (" + detail + ")"};
 }
 
 TlsError describe_handshake_failure(const boost::system::error_code& error, SSL* ssl,
                                     const HandshakeSides& sides, bool timed_out) {
     const auto& prefix = sides.prefix;
     if (timed_out) {
-        return {TlsError::Kind::eHandshakeTimeout, prefix + "the handshake did not finish in time"};
+        return {TlsError::Reason::eHandshakeTimeout, prefix + "the handshake did not finish in time"};
     }
     if (is_ssl_error(error)) {
         switch (ssl_reason(error)) {
             case SSL_R_CERTIFICATE_VERIFY_FAILED:
                 return verification_failure(ssl, sides);
             case SSL_R_PEER_DID_NOT_RETURN_A_CERTIFICATE:
-                return {TlsError::Kind::eHandshakeFailed,
+                return {TlsError::Reason::eHandshakeFailed,
                         prefix + "the " + sides.peer + " showed no certificate"};
             case SSL_R_UNSUPPORTED_PROTOCOL:
             case SSL_R_NO_PROTOCOLS_AVAILABLE:
             case SSL_R_TLSV1_ALERT_PROTOCOL_VERSION:
             case SSL_R_VERSION_TOO_LOW:
-                return {TlsError::Kind::eProtocolVersion,
+                return {TlsError::Reason::eProtocolVersion,
                         prefix + "no TLS version in common (" + error.message() + ")"};
             case SSL_R_WRONG_VERSION_NUMBER:
             case SSL_R_PACKET_LENGTH_TOO_LONG:
             case SSL_R_HTTP_REQUEST:
             case SSL_R_HTTPS_PROXY_REQUEST:
-                return {TlsError::Kind::eNotTls,
+                return {TlsError::Reason::eNotTls,
                         prefix + "the " + sides.peer + " does not speak TLS (" + error.message() + ")"};
             default:
-                return {TlsError::Kind::eHandshakeFailed, prefix + error.message()};
+                return {TlsError::Reason::eHandshakeFailed, prefix + error.message()};
         }
     }
     if (is_tls_truncation(error) || error == net::error::eof || error == net::error::connection_reset) {
-        return {TlsError::Kind::eHandshakeFailed,
+        return {TlsError::Reason::eHandshakeFailed,
                 prefix + "the " + sides.peer + " closed the connection during the handshake"};
     }
-    return {TlsError::Kind::eHandshakeFailed, prefix + error.message()};
+    return {TlsError::Reason::eHandshakeFailed, prefix + error.message()};
 }
 
 }  // namespace
@@ -521,13 +521,13 @@ std::unique_ptr<TlsError> established_failure(const boost::system::error_code& e
                                               const std::string& host) {
     if (is_tls_truncation(error)) {
         return std::make_unique<TlsError>(
-            TlsError::Kind::eTruncated,
+            TlsError::Reason::eTruncated,
             "TLS to " + host + " failed: the connection ended without close_notify");
     }
     if (is_ssl_error(error)) {
         // A server that refuses the client certificate says so after a TLS 1.3 handshake, in an
         // alert the next read meets.
-        return std::make_unique<TlsError>(TlsError::Kind::eHandshakeFailed,
+        return std::make_unique<TlsError>(TlsError::Reason::eHandshakeFailed,
                                           "TLS to " + host + " failed: " + error.message());
     }
     return nullptr;

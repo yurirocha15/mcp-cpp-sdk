@@ -1,15 +1,17 @@
-#include "../detail/proxy.hpp"
+#include "mcp/detail/net/proxy.hpp"
+
+#include "mcp/detail/text/encoding.hpp"
 
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/network_v4.hpp>
 #include <boost/asio/ip/network_v6.hpp>
 
-#include <openssl/evp.h>
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace mcp {
@@ -24,52 +26,13 @@ std::string lower(std::string text) {
     return text;
 }
 
-std::string trim(std::string_view text) {
-    const auto first = text.find_first_not_of(" \t");
-    if (first == std::string_view::npos) {
-        return {};
+/// @p text, a percent-encoded part of the userinfo in @p origin, decoded.
+std::string decode_credential(std::string_view text, const std::string& origin) {
+    auto decoded = detail::percent_decode(text);
+    if (!decoded) {
+        throw std::invalid_argument(origin + " holds a malformed percent-encoded credential");
     }
-    const auto last = text.find_last_not_of(" \t");
-    return std::string(text.substr(first, last - first + 1));
-}
-
-int hex_value(char symbol) {
-    if (symbol >= '0' && symbol <= '9') {
-        return symbol - '0';
-    }
-    const char folded = static_cast<char>(std::tolower(static_cast<unsigned char>(symbol)));
-    if (folded >= 'a' && folded <= 'f') {
-        return folded - 'a' + 10;
-    }
-    return -1;
-}
-
-std::string percent_decode(std::string_view text, const std::string& origin) {
-    std::string result;
-    result.reserve(text.size());
-    for (std::size_t index = 0; index < text.size(); ++index) {
-        if (text[index] != '%') {
-            result.push_back(text[index]);
-            continue;
-        }
-        const int high = index + 2 < text.size() ? hex_value(text[index + 1]) : -1;
-        const int low = index + 2 < text.size() ? hex_value(text[index + 2]) : -1;
-        if (high < 0 || low < 0) {
-            throw std::invalid_argument(origin + " holds a malformed percent-encoded credential");
-        }
-        result.push_back(static_cast<char>(high * 16 + low));
-        index += 2;
-    }
-    return result;
-}
-
-std::string base64(const std::string& bytes) {
-    std::string encoded(4 * ((bytes.size() + 2) / 3), '\0');
-    const int length = EVP_EncodeBlock(reinterpret_cast<unsigned char*>(encoded.data()),
-                                       reinterpret_cast<const unsigned char*>(bytes.data()),
-                                       static_cast<int>(bytes.size()));
-    encoded.resize(static_cast<std::size_t>(length));
-    return encoded;
+    return std::move(*decoded);
 }
 
 /// Splits `host[:port]` or `[v6][:port]`. The port is empty when the authority names none.
@@ -106,7 +69,7 @@ bool is_port(const std::string& text) {
 
 /// Whether one NO_PROXY entry covers @p host (lower case, no brackets) on @p port.
 bool entry_matches(const std::string& raw_entry, const std::string& host, const std::string& port) {
-    const auto entry = lower(trim(raw_entry));
+    const auto entry = lower(detail::trim_blanks(raw_entry));
     if (entry.empty()) {
         return false;
     }
@@ -158,8 +121,17 @@ bool entry_matches(const std::string& raw_entry, const std::string& host, const 
 
 namespace detail {
 
+std::string trim_blanks(std::string_view text) {
+    const auto first = text.find_first_not_of(" \t");
+    if (first == std::string_view::npos) {
+        return {};
+    }
+    const auto last = text.find_last_not_of(" \t");
+    return std::string(text.substr(first, last - first + 1));
+}
+
 ProxyRoute parse_proxy_url(const std::string& url, const std::string& origin) {
-    std::string rest = trim(url);
+    std::string rest = trim_blanks(url);
     const auto scheme_end = rest.find("://");
     if (scheme_end != std::string::npos) {
         const auto scheme = lower(rest.substr(0, scheme_end));
@@ -176,11 +148,11 @@ ProxyRoute parse_proxy_url(const std::string& url, const std::string& origin) {
         const auto userinfo = authority.substr(0, at);
         authority.erase(0, at + 1);
         const auto colon = userinfo.find(':');
-        const auto user = percent_decode(userinfo.substr(0, colon), origin);
+        const auto user = decode_credential(userinfo.substr(0, colon), origin);
         const auto password = colon == std::string::npos
                                   ? std::string()
-                                  : percent_decode(userinfo.substr(colon + 1), origin);
-        route.authorization = "Basic " + base64(user + ":" + password);
+                                  : decode_credential(userinfo.substr(colon + 1), origin);
+        route.authorization = "Basic " + detail::base64_encode(user + ":" + password);
     }
     if (!split_host_port(authority, route.host, route.port) || route.host.empty()) {
         throw std::invalid_argument(origin + " names no proxy host");

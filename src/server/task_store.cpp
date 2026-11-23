@@ -1,5 +1,5 @@
-#include <mcp/detail/secure_random.hpp>
 #include <mcp/server/task_store.hpp>
+#include "mcp/detail/text/secure_random.hpp"
 
 #include <algorithm>
 #include <cstdint>

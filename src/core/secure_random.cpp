@@ -1,12 +1,12 @@
+#include "mcp/detail/text/secure_random.hpp"
 #include <mcp/core/constants.hpp>
-#include <mcp/detail/secure_random.hpp>
 
 #include <openssl/rand.h>
 
 #include <cstddef>
 #include <stdexcept>
 #include <vector>
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 namespace encoding = mcp::detail::constants::encoding;
 
@@ -32,6 +32,27 @@ std::string generate_secure_session_id() {
         }
     }
     return session_id;
+}
+
+std::string generate_random_string(std::size_t length) {
+    // Bytes at or above the largest multiple of the alphabet's size are drawn again, so that every
+    // character is equally likely.
+    static const std::size_t s_charset_size = encoding::g_UNRESERVED_CHARS.size();
+    static const auto s_bias_limit =
+        static_cast<unsigned char>((256 / s_charset_size) * s_charset_size);
+
+    std::string result;
+    result.reserve(length);
+    while (result.size() < length) {
+        unsigned char byte = 0;
+        if (RAND_bytes(&byte, 1) != 1) {
+            throw std::runtime_error("RAND_bytes failed");
+        }
+        if (byte < s_bias_limit) {
+            result.push_back(encoding::g_UNRESERVED_CHARS[byte % s_charset_size]);
+        }
+    }
+    return result;
 }
 
 }  // namespace mcp::detail

@@ -1,30 +1,31 @@
-#include "../detail/accept_retry.hpp"
-#include "../detail/beast_string.hpp"
-#include "../detail/connection.hpp"
-#include "../detail/constants.hpp"
-#include "../detail/host_policy.hpp"
-#include "../detail/http_limits.hpp"
-#include "../detail/http_request_metadata.hpp"
-#include "../detail/jsonrpc_envelope.hpp"
-#include "../detail/memory_transport_read.hpp"
-#include "../detail/modern_methods.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/principal.hpp"
-#include "../detail/scope_challenge.hpp"
-#include "../detail/strand_executor.hpp"
-#include "../detail/tls.hpp"
-#include "../detail/tls_accept.hpp"
-#include "../server/run_control.hpp"
+#include "accept_retry.hpp"
+#include "mcp/detail/async/memory_transport_read.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/jsonrpc_envelope.hpp"
+#include "mcp/detail/json/peer_json.hpp"
+#include "mcp/detail/net/beast_string.hpp"
+#include "mcp/detail/net/connection.hpp"
+#include "mcp/detail/net/tls.hpp"
+#include "mcp/detail/protocol/modern_methods.hpp"
+#include "mcp/detail/server/run_control.hpp"
+#include "mcp/detail/transport/host_policy.hpp"
+#include "mcp/detail/transport/http_limits.hpp"
+#include "mcp/detail/transport/http_request_metadata.hpp"
+#include "mcp/detail/transport/principal.hpp"
 #include "modern_exchange.hpp"
+#include "scope_challenge.hpp"
+#include "tls_accept.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/secure_random.hpp>
+#include <mcp/server/server.hpp>
 #include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
 #include <mcp/transport/memory.hpp>
 #include <mcp/transport/tls.hpp>
+#include "mcp/detail/text/secure_random.hpp"
 
 #include <boost/asio/bind_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -61,6 +62,7 @@
 #include <variant>
 #include <vector>
 
+namespace methods = mcp::constants::methods;
 namespace http_server = mcp::constants::http_server;
 
 namespace mcp {
@@ -196,7 +198,7 @@ inline std::string generate_session_id() { return detail::generate_secure_sessio
 inline bool is_initialize_request(const nlohmann::json& request_json) {
     return request_json.is_object() && request_json.contains("method") &&
            request_json.at("method").is_string() &&
-           request_json.at("method").get<std::string>() == "initialize";
+           request_json.at("method").get<std::string>() == methods::g_INITIALIZE;
 }
 
 inline std::optional<std::string> initialize_protocol_version(const nlohmann::json& request_json) {
@@ -375,33 +377,38 @@ struct StreamableHttpSessionManager::Impl {
         boost::system::error_code ec;
         const auto bind_address = boost::asio::ip::make_address(host, ec);
         if (ec) {
-            throw std::runtime_error("Invalid bind address: " + host);
+            throw TransportError(TransportError::Kind::eConnect, "Invalid bind address: " + host);
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, port);
         (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
-            throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to open HTTP acceptor: " + ec.message(), ec);
         }
 
         (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
-            throw std::runtime_error("Failed to set reuse_address: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to set reuse_address: " + ec.message(), ec);
         }
 
         (void)acceptor.bind(endpoint, ec);
         if (ec) {
-            throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to bind HTTP acceptor: " + ec.message(), ec);
         }
 
         (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
-            throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to listen on HTTP acceptor: " + ec.message(), ec);
         }
 
         const auto bound = acceptor.local_endpoint(ec);
         if (ec) {
-            throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to query HTTP acceptor endpoint: " + ec.message(), ec);
         }
         port = bound.port();
     }
@@ -2207,7 +2214,10 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
                 co_return;
             }
             if (!detail::accept_failure_can_pass(err.code())) {
-                throw;
+                throw TransportError(TransportError::Kind::eConnect,
+                                     "StreamableHttpSessionManager could not accept a connection: " +
+                                         err.code().message(),
+                                     err.code());
             }
             retry = true;
         }

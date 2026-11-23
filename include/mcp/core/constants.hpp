@@ -115,6 +115,92 @@ inline constexpr int g_REQUEST_CANCELLED = -32800;
 
 }  // namespace jsonrpc
 
+/// The JSON-RPC methods the SDK sends and handles. Each name spells its method in upper case, with
+/// `/` and each change from lower to upper case written as `_`.
+namespace methods {
+
+inline constexpr std::string_view g_INITIALIZE = "initialize";
+
+inline constexpr std::string_view g_PING = "ping";
+
+inline constexpr std::string_view g_SERVER_DISCOVER = "server/discover";
+
+inline constexpr std::string_view g_TOOLS_LIST = "tools/list";
+
+inline constexpr std::string_view g_TOOLS_CALL = "tools/call";
+
+inline constexpr std::string_view g_RESOURCES_LIST = "resources/list";
+
+inline constexpr std::string_view g_RESOURCES_READ = "resources/read";
+
+inline constexpr std::string_view g_RESOURCES_SUBSCRIBE = "resources/subscribe";
+
+inline constexpr std::string_view g_RESOURCES_UNSUBSCRIBE = "resources/unsubscribe";
+
+inline constexpr std::string_view g_RESOURCES_TEMPLATES_LIST = "resources/templates/list";
+
+inline constexpr std::string_view g_PROMPTS_LIST = "prompts/list";
+
+inline constexpr std::string_view g_PROMPTS_GET = "prompts/get";
+
+inline constexpr std::string_view g_COMPLETION_COMPLETE = "completion/complete";
+
+inline constexpr std::string_view g_LOGGING_SET_LEVEL = "logging/setLevel";
+
+inline constexpr std::string_view g_SAMPLING_CREATE_MESSAGE = "sampling/createMessage";
+
+inline constexpr std::string_view g_ELICITATION_CREATE = "elicitation/create";
+
+inline constexpr std::string_view g_ROOTS_LIST = "roots/list";
+
+inline constexpr std::string_view g_TASKS_GET = "tasks/get";
+
+inline constexpr std::string_view g_TASKS_CANCEL = "tasks/cancel";
+
+inline constexpr std::string_view g_TASKS_UPDATE = "tasks/update";
+
+inline constexpr std::string_view g_SUBSCRIPTIONS_LISTEN = "subscriptions/listen";
+
+inline constexpr std::string_view g_NOTIFICATIONS_INITIALIZED = "notifications/initialized";
+
+inline constexpr std::string_view g_NOTIFICATIONS_CANCELLED = "notifications/cancelled";
+
+inline constexpr std::string_view g_NOTIFICATIONS_PROGRESS = "notifications/progress";
+
+inline constexpr std::string_view g_NOTIFICATIONS_MESSAGE = "notifications/message";
+
+inline constexpr std::string_view g_NOTIFICATIONS_TOOLS_LIST_CHANGED =
+    "notifications/tools/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_RESOURCES_LIST_CHANGED =
+    "notifications/resources/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_RESOURCES_UPDATED = "notifications/resources/updated";
+
+inline constexpr std::string_view g_NOTIFICATIONS_PROMPTS_LIST_CHANGED =
+    "notifications/prompts/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_ROOTS_LIST_CHANGED =
+    "notifications/roots/list_changed";
+
+inline constexpr std::string_view g_NOTIFICATIONS_TASKS = "notifications/tasks";
+
+inline constexpr std::string_view g_NOTIFICATIONS_SUBSCRIPTIONS_ACKNOWLEDGED =
+    "notifications/subscriptions/acknowledged";
+
+inline constexpr std::string_view g_NOTIFICATIONS_ELICITATION_COMPLETE =
+    "notifications/elicitation/complete";
+
+// Methods of the skills extension.
+
+inline constexpr std::string_view g_SKILLS_LIST = "skills/list";
+
+inline constexpr std::string_view g_SKILLS_GET = "skills/get";
+
+inline constexpr std::string_view g_RESOURCES_DIRECTORY_READ = "resources/directory/read";
+
+}  // namespace methods
+
 /// Protocol revisions the SDK speaks and the lists that group them.
 namespace protocol {
 
@@ -309,9 +395,6 @@ inline constexpr std::size_t g_MIN_VERIFIER_LENGTH = 43;
 /// Longest PKCE code verifier, in characters (RFC 7636).
 inline constexpr std::size_t g_MAX_VERIFIER_LENGTH = 128;
 
-/// Size of a SHA-256 digest, in bytes.
-inline constexpr std::size_t g_SHA256_DIGEST_LENGTH = 32;
-
 /// Length of the PKCE code verifiers the client generates, in characters.
 inline constexpr std::size_t g_DEFAULT_VERIFIER_LENGTH = 64;
 
@@ -345,26 +428,5 @@ namespace http_server {
 inline constexpr std::size_t g_DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 
 }  // namespace http_server
-
-/// Bounds of the JSON parsing helpers.
-namespace json_parse {
-
-/// The deepest nesting of arrays and objects parse_json_fast() reads itself, one recursion per
-/// level; a document nested this deep parses on a thread with a 256 KiB stack, also when built
-/// with AddressSanitizer. Deeper text is left to nlohmann::json, whose parser keeps its own stack.
-inline constexpr std::size_t g_MAX_FAST_DEPTH = 128;
-
-}  // namespace json_parse
-
-/// Accounting constants of the serialized transport writer.
-namespace transport_writer {
-
-/// What queued_bytes() counts for each queued message besides its text: an allowance for the memory
-/// the queue holds per message (the shared text, the operation with its timer, the queue slot and
-/// the posted handler). A bound on queued_bytes() then bounds memory even when the messages are
-/// small.
-inline constexpr std::size_t g_QUEUED_MESSAGE_OVERHEAD = 512;
-
-}  // namespace transport_writer
 
 }  // namespace mcp::constants

@@ -4,9 +4,10 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
-#include "../support/tls_test_support.hpp"
+#include "support/hang_guard.hpp"
+#include "support/network_error.hpp"
+#include "support/spawn.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -134,13 +135,13 @@ std::string exchange(asio::io_context& io, mcp::WebSocketClientTransport& client
     return answer.get();
 }
 
-/// The kind of the TlsError that @p action throws, if it throws one.
+/// The reason of the TlsError that @p action throws, if it throws one.
 template <typename Action>
-std::optional<TlsError::Kind> tls_failure(Action action) {
+std::optional<TlsError::Reason> tls_failure(Action action) {
     try {
         action();
     } catch (const TlsError& error) {
-        return error.kind();
+        return error.reason();
     } catch (...) {
     }
     return std::nullopt;
@@ -165,7 +166,7 @@ TEST(WebSocketTlsTest, TheClientChecksTheServerCertificate) {
                                             std::to_string(untrusted.port()));
     by_system.set_tls(nullptr);
     EXPECT_EQ(tls_failure([&] { exchange(io, by_system, "hello"); }),
-              TlsError::Kind::eUntrustedCertificate);
+              TlsError::Reason::eUntrustedCertificate);
 
     EchoServer other(server_context());
     mcp::WebSocketClientTransport wrong_name(io.get_executor(), "127.0.0.1",
@@ -173,7 +174,7 @@ TEST(WebSocketTlsTest, TheClientChecksTheServerCertificate) {
     wrong_name.set_tls(trusting_ca());
     wrong_name.set_server_name("other.example.test");
     EXPECT_EQ(tls_failure([&] { exchange(io, wrong_name, "hello"); }),
-              TlsError::Kind::eHostnameMismatch);
+              TlsError::Reason::eHostnameMismatch);
     EXPECT_THROW(wrong_name.set_server_name("late.example.test"), std::logic_error);
 }
 
@@ -186,7 +187,7 @@ TEST(WebSocketTlsTest, AServerOverTlsRefusesAPlainClient) {
 
     const auto ending = server.ending();
     ASSERT_TRUE(ending);
-    EXPECT_EQ(tls_failure([&] { std::rethrow_exception(ending); }), TlsError::Kind::eNotTls);
+    EXPECT_EQ(tls_failure([&] { std::rethrow_exception(ending); }), TlsError::Reason::eNotTls);
 }
 
 TEST(WebSocketTlsTest, ARequiredClientCertificateIsChecked) {
@@ -243,8 +244,10 @@ TEST(WebSocketTlsTest, APeerThatClosesGetsTheClosingHandshakeAndCloseNotify) {
     ASSERT_TRUE(ending);
     try {
         std::rethrow_exception(ending);
-    } catch (const boost::system::system_error& closed) {
-        EXPECT_EQ(closed.code(), beast::websocket::error::closed) << closed.code().message();
+    } catch (const mcp::TransportError& closed) {
+        EXPECT_TRUE(mcp_test::is_network_error(closed, mcp::TransportError::Kind::eClosed,
+                                               beast::websocket::error::closed))
+            << closed.what();
     } catch (const std::exception& other) {
         ADD_FAILURE() << other.what();
     }

@@ -98,6 +98,7 @@ set(MCP_CPP_SDK_SOURCES
     src/core/context.cpp
     src/core/runtime.cpp
     src/core/regex.cpp
+    src/core/encoding.cpp
     src/core/secure_random.cpp
     src/core/json_dump.cpp
     src/core/json_parse.cpp
@@ -125,15 +126,35 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/challenge.cpp
     src/auth/client_identity.cpp
     src/auth/metadata_policy.cpp
-    src/auth/oauth.cpp
+    src/auth/auth_middleware.cpp
+    src/auth/authenticator.cpp
+    src/auth/oauth_authenticator.cpp
+    src/auth/oauth_authorization_manager.cpp
+    src/auth/oauth_client_transport.cpp
+    src/auth/oauth_discovery.cpp
+    src/auth/oauth_http_client.cpp
+    src/auth/pkce.cpp
+    src/auth/token_store.cpp
     src/auth/grant_flow.cpp
     src/auth/client_authentication.cpp
     src/auth/client_credentials.cpp
     src/auth/enterprise_authorization.cpp
     src/client/client.cpp
+    src/client/cancellation_token.cpp
+    src/client/client_protocol.cpp
+    src/client/error.cpp
+    src/client/subscription.cpp
+    src/client/sync_client.cpp
+    src/client/task_handle.cpp
+    src/client/client_connect.cpp
+    src/client/client_input.cpp
+    src/client/client_listen.cpp
+    src/client/client_session.cpp
+    src/client/client_tasks.cpp
+    src/client/client_tools.cpp
     src/client/endpoint.cpp
     src/client/restarting_stdio_transport.cpp
-    src/detail/sealed_state.cpp
+    src/server/sealed_state.cpp
     src/client/stdio_session.cpp
     src/client/apps.cpp
     src/client/skills.cpp
@@ -147,6 +168,14 @@ set(MCP_CPP_SDK_SOURCES
     src/server/task_run.cpp
     src/server/task_store.cpp
     src/server/server.cpp
+    src/server/protocol_policy.cpp
+    src/server/sync_server.cpp
+    src/server/tool_params.cpp
+    src/server/server_dispatch.cpp
+    src/server/server_listen.cpp
+    src/server/server_mrtr.cpp
+    src/server/server_session.cpp
+    src/server/server_tasks.cpp
     src/transport/stdio.cpp
     src/transport/transport.cpp
     src/transport/stdio_client.cpp
@@ -162,8 +191,22 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/tls_roots.cpp
     src/transport/http_session_manager.cpp
     src/transport/modern_exchange.cpp
-    src/transport/websocket.cpp
-    src/transport/transport_factories.cpp)
+    src/transport/websocket.cpp)
+
+# The headers the library's sources share live in src/include and are never
+# installed. They share the mcp/ prefix with the public headers, so no path may
+# be in both trees: the include directory searched first would hide the other.
+set(MCP_CPP_SDK_PRIVATE_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/include")
+file(
+  GLOB_RECURSE MCP_CPP_SDK_PRIVATE_HEADERS CONFIGURE_DEPENDS
+  RELATIVE "${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}"
+  "${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}/*")
+foreach(header IN LISTS MCP_CPP_SDK_PRIVATE_HEADERS)
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/include/${header}")
+    message(FATAL_ERROR "src/include/${header} has the include path of "
+                        "the public include/${header}")
+  endif()
+endforeach()
 
 # Configure one installed SDK linkage variant.
 function(mcp_cpp_sdk_configure_library target)
@@ -173,7 +216,8 @@ function(mcp_cpp_sdk_configure_library target)
     ${target}
     PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
            $<BUILD_INTERFACE:${MCP_CPP_SDK_GENERATED_INCLUDE_DIR}>
-           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+           $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE ${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR})
   target_link_libraries(
     ${target} PUBLIC Boost::headers nlohmann_json::nlohmann_json OpenSSL::SSL
                      OpenSSL::Crypto)
@@ -217,10 +261,11 @@ if(MCP_CPP_SDK_BUILD_SHARED)
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # Keeps Beast's error categories and nlohmann_json's exception types shared
     # with the caller; see the headers.
+    set(MCP_CPP_SDK_DETAIL_DIR "${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}/mcp/detail")
     set(MCP_CPP_SDK_BEAST_VISIBILITY_HEADER
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/beast_error_visibility.hpp")
+        "${MCP_CPP_SDK_DETAIL_DIR}/net/beast_error_visibility.hpp")
     set(MCP_CPP_SDK_JSON_VISIBILITY_HEADER
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/detail/json_error_visibility.hpp")
+        "${MCP_CPP_SDK_DETAIL_DIR}/json/json_error_visibility.hpp")
     target_compile_options(
       mcp-cpp-sdk-shared
       PRIVATE "SHELL:-include ${MCP_CPP_SDK_BEAST_VISIBILITY_HEADER}"
@@ -437,6 +482,7 @@ if(BUILD_TESTING)
       test/core/tasks_test.cpp
       test/core/regex_test.cpp
       test/core/sealed_state_test.cpp
+      test/core/encoding_test.cpp
       test/core/serialized_transport_writer_test.cpp
       test/core/strand_executor_test.cpp
       test/server/roots_test.cpp
@@ -462,6 +508,7 @@ if(BUILD_TESTING)
       test/server/server_run_control_test.cpp
       test/transport/transport_stdio_test.cpp
       test/transport/transport_stdio_client_test.cpp
+      test/transport/network_failure_test.cpp
       test/transport/transport_ws_test.cpp
       test/transport/transport_http_test.cpp
       test/transport/transport_http_resumability_test.cpp
@@ -495,7 +542,6 @@ if(BUILD_TESTING)
       test/server/server_stdio_test.cpp
       test/server/server_http_test.cpp
       test/server/server_tool_test.cpp
-      test/transport/transport_factory_test.cpp
       test/core/gcc11_sso_crash_test.cpp
       test/core/json_peer_input_matrix_test.cpp
       test/support/spawn.cpp
@@ -505,9 +551,13 @@ if(BUILD_TESTING)
   # sources themselves.
   add_executable(
     mcp-sdk-tests
-    ${TEST_SRCS} src/detail/sealed_state.cpp src/protocol/schema_uri.cpp
+    ${TEST_SRCS} src/server/sealed_state.cpp src/protocol/schema_uri.cpp
     src/transport/proxy.cpp test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # The tests reach the library's private headers and their own shared ones.
+  target_include_directories(
+    mcp-sdk-tests PRIVATE ${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}
+                          ${CMAKE_CURRENT_SOURCE_DIR}/test/include)
   # Compiled apart from the test program, whose unity build would make Task
   # complete: the sync-mode headers must take synchronous handlers while Task is
   # only declared.
@@ -639,7 +689,7 @@ if(BUILD_TESTING)
     # the test program rebuilds.
     set_source_files_properties(
       test/support/test_timeout.cpp test/support/resolve_gate.cpp
-      test/support/socket_gate.cpp src/detail/sealed_state.cpp
+      test/support/socket_gate.cpp src/server/sealed_state.cpp
       src/protocol/schema_uri.cpp src/transport/proxy.cpp
       PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     # A fixture in a test file's unnamed namespace is the base of the test

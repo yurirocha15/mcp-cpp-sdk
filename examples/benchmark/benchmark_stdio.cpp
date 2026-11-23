@@ -71,7 +71,7 @@ int main() {
         client_info.version = "1.0.0";
 
         // Create bidirectional memory transport pair
-        auto [server_transport, client_transport] = create_memory_transport_pair(io_ctx.get_executor());
+        auto [server_transport, client_transport] = make_memory_transport_pair(io_ctx.get_executor());
 
         // ========== BENCHMARK COROUTINE ==========
         asio::co_spawn(

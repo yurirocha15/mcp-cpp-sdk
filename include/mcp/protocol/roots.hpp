@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -37,7 +38,7 @@ MCP_API void from_json(const nlohmann::json& json_obj, Root& root);
  * @brief Sent from the server to request a list of root URIs from the client.
  */
 struct ListRootsRequest {
-    std::string method = "roots/list";  ///< The method name.
+    std::string method{mcp::constants::methods::g_ROOTS_LIST};  ///< The method name.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const ListRootsRequest& value);

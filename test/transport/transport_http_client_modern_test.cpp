@@ -1,14 +1,14 @@
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../../src/detail/header_value.hpp"
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/detail/net/header_value.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_client.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -1292,7 +1292,7 @@ TEST(HttpClientModern, ABrokenResponseStreamEndsTheCallWithItsReason) {
 
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
     EXPECT_FALSE(nested);
-    EXPECT_NE(message.find("The connection to the server failed: "), std::string::npos) << message;
+    EXPECT_NE(message.find("HttpClientTransport lost its connection: "), std::string::npos) << message;
     EXPECT_EQ(message.find('['), std::string::npos) << message;
 }
 
@@ -2170,6 +2170,55 @@ void run_ending_streams(EndingStreams& streams, std::size_t wanted) {
 }
 
 }  // namespace
+
+// A legacy request whose event stream stays quiet past set_response_timeout() ends with
+// g_CONNECTION_CLOSED, and the message says it timed out rather than that the transport is closed.
+TEST(HttpClientLegacyStream, AStreamQuietPastTheResponseTimeoutEndsAsATimeout) {
+    asio::io_context io;
+    bool released = false;
+    RawServer raw(io, [&released](const Recorded& request) {
+        if (request.method == "GET") {
+            return status_reply(405);
+        }
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        if (method == "initialize") {
+            auto reply = json_reply(rpc_result(message, legacy_initialize_result()));
+            reply.headers.emplace_back("Mcp-Session-Id", "session-1");
+            return reply;
+        }
+        Reply reply;
+        if (method != "ping") {
+            reply.status = 202;
+            return reply;
+        }
+        reply.content_type = "text/event-stream";
+        reply.stream = {Step{": open\n\n", nullptr}, Step{"", [&released] { return released; }}};
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    transport->set_response_timeout(std::chrono::milliseconds(100));
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(transport, io.get_executor(), options);
+
+    int code = 0;
+    std::string message;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("quiet", "1.0");
+        try {
+            co_await client.ping();
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+            message = error.what();
+        }
+        released = true;
+        client.close();
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED) << message;
+    EXPECT_NE(message.find("timeout"), std::string::npos) << message;
+}
 
 // A GET stream the server ends at once is opened again no sooner than 100 ms later, whatever its
 // `retry` asks for, and the pause doubles each time a stream ends again carrying nothing. Only lower

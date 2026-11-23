@@ -1,6 +1,6 @@
 #include <mcp/protocol/schema.hpp>
 
-#include "../../src/detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
 
 #include <gtest/gtest.h>
 

@@ -1,8 +1,8 @@
 #include "restarting_stdio_transport.hpp"
 
-#include "../detail/constants.hpp"
-#include "../detail/jsonrpc_envelope.hpp"
-#include "../detail/spawn_awaitable.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/jsonrpc_envelope.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
@@ -26,6 +26,8 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+namespace methods = mcp::constants::methods;
 
 namespace mcp::detail {
 
@@ -119,7 +121,7 @@ struct RestartingStdioTransport::State {
         }
         const auto id = canonical_id(scanned->id);
         if (id.empty()) {
-            if (scanned->method == R"("notifications/cancelled")") {
+            if (is_method(scanned->method, methods::g_NOTIFICATIONS_CANCELLED)) {
                 if (const auto found = renamed.find(cancelled_id(message)); found != renamed.end()) {
                     message = with_id(message, nlohmann::json::parse(found->second), true);
                 }
@@ -180,9 +182,9 @@ struct RestartingStdioTransport::State {
             return same_process;
         }
         if (id.empty()) {
-            if (scanned->method == R"("notifications/initialized")") {
+            if (is_method(scanned->method, methods::g_NOTIFICATIONS_INITIALIZED)) {
                 initialized_notification = std::string(message);
-            } else if (scanned->method == R"("notifications/cancelled")") {
+            } else if (is_method(scanned->method, methods::g_NOTIFICATIONS_CANCELLED)) {
                 // A cancelled request may never be answered; it no longer waits.
                 const auto cancelled = cancelled_id(message);
                 if (const auto found = outstanding.find(cancelled); found != outstanding.end()) {
@@ -195,10 +197,10 @@ struct RestartingStdioTransport::State {
             return true;
         }
         outstanding.insert(id);
-        if (scanned->method == R"("subscriptions/listen")") {
+        if (is_method(scanned->method, methods::g_SUBSCRIPTIONS_LISTEN)) {
             listening.insert_or_assign(id, std::string(message));
         }
-        if (scanned->method == R"("initialize")") {
+        if (is_method(scanned->method, methods::g_INITIALIZE)) {
             initialize_request = std::string(message);
             initialize_id = id;
         }
@@ -220,14 +222,15 @@ struct RestartingStdioTransport::State {
     }
 
     /// Whether @p message answers the replayed initialize.
-    /// @throws std::runtime_error When it refuses it.
+    /// @throws TransportError When it refuses it.
     [[nodiscard]] bool is_initialize_answer(std::string_view message) const {
         const auto scanned = scan_jsonrpc_envelope(message);
         if (!scanned || !scanned->method.empty() || canonical_id(scanned->id) != initialize_id) {
             return false;
         }
         if (!scanned->has_result) {
-            throw std::runtime_error("The restarted server refused initialize");
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "The restarted server refused initialize");
         }
         return true;
     }
@@ -244,7 +247,7 @@ struct RestartingStdioTransport::State {
     static Task<void> write(std::shared_ptr<State> self, std::shared_ptr<std::string> message) {
         co_await wait_until_ready(self);
         if (self->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("transport closed");
+            throw TransportError(TransportError::Kind::eClosed, "transport closed");
         }
         if (!self->note_write(*message)) {
             co_return;
@@ -371,7 +374,7 @@ struct RestartingStdioTransport::State {
                 co_return message;
             }
             if (self->closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("transport closed");
+                throw TransportError(TransportError::Kind::eClosed, "transport closed");
             }
             if (self->restart_due) {
                 co_await start_again(self);

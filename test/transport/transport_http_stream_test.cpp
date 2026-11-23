@@ -1,11 +1,11 @@
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -661,7 +661,7 @@ TEST_F(HttpStreamTest, ResetAfterHalfCloseCancelsTheRequest) {
 // over HTTP without a stream drops its notifications rather than sending them to that session.
 TEST_F(HttpStreamTest, NotificationsStayOffAnotherTransportOfTheSharedServer) {
     std::shared_ptr<mcp::Server> server = make_server();
-    auto [client_end, server_end] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [client_end, server_end] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     mcp::StreamableHttpSessionManager manager(
         io_ctx_.get_executor(), "127.0.0.1", 20450,
         [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> { return nullptr; });

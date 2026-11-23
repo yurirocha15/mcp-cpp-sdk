@@ -278,7 +278,7 @@ MCP_API void from_json(const nlohmann::json& j, ServerCapabilities& cap);
  * @brief A ping request.
  */
 struct PingRequest {
-    std::string method = "ping";  ///< The method name.
+    std::string method{mcp::constants::methods::g_PING};  ///< The method name.
 };
 MCP_API void to_json(nlohmann::json& json_obj, const PingRequest& value);
 MCP_API void from_json(const nlohmann::json& json_obj, PingRequest& value);

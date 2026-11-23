@@ -1,8 +1,7 @@
-#include "../pipe_stream.hpp"
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/pipe_stream.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
@@ -11,6 +10,7 @@
 #include "mcp/transport/memory.hpp"
 #include "mcp/transport/stdio.hpp"
 #include "mcp/transport/websocket.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -654,7 +654,7 @@ TEST(ClientListen, AgainstSdkServerOverMemory) {
     boost::asio::io_context io;
     boost::asio::steady_timer guard(io);
     bool fired = false;
-    auto [client_transport, server_transport] = mcp::create_memory_transport_pair(io.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io.get_executor());
     auto server = make_listen_server();
     mcp::Client client(client_transport, io.get_executor(), modern_options());
     auto outcome = std::make_shared<ListenOutcome>();

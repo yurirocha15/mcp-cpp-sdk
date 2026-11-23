@@ -1,17 +1,17 @@
 #include <mcp/auth/enterprise_authorization.hpp>
 #include <mcp/core/async.hpp>
 
-#include "../detail/constants.hpp"
 #include "grant_flow.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/extensions.hpp>
+#include <mcp/server/server.hpp>
 
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
-
-namespace encoding = mcp::detail::constants::encoding;
 
 namespace mcp::auth {
 
@@ -50,12 +50,8 @@ class EnterpriseFlow final : public detail::GrantFlow {
     /// was issued for.
     Task<detail::GrantIdentity> identity() override {
         auto assertion = co_await provider_();
-        const auto digest = auth::detail::sha256(assertion.token_type + '\n' + assertion.token);
-        std::string text;
-        for (const auto byte : digest) {
-            text.push_back(encoding::g_HEX_DIGITS[byte >> 4]);
-            text.push_back(encoding::g_HEX_DIGITS[byte & 0x0F]);
-        }
+        auto text = mcp::detail::hex_encode(mcp::detail::digest_bytes(
+            mcp::detail::sha256(assertion.token_type + '\n' + assertion.token)));
         co_return detail::GrantIdentity{std::move(text), std::move(assertion)};
     }
 

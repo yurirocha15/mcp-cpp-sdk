@@ -1,4 +1,4 @@
-#include "schema_corpus.hpp"
+#include "support/schema_corpus.hpp"
 
 #include <mcp/protocol/schema.hpp>
 

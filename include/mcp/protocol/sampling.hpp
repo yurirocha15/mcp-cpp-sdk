@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/content.hpp>
@@ -165,8 +166,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, CreateMessageRequestParam
  * @brief A request from the server to sample an LLM via the client.
  */
 struct CreateMessageRequest {
-    std::string method = "sampling/createMessage";  ///< The method name.
-    CreateMessageRequestParams params;              ///< The request parameters.
+    std::string method{mcp::constants::methods::g_SAMPLING_CREATE_MESSAGE};  ///< The method name.
+    CreateMessageRequestParams params;  ///< The request parameters.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const CreateMessageRequest& value);

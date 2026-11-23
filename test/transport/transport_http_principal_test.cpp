@@ -1,14 +1,14 @@
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../../src/detail/principal.hpp"
+#include "mcp/detail/transport/principal.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/auth/oauth.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -115,14 +115,9 @@ std::string principal_of(const Reply& reply) {
 }
 
 std::string expected_digest(std::string_view authorization) {
-    constexpr std::string_view hex_digits = "0123456789abcdef";
-    std::string principal = "h:";
     authorization.remove_prefix(std::string_view("Bearer ").size());
-    for (const unsigned char byte : mcp::auth::detail::sha256(std::string(authorization))) {
-        principal += hex_digits[byte >> 4U];
-        principal += hex_digits[byte & 0x0FU];
-    }
-    return principal;
+    return "h:" +
+           mcp::detail::hex_encode(mcp::detail::digest_bytes(mcp::detail::sha256(authorization)));
 }
 
 /// Waits, a millisecond at a time, until @p condition holds. Gives up after g_hang_guard so a broken

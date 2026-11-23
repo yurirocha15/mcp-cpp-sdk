@@ -22,6 +22,10 @@
  * recommended) and a client secret.
  */
 
+namespace mcp {
+class Server;
+}  // namespace mcp
+
 namespace mcp::auth {
 
 /// Configuration of a ClientCredentialsAuthenticator.

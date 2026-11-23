@@ -1,8 +1,8 @@
-#include "../../src/detail/strand_executor.hpp"
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -33,7 +33,7 @@ class MemoryTransportTest : public ::testing::Test {
 };
 
 TEST_F(MemoryTransportTest, MultipleMessagesInOrder) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     bool success = false;
     std::string msg1, msg2, msg3;
@@ -59,7 +59,7 @@ TEST_F(MemoryTransportTest, MultipleMessagesInOrder) {
 }
 
 TEST_F(MemoryTransportTest, BidirectionalCommunication) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     bool success = false;
     std::string a_received, b_received;
@@ -82,7 +82,7 @@ TEST_F(MemoryTransportTest, BidirectionalCommunication) {
 }
 
 TEST_F(MemoryTransportTest, CloseOnOneSideAffectsOther) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     bool exception_thrown = false;
 
@@ -92,8 +92,9 @@ TEST_F(MemoryTransportTest, CloseOnOneSideAffectsOther) {
                                  ta->close();
                                  try {
                                      co_await tb->read_message();
-                                 } catch (const std::runtime_error& e) {
+                                 } catch (const mcp::TransportError& e) {
                                      exception_thrown = true;
+                                     EXPECT_EQ(e.kind(), mcp::TransportError::Kind::eClosed);
                                      EXPECT_STREQ(e.what(), "transport closed");
                                  }
                              });
@@ -104,7 +105,7 @@ TEST_F(MemoryTransportTest, CloseOnOneSideAffectsOther) {
 }
 
 TEST_F(MemoryTransportTest, CloseIsIdempotent) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     (void)transport_b;
 
     transport_a->close();
@@ -117,8 +118,9 @@ TEST_F(MemoryTransportTest, CloseIsIdempotent) {
                              [ta = std::move(transport_a), &exception_thrown]() -> mcp::Task<void> {
                                  try {
                                      co_await ta->read_message();
-                                 } catch (const std::runtime_error& e) {
+                                 } catch (const mcp::TransportError& e) {
                                      exception_thrown = true;
+                                     EXPECT_EQ(e.kind(), mcp::TransportError::Kind::eClosed);
                                      EXPECT_STREQ(e.what(), "transport closed");
                                  }
                              });
@@ -129,7 +131,7 @@ TEST_F(MemoryTransportTest, CloseIsIdempotent) {
 }
 
 TEST_F(MemoryTransportTest, WriteAfterCloseThrows) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     (void)transport_b;
 
     bool exception_thrown = false;
@@ -139,8 +141,9 @@ TEST_F(MemoryTransportTest, WriteAfterCloseThrows) {
                                  ta->close();
                                  try {
                                      co_await ta->write_message("test");
-                                 } catch (const std::runtime_error& e) {
+                                 } catch (const mcp::TransportError& e) {
                                      exception_thrown = true;
+                                     EXPECT_EQ(e.kind(), mcp::TransportError::Kind::eClosed);
                                      EXPECT_STREQ(e.what(), "transport closed");
                                  }
                              });
@@ -151,7 +154,7 @@ TEST_F(MemoryTransportTest, WriteAfterCloseThrows) {
 }
 
 TEST_F(MemoryTransportTest, WriteOwnsStringViewBeforeTaskIsAwaited) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     std::string source = "original message";
     std::string received_message;
@@ -172,7 +175,7 @@ TEST_F(MemoryTransportTest, WriteOwnsStringViewBeforeTaskIsAwaited) {
 }
 
 TEST_F(MemoryTransportTest, PendingReadRetainsEndpointAfterWrapperDestruction) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     std::string received_message;
 
@@ -192,7 +195,7 @@ TEST_F(MemoryTransportTest, PendingReadRetainsEndpointAfterWrapperDestruction) {
 }
 
 TEST_F(MemoryTransportTest, DestroyingIdleEndpointWakesPeerRead) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     bool peer_closed = false;
     mcp_test::spawn_detached(
@@ -216,7 +219,7 @@ TEST_F(MemoryTransportTest, DestroyingIdleEndpointWakesPeerRead) {
 }
 
 TEST_F(MemoryTransportTest, JsonMessagesRoundTripWithoutSerializationAtTheWriter) {
-    auto [base_a, base_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [base_a, base_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     auto transport_a = std::dynamic_pointer_cast<mcp::MemoryTransport>(base_a);
     auto transport_b = std::dynamic_pointer_cast<mcp::MemoryTransport>(base_b);
     ASSERT_NE(transport_a, nullptr);
@@ -239,7 +242,7 @@ TEST_F(MemoryTransportTest, JsonMessagesRoundTripWithoutSerializationAtTheWriter
 }
 
 TEST_F(MemoryTransportTest, ConcurrentCloseWakesPendingReadExactlyOnce) {
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     int close_errors = 0;
     mcp_test::spawn_detached(io_ctx_, [transport_a, &close_errors]() -> mcp::Task<void> {
@@ -275,7 +278,7 @@ TEST_F(MemoryTransportTest, ConcurrentReadWriteIsSafeAcrossThreadPool) {
 
     for (int round = 0; round < round_count; ++round) {
         boost::asio::io_context io_context;
-        auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_context.get_executor());
+        auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_context.get_executor());
 
         std::atomic<int> write_completions{0};
         std::atomic<int> failures{0};
@@ -333,7 +336,7 @@ TEST_F(MemoryTransportTest, ConcurrentReadWriteIsSafeAcrossThreadPool) {
 
 TEST_F(MemoryTransportTest, MultiplePendingReadersReceiveDistinctMessages) {
     boost::asio::io_context io_context;
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_context.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_context.get_executor());
 
     constexpr int reader_count = 64;
     std::atomic<int> failures{0};
@@ -392,7 +395,7 @@ TEST_F(MemoryTransportTest, MultiplePendingReadersReceiveDistinctMessages) {
 TEST_F(MemoryTransportTest, ConcurrentCloseWakesReadersOnRunningThreadPool) {
     boost::asio::io_context io_context;
     auto work_guard = boost::asio::make_work_guard(io_context);
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(io_context.get_executor());
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_context.get_executor());
 
     constexpr int reader_count = 32;
     std::atomic<int> started{0};
@@ -465,7 +468,7 @@ TEST_F(MemoryTransportTest, ConcurrentCloseWakesReadersOnRunningThreadPool) {
 // connection, so the endpoints share a strand instead of each getting its own.
 TEST_F(MemoryTransportTest, EndpointsOverOneStrandExchangeMessagesInBothDirections) {
     const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(strand);
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(strand);
 
     std::vector<std::string> received_by_b;
     std::vector<std::string> received_by_a;
@@ -493,7 +496,7 @@ TEST_F(MemoryTransportTest, ConcurrentReadWriteIsSafeWhenEndpointsShareOneStrand
     for (int round = 0; round < round_count; ++round) {
         boost::asio::io_context io_context;
         const auto strand = mcp::detail::make_strand_executor(io_context.get_executor());
-        auto [transport_a, transport_b] = mcp::create_memory_transport_pair(strand);
+        auto [transport_a, transport_b] = mcp::make_memory_transport_pair(strand);
 
         std::atomic<int> write_completions{0};
         std::atomic<int> failures{0};
@@ -555,7 +558,7 @@ TEST_F(MemoryTransportTest, ConcurrentReadWriteIsSafeWhenEndpointsShareOneStrand
 
 TEST_F(MemoryTransportTest, ClosingWakesReadersOfBothEndpointsThatShareOneStrand) {
     const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
-    auto [transport_a, transport_b] = mcp::create_memory_transport_pair(strand);
+    auto [transport_a, transport_b] = mcp::make_memory_transport_pair(strand);
 
     int close_errors = 0;
     for (const auto& transport : {transport_a, transport_b}) {

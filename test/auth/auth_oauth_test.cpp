@@ -31,13 +31,12 @@
 #include <thread>
 #include <vector>
 
-#include "../../src/detail/constants.hpp"
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 namespace auth_oauth_test {
-
-namespace encoding = mcp::detail::constants::encoding;
 
 namespace {
 
@@ -45,18 +44,6 @@ namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
 using json = nlohmann::json;
-
-// Known SHA-256 test vector: SHA-256("") =
-// e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-std::string hex_encode(const unsigned char* data, std::size_t len) {
-    std::string result;
-    result.reserve(len * 2);
-    for (std::size_t i = 0; i < len; ++i) {
-        result.push_back(encoding::g_HEX_DIGITS[data[i] >> 4]);
-        result.push_back(encoding::g_HEX_DIGITS[data[i] & 0x0F]);
-    }
-    return result;
-}
 
 using AcceptorCallback =
     std::function<asio::awaitable<void>(asio::ip::tcp::socket, asio::ip::tcp::acceptor&)>;
@@ -79,61 +66,6 @@ mcp::auth::MetadataFetchPolicy loopback_policy(unsigned short port) {
 
 }  // namespace
 
-TEST(AuthSha256Test, EmptyString) {
-    auto hash = mcp::auth::detail::sha256("");
-    auto hex = hex_encode(hash.data(), hash.size());
-    EXPECT_EQ(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-}
-
-TEST(AuthSha256Test, Abc) {
-    auto hash = mcp::auth::detail::sha256("abc");
-    auto hex = hex_encode(hash.data(), hash.size());
-    EXPECT_EQ(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-}
-
-TEST(AuthSha256Test, LongerString) {
-    auto hash = mcp::auth::detail::sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
-    auto hex = hex_encode(hash.data(), hash.size());
-    EXPECT_EQ(hex, "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
-}
-
-TEST(AuthBase64Test, BasicEncode) {
-    std::string input = "Hello";
-    auto encoded = mcp::auth::detail::base64_encode(
-        reinterpret_cast<const unsigned char*>(input.data()), input.size());
-    EXPECT_EQ(encoded, "SGVsbG8=");
-}
-
-TEST(AuthBase64Test, EmptyInput) {
-    auto encoded = mcp::auth::detail::base64_encode(nullptr, 0);
-    EXPECT_EQ(encoded, "");
-}
-
-TEST(AuthBase64UrlTest, NoPaddingAndCharReplacement) {
-    unsigned char data[] = {0xfb, 0xff, 0xfe};
-    auto encoded = mcp::auth::detail::base64url_encode(data, 3);
-    EXPECT_EQ(encoded.find('+'), std::string::npos);
-    EXPECT_EQ(encoded.find('/'), std::string::npos);
-    EXPECT_EQ(encoded.find('='), std::string::npos);
-}
-
-TEST(AuthUrlEncodeTest, ReservedChars) {
-    auto encoded = mcp::auth::detail::url_encode("hello world&foo=bar");
-    EXPECT_EQ(encoded, "hello%20world%26foo%3Dbar");
-}
-
-TEST(AuthUrlEncodeTest, UnreservedCharsPassThrough) {
-    auto encoded = mcp::auth::detail::url_encode("abc-._~123");
-    EXPECT_EQ(encoded, "abc-._~123");
-}
-
-TEST(AuthFormBodyTest, BuildsCorrectly) {
-    auto body = mcp::auth::detail::build_form_body({{"grant_type", "authorization_code"},
-                                                    {"code", "abc123"},
-                                                    {"redirect_uri", "http://localhost"}});
-    EXPECT_EQ(body, "grant_type=authorization_code&code=abc123&redirect_uri=http%3A%2F%2Flocalhost");
-}
-
 TEST(AuthPkceTest, GeneratesPairWithCorrectProperties) {
     auto pair = mcp::auth::generate_pkce_pair();
     EXPECT_GE(pair.code_verifier.size(), 43);
@@ -151,9 +83,8 @@ TEST(AuthPkceTest, GeneratesPairWithCorrectProperties) {
 
 TEST(AuthPkceTest, ChallengeMatchesSha256OfVerifier) {
     auto pair = mcp::auth::generate_pkce_pair(43);
-    auto hash = mcp::auth::detail::sha256(pair.code_verifier);
-    auto expected_challenge = mcp::auth::detail::base64url_encode(hash.data(), hash.size());
-    EXPECT_EQ(pair.code_challenge, expected_challenge);
+    const auto hash = mcp::detail::sha256(pair.code_verifier);
+    EXPECT_EQ(pair.code_challenge, mcp::detail::base64url_encode(mcp::detail::digest_bytes(hash)));
 }
 
 TEST(AuthPkceTest, RejectsInvalidLength) {
@@ -985,6 +916,60 @@ TEST_F(DiscoveryTest, DiscoverAuthServerFallsBackToOIDC) {
     EXPECT_EQ(result.issuer, "http://127.0.0.1:" + std::to_string(port));
 }
 
+TEST_F(DiscoveryTest, FailureNamesWhyEachWellKnownUrlMissed) {
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        // oauth-authorization-server answers 404; openid-configuration answers a document whose
+        // issuer is not a string.
+        for (int answer = 0; answer < 2; ++answer) {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            beast::tcp_stream stream(std::move(socket));
+            beast::flat_buffer buffer;
+            http::request<http::string_body> req;
+            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+
+            http::response<http::string_body> res{
+                answer == 0 ? http::status::not_found : http::status::ok, req.version()};
+            if (answer == 1) {
+                res.set(http::field::content_type, "application/json");
+                res.body() = R"({"issuer":42})";
+            }
+            res.prepare_payload();
+            co_await http::async_write(stream, res, asio::use_awaitable);
+
+            beast::error_code ec;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+        }
+    });
+
+    std::string failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx_.get_executor());
+        http_client->set_metadata_policy(loopback_policy(port));
+        mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
+        try {
+            (void)co_await discovery.discover_auth_server("http://127.0.0.1:" + std::to_string(port));
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+    });
+
+    io_ctx_.run();
+
+    const auto base = "http://127.0.0.1:" + std::to_string(port);
+    EXPECT_EQ(failure.rfind("Failed to discover authorization server metadata for " + base + ": ", 0),
+              0U)
+        << failure;
+    // The 404's own message names its URL; the bad document's reason is led by the URL.
+    EXPECT_NE(failure.find(base + "/.well-known/oauth-authorization-server failed with status 404"),
+              std::string::npos)
+        << failure;
+    EXPECT_NE(failure.find("; " + base + "/.well-known/openid-configuration: "), std::string::npos)
+        << failure;
+}
+
 TEST_F(DiscoveryTest, CacheHitSkipsNetworkCall) {
     constexpr unsigned short port = 18105;
 
@@ -1526,10 +1511,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
 
     stop.store(true);
     writer.join();
-    const auto drain_deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (in_flight.load() > 0 && std::chrono::steady_clock::now() < drain_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    eventually([&] { return in_flight.load() == 0; });
     ASSERT_EQ(in_flight.load(), 0u) << "an exchange never completed; the run proves nothing";
     work.reset();
     client_ctx.stop();

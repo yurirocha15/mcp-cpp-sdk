@@ -58,7 +58,7 @@ class MCP_API WebSocketServerTransport final : public ITransport {
      * @brief Read the next message from the WebSocket connection.
      *
      * @throws std::logic_error If another read is already outstanding.
-     * @throws std::runtime_error If the transport is closed or the connection drops.
+     * @throws TransportError If the transport is closed or the connection drops.
      */
     Task<std::string> read_message() override;
 
@@ -189,7 +189,7 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      * Connects and performs the WebSocket handshake on the first call.
      *
      * @throws std::logic_error If another read is already outstanding.
-     * @throws std::runtime_error If the transport is closed or the connection drops.
+     * @throws TransportError If the transport is closed or the connection drops.
      */
     Task<std::string> read_message() override;
 

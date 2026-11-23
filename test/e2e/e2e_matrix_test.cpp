@@ -6,11 +6,10 @@
  * and checks the outcome the compatibility matrix of the 2026-07-28 versioning page prescribes,
  * including the combinations that must fail with an error naming the versions the server serves.
  */
-#include "../pipe_stream.hpp"
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/pipe_stream.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
@@ -20,6 +19,7 @@
 #include "mcp/transport/memory.hpp"
 #include "mcp/transport/stdio.hpp"
 #include "mcp/transport/websocket.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -297,7 +297,7 @@ Outcome run_cell(ClientKind client_kind, ServerKind server_kind, TransportKind t
         case TransportKind::eMemory: {
             auto server = make_server(server_kind);
             auto [client_transport, server_transport] =
-                mcp::create_memory_transport_pair(io.get_executor());
+                mcp::make_memory_transport_pair(io.get_executor());
             mcp::Client client(client_transport, io.get_executor(), options);
             mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));
             run_guarded(io, [&]() -> mcp::Task<void> {
@@ -527,7 +527,7 @@ FeatureOutcome run_feature_cell(ClientKind client_kind, ServerKind server_kind,
     switch (transport_kind) {
         case FeatureTransport::eMemory: {
             auto [client_transport, server_transport] =
-                mcp::create_memory_transport_pair(io.get_executor());
+                mcp::make_memory_transport_pair(io.get_executor());
             mcp::Client client(client_transport, io.get_executor(), options);
             answer_elicitations(client);
             mcp_test::spawn_detached(io, serve(server.get(), server_transport, io.get_executor()));

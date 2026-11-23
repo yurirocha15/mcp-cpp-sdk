@@ -1,13 +1,13 @@
-#include "../../src/detail/strand_executor.hpp"
-#include "../support/extension_harness.hpp"
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "mcp/detail/async/strand_executor.hpp"
+#include "support/extension_harness.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/core/context.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -682,7 +682,7 @@ TEST_F(ServerCoreTest, MemoryTransportRecoversFromTextItCannotParse) {
         SCOPED_TRACE(malformed);
         mcp::Server server({"validation-server", "1.0"}, mcp::ServerCapabilities{});
         auto [server_transport, client_transport] =
-            mcp::create_memory_transport_pair(io_ctx_.get_executor());
+            mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
         std::vector<nlohmann::json> responses;
         std::exception_ptr server_error;
@@ -714,7 +714,7 @@ TEST_F(ServerCoreTest, ServesMemoryTransportsThatShareTheStrandItRunsOn) {
 
     mcp::Server server({"shared-strand-server", "1.0"}, mcp::ServerCapabilities{});
     const auto strand = mcp::detail::make_strand_executor(io_ctx_.get_executor());
-    auto [server_transport, client_transport] = mcp::create_memory_transport_pair(strand);
+    auto [server_transport, client_transport] = mcp::make_memory_transport_pair(strand);
 
     std::vector<nlohmann::json> responses;
     std::exception_ptr server_error;
@@ -952,8 +952,7 @@ TEST_F(ServerCoreTest, SessionTeardownStaysOnConfiguredStrandAcrossRepeatedRuns)
 TEST_F(ServerCoreTest, ReverseRequestResponseCarryingNullErrorIsAccepted) {
     using namespace std::chrono_literals;
 
-    auto [server_transport, client_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [server_transport, client_transport] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     mcp::Server server({"reverse-rpc-server", "1.0"}, mcp::ServerCapabilities{});
 
     std::atomic_bool session_ready{false};
@@ -1012,8 +1011,7 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     using namespace std::chrono_literals;
 
     constexpr std::size_t request_count = 256;
-    auto [server_transport, client_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [server_transport, client_transport] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
     mcp::Server server({"reverse-rpc-server", "1.0"}, mcp::ServerCapabilities{});
 
     std::atomic_bool session_ready{false};
@@ -1584,7 +1582,7 @@ ReverseErrorOutcome reverse_request_against_peer_error(boost::asio::io_context& 
 
     // Named copies rather than a structured binding: GCC 13 ICEs on capturing a structured binding
     // by copy in a coroutine lambda alongside a by-reference default.
-    auto transport_pair = mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto transport_pair = mcp::make_memory_transport_pair(io_ctx.get_executor());
     auto server_transport = transport_pair.first;
     auto client_transport = transport_pair.second;
     mcp::Server server({"reverse-error-server", "1.0"}, mcp::ServerCapabilities{});
@@ -1800,18 +1798,6 @@ void run_with_teardown_watchdog(std::chrono::milliseconds budget, const std::fun
     reached_the_end.get();
 }
 
-// Spins until `condition` holds, or the budget runs out. Returns whether it held.
-bool wait_for_condition(const std::function<bool()>& condition, std::chrono::milliseconds budget) {
-    const auto deadline = std::chrono::steady_clock::now() + budget;
-    while (!condition()) {
-        if (std::chrono::steady_clock::now() >= deadline) {
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    return true;
-}
-
 constexpr std::chrono::milliseconds g_teardown_budget{10000};
 
 }  // namespace
@@ -1877,7 +1863,7 @@ TEST(ServerTeardownTest, DestroyAfterIoContextStoppedCompletes) {
     auto work = boost::asio::make_work_guard(io_ctx);
     std::thread runner([&io_ctx] { io_ctx.run(); });
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
 
     std::atomic_size_t settled{0};
     mcp_test::spawn_then(
@@ -1885,8 +1871,7 @@ TEST(ServerTeardownTest, DestroyAfterIoContextStoppedCompletes) {
         [&settled](std::exception_ptr, nlohmann::json) {
             settled.fetch_add(1, std::memory_order_release);
         });
-    ASSERT_TRUE(
-        wait_for_condition([&] { return transport->reverse_requests() == 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->reverse_requests() == 1; }, g_teardown_budget));
 
     work.reset();
     io_ctx.stop();
@@ -1943,7 +1928,7 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
         pool.emplace_back([&io_ctx] { io_ctx.run(); });
     }
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
 
     std::atomic_size_t settled{0};
     for (std::size_t sequence = 0; sequence < pending_count; ++sequence) {
@@ -1955,8 +1940,8 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
             });
     }
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->reverse_requests() == pending_count; },
-                                   g_teardown_budget));
+    ASSERT_TRUE(
+        eventually([&] { return transport->reverse_requests() == pending_count; }, g_teardown_budget));
     ASSERT_EQ(settled.load(std::memory_order_acquire), 0U);
     ASSERT_EQ(transport->close_calls(), 0U);
 
@@ -1970,8 +1955,8 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
     // teardown here: this transport does not wake its reader on close, so whatever the destructor
     // arranges is the only cleanup that runs. Destroying a Server mid-session must not strand the
     // callers waiting on its reverse requests.
-    EXPECT_TRUE(wait_for_condition(
-        [&] { return settled.load(std::memory_order_acquire) == pending_count; }, g_teardown_budget))
+    EXPECT_TRUE(eventually([&] { return settled.load(std::memory_order_acquire) == pending_count; },
+                           g_teardown_budget))
         << "settled " << settled.load(std::memory_order_acquire) << " of " << pending_count;
 
     work.reset();
@@ -2027,20 +2012,20 @@ TEST(ServerTeardownTest, ReverseRequestFromAHandlerReportsADestroyedServer) {
     auto work = boost::asio::make_work_guard(io_ctx);
     std::thread runner([&io_ctx] { io_ctx.run(); });
 
-    ASSERT_TRUE(wait_for_condition([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
+    ASSERT_TRUE(eventually([&] { return transport->read_calls() >= 1; }, g_teardown_budget));
 
     transport->feed(make_initialize_request("init").dump());
     transport->feed(make_initialized_notification().dump());
     transport->feed(make_tool_call_request("call", "park").dump());
 
-    ASSERT_TRUE(wait_for_condition([&] { return handler_entered.load(std::memory_order_acquire); },
-                                   g_teardown_budget));
+    ASSERT_TRUE(
+        eventually([&] { return handler_entered.load(std::memory_order_acquire); }, g_teardown_budget));
 
     run_with_teardown_watchdog(g_teardown_budget, [&server] { server.reset(); });
     server_destroyed.store(true, std::memory_order_release);
 
-    EXPECT_TRUE(wait_for_condition([&] { return call_returned.load(std::memory_order_acquire); },
-                                   g_teardown_budget))
+    EXPECT_TRUE(
+        eventually([&] { return call_returned.load(std::memory_order_acquire); }, g_teardown_budget))
         << "the reverse-RPC call never returned";
     EXPECT_NE(observed.find("destroyed"), std::string::npos)
         << "reverse RPC after destruction reported: " << observed;

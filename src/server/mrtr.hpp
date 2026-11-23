@@ -12,7 +12,7 @@
 
 #include <mcp/protocol/request_meta.hpp>
 
-#include "../detail/sealed_state.hpp"
+#include "mcp/detail/server/sealed_state.hpp"
 
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>

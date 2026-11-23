@@ -1,4 +1,4 @@
-#include "schema_uri.hpp"
+#include "mcp/detail/protocol/schema_uri.hpp"
 
 #include <cstddef>
 #include <utility>
@@ -50,19 +50,6 @@ std::string merge_paths(const UriReference& base, const std::string& reference_p
         return reference_path;
     }
     return base.path.substr(0, last + 1) + reference_path;
-}
-
-int hex_value(char character) {
-    if (character >= '0' && character <= '9') {
-        return character - '0';
-    }
-    if (character >= 'a' && character <= 'f') {
-        return character - 'a' + 10;
-    }
-    if (character >= 'A' && character <= 'F') {
-        return character - 'A' + 10;
-    }
-    return -1;
 }
 
 }  // namespace
@@ -169,28 +156,6 @@ std::pair<std::string, std::string> split_fragment(std::string_view uri) {
         return {std::string(uri), std::string()};
     }
     return {std::string(uri.substr(0, hash)), std::string(uri.substr(hash + 1))};
-}
-
-std::optional<std::string> percent_decode(std::string_view text) {
-    std::string decoded;
-    decoded.reserve(text.size());
-    for (std::size_t i = 0; i < text.size(); ++i) {
-        if (text[i] != '%') {
-            decoded += text[i];
-            continue;
-        }
-        if (i + 2 >= text.size()) {
-            return std::nullopt;
-        }
-        const int high = hex_value(text[i + 1]);
-        const int low = hex_value(text[i + 2]);
-        if (high < 0 || low < 0) {
-            return std::nullopt;
-        }
-        decoded += static_cast<char>(high * 16 + low);
-        i += 2;
-    }
-    return decoded;
 }
 
 std::optional<std::vector<std::string>> json_pointer_tokens(std::string_view pointer) {

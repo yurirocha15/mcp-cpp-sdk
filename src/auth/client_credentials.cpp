@@ -5,6 +5,7 @@
 
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/extensions.hpp>
+#include <mcp/server/server.hpp>
 
 #include <algorithm>
 #include <stdexcept>

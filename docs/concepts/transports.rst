@@ -113,7 +113,7 @@ The options of the process, in either mode:
        const mcp::ProcessExit exit = co_await transport->shutdown();
    }, boost::asio::detached);
 
-The constructor starts the process and throws ``std::runtime_error`` when it
+The constructor starts the process and throws ``mcp::TransportError`` when it
 cannot (the program is not found, the working directory is missing). A command
 without a directory is searched for in ``PATH``; a relative path is taken
 relative to the client's working directory. ``environment`` adds to the client's
@@ -400,7 +400,7 @@ process management during testing.
 Creating Transport Pairs
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-You should always use the `create_memory_transport_pair` helper to ensure that
+You should always use the `make_memory_transport_pair` helper to ensure that
 both ends of the transport are correctly linked.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp

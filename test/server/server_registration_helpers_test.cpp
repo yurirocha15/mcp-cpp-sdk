@@ -1,5 +1,5 @@
-#include "../support/extension_harness.hpp"
-#include "../test_utils.hpp"
+#include "support/extension_harness.hpp"
+#include "support/test_utils.hpp"
 
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"

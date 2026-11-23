@@ -1,5 +1,6 @@
-#include "../../src/detail/sealed_state.hpp"
-#include "../../src/detail/constants.hpp"
+#include "mcp/detail/server/sealed_state.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
 #include <gtest/gtest.h>
 
@@ -68,7 +69,7 @@ TEST(SealedStateTest, TokenIsUnpaddedBase64urlAndEachSealIsDifferent) {
                     c == '-' || c == '_')
             << c;
     }
-    const auto raw = ss::base64url_decode(a.token);
+    const auto raw = mcp::detail::base64url_decode(a.token);
     ASSERT_TRUE(raw.has_value());
     EXPECT_EQ(raw->size(), sealed_token::g_MIN_TOKEN_BYTES + g_payload.size());
     EXPECT_EQ(static_cast<std::uint8_t>((*raw)[0]), sealed_token::g_VERSION);
@@ -78,7 +79,7 @@ TEST(SealedStateTest, FlippingAnyByteOfTheTokenIsRejected) {
     const auto codec = ring({make_key(1, 10)});
     const auto sealed = codec.seal(g_payload);
     ASSERT_TRUE(sealed);
-    const auto raw = ss::base64url_decode(sealed.token);
+    const auto raw = mcp::detail::base64url_decode(sealed.token);
     ASSERT_TRUE(raw.has_value());
     std::size_t opened_ok = 0;
     std::size_t attempts = 0;
@@ -87,7 +88,7 @@ TEST(SealedStateTest, FlippingAnyByteOfTheTokenIsRejected) {
             std::string mutated = *raw;
             mutated[i] = static_cast<char>(static_cast<unsigned char>(mutated[i]) ^ mask);
             ++attempts;
-            if (codec.open(ss::base64url_encode(mutated))) {
+            if (codec.open(mcp::detail::base64url_encode(mutated))) {
                 ++opened_ok;
             }
         }
@@ -232,27 +233,6 @@ TEST(SealedStateTest, Base64GarbageIsRejected) {
     EXPECT_EQ(codec.open("!!!!").error, ss::OpenError::eBadEncoding);
 }
 
-TEST(SealedStateTest, Base64UrlHasOneSpellingPerByteString) {
-    EXPECT_EQ(ss::base64url_encode(""), "");
-    EXPECT_EQ(ss::base64url_encode("f"), "Zg");
-    EXPECT_EQ(ss::base64url_encode("fo"), "Zm8");
-    EXPECT_EQ(ss::base64url_encode("foo"), "Zm9v");
-    EXPECT_EQ(ss::base64url_encode(std::string("\xfb\xff", 2)), "-_8");
-    EXPECT_EQ(ss::base64url_decode("Zm9v"), std::optional<std::string>("foo"));
-    EXPECT_EQ(ss::base64url_decode("Zg"), std::optional<std::string>("f"));
-    // "Zh" decodes to the same byte as "Zg" but with non-zero trailing bits.
-    EXPECT_FALSE(ss::base64url_decode("Zh").has_value());
-    EXPECT_FALSE(ss::base64url_decode("Zg==").has_value());
-    for (std::size_t n = 0; n < 50; ++n) {
-        std::string bytes(n, '\0');
-        for (std::size_t i = 0; i < n; ++i) {
-            bytes[i] = static_cast<char>(i * 37 + n);
-        }
-        EXPECT_EQ(ss::base64url_decode(ss::base64url_encode(bytes)), std::optional<std::string>(bytes))
-            << n;
-    }
-}
-
 TEST(SealedStateTest, AnEmptyRingCannotSealButTheCodecStillRejectsTokens) {
     const ss::Codec empty_ring({});
     EXPECT_EQ(empty_ring.seal(g_payload).error, ss::SealError::eNoKey);
@@ -269,9 +249,9 @@ TEST(SealedStateTest, UnknownVersionIsReportedBeforeTheKeyLookup) {
     const auto codec = ring({make_key(1, 10)});
     const auto sealed = codec.seal(g_payload);
     ASSERT_TRUE(sealed);
-    auto raw = *ss::base64url_decode(sealed.token);
+    auto raw = *mcp::detail::base64url_decode(sealed.token);
     raw[0] = 2;
-    EXPECT_EQ(codec.open(ss::base64url_encode(raw)).error, ss::OpenError::eBadVersion);
+    EXPECT_EQ(codec.open(mcp::detail::base64url_encode(raw)).error, ss::OpenError::eBadVersion);
 }
 
 TEST(SealedStateTest, KeysAreCopyableForARuntimeSwap) {
@@ -289,7 +269,7 @@ TEST(SealedStateTest, SaltsDoNotRepeatAcrossManySeals) {
     for (int i = 0; i < 200; ++i) {
         const auto sealed = codec.seal("x");
         ASSERT_TRUE(sealed);
-        const auto raw = *ss::base64url_decode(sealed.token);
+        const auto raw = *mcp::detail::base64url_decode(sealed.token);
         salts.insert(raw.substr(1 + sealed_token::g_KID_SIZE, sealed_token::g_SALT_SIZE));
     }
     EXPECT_EQ(salts.size(), 200U);

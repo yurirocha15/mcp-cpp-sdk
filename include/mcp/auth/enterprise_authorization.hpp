@@ -26,6 +26,10 @@
  * token or other assertion, are the application's work.
  */
 
+namespace mcp {
+class Server;
+}  // namespace mcp
+
 namespace mcp::auth {
 
 /// The identity assertion the IdP issued when the user signed in.

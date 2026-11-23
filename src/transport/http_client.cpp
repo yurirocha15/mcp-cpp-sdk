@@ -1,14 +1,15 @@
-#include "../detail/constants.hpp"
-#include "../detail/diagnostic_text.hpp"
-#include "../detail/header_value.hpp"
-#include "../detail/http_connect.hpp"
-#include "../detail/http_request_metadata.hpp"
-#include "../detail/param_headers.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/proxy.hpp"
-#include "../detail/request_meta.hpp"
-#include "../detail/socket_deadline.hpp"
-#include "../detail/tls.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/peer_json.hpp"
+#include "mcp/detail/net/header_value.hpp"
+#include "mcp/detail/net/http_connect.hpp"
+#include "mcp/detail/net/network_failure.hpp"
+#include "mcp/detail/net/param_headers.hpp"
+#include "mcp/detail/net/proxy.hpp"
+#include "mcp/detail/net/socket_deadline.hpp"
+#include "mcp/detail/net/tls.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
+#include "mcp/detail/text/diagnostic_text.hpp"
+#include "mcp/detail/transport/http_request_metadata.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
@@ -49,6 +50,7 @@
 
 namespace mcp {
 
+namespace methods = mcp::constants::methods;
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
 namespace net = boost::asio;
@@ -80,7 +82,8 @@ class SseDecoder {
             if (symbol != '\n') {
                 line_.push_back(symbol);
                 if (line_.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                    throw std::runtime_error("An SSE line from the server is too long");
+                    throw TransportError(TransportError::Kind::eProtocol,
+                                         "An SSE line from the server is too long");
                 }
                 continue;
             }
@@ -140,7 +143,8 @@ class SseDecoder {
             }
             if (payload_.size() + value.size() + 1 >
                 mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                throw std::runtime_error("An SSE event from the server is too long");
+                throw TransportError(TransportError::Kind::eProtocol,
+                                     "An SSE event from the server is too long");
             }
             if (!payload_.empty()) {
                 payload_.push_back('\n');
@@ -507,13 +511,18 @@ struct HttpClientTransport::Impl {
         }
 
         const auto connection_plan = current_plan();
-        auto resolved_endpoints = co_await state->resolver.async_resolve(
-            connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
+        net::ip::tcp::resolver::results_type resolved_endpoints;
+        try {
+            resolved_endpoints = co_await state->resolver.async_resolve(
+                connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
+        } catch (const boost::system::system_error& error) {
+            throw detail::ConnectFailure(error.code());
+        }
         // A close() that ran while the resolve could no longer be cancelled found no socket to
         // cancel either. From here to the socket opening inside the connect nothing suspends, so a
         // later close() runs on the strand after it and closes that socket.
         if (state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpClientTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
         }
         state->stream = detail::make_connection(strand, *connection_plan);
         state->stream_plan = connection_plan;
@@ -599,7 +608,7 @@ struct HttpClientTransport::Impl {
     bool capture_initialize_request(std::string_view message) {
         try {
             const auto request = nlohmann::json::parse(message);
-            if (request.is_object() && request.value("method", "") == "initialize" &&
+            if (request.is_object() && request.value("method", "") == methods::g_INITIALIZE &&
                 request.contains("id") &&
                 (request.at("id").is_string() || request.at("id").is_number_integer())) {
                 state->initialize_request_key = request.at("id").get<RequestId>().correlation_key();
@@ -739,7 +748,9 @@ struct HttpClientTransport::Impl {
         return mcp::detail::dump_json(parsed);
     }
 
-    void process_response(const StringResponse& response, const std::string& sent, bool in_session) {
+    /// Hands the JSON-RPC messages of @p response to the reader. An error status throws
+    /// HttpStatusError, unless a sessionless request was answered with a JSON-RPC error.
+    void deliver_response(const StringResponse& response, const std::string& sent, bool in_session) {
         if (response.result() == http::status::accepted) {
             return;
         }
@@ -821,7 +832,8 @@ struct HttpClientTransport::Impl {
                 }
 
                 if (state.closed.load(std::memory_order_acquire)) {
-                    throw std::runtime_error("HttpClientTransport is closed");
+                    throw TransportError(TransportError::Kind::eClosed,
+                                         "HttpClientTransport is closed");
                 }
 
                 state.timer.expires_at(std::chrono::steady_clock::time_point::max());
@@ -829,7 +841,8 @@ struct HttpClientTransport::Impl {
                     co_await state.timer.async_wait(net::use_awaitable);
                 } catch (const boost::system::system_error& error) {
                     if (error.code() != net::error::operation_aborted) {
-                        throw;
+                        throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                      "HttpClientTransport");
                     }
                 }
             }
@@ -862,7 +875,7 @@ struct HttpClientTransport::Impl {
                                 std::function<std::string()> bearer_token_provider) {
         auto& state = *impl->state;
         if (state.closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpClientTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
         }
 
         bool handled = false;
@@ -887,11 +900,12 @@ struct HttpClientTransport::Impl {
                 co_await state.operation_timer.async_wait(net::use_awaitable);
             } catch (const boost::system::system_error& error) {
                 if (error.code() != net::error::operation_aborted) {
-                    throw;
+                    throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                  "HttpClientTransport");
                 }
             }
             if (state.closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("HttpClientTransport is closed");
+                throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
             }
         }
 
@@ -922,7 +936,7 @@ struct HttpClientTransport::Impl {
                 response = co_await exchange(impl, *sent, bearer_token_provider);
             }
             impl->capture_session_id(response);
-            impl->process_response(response, *sent, in_session);
+            impl->deliver_response(response, *sent, in_session);
             if (initialize_operation) {
                 state.initialize_request_key.reset();
             }
@@ -934,7 +948,8 @@ struct HttpClientTransport::Impl {
             // A refused request leaves nothing to reuse: the next one opens a new connection.
             impl->reset_connection();
             complete_operation(impl->state);
-            throw;
+            std::rethrow_exception(
+                detail::as_transport_failure(std::current_exception(), "HttpClientTransport"));
         }
     }
 
@@ -956,30 +971,31 @@ struct HttpClientTransport::Impl {
         if (impl->changes_session_terms(initialized, *initialize)) {
             // The Client would go on with what the old session said of the server.
             state.initialize_request_key.reset();
-            throw std::runtime_error(
+            throw TransportError(
+                TransportError::Kind::eProtocol,
                 "The server started a new session with another protocol version or other "
                 "capabilities; connect again to use it");
         }
         impl->capture_session_id(initialized);
         try {
-            impl->process_response(initialized, *initialize, false);
+            impl->deliver_response(initialized, *initialize, false);
         } catch (...) {
             state.initialize_request_key.reset();
             throw;
         }
         state.initialize_request_key.reset();
-        const auto notification = std::make_shared<const std::string>(
-            R"({"jsonrpc":"2.0","method":"notifications/initialized"})");
+        const auto notification = std::make_shared<const std::string>(mcp::detail::dump_json(
+            {{"jsonrpc", "2.0"}, {"method", methods::g_NOTIFICATIONS_INITIALIZED}}));
         const bool in_session = !state.session_id.empty();
         const auto accepted = co_await exchange(impl, *notification, bearer_token_provider);
-        impl->process_response(accepted, *notification, in_session);
+        impl->deliver_response(accepted, *notification, in_session);
         state.session_lost = false;
     }
 
     static bool is_initialize(std::string_view message) {
         const auto parsed = nlohmann::json::parse(message, nullptr, false);
         return parsed.is_object() && parsed.contains("id") &&
-               parsed.value("method", "") == "initialize";
+               parsed.value("method", "") == methods::g_INITIALIZE;
     }
 
     /// A message of the legacy session as a call: a request, which waits for its response, or a
@@ -1015,11 +1031,12 @@ struct HttpClientTransport::Impl {
                 co_await state.operation_timer.async_wait(net::use_awaitable);
             } catch (const boost::system::system_error& error) {
                 if (error.code() != net::error::operation_aborted) {
-                    throw;
+                    throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                  "HttpClientTransport");
                 }
             }
             if (state.closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("HttpClientTransport is closed");
+                throw TransportError(TransportError::Kind::eClosed, "HttpClientTransport is closed");
             }
         }
     }
@@ -1040,7 +1057,8 @@ struct HttpClientTransport::Impl {
         } catch (...) {
             impl->reset_connection();
             complete_operation(impl->state);
-            throw;
+            std::rethrow_exception(
+                detail::as_transport_failure(std::current_exception(), "HttpClientTransport"));
         }
         complete_operation(impl->state);
         start_listening(impl, std::move(bearer_token_provider));
@@ -1087,12 +1105,14 @@ struct HttpClientTransport::Impl {
             end_call(shared, *call);
             if (failure) {
                 if (shared.closed.load(std::memory_order_acquire) || call->cancelled) {
-                    throw boost::system::system_error(net::error::operation_aborted);
+                    throw detail::network_failure(net::error::operation_aborted,
+                                                  TransportError::Kind::eIo, "HttpClientTransport");
                 }
                 if (timed_out) {
-                    throw boost::system::system_error(beast::error::timeout);
+                    throw detail::network_failure(beast::error::timeout, TransportError::Kind::eIo,
+                                                  "HttpClientTransport");
                 }
-                std::rethrow_exception(failure);
+                std::rethrow_exception(detail::as_transport_failure(failure, "HttpClientTransport"));
             }
             if (forgotten) {
                 if (shared.session_id == *session) {
@@ -1103,7 +1123,7 @@ struct HttpClientTransport::Impl {
             if (call->final_message) {
                 impl->enqueue_message(std::move(*call->final_message));
             }
-            if (call->method == "notifications/initialized") {
+            if (call->method == methods::g_NOTIFICATIONS_INITIALIZED) {
                 start_listening(impl, call->bearer_token_provider);
             }
             co_return;
@@ -1124,6 +1144,11 @@ struct HttpClientTransport::Impl {
                 co_await modern_read(impl, call);
             } catch (...) {
                 failure = std::current_exception();
+            }
+            // The response deadline ends a stream that stays quiet by closing its socket, which the
+            // read reports as cancelled; the reader learns that it timed out.
+            if (failure && call->deadline && call->deadline->expired()) {
+                failure = std::make_exception_ptr(boost::system::system_error(beast::error::timeout));
             }
             impl->remember_last_event_id(call->decoder);
             if (call->final_message || !call->expects_response || call->cancelled ||
@@ -1266,7 +1291,8 @@ struct HttpClientTransport::Impl {
             co_await impl->ensure_connected();
 
             if (!state.stream) {
-                throw std::runtime_error("HttpClientTransport stream is not initialized");
+                throw TransportError(TransportError::Kind::eConnect,
+                                     "HttpClientTransport stream is not initialized");
             }
             const auto& connection_plan = *state.stream_plan;
             StringRequest request{http::verb::post, connection_plan.request_target(impl->path),
@@ -1390,7 +1416,7 @@ struct HttpClientTransport::Impl {
             call->id = *id_it;
             call->id_key = id_it->get<RequestId>().correlation_key();
         } else {
-            if (method == "notifications/cancelled") {
+            if (method == methods::g_NOTIFICATIONS_CANCELLED) {
                 // Closing the response stream is the cancellation; no notification is sent.
                 bool ended_a_call = false;
                 try {
@@ -1459,12 +1485,12 @@ struct HttpClientTransport::Impl {
     /// resources/read, params.taskId for the tasks methods.
     static const nlohmann::json* mirrored_name(const ModernCall& call) {
         const char* member = nullptr;
-        if (call.method == "tools/call" || call.method == "prompts/get") {
+        if (call.method == methods::g_TOOLS_CALL || call.method == methods::g_PROMPTS_GET) {
             member = "name";
-        } else if (call.method == "resources/read") {
+        } else if (call.method == methods::g_RESOURCES_READ) {
             member = "uri";
-        } else if (call.method == "tasks/get" || call.method == "tasks/update" ||
-                   call.method == "tasks/cancel") {
+        } else if (call.method == methods::g_TASKS_GET || call.method == methods::g_TASKS_UPDATE ||
+                   call.method == methods::g_TASKS_CANCEL) {
             member = "taskId";
         } else {
             return nullptr;
@@ -1485,7 +1511,7 @@ struct HttpClientTransport::Impl {
             return;
         }
         request.set("Mcp-Name", detail::encode_header_value(name->get_ref<const std::string&>()));
-        if (call.method != "tools/call") {
+        if (call.method != methods::g_TOOLS_CALL) {
             return;
         }
         const auto known = state->tool_params.find(name->get_ref<const std::string&>());
@@ -1630,8 +1656,14 @@ struct HttpClientTransport::Impl {
         call->stream = shared.take_connection(connection_plan);
         if (!call->stream) {
             net::ip::tcp::resolver resolver(impl->strand);
-            auto endpoints = co_await resolver.async_resolve(
-                connection_plan->connect_host(), connection_plan->connect_port(), net::use_awaitable);
+            net::ip::tcp::resolver::results_type endpoints;
+            try {
+                endpoints = co_await resolver.async_resolve(connection_plan->connect_host(),
+                                                            connection_plan->connect_port(),
+                                                            net::use_awaitable);
+            } catch (const boost::system::system_error& error) {
+                throw detail::ConnectFailure(error.code());
+            }
             throw_if_unavailable(shared, *call);
             call->stream = detail::make_connection(impl->strand, *connection_plan);
             co_await detail::establish(call->stream, endpoints_of(endpoints), connection_plan);
@@ -1749,7 +1781,8 @@ struct HttpClientTransport::Impl {
             } else {
                 body.append(piece);
                 if (body.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                    throw std::runtime_error("The server's response is too large");
+                    throw TransportError(TransportError::Kind::eProtocol,
+                                         "The server's response is too large");
                 }
             }
         }
@@ -1761,7 +1794,8 @@ struct HttpClientTransport::Impl {
                 }
             }
             if (call->expects_response && !call->final_message) {
-                throw std::runtime_error("The server's event stream ended without a response");
+                throw TransportError(TransportError::Kind::eProtocol,
+                                     "The server's event stream ended without a response");
             }
             co_return;
         }
@@ -1782,12 +1816,14 @@ struct HttpClientTransport::Impl {
         if (status == static_cast<unsigned int>(http::status::accepted) || body.empty()) {
             // A server of an older revision may answer a request with 202 alone.
             if (call->expects_response && !call->legacy) {
-                throw std::runtime_error("The server answered a request without a response");
+                throw TransportError(TransportError::Kind::eProtocol,
+                                     "The server answered a request without a response");
             }
             co_return;
         }
         if (!starts_with(call->content_type, "application/json")) {
-            throw std::runtime_error("The server answered with an unexpected content type");
+            throw TransportError(TransportError::Kind::eProtocol,
+                                 "The server answered with an unexpected content type");
         }
         call->final_message = std::move(body);
     }
@@ -1807,7 +1843,7 @@ struct HttpClientTransport::Impl {
         const auto cursor = std::make_shared<std::optional<std::string>>();
         for (int page = 0; page < mcp::detail::constants::http_client::g_MAX_REFRESH_PAGES; ++page) {
             auto refresh = std::make_shared<ModernCall>();
-            refresh->method = "tools/list";
+            refresh->method = methods::g_TOOLS_LIST;
             refresh->version = origin->version;
             refresh->owner_key = origin->id_key;
             refresh->forward = false;
@@ -1822,8 +1858,10 @@ struct HttpClientTransport::Impl {
             if (*cursor) {
                 params["cursor"] = **cursor;
             }
-            refresh->message = nlohmann::json{
-                {"jsonrpc", "2.0"}, {"id", refresh->id}, {"method", "tools/list"}, {"params", params}};
+            refresh->message = nlohmann::json{{"jsonrpc", "2.0"},
+                                              {"id", refresh->id},
+                                              {"method", methods::g_TOOLS_LIST},
+                                              {"params", params}};
             refresh->body = mcp::detail::dump_json(refresh->message);
             co_await run_exchange(impl, refresh, false);
             if (!refresh->final_message) {
@@ -1874,20 +1912,17 @@ struct HttpClientTransport::Impl {
             return;
         }
         auto text = *call.final_message;
-        if (call.method == "tools/list") {
+        if (call.method == methods::g_TOOLS_LIST) {
             text = track_tools(call, std::move(text));
         }
         enqueue_message(std::move(text));
     }
 
-    /// The text of the error a reader gets for @p failure. A connection's failure is described by
-    /// its error code, as a failed call's McpError describes it, without the source location that
-    /// Boost puts in what().
+    /// The text of the error a reader gets for @p failure: what() of the TransportError a failed
+    /// write would have thrown for it.
     static std::string describe(const std::exception_ptr& failure) {
         try {
-            std::rethrow_exception(failure);
-        } catch (const boost::system::system_error& error) {
-            return "The connection to the server failed: " + error.code().message();
+            std::rethrow_exception(detail::as_transport_failure(failure, "HttpClientTransport"));
         } catch (const std::exception& error) {
             return error.what();
         } catch (...) {
@@ -1972,7 +2007,7 @@ struct HttpClientTransport::Impl {
         bool streaming = false;
         try {
             streaming = co_await run_exchange(impl, call, true);
-            if (!streaming && call->method == "tools/call" && is_header_mismatch(*call)) {
+            if (!streaming && call->method == methods::g_TOOLS_CALL && is_header_mismatch(*call)) {
                 co_await refresh_tool_schemas(impl, call);
                 streaming = co_await run_exchange(impl, call, true);
             }
@@ -1993,7 +2028,7 @@ struct HttpClientTransport::Impl {
                 }
                 co_return;
             }
-            std::rethrow_exception(failure);
+            std::rethrow_exception(detail::as_transport_failure(failure, "HttpClientTransport"));
         }
         if (streaming) {
             co_return;

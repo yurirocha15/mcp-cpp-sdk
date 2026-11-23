@@ -75,7 +75,7 @@ class MCP_API StdioTransport final : public ITransport {
      * @return The transport. It must be destroyed before the process relies on
      * stdout again.
      *
-     * @throws std::runtime_error if standard output cannot be duplicated or
+     * @throws TransportError if standard output cannot be duplicated or
      * redirected, or if another StdioTransport in this process already owns it.
      *
      * @note This changes process-global state, so construct the transport

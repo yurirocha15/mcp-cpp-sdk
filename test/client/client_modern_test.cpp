@@ -1,8 +1,7 @@
-#include "../pipe_stream.hpp"
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/pipe_stream.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
@@ -10,6 +9,7 @@
 #include "mcp/transport/http_session_manager.hpp"
 #include "mcp/transport/memory.hpp"
 #include "mcp/transport/stdio.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -1545,8 +1545,7 @@ TEST(E2eEra, MemoryClientAgainstDualEraServer) {
         boost::asio::io_context io;
         boost::asio::steady_timer guard(io);
         bool fired = false;
-        auto [client_transport, server_transport] =
-            mcp::create_memory_transport_pair(io.get_executor());
+        auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io.get_executor());
         auto server = make_dual_era_server();
         mcp::ClientOptions options;
         options.protocol = item.protocol;
@@ -1605,8 +1604,7 @@ TEST(E2eEra, MemoryAutoAgainstSingleEraServers) {
         boost::asio::io_context io;
         boost::asio::steady_timer guard(io);
         bool fired = false;
-        auto [client_transport, server_transport] =
-            mcp::create_memory_transport_pair(io.get_executor());
+        auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io.get_executor());
         auto server = make_dual_era_server();
         server->set_protocol_policy(item.policy);
         mcp::ClientOptions options = auto_options();
@@ -1642,7 +1640,7 @@ TEST(E2eEra, LegacyClientOfModernOnlyServerGetsTheServedVersions) {
     boost::asio::io_context io;
     boost::asio::steady_timer guard(io);
     bool fired = false;
-    auto [client_transport, server_transport] = mcp::create_memory_transport_pair(io.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io.get_executor());
     auto server = make_dual_era_server();
     mcp::ServerProtocolPolicy modern_only;
     modern_only.serve_legacy = false;

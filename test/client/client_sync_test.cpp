@@ -124,7 +124,7 @@ TEST(ClientSyncTest, ABlockingCallOnTheLoopThreadThrows) {
 
 TEST(ClientSyncTest, AClientOnTheApplicationsExecutorRefusesBlockingCalls) {
     boost::asio::io_context io_ctx;
-    auto [client_end, server_end] = mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_end, server_end] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     mcp::Client client(client_end, io_ctx.get_executor());
     EXPECT_THROW(static_cast<void>(client.sync()), std::logic_error);
     EXPECT_THROW(client.run([]() -> mcp::Task<void> { co_return; }), std::logic_error);
@@ -421,11 +421,14 @@ TEST(ClientSyncTest, EveryRequestOptionsOverloadSendsItsRequest) {
 }
 
 TEST(ClientSyncTest, EveryCoroutineMemberHasABlockingTwin) {
-    std::ifstream file(std::string(MCP_SOURCE_DIR) + "/include/mcp/client/client.hpp");
-    ASSERT_TRUE(file) << "client.hpp not found";
-    std::stringstream text;
-    text << file.rdbuf();
-    const auto header = text.str();
+    std::string header;
+    for (const char* name : {"client.hpp", "subscription.hpp", "sync_client.hpp", "task_handle.hpp"}) {
+        std::ifstream file(std::string(MCP_SOURCE_DIR) + "/include/mcp/client/" + name);
+        ASSERT_TRUE(file) << name << " not found";
+        std::stringstream text;
+        text << file.rdbuf();
+        header += text.str();
+    }
     for (const auto& [coroutine_class, sync_class] :
          std::vector<std::pair<std::string, std::string>>{{"Client", "SyncClient"},
                                                           {"TaskHandle", "SyncTaskHandle"},

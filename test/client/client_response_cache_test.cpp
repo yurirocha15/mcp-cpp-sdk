@@ -1,13 +1,13 @@
 // The response cache of the client. The cache class is internal, so the unit tests include its
 // header; the client tests use a scripted 2026-07-28 peer that counts the requests reaching it.
-#include "../../src/detail/response_cache.hpp"
+#include "mcp/detail/client/response_cache.hpp"
 
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 

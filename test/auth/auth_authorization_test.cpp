@@ -40,12 +40,13 @@
 #include <mcp/transport/http_session_manager.hpp>
 
 // Reach-in for retained-state assertions; see the header. Not a public SDK header.
-#include "../../src/auth/oauth_internal.hpp"
-#include "../../src/detail/constants.hpp"
-#include "../support/hang_guard.hpp"
-#include "../support/resolve_gate.hpp"
-#include "../support/socket_gate.hpp"
-#include "../support/spawn.hpp"
+#include "mcp/detail/auth/oauth_internal.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/encoding.hpp"
+#include "support/hang_guard.hpp"
+#include "support/resolve_gate.hpp"
+#include "support/socket_gate.hpp"
+#include "support/spawn.hpp"
 
 #include <memory>
 #include <mutex>
@@ -301,7 +302,7 @@ TEST(AuthAuthorizationManagerTest, CompletesChallengeDiscoveryAuthorizeAndTokenE
     EXPECT_NE(fixture.authorization_url.find("code_challenge="), std::string::npos);
     EXPECT_NE(fixture.authorization_url.find("response_type=code"), std::string::npos);
     EXPECT_EQ(query_value(fixture.authorization_url, "resource"),
-              mcp::auth::detail::url_encode(base + "/mcp"));
+              mcp::detail::percent_encode(base + "/mcp"));
 
     const auto& token_body = server.bodies()[2];
     EXPECT_NE(token_body.find("grant_type=authorization_code"), std::string::npos);
@@ -2914,11 +2915,7 @@ TEST(AuthTransportCloseTest, CloseFromAnotherThreadWhileAuthorizationIsInFlightT
 
     // Wait until the discovery fetch has connected to the stalling server (a fixed head start is
     // not enough under sanitizer slowdown), then close from a thread that never runs the io_context.
-    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (stalling.accepted() < 1 && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    const bool reached_stall = stalling.accepted() >= 1;
+    const bool reached_stall = eventually([&] { return stalling.accepted() >= 1; });
     transport->close();
     resource_server.close();
 
@@ -4932,8 +4929,7 @@ InjectedSecretOutcome try_injected_secret(
         // the base64 Authorization header under client_secret_basic; check both spellings so
         // this cannot pass merely because the auth method changed.
         const std::string basic_credentials = "application-held-client:" + std::string(secret);
-        const auto basic_header = mcp::auth::detail::base64_encode(
-            reinterpret_cast<const unsigned char*>(basic_credentials.data()), basic_credentials.size());
+        const auto basic_header = mcp::detail::base64_encode(basic_credentials);
         const auto contains_secret = [&](const std::vector<std::string>& recorded) {
             return std::any_of(recorded.begin(), recorded.end(), [&](const std::string& value) {
                 return value.find(secret) != std::string::npos ||
@@ -5940,6 +5936,9 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_NE(client_failure.find("Failed to discover protected resource metadata"), std::string::npos)
         << client_failure;
     EXPECT_NE(client_failure.find("/mcp"), std::string::npos) << client_failure;
+    // It also says why each guess missed.
+    EXPECT_NE(client_failure.find("/.well-known/oauth-protected-resource"), std::string::npos)
+        << client_failure;
 }
 
 // A server that is told what resource it represents advertises where its metadata lives, so the
@@ -6085,10 +6084,7 @@ TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsS
         });
     }
 
-    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (completed.load() < request_count && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    eventually([&] { return completed.load() >= request_count; });
     stop_writing.store(true);
     writer.join();
     server.close();

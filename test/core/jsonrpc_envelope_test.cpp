@@ -1,4 +1,5 @@
-#include "../../src/detail/jsonrpc_envelope.hpp"
+#include "mcp/detail/json/jsonrpc_envelope.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
 
 #include <gtest/gtest.h>
 
@@ -50,6 +51,27 @@ TEST(JsonRpcEnvelopeTest, ReportsTheTopLevelMethodWithItsQuotes) {
     const auto response = scan_jsonrpc_envelope(R"({"jsonrpc":"2.0","id":3,"result":{}})");
     ASSERT_TRUE(response.has_value());
     EXPECT_TRUE(response->method.empty());
+}
+
+TEST(JsonRpcEnvelopeTest, IsMethodComparesTheTextInsideTheQuotes) {
+    const auto scan = scan_jsonrpc_envelope(R"({"jsonrpc":"2.0","id":1,"method":"initialize"})");
+    ASSERT_TRUE(scan.has_value());
+    EXPECT_TRUE(mcp::detail::is_method(scan->method, "initialize"));
+    EXPECT_FALSE(mcp::detail::is_method(scan->method, "initialized"));
+    EXPECT_FALSE(mcp::detail::is_method(scan->method, "initializ"));
+    EXPECT_FALSE(mcp::detail::is_method(scan->method, R"("initialize")"));
+    EXPECT_FALSE(mcp::detail::is_method("", ""));
+    EXPECT_FALSE(mcp::detail::is_method("xinitializex", "initialize"));
+    EXPECT_TRUE(mcp::detail::is_method(R"("")", ""));
+}
+
+TEST(JsonRpcEnvelopeTest, MethodIsMatchesOnlyThatString) {
+    const auto request = nlohmann::json::parse(R"({"method":"tools/call","id":1})");
+    EXPECT_TRUE(mcp::detail::method_is(request.at("method"), "tools/call"));
+    EXPECT_FALSE(mcp::detail::method_is(request.at("method"), "tools/list"));
+    EXPECT_FALSE(mcp::detail::method_is(request.at("id"), "1"));
+    EXPECT_FALSE(mcp::detail::method_is(nlohmann::json(), ""));
+    EXPECT_FALSE(mcp::detail::method_is(nlohmann::json::array({"tools/call"}), "tools/call"));
 }
 
 TEST(JsonRpcEnvelopeTest, AcceptsWhitespaceBetweenTokens) {

@@ -1,10 +1,10 @@
-#include "../support/hang_guard.hpp"
+#include "support/hang_guard.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -76,8 +76,7 @@ class Session {
         options.protocol =
             modern ? mcp::ClientProtocol::pinned("2026-07-28") : mcp::ClientProtocol::legacy();
         options.validate_elicitation_content = client_validates;
-        auto [client_transport, server_transport] =
-            mcp::create_memory_transport_pair(io_.get_executor());
+        auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_.get_executor());
         server_ = make_server();
         server_transport_ = server_transport;
         client_ = std::make_unique<mcp::Client>(client_transport, io_.get_executor(), options);

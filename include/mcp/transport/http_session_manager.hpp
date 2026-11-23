@@ -2,7 +2,6 @@
 
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
-#include <mcp/server/server.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -19,6 +18,9 @@
 #include <vector>
 
 namespace mcp {
+
+class Server;
+struct ServerProtocolPolicy;
 
 namespace detail {
 /// Gives set_custom_request_handler(), declared with the Beast types in

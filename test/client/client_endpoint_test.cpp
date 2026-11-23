@@ -8,6 +8,8 @@
 
 #include <gtest/gtest.h>
 
+#include "support/hang_guard.hpp"
+
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -27,6 +29,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -291,10 +294,8 @@ TEST(ClientEndpointTest, OnlyOpenListenStreamsGoOnWithTheRestartedServer) {
     closed_by_client.sync().close();
     auto kept_open = client.sync().listen(filter);
     // The server forgets the closed stream once it reads the cancellation.
-    const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (open_streams() != 1 && std::chrono::steady_clock::now() < give_up) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    eventually([&] { return open_streams() == 1; }, std::chrono::seconds(10),
+               std::chrono::milliseconds(10));
     ASSERT_EQ(open_streams(), 1);
 
     EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
@@ -507,7 +508,13 @@ TEST(ClientEndpointTest, AnHttpConnectionThatFailsThrowsMcpError) {
     } catch (const mcp::McpError& error) {
         EXPECT_EQ(error.code(), mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
         EXPECT_FALSE(error.data().has_value());
-        EXPECT_THROW(std::rethrow_if_nested(error), boost::system::system_error);
+        try {
+            std::rethrow_if_nested(error);
+            ADD_FAILURE() << "the transport's exception is not nested";
+        } catch (const mcp::TransportError& transport_error) {
+            EXPECT_EQ(transport_error.kind(), mcp::TransportError::Kind::eConnect);
+            EXPECT_EQ(transport_error.code(), std::errc::connection_refused) << transport_error.what();
+        }
     }
 }
 
@@ -518,10 +525,8 @@ TEST(ClientEndpointTest, AnHttpErrorStatusThrowsMcpErrorWithTheStatus) {
             http.set_bearer_token_validator([](std::string_view token) { return token == "right"; });
         });
     });
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (server.bound_port() == 0 && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    eventually([&] { return server.bound_port() != 0; }, std::chrono::seconds(30),
+               std::chrono::milliseconds(10));
     const auto port = server.bound_port();
     std::optional<unsigned int> nested_status;
     std::optional<int> code;

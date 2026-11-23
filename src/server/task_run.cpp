@@ -1,6 +1,8 @@
 #include "task_run.hpp"
+#include <mcp/core/constants.hpp>
 
-#include "../detail/constants.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
 #include "mrtr.hpp"
 
 #include <boost/asio/co_spawn.hpp>
@@ -14,6 +16,8 @@
 #include <mcp/core/async.hpp>
 #include <sstream>
 #include <stdexcept>
+
+namespace methods = mcp::constants::methods;
 
 namespace mcp::detail {
 
@@ -86,7 +90,7 @@ Task<nlohmann::json> task_request_input(std::shared_ptr<TaskRun> run, nlohmann::
     if (params) {
         request["params"] = std::move(*params);
         // 2026-07-28 has no elicitation ids: an elicitation's answer comes back under its key.
-        if (method == "elicitation/create" && request["params"].is_object()) {
+        if (method_is(method, methods::g_ELICITATION_CREATE) && request["params"].is_object()) {
             request["params"].erase("elicitationId");
         }
     }

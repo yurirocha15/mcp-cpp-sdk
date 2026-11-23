@@ -1,13 +1,14 @@
 #include "native_schema.hpp"
 
-#include "../detail/constants.hpp"
-#include "../detail/diagnostic_text.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/protocol/schema_uri.hpp"
+#include "mcp/detail/text/diagnostic_text.hpp"
+#include "mcp/detail/text/encoding.hpp"
 #include "schema_checker.hpp"
 #include "schema_dialect.hpp"
-#include "schema_uri.hpp"
 #include "schema_values.hpp"
 
-#include <mcp/detail/regex.hpp>
+#include "mcp/detail/text/regex.hpp"
 
 #include <algorithm>
 #include <array>
@@ -981,7 +982,7 @@ constexpr std::size_t g_CONTENT_BYTES_PER_UNIT = 4;
 
 /// @p text decoded as base64: the characters before the first '=' must all be base64 characters,
 /// and what follows it is ignored. Nothing when one is not.
-std::optional<std::string> base64_decode(std::string_view text) {
+std::optional<std::string> lenient_base64_decode(std::string_view text) {
     const auto value = [](char character) -> int {
         if (character >= 'A' && character <= 'Z') {
             return character - 'A';
@@ -1127,7 +1128,7 @@ class Evaluation {
         const bool base64 = node.content_encoding && *node.content_encoding == "base64";
         if (node.content_encoding) {
             charge(work_, 1 + text.size() / g_CONTENT_BYTES_PER_UNIT);
-            if (base64 && !base64_decode(text) && !report("Content is not a base64 string")) {
+            if (base64 && !lenient_base64_decode(text) && !report("Content is not a base64 string")) {
                 return false;
             }
             if (!base64 && !node.content_encoding->empty() &&
@@ -1139,7 +1140,7 @@ class Evaluation {
             charge(work_, 1 + text.size() / g_CONTENT_BYTES_PER_UNIT);
             std::optional<std::string> decoded;
             if (base64) {
-                decoded = base64_decode(text);
+                decoded = lenient_base64_decode(text);
                 if (!decoded) {
                     return true;
                 }

@@ -1,26 +1,28 @@
-#include "../detail/accept_retry.hpp"
-#include "../detail/beast_string.hpp"
-#include "../detail/connection.hpp"
-#include "../detail/constants.hpp"
-#include "../detail/host_policy.hpp"
-#include "../detail/http_limits.hpp"
-#include "../detail/http_request_metadata.hpp"
-#include "../detail/modern_methods.hpp"
-#include "../detail/peer_json.hpp"
-#include "../detail/principal.hpp"
-#include "../detail/scope_challenge.hpp"
-#include "../detail/socket_probe.hpp"
-#include "../detail/tls.hpp"
-#include "../detail/tls_accept.hpp"
+#include "accept_retry.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/json/peer_json.hpp"
+#include "mcp/detail/net/beast_string.hpp"
+#include "mcp/detail/net/connection.hpp"
+#include "mcp/detail/net/network_failure.hpp"
+#include "mcp/detail/net/tls.hpp"
+#include "mcp/detail/protocol/modern_methods.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
+#include "mcp/detail/transport/host_policy.hpp"
+#include "mcp/detail/transport/http_limits.hpp"
+#include "mcp/detail/transport/http_request_metadata.hpp"
+#include "mcp/detail/transport/principal.hpp"
 #include "modern_exchange.hpp"
+#include "scope_challenge.hpp"
+#include "socket_probe.hpp"
+#include "tls_accept.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
-#include <mcp/detail/secure_random.hpp>
 #include <mcp/transport/http_server.hpp>
 #include <mcp/transport/http_types.hpp>
 #include <mcp/transport/tls.hpp>
+#include "mcp/detail/text/secure_random.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -52,6 +54,7 @@
 
 namespace mcp {
 
+namespace methods = mcp::constants::methods;
 namespace beast = boost::beast;
 namespace http = boost::beast::http;
 
@@ -157,28 +160,32 @@ struct HttpServerTransport::Impl {
         boost::system::error_code ec;
         const auto bind_address = boost::asio::ip::make_address(this->host, ec);
         if (ec) {
-            throw std::runtime_error("Invalid bind address: " + this->host);
+            throw TransportError(TransportError::Kind::eConnect, "Invalid bind address: " + this->host);
         }
 
         const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, this->port);
         (void)acceptor.open(endpoint.protocol(), ec);
         if (ec) {
-            throw std::runtime_error("Failed to open HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to open HTTP acceptor: " + ec.message(), ec);
         }
 
         (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
         if (ec) {
-            throw std::runtime_error("Failed to set reuse_address: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to set reuse_address: " + ec.message(), ec);
         }
 
         (void)acceptor.bind(endpoint, ec);
         if (ec) {
-            throw std::runtime_error("Failed to bind HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to bind HTTP acceptor: " + ec.message(), ec);
         }
 
         (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
         if (ec) {
-            throw std::runtime_error("Failed to listen on HTTP acceptor: " + ec.message());
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "Failed to listen on HTTP acceptor: " + ec.message(), ec);
         }
     }
 
@@ -193,7 +200,7 @@ struct HttpServerTransport::Impl {
     static bool is_initialize_request(const nlohmann::json& request_json) {
         return request_json.is_object() && request_json.contains("method") &&
                request_json.at("method").is_string() &&
-               request_json.at("method").get<std::string>() == "initialize";
+               request_json.at("method").get<std::string>() == methods::g_INITIALIZE;
     }
 
     static std::string_view header_value(const StringRequest::const_iterator& header_it) {
@@ -827,7 +834,7 @@ struct HttpServerTransport::Impl {
     /// when its stream closes. 2026-07-28 has no other way to say so over HTTP.
     void cancel_abandoned_request(const std::string& sentinel_id, std::string principal) const {
         nlohmann::json notification = {{"jsonrpc", "2.0"},
-                                       {"method", "notifications/cancelled"},
+                                       {"method", methods::g_NOTIFICATIONS_CANCELLED},
                                        {"params", {{"requestId", sentinel_id}}}};
         enqueue_incoming_message(mcp::detail::dump_json(notification), std::move(principal));
     }
@@ -882,7 +889,7 @@ struct HttpServerTransport::Impl {
             co_return detail::start_modern_exchange(request, std::move(request_json),
                                                     std::move(principal), start, *dispatch);
         }
-        if (request_json.at("method") == "tools/call") {
+        if (detail::method_is(request_json.at("method"), methods::g_TOOLS_CALL)) {
             if (check) {
                 if (auto mismatch = check(request_json, detail::mcp_param_headers(request))) {
                     header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
@@ -1549,7 +1556,8 @@ struct HttpServerTransport::Impl {
                 }
 
                 if (state.closed.load(std::memory_order_acquire)) {
-                    throw std::runtime_error("HttpServerTransport is closed");
+                    throw TransportError(TransportError::Kind::eClosed,
+                                         "HttpServerTransport is closed");
                 }
 
                 state.timer.expires_at(std::chrono::steady_clock::time_point::max());
@@ -1557,7 +1565,8 @@ struct HttpServerTransport::Impl {
                     co_await state.timer.async_wait(boost::asio::use_awaitable);
                 } catch (const boost::system::system_error& error) {
                     if (error.code() != boost::asio::error::operation_aborted) {
-                        throw;
+                        throw detail::network_failure(error.code(), TransportError::Kind::eIo,
+                                                      "HttpServerTransport");
                     }
                 }
             }
@@ -1570,7 +1579,7 @@ struct HttpServerTransport::Impl {
     static Task<void> run_write(std::shared_ptr<Impl> impl, std::string message,
                                 std::shared_ptr<const std::string> related_request = nullptr) {
         if (impl->state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("HttpServerTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "HttpServerTransport is closed");
         }
 
         const auto response_json = nlohmann::json::parse(message, nullptr, false);
@@ -1761,7 +1770,8 @@ unsigned short HttpServerTransport::port() const {
     boost::system::error_code ec;
     const auto endpoint = impl_->acceptor.local_endpoint(ec);
     if (ec) {
-        throw std::runtime_error("Failed to query HTTP acceptor endpoint: " + ec.message());
+        throw TransportError(TransportError::Kind::eConnect,
+                             "Failed to query HTTP acceptor endpoint: " + ec.message(), ec);
     }
     return endpoint.port();
 }
@@ -1991,7 +2001,10 @@ Task<void> HttpServerTransport::listen_impl(std::shared_ptr<Impl> impl) {
                 co_return;
             }
             if (!detail::accept_failure_can_pass(err.code())) {
-                throw;
+                throw TransportError(
+                    TransportError::Kind::eConnect,
+                    "HttpServerTransport could not accept a connection: " + err.code().message(),
+                    err.code());
             }
             retry = true;
         }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/capabilities.hpp>
@@ -160,8 +161,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, CallToolResult& result);
  * @brief A request to call a tool.
  */
 struct CallToolRequest {
-    std::string method = "tools/call";  ///< The method name.
-    CallToolParams params;              ///< The request parameters.
+    std::string method{mcp::constants::methods::g_TOOLS_CALL};  ///< The method name.
+    CallToolParams params;                                      ///< The request parameters.
 };
 MCP_API void to_json(nlohmann::json& json_obj, const CallToolRequest& value);
 MCP_API void from_json(const nlohmann::json& json_obj, CallToolRequest& value);
@@ -179,8 +180,8 @@ MCP_API void from_json(const nlohmann::json& j, ListToolsRequestParams& p);
  * @brief A request to list all available tools.
  */
 struct ListToolsRequest {
-    std::string method = "tools/list";             ///< The method name.
-    std::optional<ListToolsRequestParams> params;  ///< Optional request parameters.
+    std::string method{mcp::constants::methods::g_TOOLS_LIST};  ///< The method name.
+    std::optional<ListToolsRequestParams> params;               ///< Optional request parameters.
 };
 MCP_API void to_json(nlohmann::json& j, const ListToolsRequest& r);
 MCP_API void from_json(const nlohmann::json& j, ListToolsRequest& r);

@@ -1,7 +1,8 @@
 #include <mcp/core/async.hpp>
 #include <mcp/transport/stdio.hpp>
-#include "../detail/constants.hpp"
-#include "../detail/spawn_awaitable.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/network_failure.hpp"
 
 #if defined(_WIN32)
 #include <fcntl.h>
@@ -294,7 +295,8 @@ class OwnedStdout {
     static int acquire() {
         bool unowned = false;
         if (!owner_active().compare_exchange_strong(unowned, true, std::memory_order_acq_rel)) {
-            throw std::runtime_error(
+            throw TransportError(
+                TransportError::Kind::eConnect,
                 "StdioTransport: another transport already owns this process's standard output");
         }
 
@@ -306,8 +308,8 @@ class OwnedStdout {
         const int descriptor = duplicate_descriptor(mcp::detail::constants::stdio::g_STDOUT_DESCRIPTOR);
         if (descriptor < 0) {
             owner_active().store(false, std::memory_order_release);
-            throw std::runtime_error(
-                "StdioTransport could not duplicate this process's standard output");
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "StdioTransport could not duplicate this process's standard output");
         }
         suppress_pipe_signal(descriptor);
 
@@ -326,7 +328,8 @@ class OwnedStdout {
             if (!diverted) {
                 release_descriptor(descriptor);
                 owner_active().store(false, std::memory_order_release);
-                throw std::runtime_error(
+                throw TransportError(
+                    TransportError::Kind::eConnect,
                     "StdioTransport could not redirect this process's standard output away from "
                     "the protocol stream");
             }
@@ -773,10 +776,10 @@ struct StdioTransport::Impl {
             }
 
             if (!shared_state->input_error.empty()) {
-                throw std::runtime_error(shared_state->input_error);
+                throw TransportError(TransportError::Kind::eProtocol, shared_state->input_error);
             }
             if (shared_state->closed.load(std::memory_order_acquire) || shared_state->input_ended) {
-                throw std::runtime_error("StdioTransport is closed");
+                throw TransportError(TransportError::Kind::eClosed, "StdioTransport is closed");
             }
 
             shared_state->read_signal.expires_at(std::chrono::steady_clock::time_point::max());
@@ -784,21 +787,21 @@ struct StdioTransport::Impl {
             co_await shared_state->read_signal.async_wait(
                 boost::asio::redirect_error(boost::asio::use_awaitable, error));
             if (error && error != boost::asio::error::operation_aborted) {
-                throw boost::system::system_error(error);
+                throw detail::network_failure(error, TransportError::Kind::eIo, "StdioTransport");
             }
         }
     }
 
     static Task<void> write_on_strand(std::shared_ptr<SharedState> shared_state, std::string message) {
         if (shared_state->closed.load(std::memory_order_acquire)) {
-            throw std::runtime_error("StdioTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "StdioTransport is closed");
         }
 
         auto waiter = std::make_shared<WriteWaiter>(shared_state->strand);
         {
             std::lock_guard lock(shared_state->pump->mutex);
             if (shared_state->closed.load(std::memory_order_acquire)) {
-                throw std::runtime_error("StdioTransport is closed");
+                throw TransportError(TransportError::Kind::eClosed, "StdioTransport is closed");
             }
             shared_state->pump->outgoing.push_back({std::move(message), waiter});
             shared_state->pump->wake.notify_all();
@@ -810,10 +813,11 @@ struct StdioTransport::Impl {
                 boost::asio::redirect_error(boost::asio::use_awaitable, error));
         }
         if (shared_state->closed.load(std::memory_order_acquire) && !waiter->written) {
-            throw std::runtime_error("StdioTransport is closed");
+            throw TransportError(TransportError::Kind::eClosed, "StdioTransport is closed");
         }
         if (!waiter->written) {
-            throw std::runtime_error("StdioTransport failed to write to the output stream");
+            throw TransportError(TransportError::Kind::eIo,
+                                 "StdioTransport failed to write to the output stream");
         }
     }
 

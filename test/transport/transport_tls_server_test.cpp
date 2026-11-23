@@ -7,12 +7,12 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
-#include "../support/mcp_server_hosts.hpp"
-#include "../support/tls_test_support.hpp"
+#include "support/hang_guard.hpp"
+#include "support/mcp_server_hosts.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <openssl/rsa.h>
-#include "../test_utils.hpp"
+#include "support/test_utils.hpp"
 
 #include <array>
 #include <boost/asio/io_context.hpp>
@@ -165,15 +165,12 @@ std::string read_until_closed(asio::io_context& io, tcp::socket& socket) {
 
 /// Repeats a TLS handshake with the server on @p port until one succeeds or the hang guard passes.
 bool handshake_eventually(unsigned short port) {
-    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
-    while (std::chrono::steady_clock::now() < give_up) {
-        RawTlsClient client(port);
-        if (!client.handshake()) {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    return false;
+    return eventually(
+        [port] {
+            RawTlsClient client(port);
+            return !client.handshake();
+        },
+        g_hang_guard, std::chrono::milliseconds(10));
 }
 
 /// The bytes of a request with a Host header the server accepts.
@@ -409,11 +406,7 @@ TEST(TlsServerTest, AStreamedRequestEndsWhenItsClientResets) {
     auto& socket = client.stream().next_layer();
     socket.set_option(asio::socket_base::linger(true, 0));
     socket.close();
-    const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
-    while (host.manager().stream_stats().disconnect_cancels == 0 &&
-           std::chrono::steady_clock::now() < give_up) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    eventually([&] { return host.manager().stream_stats().disconnect_cancels != 0; });
     EXPECT_EQ(host.manager().stream_stats().disconnect_cancels, 1U);
 }
 

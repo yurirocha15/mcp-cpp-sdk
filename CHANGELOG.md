@@ -33,6 +33,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `ClientOptions::response_cache` lets a `Client` answer list and `read_resource()` calls from earlier results while their `ttlMs` lasts; `RequestOptions::cache_mode` refreshes or bypasses it.
 - `Server::set_notification_rate_limit()` and `ClientOptions::notification_rate_limit` cap the progress and log notifications each request sends or delivers; there is no limit by default.
 - The documentation lists which parts of the specification the SDK implements and marks the features protocol revision 2026-07-28 deprecates.
+- The built-in transports throw `TransportError` for their failures, network errors included; `kind()` tells closed, connect, I/O and protocol failures apart; `code()` holds a network error's code.
+- `mcp::constants::methods` names the JSON-RPC methods the SDK sends and handles, such as `g_TOOLS_CALL`.
 
 ### Changed
 
@@ -45,6 +47,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::add_raw_tool()` takes any coroutine JSON handler, with or without the request's `Context`.
 - `set_custom_request_handler()` is a free function in `<mcp/transport/http_beast.hpp>`, where `StringRequest` and `StringResponse` moved from `http_types.hpp`.
 - `ITransport` and `auth::Authenticator` are exported from the library.
+- The OAuth, client and server types have headers of their own, such as `<mcp/client/subscription.hpp>`; `<mcp/auth/oauth.hpp>`, `<mcp/client/client.hpp>` and `<mcp/server/server.hpp>` include them all.
 - `Client::get_prompt()` and its blocking twin take the arguments as a `std::map`, empty for none, so `{{"name", "Ada"}}` is accepted.
 - A `Client` call whose transport fails throws `McpError` (`g_CONNECTION_CLOSED`), with an HTTP status in `data()` and the transport's exception nested unless a response stream broke off.
 - `Client::call_tool()` with `nlohmann::json` arguments is an ordinary member function; the template overloads take other argument types.
@@ -68,12 +71,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - With a `StdioRestartPolicy`, `Endpoint::stdio()` sends each open `subscriptions/listen` request to the restarted server, so its `Subscription` goes on.
 - Tool registration throws for a name that is empty, longer than 128 characters or holds characters other than ASCII letters, digits, `_`, `-` and `.`.
 - `Context::sample_llm()` refuses an `includeContext` other than "none" for a client that did not declare `sampling.context`.
+- An OAuth metadata discovery that finds no document says in its error why each well-known URL it tried failed.
+- `RequestContext` is declared in `<mcp/transport/request_context.hpp>`, and the transport, auth and `Context` headers no longer include server or transport headers they do not use.
+- Each `Client` call and its `Client::sync()` twin take `RequestOptions` as a last parameter that defaults to none, in place of a second overload.
+- `create_memory_transport_pair()` is named `make_memory_transport_pair()`, like the other factory functions.
 
 ### Removed
 
 - `<mcp/core/core.hpp>`; `Task` is in `<mcp/core/async.hpp>`.
-- `mcp::TransportFactory`; transports are constructed with `Runtime::executor()`. The deprecated `make_*_transport()` functions remain.
+- `mcp::TransportFactory` and the deprecated `make_stdio_transport()` and `make_http_client_transport()`; transports are constructed with `Runtime::executor()`.
 - The `mcp::auth::net` alias of `boost::asio`.
+- The installed headers no longer declare the JSON parser, the regular expression engine, the serialized transport writer, the executor access, the secure random helpers or the OAuth encoders.
 
 ### Migrating from 0.3.0
 
@@ -83,12 +91,17 @@ Code written for 0.3.0 needs these changes to compile with this release:
 - Include `<mcp/core/async.hpp>` where a coroutine is defined or awaited; `<mcp/core/core.hpp>` is gone.
 - A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
 - `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
-- Construct transports with `Runtime::executor()` instead of `TransportFactory`.
+- Construct transports with `Runtime::executor()` instead of `TransportFactory` or `make_*_transport()`.
+- Call `make_memory_transport_pair()` where code called `create_memory_transport_pair()`.
 - Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
+- Include `<mcp/server/server.hpp>` where code uses `Server` after including only `<mcp/transport/http_session_manager.hpp>` or `<mcp/auth/oauth.hpp>`.
+- Include `<mcp/transport/request_context.hpp>` where code included `<mcp/server/request_context.hpp>`.
+- Include `<mcp/transport/transport.hpp>` where code uses `ITransport` after including only `<mcp/core/context.hpp>`.
 
 These changes in behavior need no change to compile:
 
-- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows those.
+- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows the transport's exception.
+- Catch `TransportError` where code caught `boost::system::system_error` from a built-in transport's read or write; `code()` holds the error code.
 - Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
 
 ### Fixed
@@ -104,6 +117,8 @@ These changes in behavior need no change to compile:
   sessions of 2025-11-25 and earlier too, as the specification asks.
 - The error for an HTTP response stream that breaks off names the reason without
   the source location that Boost adds to it.
+- The LLDB example returns a command that LLDB fails as a tool error instead of
+  as its output.
 
 ## [0.3.0] - 2026-11-17
 

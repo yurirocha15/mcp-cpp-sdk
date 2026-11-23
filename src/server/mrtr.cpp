@@ -1,9 +1,10 @@
 #include "mrtr.hpp"
 
-#include "../detail/constants.hpp"
-#include "../detail/spawn_awaitable.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/protocol/request_meta.hpp"
+#include "mcp/detail/text/encoding.hpp"
 
-#include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
@@ -15,15 +16,17 @@
 #include <chrono>
 #include <utility>
 
+namespace methods = mcp::constants::methods;
+
 namespace mcp::detail {
 
 namespace {
 
 std::string_view key_prefix(std::string_view method) {
-    if (method == "elicitation/create") {
+    if (method == methods::g_ELICITATION_CREATE) {
         return "elicitation";
     }
-    if (method == "sampling/createMessage") {
+    if (method == methods::g_SAMPLING_CREATE_MESSAGE) {
         return "sampling";
     }
     return "roots";
@@ -104,7 +107,7 @@ Task<nlohmann::json> request_input_on_strand(std::shared_ptr<MrtrEntry> entry, n
     if (params) {
         request["params"] = std::move(*params);
         // 2026-07-28 has no elicitation ids: an elicitation's response comes back with its key.
-        if (method == "elicitation/create" && request["params"].is_object()) {
+        if (method_is(method, methods::g_ELICITATION_CREATE) && request["params"].is_object()) {
             request["params"].erase("elicitationId");
         }
     }
@@ -208,7 +211,8 @@ Task<void> notify_on_strand(std::shared_ptr<MrtrEntry> entry,
     // its own, or none.
     if (message->find("\"notifications/progress\"") != std::string::npos) {
         auto notification = nlohmann::json::parse(*message, nullptr, false);
-        if (notification.is_object() && notification.value("method", "") == "notifications/progress" &&
+        if (notification.is_object() &&
+            notification.value("method", "") == methods::g_NOTIFICATIONS_PROGRESS &&
             notification.contains("params") && notification["params"].is_object()) {
             if (!entry->progress_token) {
                 co_return;
@@ -342,7 +346,7 @@ nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabili
         return found != client_capabilities.end() && found->is_object() ? &*found : nullptr;
     };
 
-    if (method == "elicitation/create") {
+    if (method == methods::g_ELICITATION_CREATE) {
         const std::string mode = params.contains("mode") && params["mode"].is_string()
                                      ? params["mode"].get<std::string>()
                                      : "form";
@@ -353,7 +357,7 @@ nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabili
         if (!supported) {
             return {{"elicitation", {{mode, nlohmann::json::object()}}}};
         }
-    } else if (method == "sampling/createMessage") {
+    } else if (method == methods::g_SAMPLING_CREATE_MESSAGE) {
         const auto* sampling = declared("sampling");
         if (sampling == nullptr) {
             return {{"sampling", nlohmann::json::object()}};
@@ -366,7 +370,7 @@ nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabili
         if (asks_for_sampling_context(params) && !sampling->contains("context")) {
             return {{"sampling", {{"context", nlohmann::json::object()}}}};
         }
-    } else if (method == "roots/list") {
+    } else if (method == methods::g_ROOTS_LIST) {
         if (declared("roots") == nullptr) {
             return {{"roots", nlohmann::json::object()}};
         }
@@ -438,9 +442,7 @@ std::string mrtr_principal_digest(std::string_view principal) {
     if (principal.empty()) {
         return {};
     }
-    const auto digest = auth::detail::sha256(std::string(principal));
-    return sealed_state::base64url_encode(
-        {reinterpret_cast<const char*>(digest.data()), digest.size()});
+    return base64url_encode(digest_bytes(sha256(principal)));
 }
 
 std::string mrtr_seal_state(const sealed_state::Codec& codec, const MrtrSealedState& state) {
@@ -449,7 +451,7 @@ std::string mrtr_seal_state(const sealed_state::Codec& codec, const MrtrSealedSt
                                     {"e", state.expires_ms},
                                     {"p", state.principal_digest},
                                     {"m", state.method},
-                                    {"d", sealed_state::base64url_encode(state.params_digest)},
+                                    {"d", base64url_encode(state.params_digest)},
                                     {"r", state.round},
                                     {"k", state.asked},
                                     {"a", state.answers}};
@@ -473,7 +475,7 @@ std::optional<MrtrSealedState> mrtr_open_state(const sealed_state::Codec& codec,
         state.expires_ms = payload.at("e").get<std::int64_t>();
         state.principal_digest = payload.at("p").get<std::string>();
         state.method = payload.at("m").get<std::string>();
-        auto digest = sealed_state::base64url_decode(payload.at("d").get<std::string>());
+        auto digest = base64url_decode(payload.at("d").get<std::string>());
         if (!digest) {
             return std::nullopt;
         }
@@ -501,8 +503,7 @@ std::string mrtr_params_digest(const nlohmann::json& params) {
     salient.erase("_meta");
     salient.erase("inputResponses");
     salient.erase("requestState");
-    const auto digest = auth::detail::sha256(mcp::detail::dump_json(salient));
-    return {reinterpret_cast<const char*>(digest.data()), digest.size()};
+    return std::string(digest_bytes(sha256(dump_json(salient))));
 }
 
 }  // namespace mcp::detail

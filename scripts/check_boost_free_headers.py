@@ -20,8 +20,6 @@ from check_readme_snippets import compile_flags, find_build_dir
 BOOST_HEADERS = frozenset({
     "mcp/core/async.hpp",
     "mcp/core/signal.hpp",
-    "mcp/detail/runtime_access.hpp",
-    "mcp/detail/serialized_transport_writer.hpp",
     "mcp/detail/signal.hpp",
     "mcp/transport/http_beast.hpp",
     "mcp/transport/websocket.hpp",

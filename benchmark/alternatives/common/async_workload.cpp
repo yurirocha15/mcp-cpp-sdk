@@ -1,4 +1,5 @@
 #include "async_workload.hpp"
+#include "workload_support.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/experimental/awaitable_operators.hpp>
@@ -7,7 +8,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <memory>
@@ -29,11 +29,6 @@ using asio::ip::tcp;
 using Json = nlohmann::json;
 template <class T>
 using Awaitable = asio::awaitable<T>;
-
-std::string env_or(const char* name, const char* fallback) {
-    const char* value = std::getenv(name);
-    return value && *value ? value : fallback;
-}
 
 struct HostPort {
     std::string host;
@@ -278,24 +273,6 @@ class AsyncRedis {
     IdlePool<RedisConnection> pool_;
 };
 
-std::string number(double value) {
-    std::ostringstream out;
-    out << std::setprecision(15) << value;
-    return out.str();
-}
-
-int user_number(const std::string& user_id) {
-    const auto dash = user_id.rfind('-');
-    if (dash == std::string::npos) {
-        return 42;
-    }
-    try {
-        return std::stoi(user_id.substr(dash + 1));
-    } catch (...) {
-        return 42;
-    }
-}
-
 Json recent_history(const std::vector<std::string>& history) {
     Json recent = Json::array();
     for (const auto& entry : history) {
@@ -402,8 +379,8 @@ class AsyncWorkload::Impl {
         std::string product_path = "/products/" + std::to_string(product_id);
         auto fetched =
             co_await (redis_.string_array(std::move(lrange)) && http_.get(std::move(product_path)));
-        auto& history = std::get<0>(fetched);
-        auto& product_body = std::get<1>(fetched);
+        const auto& history = std::get<0>(fetched);
+        const auto& product_body = std::get<1>(fetched);
         (void)product_body;
         Json recent = recent_history(history);
         Json result = {

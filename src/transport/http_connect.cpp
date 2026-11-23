@@ -1,9 +1,10 @@
-#include "../detail/http_connect.hpp"
+#include "mcp/detail/net/http_connect.hpp"
 
-#include "../detail/constants.hpp"
-#include "../detail/diagnostic_text.hpp"
-#include "../detail/socket_deadline.hpp"
-#include "../detail/tls.hpp"
+#include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/network_failure.hpp"
+#include "mcp/detail/net/socket_deadline.hpp"
+#include "mcp/detail/net/tls.hpp"
+#include "mcp/detail/text/diagnostic_text.hpp"
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -57,11 +58,9 @@ Task<void> establish(std::shared_ptr<Connection> connection,
                                   std::chrono::seconds(constants::http_client::g_TIMEOUT_SECONDS));
     try {
         co_await net::async_connect(connection->socket(), endpoints, net::use_awaitable);
-    } catch (const boost::system::system_error&) {
-        if (deadline.expired()) {
-            throw boost::system::system_error(beast::error::timeout);
-        }
-        throw;
+    } catch (const boost::system::system_error& error) {
+        throw ConnectFailure(deadline.expired() ? boost::system::error_code(beast::error::timeout)
+                                                : error.code());
     }
     // The wait for a response has a long limit, so this is what finds a peer that vanished.
     boost::system::error_code keep_alive_error;
@@ -85,20 +84,20 @@ Task<void> establish(std::shared_ptr<Connection> connection,
             co_await http::async_write(connection->tcp(), tunnel->request, net::use_awaitable);
             co_await http::async_read_header(connection->tcp(), tunnel->buffer, tunnel->parser,
                                              net::use_awaitable);
-        } catch (const boost::system::system_error&) {
-            if (deadline.expired()) {
-                throw boost::system::system_error(beast::error::timeout);
-            }
-            throw;
+        } catch (const boost::system::system_error& error) {
+            throw ConnectFailure(deadline.expired() ? boost::system::error_code(beast::error::timeout)
+                                                    : error.code());
         }
         const auto status = tunnel->parser.get().result_int();
         if (status < 200 || status > 299) {
-            throw std::runtime_error("The proxy refused the tunnel to " +
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "The proxy refused the tunnel to " +
                                      sanitize_for_diagnostics(authority) + " with status " +
                                      std::to_string(status));
         }
         if (tunnel->buffer.size() != 0) {
-            throw std::runtime_error("The proxy sent data before the tunnel to " +
+            throw TransportError(TransportError::Kind::eConnect,
+                                 "The proxy sent data before the tunnel to " +
                                      sanitize_for_diagnostics(authority) + " opened");
         }
     }

@@ -4,7 +4,7 @@
 
 #include <mcp/protocol/schema.hpp>
 
-#include "../../src/protocol/schema_cache.hpp"
+#include "mcp/detail/protocol/schema_cache.hpp"
 
 #include <gtest/gtest.h>
 

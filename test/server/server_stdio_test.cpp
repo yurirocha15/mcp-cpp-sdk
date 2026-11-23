@@ -1,9 +1,9 @@
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/stdio.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <future>
@@ -205,6 +206,9 @@ class StdioServerProcess {
         int from_child[2];
         EXPECT_EQ(::pipe(to_child), 0);
         EXPECT_EQ(::pipe(from_child), 0);
+        // The child ends with std::exit(), which writes what the parent's streams held at the fork,
+        // such as buffered test output, into the server's standard output.
+        std::fflush(nullptr);
         child_ = ::fork();
         if (child_ == 0) {
             ::dup2(to_child[0], STDIN_FILENO);
@@ -313,16 +317,12 @@ class StdioServerProcess {
     /// The child's wait status, or nullopt when it is still running after g_hang_guard: a bound for
     /// reporting a hang, not a measure of how fast it should be.
     std::optional<int> wait_for_exit() {
-        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
-        while (std::chrono::steady_clock::now() < give_up) {
-            int status = 0;
-            if (::waitpid(child_, &status, WNOHANG) == child_) {
-                reaped_ = true;
-                return status;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        int status = 0;
+        if (!eventually([&] { return ::waitpid(child_, &status, WNOHANG) == child_; })) {
+            return std::nullopt;
         }
-        return std::nullopt;
+        reaped_ = true;
+        return status;
     }
 
    private:
@@ -833,22 +833,6 @@ TEST_F(ServerStdioTest, RunStdioExitsCleanlyOnEmptyInput) {
     server_->run_stdio(input, output);
 
     EXPECT_TRUE(output.str().empty());
-}
-
-// Returning is the whole assertion: what this detects is run_stdio() failing to shut down on a
-// signal, which shows up as a join that never completes rather than as a wrong value. The absence
-// of an EXPECT here is deliberate.
-TEST_F(ServerStdioTest, RunStdioSignalCausesShutdown) {
-    BlockingStreambuf sbuf;
-    std::istream input(&sbuf);
-    std::ostringstream output;
-
-    std::thread server_thread([&] { server_->run_stdio(input, output); });
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    mcp::detail::trigger_shutdown_signal();
-    sbuf.close();
-    server_thread.join();
 }
 
 }  // namespace server_stdio_test

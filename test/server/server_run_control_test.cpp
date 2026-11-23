@@ -1,5 +1,5 @@
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
@@ -19,18 +19,6 @@
 namespace server_run_control_test {
 
 namespace {
-
-/// Whether @p condition holds within the hang guard.
-bool eventually(const std::function<bool()>& condition) {
-    const auto deadline = std::chrono::steady_clock::now() + g_hang_guard;
-    while (!condition()) {
-        if (std::chrono::steady_clock::now() > deadline) {
-            return false;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return true;
-}
 
 /// Runs an io_context on a thread of its own, stopping and joining it however the test ends.
 class LoopThread {
@@ -72,8 +60,7 @@ TEST(ServerRunControlTest, StopEndsRunAndSyncRefusesTheApplicationsExecutor) {
                     [](const nlohmann::json& args) { return args; });
 
     boost::asio::io_context io_ctx;
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     std::atomic<bool> connected{false};
     std::atomic<bool> run_ended{false};
     mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
@@ -107,8 +94,7 @@ TEST(ServerRunControlTest, StopFromAHandlerEndsRun) {
                     });
 
     boost::asio::io_context io_ctx;
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx.get_executor());
     std::atomic<bool> run_ended{false};
     mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
         co_await server.run(server_transport, io_ctx.get_executor());

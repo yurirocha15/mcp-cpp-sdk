@@ -3,9 +3,9 @@
  * @brief Tests for Server middleware functionality
  */
 
-#include "../support/hang_guard.hpp"
-#include "../support/spawn.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
+#include "support/test_utils.hpp"
 
 #include <gtest/gtest.h>
 #include <boost/asio/co_spawn.hpp>

@@ -151,7 +151,7 @@ class MCP_API StdioClientTransport final : public ITransport {
      * @param executor The executor for the transport's asynchronous operations. A multithreaded
      *        io_context is supported.
      * @param options How to launch the process.
-     * @throws std::runtime_error If the process cannot be started: the program is not found or not
+     * @throws TransportError If the process cannot be started: the program is not found or not
      *         executable, the working directory is missing, or the system refuses.
      * @throws std::invalid_argument If #StdioProcessOptions::command is empty.
      */
@@ -166,7 +166,7 @@ class MCP_API StdioClientTransport final : public ITransport {
 
     /**
      * @brief Read the next line from the server's standard output.
-     * @throws std::runtime_error When the output ends (the server exited or closed it), the line is
+     * @throws TransportError When the output ends (the server exited or closed it), the line is
      *         longer than StdioProcessOptions::max_message_bytes, or the transport is closed.
      * @throws std::logic_error When another read is outstanding.
      */
@@ -175,7 +175,7 @@ class MCP_API StdioClientTransport final : public ITransport {
     /**
      * @brief Write @p message and a newline to the server's standard input.
      * @throws std::invalid_argument If @p message contains a newline.
-     * @throws std::runtime_error If the transport is closed or the server no longer reads.
+     * @throws TransportError If the transport is closed or the server no longer reads.
      * @throws std::logic_error When another write is outstanding.
      */
     Task<void> write_message(std::string_view message) override;

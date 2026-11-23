@@ -1,6 +1,6 @@
 // The Host check of the HTTP and WebSocket servers. The policy is internal, so the test includes its
 // header; the test program builds src/transport/proxy.cpp, which holds the loopback rule.
-#include "../../src/detail/host_policy.hpp"
+#include "mcp/detail/transport/host_policy.hpp"
 
 #include "mcp/core/async.hpp"
 #include "mcp/transport/http_server.hpp"
@@ -9,11 +9,11 @@
 
 #include <gtest/gtest.h>
 
-#include "../support/hang_guard.hpp"
-#include "../support/mcp_server_hosts.hpp"
-#include "../support/spawn.hpp"
-#include "../support/tls_test_support.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/mcp_server_hosts.hpp"
+#include "support/spawn.hpp"
+#include "support/test_utils.hpp"
+#include "support/tls_test_support.hpp"
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>

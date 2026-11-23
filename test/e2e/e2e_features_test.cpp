@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
 
-#include "../test_utils.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/spawn.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -27,8 +27,7 @@ class E2EFeaturesTest : public ::testing::Test {
 TEST_F(E2EFeaturesTest, OneSessionConnectsPingsListsAndCallsTools) {
     bool test_passed = false;
 
-    auto [client_transport, server_transport] =
-        mcp::create_memory_transport_pair(io_ctx_.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 
     mcp::Server server({"test-server", "1.0"}, {});
     server.set_page_size(3);

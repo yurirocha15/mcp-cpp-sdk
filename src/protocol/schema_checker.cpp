@@ -1,6 +1,6 @@
 #include "schema_checker.hpp"
 
-#include "schema_uri.hpp"
+#include "mcp/detail/protocol/schema_uri.hpp"
 #include "schema_values.hpp"
 
 #include <algorithm>

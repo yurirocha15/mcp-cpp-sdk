@@ -111,7 +111,7 @@ using SchemaDocuments = std::map<std::string, nlohmann::json>;
  * sets. `$schema` may name 2020-12, 2019-09, draft-07, draft-06 or draft-04; any other value is
  * refused with `SchemaError::Category::eUnsupportedDialect`. The schema itself is checked against
  * the rules its dialect's published metaschema states. `pattern` and `patternProperties` use
- * `mcp::detail::Regex`, which matches in linear time.
+ * the SDK's own regular expression engine, which matches in linear time.
  *
  * References resolve within the document and within the documents given as `SchemaDocuments`:
  * JSON Pointer fragments, anchors, and subschemas identified by `$id`. A reference to the whole

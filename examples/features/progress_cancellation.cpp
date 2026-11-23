@@ -97,7 +97,7 @@ int main() {
 
         // ========== TRANSPORT & RUN ==========
         auto [client_transport, server_transport] =
-            mcp::create_memory_transport_pair(io_ctx.get_executor());
+            mcp::make_memory_transport_pair(io_ctx.get_executor());
 
         asio::co_spawn(
             io_ctx,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/capabilities.hpp>
@@ -83,8 +84,8 @@ MCP_API void from_json(const nlohmann::json& j, ListResourcesRequestParams& p);
  * @brief A request to list all available resources.
  */
 struct ListResourcesRequest {
-    std::string method = "resources/list";             ///< The method name.
-    std::optional<ListResourcesRequestParams> params;  ///< Optional request parameters.
+    std::string method{mcp::constants::methods::g_RESOURCES_LIST};  ///< The method name.
+    std::optional<ListResourcesRequestParams> params;               ///< Optional request parameters.
 };
 MCP_API void to_json(nlohmann::json& j, const ListResourcesRequest& r);
 MCP_API void from_json(const nlohmann::json& j, ListResourcesRequest& r);
@@ -115,7 +116,7 @@ MCP_API void from_json(const nlohmann::json& j, ListResourceTemplatesRequestPara
  * @brief A request to list all available resource templates.
  */
 struct ListResourceTemplatesRequest {
-    std::string method = "resources/templates/list";           ///< The method name.
+    std::string method{mcp::constants::methods::g_RESOURCES_TEMPLATES_LIST};  ///< The method name.
     std::optional<ListResourceTemplatesRequestParams> params;  ///< Optional request parameters.
 };
 MCP_API void to_json(nlohmann::json& j, const ListResourceTemplatesRequest& r);
@@ -147,8 +148,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, ReadResourceRequestParams
  * @brief A request to read the contents of a resource.
  */
 struct ReadResourceRequest {
-    std::string method = "resources/read";  ///< The method name.
-    ReadResourceRequestParams params;       ///< The request parameters.
+    std::string method{mcp::constants::methods::g_RESOURCES_READ};  ///< The method name.
+    ReadResourceRequestParams params;                               ///< The request parameters.
 };
 MCP_API void to_json(nlohmann::json& json_obj, const ReadResourceRequest& value);
 MCP_API void from_json(const nlohmann::json& json_obj, ReadResourceRequest& value);
@@ -166,8 +167,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, ResourceSubscribeParams& 
  * @brief A request to subscribe to resource updates.
  */
 struct SubscribeRequest {
-    std::string method = "resources/subscribe";  ///< The method name.
-    ResourceSubscribeParams params;              ///< The request parameters.
+    std::string method{mcp::constants::methods::g_RESOURCES_SUBSCRIBE};  ///< The method name.
+    ResourceSubscribeParams params;                                      ///< The request parameters.
 };
 MCP_API void to_json(nlohmann::json& json_obj, const SubscribeRequest& value);
 MCP_API void from_json(const nlohmann::json& json_obj, SubscribeRequest& value);
@@ -185,8 +186,8 @@ MCP_API void from_json(const nlohmann::json& json_obj, ResourceUnsubscribeParams
  * @brief A request to unsubscribe from resource updates.
  */
 struct UnsubscribeRequest {
-    std::string method = "resources/unsubscribe";  ///< The method name.
-    ResourceUnsubscribeParams params;              ///< The request parameters.
+    std::string method{mcp::constants::methods::g_RESOURCES_UNSUBSCRIBE};  ///< The method name.
+    ResourceUnsubscribeParams params;                                      ///< The request parameters.
 };
 MCP_API void to_json(nlohmann::json& json_obj, const UnsubscribeRequest& value);
 MCP_API void from_json(const nlohmann::json& json_obj, UnsubscribeRequest& value);

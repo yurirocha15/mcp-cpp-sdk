@@ -1,4 +1,4 @@
-#include "../../src/detail/fifo.hpp"
+#include "mcp/detail/async/fifo.hpp"
 
 #include <gtest/gtest.h>
 

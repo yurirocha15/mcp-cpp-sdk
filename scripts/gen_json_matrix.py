@@ -109,6 +109,17 @@ def enum_values(text: str) -> dict[str, str]:
     return out
 
 
+METHOD_CONSTANT = re.compile(r"\{\s*mcp::constants::methods::(g_\w+)\s*\}")
+
+
+def method_names(base: str) -> dict[str, str]:
+    """Constant name -> method, from the `methods` group of the public constants header."""
+    with open(os.path.join(base, "include", "mcp", "core", "constants.hpp"), encoding="utf-8") as fh:
+        text = fh.read()
+    group = text[text.index("namespace methods {") : text.index("}  // namespace methods")]
+    return dict(re.findall(r'inline constexpr std::string_view (g_\w+)\s*=\s*"([^"]+)";', group))
+
+
 MEMBER_WITH_DEFAULT = re.compile(
     r"^\s*(?:const\s+)?[\w:]+(?:\s*<[^;]*>)?\s+(\w+)\s*=\s*([^;]+);\s*$",
     re.MULTILINE,
@@ -152,13 +163,15 @@ def load_protocol(base: str):
     enums: dict[str, str] = {}
     defaults: dict[tuple[str, str], object] = {}
     from_json_types: set[str] = set()
+    methods = method_names(base)
     top = os.path.join(base, PROTOCOL_DIR)
     for name in sorted(os.listdir(top)):
         if not name.endswith(".hpp"):
             continue
         with open(os.path.join(top, name), encoding="utf-8") as fh:
             raw = fh.read()
-        text = census.strip_comments(raw)
+        # A member initialised with a method constant declares that method as its default.
+        text = METHOD_CONSTANT.sub(lambda m: f' = "{methods[m.group(1)]}"', census.strip_comments(raw))
         root = census.parse_blocks(text)
         for k, v in census.parse_structs(text, root).items():
             structs.setdefault(k, v)

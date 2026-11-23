@@ -6,7 +6,8 @@
  */
 
 #include <gtest/gtest.h>
-#include "../support/spawn.hpp"
+#include "mcp/detail/text/encoding.hpp"
+#include "support/spawn.hpp"
 
 #include <algorithm>
 #include <boost/asio/co_spawn.hpp>
@@ -481,10 +482,10 @@ TEST(AuthClientIdentityLoopbackTest, UsesTheMetadataDocumentUrlAsTheClientIdAndS
     // The registration endpoint was advertised and deliberately not used.
     EXPECT_EQ(server.count("/register"), 0U);
     EXPECT_NE(fixture.authorization_url.find(
-                  mcp::auth::detail::url_encode("https://client.example/metadata.json")),
+                  mcp::detail::percent_encode("https://client.example/metadata.json")),
               std::string::npos);
     EXPECT_NE(server.body_for("/token").find(
-                  "client_id=" + mcp::auth::detail::url_encode("https://client.example/metadata.json")),
+                  "client_id=" + mcp::detail::percent_encode("https://client.example/metadata.json")),
               std::string::npos);
 
     // Nothing is persisted: the document URL is the identity, so there is no credential to bind.

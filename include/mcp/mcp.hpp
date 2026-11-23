@@ -11,4 +11,3 @@
 #include <mcp/core/version.hpp>
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/server.hpp>
-#include <mcp/transport/transport_factory.hpp>

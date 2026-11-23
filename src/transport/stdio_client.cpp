@@ -1,8 +1,8 @@
 #include <mcp/core/async.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
-#include "../detail/constants.hpp"
-#include "../detail/spawn_awaitable.hpp"
+#include "mcp/detail/async/spawn_awaitable.hpp"
+#include "mcp/detail/constants.hpp"
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/buffer.hpp>
@@ -168,11 +168,13 @@ void make_pipe(UniqueFd& read_end, UniqueFd& write_end) {
     defined(__DragonFly__)
     // Both ends are close-on-exec from the moment they exist.
     if (::pipe2(raw, O_CLOEXEC) != 0) {
-        throw std::runtime_error(std::string("Cannot create a pipe: ") + std::strerror(errno));
+        throw TransportError(TransportError::Kind::eConnect,
+                             std::string("Cannot create a pipe: ") + std::strerror(errno));
     }
 #else
     if (::pipe(raw) != 0) {
-        throw std::runtime_error(std::string("Cannot create a pipe: ") + std::strerror(errno));
+        throw TransportError(TransportError::Kind::eConnect,
+                             std::string("Cannot create a pipe: ") + std::strerror(errno));
     }
     ::fcntl(raw[0], F_SETFD, FD_CLOEXEC);
     ::fcntl(raw[1], F_SETFD, FD_CLOEXEC);
@@ -182,7 +184,8 @@ void make_pipe(UniqueFd& read_end, UniqueFd& write_end) {
     UniqueFd moved_first(::fcntl(first.get(), F_DUPFD_CLOEXEC, 3));
     UniqueFd moved_second(::fcntl(second.get(), F_DUPFD_CLOEXEC, 3));
     if (moved_first.get() < 0 || moved_second.get() < 0) {
-        throw std::runtime_error(std::string("Cannot create a pipe: ") + std::strerror(errno));
+        throw TransportError(TransportError::Kind::eConnect,
+                             std::string("Cannot create a pipe: ") + std::strerror(errno));
     }
     read_end = std::move(moved_first);
     write_end = std::move(moved_second);
@@ -214,7 +217,8 @@ std::string resolve_program(const std::string& command) {
         }
         begin = end + 1;
     }
-    throw std::runtime_error("Cannot find the server program '" + command + "' in PATH");
+    throw TransportError(TransportError::Kind::eConnect,
+                         "Cannot find the server program '" + command + "' in PATH");
 }
 
 std::vector<std::string> environment_strings(const StdioProcessOptions& options) {
@@ -286,8 +290,8 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
     } else if (options.stderr_mode == StderrMode::eDiscard) {
         null_device.reset(::open("/dev/null", O_WRONLY | O_CLOEXEC));
         if (null_device.get() < 0) {
-            throw std::runtime_error(std::string("Cannot open the null device: ") +
-                                     std::strerror(errno));
+            throw TransportError(TransportError::Kind::eConnect,
+                                 std::string("Cannot open the null device: ") + std::strerror(errno));
         }
     }
     UniqueFd report_read;
@@ -340,8 +344,9 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
     }
     spawn_lock.unlock();
     if (pid < 0) {
-        throw std::runtime_error(std::string("Cannot start the server process: ") +
-                                 std::strerror(fork_error));
+        throw TransportError(
+            TransportError::Kind::eConnect,
+            std::string("Cannot start the server process: ") + std::strerror(fork_error));
     }
 
     stdin_read.reset();
@@ -358,8 +363,9 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
         int status = 0;
         while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
         }
-        throw std::runtime_error("Cannot start the server process '" + options.command +
-                                 "': " + std::strerror(failure));
+        throw TransportError(
+            TransportError::Kind::eConnect,
+            "Cannot start the server process '" + options.command + "': " + std::strerror(failure));
     }
     state.pid = pid;
     state.id = static_cast<std::uint64_t>(pid);
@@ -567,13 +573,13 @@ void make_pipe(bool parent_reads, UniqueHandle& parent_end, UniqueHandle& child_
                            1, mcp::detail::constants::stdio_client::g_CHUNK_BYTES,
                            mcp::detail::constants::stdio_client::g_CHUNK_BYTES, 0, nullptr));
     if (!parent.valid()) {
-        throw std::runtime_error(windows_error("Cannot create a pipe"));
+        throw TransportError(TransportError::Kind::eConnect, windows_error("Cannot create a pipe"));
     }
     SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     UniqueHandle child(::CreateFileW(name.c_str(), parent_reads ? GENERIC_WRITE : GENERIC_READ, 0,
                                      &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!child.valid()) {
-        throw std::runtime_error(windows_error("Cannot open a pipe"));
+        throw TransportError(TransportError::Kind::eConnect, windows_error("Cannot open a pipe"));
     }
     parent_end = std::move(parent);
     child_end = std::move(child);
@@ -584,7 +590,8 @@ UniqueHandle open_null_device() {
     UniqueHandle device(::CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                       &inheritable, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!device.valid()) {
-        throw std::runtime_error(windows_error("Cannot open the null device"));
+        throw TransportError(TransportError::Kind::eConnect,
+                             windows_error("Cannot open the null device"));
     }
     return device;
 }
@@ -632,7 +639,8 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
     std::vector<char> list_storage(list_size);
     auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(list_storage.data());
     if (!::InitializeProcThreadAttributeList(list, 1, 0, &list_size)) {
-        throw std::runtime_error(windows_error("Cannot prepare the process launch"));
+        throw TransportError(TransportError::Kind::eConnect,
+                             windows_error("Cannot prepare the process launch"));
     }
     struct ListGuard {
         LPPROC_THREAD_ATTRIBUTE_LIST list;
@@ -640,7 +648,8 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
     } list_guard{list};
     if (!::UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited.data(),
                                      inherited.size() * sizeof(HANDLE), nullptr, nullptr)) {
-        throw std::runtime_error(windows_error("Cannot prepare the process launch"));
+        throw TransportError(TransportError::Kind::eConnect,
+                             windows_error("Cannot prepare the process launch"));
     }
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
@@ -657,7 +666,8 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
         limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         if (!job.valid() || !::SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
                                                        &limits, sizeof(limits))) {
-            throw std::runtime_error(windows_error("Cannot create a job object"));
+            throw TransportError(TransportError::Kind::eConnect,
+                                 windows_error("Cannot create a job object"));
         }
     }
     DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
@@ -669,7 +679,8 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
                           environment.data(),
                           working_directory.empty() ? nullptr : working_directory.c_str(),
                           &startup.StartupInfo, &created)) {
-        throw std::runtime_error(
+        throw TransportError(
+            TransportError::Kind::eConnect,
             windows_error("Cannot start the server process '" + options.command + "'"));
     }
     UniqueHandle process_handle(created.hProcess);
@@ -680,7 +691,7 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
             const std::string message = windows_error("Cannot start the server process '" +
                                                       options.command + "' in its job object");
             ::TerminateProcess(created.hProcess, 1);
-            throw std::runtime_error(message);
+            throw TransportError(TransportError::Kind::eConnect, message);
         }
     }
     thread_handle.reset();
@@ -827,6 +838,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
             try {
                 options.on_exit(exit);
             } catch (...) {
+                // The callback observes; a failure of its own has no listener.
             }
         }
     }
@@ -932,12 +944,13 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
         // Shuts the process down: a server that writes a line past the limit is not read further.
         const auto too_long = [&self] {
             self->begin_close();
-            return std::runtime_error("The server wrote a line longer than the limit of " +
+            return TransportError(TransportError::Kind::eProtocol,
+                                  "The server wrote a line longer than the limit of " +
                                       std::to_string(self->options.max_message_bytes) + " bytes");
         };
         for (;;) {
             if (self->closed.load()) {
-                throw std::runtime_error("transport closed");
+                throw TransportError(TransportError::Kind::eClosed, "transport closed");
             }
             // A line that arrived before the end of the output is still returned.
             // The limit counts the message without its line ending, so a line that ends in CRLF, as
@@ -978,9 +991,12 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                             co_return line;
                         }
                     }
-                    throw std::runtime_error("The server process closed its standard output");
+                    throw TransportError(TransportError::Kind::eClosed,
+                                         "The server process closed its standard output");
                 }
-                throw std::runtime_error("Cannot read from the server: " + self->read_error.message());
+                throw TransportError(TransportError::Kind::eIo,
+                                     "Cannot read from the server: " + self->read_error.message(),
+                                     self->read_error);
             }
             boost::system::error_code error;
             const auto count = co_await self->stdout_pipe.async_read_some(
@@ -996,7 +1012,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
 
     static Task<void> write(std::shared_ptr<Impl> self, std::shared_ptr<const std::string> line) {
         if (self->closed.load() || !self->stdin_pipe.is_open()) {
-            throw std::runtime_error("transport closed");
+            throw TransportError(TransportError::Kind::eClosed, "transport closed");
         }
         if (self->writing) {
             throw std::logic_error("A write is already outstanding");
@@ -1012,9 +1028,10 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
             boost::asio::redirect_error(boost::asio::use_awaitable, error));
         if (error) {
             if (self->closed.load()) {
-                throw std::runtime_error("transport closed");
+                throw TransportError(TransportError::Kind::eClosed, "transport closed");
             }
-            throw std::runtime_error("Cannot write to the server: " + error.message());
+            throw TransportError(TransportError::Kind::eIo,
+                                 "Cannot write to the server: " + error.message(), error);
         }
     }
 
@@ -1043,6 +1060,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                 try {
                     self->options.on_stderr_line(line);
                 } catch (...) {
+                    // The callback observes; a failure of its own must not stop the reading.
                 }
             }
         };
@@ -1053,13 +1071,14 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                 boost::asio::buffer(buffer),
                 boost::asio::redirect_error(boost::asio::use_awaitable, error));
             self->stderr_pending.append(buffer.data(), count);
-            std::size_t start = 0;
-            for (auto newline = self->stderr_pending.find('\n', start); newline != std::string::npos;
-                 newline = self->stderr_pending.find('\n', start)) {
-                deliver(std::string_view(self->stderr_pending).substr(start, newline - start));
-                start = newline + 1;
+            std::size_t line_start = 0;
+            for (auto newline = self->stderr_pending.find('\n', line_start);
+                 newline != std::string::npos; newline = self->stderr_pending.find('\n', line_start)) {
+                deliver(
+                    std::string_view(self->stderr_pending).substr(line_start, newline - line_start));
+                line_start = newline + 1;
             }
-            self->stderr_pending.erase(0, start);
+            self->stderr_pending.erase(0, line_start);
             if (error) {
                 break;
             }

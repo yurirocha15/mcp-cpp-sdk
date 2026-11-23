@@ -1,11 +1,11 @@
-#include "../support/hang_guard.hpp"
-#include "../test_utils.hpp"
+#include "support/hang_guard.hpp"
+#include "support/test_utils.hpp"
 
-#include "../support/spawn.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
@@ -105,8 +105,7 @@ class ClientTasks : public ::testing::Test {
     }
 
     void connect(mcp::ClientOptions options, bool modern = true) {
-        auto [client_transport, server_transport] =
-            mcp::create_memory_transport_pair(io_.get_executor());
+        auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_.get_executor());
         if (modern) {
             options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
         } else {
@@ -407,7 +406,7 @@ TEST_F(ClientTasks, ATaskStatusNotificationArrivesOnAStreamThatAsksForIt) {
 
 TEST(ClientTasksOptions, PollAndTimeoutMustBePositive) {
     asio::io_context io;
-    auto [client_transport, server_transport] = mcp::create_memory_transport_pair(io.get_executor());
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io.get_executor());
     mcp::ClientOptions poll;
     poll.task_poll_interval = std::chrono::milliseconds(0);
     EXPECT_THROW(mcp::Client(client_transport, io.get_executor(), poll), std::invalid_argument);

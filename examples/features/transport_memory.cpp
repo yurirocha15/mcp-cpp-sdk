@@ -3,7 +3,7 @@
 ///
 /// This example shows:
 /// - MemoryTransport: In-memory bidirectional transport for testing
-/// - create_memory_transport_pair(): Creating connected transport pairs
+/// - make_memory_transport_pair(): Creating connected transport pairs
 /// - Bidirectional message exchange via MemoryTransport
 
 #include <mcp/core/async.hpp>
@@ -18,10 +18,10 @@
 
 namespace asio = boost::asio;
 
-// ========== DEMO 1: MemoryTransport with create_memory_transport_pair() ==========
+// ========== DEMO 1: MemoryTransport with make_memory_transport_pair() ==========
 void demo_memory_transport() {
     std::cout << "\n" << std::string(70, '=') << "\n";
-    std::cout << "DEMO 1: MemoryTransport with create_memory_transport_pair()\n";
+    std::cout << "DEMO 1: MemoryTransport with make_memory_transport_pair()\n";
     std::cout << std::string(70, '=') << "\n\n";
 
     try {
@@ -30,7 +30,7 @@ void demo_memory_transport() {
         asio::io_context io_ctx;
 
         // Create bidirectional memory transport pair
-        auto [transport_a, transport_b] = create_memory_transport_pair(io_ctx.get_executor());
+        auto [transport_a, transport_b] = make_memory_transport_pair(io_ctx.get_executor());
 
         std::cout << "[Main] Created MemoryTransport pair\n";
         std::cout << "[Main] Transport A: " << transport_a.get() << "\n";

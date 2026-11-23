@@ -1,7 +1,7 @@
-// URI reference resolution (RFC 3986), percent-decoding and JSON Pointer tokens, which schema
-// references are resolved with.
+// URI reference resolution (RFC 3986) and JSON Pointer tokens, which schema references are
+// resolved with.
 
-#include "../../src/protocol/schema_uri.hpp"
+#include "mcp/detail/protocol/schema_uri.hpp"
 
 #include <gtest/gtest.h>
 
@@ -15,7 +15,6 @@ namespace {
 
 using mcp::detail::json_pointer_tokens;
 using mcp::detail::parse_uri_reference;
-using mcp::detail::percent_decode;
 using mcp::detail::resolve_uri;
 using mcp::detail::split_fragment;
 
@@ -114,14 +113,6 @@ TEST(SchemaUri, SplitsComponents) {
     EXPECT_FALSE(parse_uri_reference("1a:b").scheme.has_value());
     EXPECT_EQ(split_fragment("a.json#/x"), std::make_pair(std::string("a.json"), std::string("/x")));
     EXPECT_EQ(split_fragment("a.json"), std::make_pair(std::string("a.json"), std::string()));
-}
-
-TEST(SchemaUri, DecodesPercentEscapes) {
-    EXPECT_EQ(percent_decode("/%24defs/a%20b%25"), "/$defs/a b%");
-    EXPECT_EQ(percent_decode("%4a%4A%c3%A9"), "JJ\xc3\xa9");
-    EXPECT_FALSE(percent_decode("%2").has_value());
-    EXPECT_FALSE(percent_decode("%zz").has_value());
-    EXPECT_FALSE(percent_decode("abc%").has_value());
 }
 
 TEST(SchemaUri, ReadsJsonPointers) {
