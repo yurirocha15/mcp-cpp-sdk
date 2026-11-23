@@ -60,6 +60,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -75,6 +76,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -370,7 +372,8 @@ inline void validate_uri_template_variables(std::string_view expression) {
         throw std::invalid_argument("Resource URI template contains an empty expression");
     }
 
-    while (!expression.empty()) {
+    // A comma separates two variables, so one at either end of the list leaves an empty variable.
+    for (;;) {
         auto separator = expression.find(',');
         auto variable = expression.substr(0, separator);
         if (variable.empty()) {

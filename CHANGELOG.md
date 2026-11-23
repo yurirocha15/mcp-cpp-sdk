@@ -108,6 +108,11 @@ These changes in behavior need no change to compile:
 
 ### Fixed
 
+- A list request whose cursor is not wholly a decimal offset within the list,
+  such as `2abc`, `-1` or one past the end, is answered with -32602 instead of a
+  page.
+- Registering a resource template whose variable list ends with a comma, such as
+  `{a,}`, throws `std::invalid_argument`, as one that starts with a comma does.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

@@ -1367,22 +1367,20 @@ std::optional<Server::PaginationSlice> Server::Impl::paginate(std::size_t total,
         return PaginationSlice{0, total, std::nullopt};
     }
 
+    // A cursor is the decimal offset of the page's first entry, as next_cursor below writes it.
+    // Anything else, or an offset past the end of the list, is not a cursor this server issued.
     std::size_t offset = 0;
     if (json_msg.contains("params") && detail::has_json_value(json_msg.at("params"), "cursor")) {
-        try {
-            auto cursor_str = json_msg.at("params").at("cursor").get<std::string>();
-            offset = std::stoull(cursor_str);
-        } catch (const nlohmann::json::exception&) {
-            return std::nullopt;
-        } catch (const std::invalid_argument&) {
-            return std::nullopt;
-        } catch (const std::out_of_range&) {
+        const auto& cursor = json_msg.at("params").at("cursor");
+        if (!cursor.is_string()) {
             return std::nullopt;
         }
-    }
-
-    if (offset >= total) {
-        offset = 0;
+        const auto& text = cursor.get_ref<const std::string&>();
+        const char* const text_end = text.data() + text.size();
+        const auto [parsed_end, error] = std::from_chars(text.data(), text_end, offset);
+        if (error != std::errc{} || parsed_end != text_end || offset >= total) {
+            return std::nullopt;
+        }
     }
 
     auto end = std::min(offset + page_size, total);

@@ -520,6 +520,10 @@ class MCP_API Server {
     /**
      * @brief Set the page size for paginated list responses.
      *
+     * @details A list request whose cursor is not one a `nextCursor` of this server could have
+     * held, including one past the end of a list that has since become shorter, is answered with
+     * -32602 (Invalid params).
+     *
      * @param size The maximum number of items per page. 0 means no pagination.
      */
     void set_page_size(std::size_t size);

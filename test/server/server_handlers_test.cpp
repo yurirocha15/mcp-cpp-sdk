@@ -1237,6 +1237,37 @@ TEST_F(ServerHandlersTest, ResourceTemplateRegistrationRejectsDuplicateAndEquiva
     EXPECT_THROW(setup.server.add_resource_template(malformed), std::invalid_argument);
 }
 
+// A URI template is checked when it is registered: an empty template, a '}' without its '{', an
+// expression with no variable, an empty variable anywhere in a list (a comma at either end
+// included) and a variable name outside RFC 6570's varchar set are refused. Variable lists, prefix
+// and explode modifiers and operators are accepted.
+TEST_F(ServerHandlersTest, ResourceTemplateRegistrationChecksTheTemplateSyntax) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    int registered = 0;
+    const auto add = [&setup, &registered](const std::string& uri_template) {
+        mcp::ResourceTemplate tmpl;
+        tmpl.uriTemplate = uri_template;
+        tmpl.name = "template_" + std::to_string(++registered);
+        setup.server.add_resource_template(tmpl);
+    };
+
+    for (const std::string refused :
+         {"", "file:///path}", "file:///{}", "file:///{+}", "file:///{,a}", "file:///{a,}",
+          "file:///{a,,b}", "file:///{a-b}", "file:///{a b}", "file:///{:3}"}) {
+        SCOPED_TRACE(refused);
+        EXPECT_THROW(add(refused), std::invalid_argument);
+    }
+    for (const std::string accepted :
+         {"db://{schema}/{table,column}", "logs://{day:10}", "tags://list/{tags*}",
+          "docs://{+path}{?query,page}", "home://{user.name}/{%41}"}) {
+        SCOPED_TRACE(accepted);
+        EXPECT_NO_THROW(add(accepted));
+    }
+}
+
 TEST_F(ServerHandlersTest, AmbiguousResourceTemplateMatchReturnsInvalidParams) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
@@ -1937,6 +1968,64 @@ TEST_F(ServerHandlersTest, ToolsListPagesThroughTheToolsByCursor) {
     EXPECT_EQ(null_cursor["result"]["tools"][0]["name"], "tool_0");
     ASSERT_TRUE(null_cursor["result"].contains("nextCursor"));
     EXPECT_EQ(null_cursor["result"]["nextCursor"], "2");
+}
+
+// The server hands out decimal offsets as cursors. A cursor that is not a string, not wholly a
+// decimal number, too large to be an offset, or past the end of the list is one it never issued,
+// and is refused with -32602 instead of being read as some page.
+TEST_F(ServerHandlersTest, ToolsListRefusesCursorsTheServerCannotHaveIssued) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    setup.server.set_page_size(2);
+    for (int i = 0; i < 3; ++i) {
+        setup.server.add_tool<AddParams, AddResult>(
+            "tool_" + std::to_string(i), "Tool", nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    const std::map<std::string, nlohmann::json> cursors = {{"word", "next"},
+                                                           {"integer", 2},
+                                                           {"empty", ""},
+                                                           {"trailing-letters", "2abc"},
+                                                           {"signed", "+2"},
+                                                           {"negative", "-1"},
+                                                           {"leading-space", " 2"},
+                                                           {"end-of-list", "3"},
+                                                           {"too-large", "99999999999999999999999"}};
+    std::map<std::string, nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&](std::string_view msg) {
+        auto response = nlohmann::json::parse(msg);
+        const auto id = response.at("id").get<std::string>();
+        responses[id] = std::move(response);
+        if (responses.size() == cursors.size() + 1) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("init").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    for (const auto& [id, cursor] : cursors) {
+        setup.raw_transport->enqueue_message(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", id},
+            {"method", "tools/list"},
+            {"params", {{"cursor", cursor}}}}.dump());
+    }
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), cursors.size() + 1);
+    for (const auto& [id, cursor] : cursors) {
+        SCOPED_TRACE(id);
+        const auto& response = responses[id];
+        ASSERT_TRUE(response.contains("error")) << response;
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
+        EXPECT_EQ(response["error"]["message"], "Invalid pagination cursor");
+    }
 }
 
 TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredTools) {
