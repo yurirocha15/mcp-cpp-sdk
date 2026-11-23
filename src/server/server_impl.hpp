@@ -1458,9 +1458,6 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// handler must stay where it is until the call ends: one in a node of a std::map does.
     Task<nlohmann::json> call_through_middleware(const TypeErasedHandler& final_handler, Context& ctx,
                                                  const nlohmann::json& params);
-    /// Checks a tools/call's Mcp-Param-* headers against the tool it names, for a transport that
-    /// validates them before the request reaches the server.
-    detail::ParamHeaderCheck make_param_header_check();
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
     static std::string make_result_wire(const RequestId& id, nlohmann::json result);
     /// The response to @p id whose result is @p result_text, JSON text already serialized.

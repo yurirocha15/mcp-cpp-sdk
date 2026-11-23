@@ -4,31 +4,6 @@ namespace methods = mcp::constants::methods;
 
 namespace mcp {
 
-detail::ParamHeaderCheck Server::Impl::make_param_header_check() {
-    return [weak = weak_from_this()](
-               const nlohmann::json& request,
-               const detail::ParamHeaderValues& headers) -> std::optional<std::string> {
-        auto impl = weak.lock();
-        const auto params = request.find("params");
-        if (!impl || params == request.end() || !params->is_object()) {
-            return std::nullopt;
-        }
-        const auto name = params->find("name");
-        if (name == params->end() || !name->is_string()) {
-            return std::nullopt;
-        }
-        // An unknown tool is the server's to answer, as invalid params.
-        const auto tool = impl->tool_handlers.find(name->get_ref<const std::string&>());
-        if (tool == impl->tool_handlers.end()) {
-            return std::nullopt;
-        }
-        const auto arguments = params->find("arguments");
-        return detail::param_header_mismatch(
-            tool->second.schemas.param_headers->headers,
-            arguments == params->end() ? nlohmann::json::object() : *arguments, headers);
-    };
-}
-
 Context Server::Impl::make_context(
     std::shared_ptr<std::atomic<bool>> cancelled, std::optional<ProgressToken> progress_token,
     std::shared_ptr<const RequestMetadata> request_meta, bool session_request,

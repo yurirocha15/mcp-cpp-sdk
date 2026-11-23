@@ -226,7 +226,7 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
         session->http_transport = http_transport;
         unbinder.http_transport = http_transport;
         detail::bind_server(*http_transport,
-                            {impl->make_param_header_check(), impl->supported_versions(),
+                            {impl->supported_versions(),
                              [weak = std::weak_ptr<Impl>(impl)](nlohmann::json json_msg,
                                                                 RequestContext request_context) {
                                  return Impl::dispatch_for_http(weak, std::move(json_msg),

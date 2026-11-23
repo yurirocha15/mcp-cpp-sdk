@@ -870,12 +870,10 @@ struct HttpServerTransport::Impl {
         }
         std::shared_ptr<const detail::ModernDispatch> dispatch;
         boost::asio::any_io_executor dispatch_executor;
-        detail::ParamHeaderCheck check;
         {
             std::lock_guard lock(configuration_mutex);
             dispatch = modern_dispatch;
             dispatch_executor = modern_dispatch_executor;
-            check = param_header_check;
         }
         if (dispatch) {
             // The server checks the Mcp-Param headers of the request it is given.
@@ -890,17 +888,6 @@ struct HttpServerTransport::Impl {
             co_return detail::start_modern_exchange(request, std::move(request_json),
                                                     std::move(principal), start, *dispatch);
         }
-        if (detail::method_is(request_json.at("method"), methods::g_TOOLS_CALL)) {
-            if (check) {
-                if (auto mismatch = check(request_json, detail::mcp_param_headers(request))) {
-                    header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
-                    co_return make_jsonrpc_error_response(
-                        request, http::status::bad_request, mcp::constants::jsonrpc::g_HEADER_MISMATCH,
-                        "Header mismatch: " + *mismatch, request_json.at("id"));
-                }
-            }
-        }
-
         // Sessionless requests wait in the session's incoming queue, so a stranger could otherwise
         // delay the session's own requests by sending many at once.
         if (sessionless_request_ids.size() >= g_max_pending_sessionless_requests) {
@@ -1695,11 +1682,9 @@ struct HttpServerTransport::Impl {
 
     mutable std::mutex configuration_mutex;
     bool listening_started{false};
-    /// Guarded by configuration_mutex: Server::run() installs it while the transport may be
-    /// listening already.
-    detail::ParamHeaderCheck param_header_check;
-    /// Guarded by configuration_mutex, like param_header_check: what serves 2026-07-28 requests
-    /// directly once Server::run() reads the transport, and where it runs.
+    /// Guarded by configuration_mutex, since Server::run() installs them while the transport may be
+    /// listening already: what serves 2026-07-28 requests directly once Server::run() reads the
+    /// transport, and where it runs.
     std::shared_ptr<const detail::ModernDispatch> modern_dispatch;
     boost::asio::any_io_executor modern_dispatch_executor;
     /// Set before listen(); read while serving.
@@ -2092,7 +2077,6 @@ void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
         throw std::invalid_argument("bind_server() needs a dispatch_executor for modern_dispatch");
     }
     std::lock_guard lock(transport.impl_->configuration_mutex);
-    transport.impl_->param_header_check = std::move(binding.param_header_check);
     transport.impl_->served_versions = std::move(binding.served_versions);
     transport.impl_->modern_dispatch =
         binding.modern_dispatch

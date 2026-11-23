@@ -30,15 +30,8 @@ namespace detail {
 /// across `initialize` requests to recognise the start of a new session on the same transport.
 std::uint64_t terminated_session_count(const HttpServerTransport& transport) noexcept;
 
-/// Checks the `Mcp-Param-{Name}` headers ({Name, value} pairs) of a 2026-07-28 tools/call against
-/// the arguments of the request, returning why they do not match or nullopt when they do.
-using ParamHeaderCheck = std::function<std::optional<std::string>(
-    const nlohmann::json& request, const std::vector<std::pair<std::string, std::string>>& headers)>;
-
 /// What Server::run() tells the HttpServerTransport it serves about itself.
 struct HttpServerBinding {
-    /// Knows which arguments each tool mirrors into headers.
-    ParamHeaderCheck param_header_check;
     /// The protocol versions the server serves, named in the error that answers an initialize
     /// sent with a 2026-07-28 version header.
     std::vector<std::string> served_versions;
