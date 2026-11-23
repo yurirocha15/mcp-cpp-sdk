@@ -20,6 +20,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace client_notifications_test {
@@ -768,8 +769,9 @@ TEST_F(ClientNotificationsTest, RequestOptionsThatCannotBeHonouredFailBeforeTheR
             for (const auto& params : unusable_params) {
                 mcp::RequestOptions options;
                 options.on_progress = [](const mcp::ProgressNotificationParams&) {};
+                const std::optional<nlohmann::json> request_params(std::in_place, params);
                 try {
-                    static_cast<void>(co_await client.send_request("ping", params, options));
+                    static_cast<void>(co_await client.send_request("ping", request_params, options));
                     outcomes.emplace_back("sent");
                 } catch (const mcp::McpError& error) {
                     outcomes.emplace_back(error.code() == mcp::constants::jsonrpc::g_INVALID_PARAMS

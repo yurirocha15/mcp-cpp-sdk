@@ -1062,7 +1062,7 @@ TEST_F(ServerToolOutputTest, ResultWithoutStructuredContentIsAnInternalError) {
     mcp::Tool tool;
     tool.name = "measure";
     tool.inputSchema = {{"type", "object"}};
-    tool.outputSchema = {{"type", "object"}};
+    tool.outputSchema = nlohmann::json{{"type", "object"}};
     setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
         return mcp::make_tool_text_result("seven");
     });
