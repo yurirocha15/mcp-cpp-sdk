@@ -324,8 +324,18 @@ struct Shared {
     }
 };
 
+/// The question of the `ask` tool.
+mcp::ElicitRequestParams name_question() {
+    mcp::ElicitRequestFormParams params;
+    params.message = "Your name?";
+    params.requestedSchema = {{"type", "object"}, {"properties", {{"name", {{"type", "string"}}}}}};
+    return params;
+}
+
 /// A server whose `ask` tool asks the client for a name, whose `wait` tool logs its tag, then waits
 /// until released, and whose `flood` tool logs a message of `size` bytes, then waits until released.
+/// The tools keep their strings out of their coroutine frames and build no temporary in a co_await
+/// operand, as docs/contributing.rst asks for GCC 11.
 std::unique_ptr<mcp::Server> make_server(const std::shared_ptr<Shared>& shared) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{true};
@@ -334,28 +344,27 @@ std::unique_ptr<mcp::Server> make_server(const std::shared_ptr<Shared>& shared) 
     server->add_tool<json, mcp::CallToolResult>(
         "ask", "Asks for a name", json{{"type", "object"}},
         [](mcp::Context& context, json) -> mcp::Task<mcp::CallToolResult> {
-            mcp::ElicitRequestFormParams params;
-            params.message = "Your name?";
-            params.requestedSchema = {{"type", "object"},
-                                      {"properties", {{"name", {{"type", "string"}}}}}};
-            const auto answer = co_await context.elicit(params);
+            const auto question = std::make_shared<const mcp::ElicitRequestParams>(name_question());
+            const auto answer = co_await context.elicit(*question);
             co_return mcp::make_tool_text_result(
                 answer.content.value_or(json::object()).value("name", "nobody"));
         });
     server->add_tool<json, mcp::CallToolResult>(
         "wait", "Logs its tag, then waits until released", json{{"type", "object"}},
         [shared](mcp::Context& context, json arguments) -> mcp::Task<mcp::CallToolResult> {
-            const auto tag = arguments.value("tag", std::string());
-            co_await context.log_info(tag);
-            co_await wait_until([shared] { return shared->released.load(); });
-            co_return mcp::make_tool_text_result("done-" + tag);
+            const json tag = arguments.value("tag", std::string());
+            co_await context.log_info(tag.get_ref<const std::string&>());
+            std::function<bool()> released = [shared] { return shared->released.load(); };
+            co_await wait_until(std::move(released));
+            co_return mcp::make_tool_text_result("done-" + tag.get<std::string>());
         });
     server->add_tool<json, mcp::CallToolResult>(
         "flood", "Logs a large message, then waits until released", json{{"type", "object"}},
         [shared](mcp::Context& context, json arguments) -> mcp::Task<mcp::CallToolResult> {
-            const std::string text(arguments.value("size", std::size_t{0}), 'x');
-            co_await context.log_info(text);
-            co_await wait_until([shared] { return shared->released.load(); });
+            const json text = std::string(arguments.value("size", std::size_t{0}), 'x');
+            co_await context.log_info(text.get_ref<const std::string&>());
+            std::function<bool()> released = [shared] { return shared->released.load(); };
+            co_await wait_until(std::move(released));
             co_return mcp::make_tool_text_result("flooded");
         });
     {
@@ -832,7 +841,9 @@ TEST_F(LegacyStreamTest, ClientCallsOverlapAndGetTheServersRequestsAndNotificati
             asio::steady_timer settle(executor, std::chrono::milliseconds(50));
             co_await settle.async_wait(asio::use_awaitable);
             shared_->released = true;
-            co_await wait_until([done] { return done->load() == 2; });
+            // Named, as make_server() names its conditions: no temporary in a co_await operand.
+            std::function<bool()> both_done = [done] { return done->load() == 2; };
+            co_await wait_until(std::move(both_done));
             co_await shared_->last_server()->notify_tools_list_changed();
             notified = co_await wait_until([&list_changed] { return list_changed.load() == 1; });
         },
