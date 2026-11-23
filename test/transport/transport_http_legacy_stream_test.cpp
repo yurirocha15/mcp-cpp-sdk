@@ -193,6 +193,18 @@ struct Reply {
     std::string body;
 };
 
+/// The messages of @p exchange's stream from here to its end.
+mcp::Task<std::vector<json>> rest_of(std::shared_ptr<Exchange> exchange) {
+    std::vector<json> messages;
+    for (;;) {
+        auto message = co_await exchange->next_message();
+        if (!message) {
+            co_return messages;
+        }
+        messages.push_back(std::move(*message));
+    }
+}
+
 /// Sends one request and reads the whole answer.
 mcp::Task<Reply> send(const asio::any_io_executor& executor, unsigned short port, http::verb verb,
                       std::string body, std::string session_id) {
@@ -479,9 +491,12 @@ TEST_F(LegacyStreamTest, SessionManagerGetStreamCarriesWhatBelongsToNoRequest) {
 TEST_F(LegacyStreamTest, SessionManagerSendsWhatBelongsToNoRequestOnAWaitingPostWithoutAGet) {
     constexpr unsigned short port = 19457;
     auto manager = make_manager(port);
-    std::vector<json> alone;
-    std::vector<json> first;
-    std::vector<json> second;
+    json only_log;
+    std::vector<json> only_rest;
+    json first_log;
+    json second_log;
+    std::vector<json> first_rest;
+    std::vector<json> second_rest;
     run(
         [&]() -> mcp::Task<void> {
             const auto executor = io_ctx_.get_executor();
@@ -491,19 +506,10 @@ TEST_F(LegacyStreamTest, SessionManagerSendsWhatBelongsToNoRequestOnAWaitingPost
             auto only = std::make_shared<Exchange>(executor);
             const auto body_only = call_tool(2, "wait", json{{"tag", "only"}}).dump();
             co_await only->open(port, http::verb::post, body_only, headers);
-            const auto log = co_await only->next_message();
-            alone.push_back(log.value_or(json()));
+            only_log = (co_await only->next_message()).value_or(json());
             co_await shared_->last_server()->notify_tools_list_changed();
-            const auto change = co_await only->next_message();
-            alone.push_back(change.value_or(json()));
             shared_->released = true;
-            for (;;) {
-                auto message = co_await only->next_message();
-                if (!message) {
-                    break;
-                }
-                alone.push_back(std::move(*message));
-            }
+            only_rest = co_await rest_of(only);
 
             shared_->released = false;
             auto a = std::make_shared<Exchange>(executor);
@@ -512,47 +518,33 @@ TEST_F(LegacyStreamTest, SessionManagerSendsWhatBelongsToNoRequestOnAWaitingPost
             const auto body_b = call_tool(4, "wait", json{{"tag", "b"}}).dump();
             co_await a->open(port, http::verb::post, body_a, headers);
             co_await b->open(port, http::verb::post, body_b, headers);
-            const auto log_a = co_await a->next_message();
-            first.push_back(log_a.value_or(json()));
-            const auto log_b = co_await b->next_message();
-            second.push_back(log_b.value_or(json()));
+            first_log = (co_await a->next_message()).value_or(json());
+            second_log = (co_await b->next_message()).value_or(json());
             co_await shared_->last_server()->notify_tools_list_changed();
             shared_->released = true;
-            for (;;) {
-                auto message = co_await a->next_message();
-                if (!message) {
-                    break;
-                }
-                first.push_back(std::move(*message));
-            }
-            for (;;) {
-                auto message = co_await b->next_message();
-                if (!message) {
-                    break;
-                }
-                second.push_back(std::move(*message));
-            }
+            first_rest = co_await rest_of(a);
+            second_rest = co_await rest_of(b);
         },
         [&] { manager->close(); });
 
     const auto method_of = [](const json& message) { return message.value("method", ""); };
-    ASSERT_EQ(alone.size(), 3U);
-    EXPECT_EQ(alone[0]["params"]["data"], "only") << alone[0];
-    EXPECT_EQ(method_of(alone[1]), "notifications/tools/list_changed") << alone[1];
-    EXPECT_EQ(text_of(alone[2]), "done-only") << alone[2];
+    EXPECT_EQ(only_log["params"]["data"], "only") << only_log;
+    ASSERT_EQ(only_rest.size(), 2U);
+    EXPECT_EQ(method_of(only_rest[0]), "notifications/tools/list_changed") << only_rest[0];
+    EXPECT_EQ(text_of(only_rest[1]), "done-only") << only_rest[1];
 
+    EXPECT_EQ(first_log["params"]["data"], "a") << first_log;
+    EXPECT_EQ(second_log["params"]["data"], "b") << second_log;
     // Both tools end together, so either response may be the next one.
-    auto& carrier = first.size() == 3 ? first : second;
-    auto& other = first.size() == 3 ? second : first;
-    ASSERT_EQ(carrier.size(), 3U);
-    ASSERT_EQ(other.size(), 2U);
-    EXPECT_EQ(method_of(carrier[0]), "notifications/message") << carrier[0];
-    EXPECT_EQ(method_of(carrier[1]), "notifications/tools/list_changed") << carrier[1];
-    EXPECT_TRUE(carrier[2].contains("result")) << carrier[2];
-    EXPECT_EQ(method_of(other[0]), "notifications/message") << other[0];
-    EXPECT_TRUE(other[1].contains("result")) << other[1];
-    EXPECT_EQ(text_of(first.back()), "done-a") << first.back();
-    EXPECT_EQ(text_of(second.back()), "done-b") << second.back();
+    auto& carrier = first_rest.size() == 2 ? first_rest : second_rest;
+    auto& other = first_rest.size() == 2 ? second_rest : first_rest;
+    ASSERT_EQ(carrier.size(), 2U);
+    ASSERT_EQ(other.size(), 1U);
+    EXPECT_EQ(method_of(carrier[0]), "notifications/tools/list_changed") << carrier[0];
+    EXPECT_TRUE(carrier[1].contains("result")) << carrier[1];
+    EXPECT_TRUE(other[0].contains("result")) << other[0];
+    EXPECT_EQ(text_of(first_rest.back()), "done-a") << first_rest.back();
+    EXPECT_EQ(text_of(second_rest.back()), "done-b") << second_rest.back();
 }
 
 // A client that left a stream before its response resumes it with Last-Event-ID, and gets the rest
@@ -640,9 +632,12 @@ TEST_F(LegacyStreamTest, HttpServerTransportSendsWhatBelongsToNoRequestOnlyOnALo
     mcp_test::spawn_detached(io_ctx_, transport->listen());
     mcp_test::spawn_detached(
         io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); });
-    std::vector<json> alone;
-    std::vector<json> first;
-    std::vector<json> second;
+    json only_log;
+    std::vector<json> only_rest;
+    json first_log;
+    json second_log;
+    std::vector<json> first_rest;
+    std::vector<json> second_rest;
     run(
         [&]() -> mcp::Task<void> {
             const auto executor = io_ctx_.get_executor();
@@ -652,17 +647,10 @@ TEST_F(LegacyStreamTest, HttpServerTransportSendsWhatBelongsToNoRequestOnlyOnALo
             auto only = std::make_shared<Exchange>(executor);
             const auto body_only = call_tool(2, "wait", json{{"tag", "only"}}).dump();
             co_await only->open(port, http::verb::post, body_only, headers);
-            const auto log = co_await only->next_message();
-            alone.push_back(log.value_or(json()));
+            only_log = (co_await only->next_message()).value_or(json());
             co_await server->notify_tools_list_changed();
             shared_->released = true;
-            for (;;) {
-                auto message = co_await only->next_message();
-                if (!message) {
-                    break;
-                }
-                alone.push_back(std::move(*message));
-            }
+            only_rest = co_await rest_of(only);
 
             shared_->released = false;
             auto a = std::make_shared<Exchange>(executor);
@@ -671,40 +659,26 @@ TEST_F(LegacyStreamTest, HttpServerTransportSendsWhatBelongsToNoRequestOnlyOnALo
             const auto body_b = call_tool(4, "wait", json{{"tag", "b"}}).dump();
             co_await a->open(port, http::verb::post, body_a, headers);
             co_await b->open(port, http::verb::post, body_b, headers);
-            const auto log_a = co_await a->next_message();
-            first.push_back(log_a.value_or(json()));
-            const auto log_b = co_await b->next_message();
-            second.push_back(log_b.value_or(json()));
+            first_log = (co_await a->next_message()).value_or(json());
+            second_log = (co_await b->next_message()).value_or(json());
             co_await server->notify_tools_list_changed();
             shared_->released = true;
-            for (;;) {
-                auto message = co_await a->next_message();
-                if (!message) {
-                    break;
-                }
-                first.push_back(std::move(*message));
-            }
-            for (;;) {
-                auto message = co_await b->next_message();
-                if (!message) {
-                    break;
-                }
-                second.push_back(std::move(*message));
-            }
+            first_rest = co_await rest_of(a);
+            second_rest = co_await rest_of(b);
         },
         [&] { transport->close(); });
 
     const auto method_of = [](const json& message) { return message.value("method", ""); };
-    ASSERT_EQ(alone.size(), 3U);
-    EXPECT_EQ(alone[0]["params"]["data"], "only") << alone[0];
-    EXPECT_EQ(method_of(alone[1]), "notifications/tools/list_changed") << alone[1];
-    EXPECT_EQ(text_of(alone[2]), "done-only") << alone[2];
-    ASSERT_EQ(first.size(), 2U);
-    ASSERT_EQ(second.size(), 2U);
-    EXPECT_EQ(first[0]["params"]["data"], "a") << first[0];
-    EXPECT_EQ(text_of(first[1]), "done-a") << first[1];
-    EXPECT_EQ(second[0]["params"]["data"], "b") << second[0];
-    EXPECT_EQ(text_of(second[1]), "done-b") << second[1];
+    EXPECT_EQ(only_log["params"]["data"], "only") << only_log;
+    ASSERT_EQ(only_rest.size(), 2U);
+    EXPECT_EQ(method_of(only_rest[0]), "notifications/tools/list_changed") << only_rest[0];
+    EXPECT_EQ(text_of(only_rest[1]), "done-only") << only_rest[1];
+    EXPECT_EQ(first_log["params"]["data"], "a") << first_log;
+    EXPECT_EQ(second_log["params"]["data"], "b") << second_log;
+    ASSERT_EQ(first_rest.size(), 1U);
+    ASSERT_EQ(second_rest.size(), 1U);
+    EXPECT_EQ(text_of(first_rest[0]), "done-a") << first_rest[0];
+    EXPECT_EQ(text_of(second_rest[0]), "done-b") << second_rest[0];
 }
 
 // A Client over HttpClientTransport answers the server's request while its call waits, sends calls
