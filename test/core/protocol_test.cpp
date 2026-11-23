@@ -243,6 +243,110 @@ TEST(ProtocolTest, MixedContentBlockSerialization) {
     EXPECT_EQ(std::get<mcp::ImageContent>(deserialized.content[1]).mimeType, "image/jpeg");
 }
 
+// Audio, resource links and embedded text and blob resources come back as the same block with
+// every field, optional ones included.
+TEST(ProtocolTest, AudioResourceLinkAndEmbeddedResourceBlocksRoundTrip) {
+    mcp::ResourceLink link;
+    link.uri = "file:///reports/q3.pdf";
+    link.name = "q3";
+    link.description = "Third quarter report";
+    link.mimeType = "application/pdf";
+    link.size = 52'428'800;
+    link.meta = json{{"origin", "archive"}};
+    link.annotations = mcp::Annotations{std::nullopt, "2026-10-01T00:00:00Z", 0.5};
+    link.title = "Q3 report";
+    link.icons = std::vector<mcp::Icon>{mcp::Icon{"https://example.com/pdf.png", "image/png"}};
+
+    mcp::EmbeddedResource text_resource;
+    text_resource.resource = mcp::TextResourceContents{"file:///notes.md", "# Notes", "text/markdown"};
+    text_resource.meta = json{{"revision", 3}};
+    text_resource.annotations = mcp::Annotations{std::nullopt, std::nullopt, 1.0};
+
+    mcp::EmbeddedResource blob_resource;
+    blob_resource.resource = mcp::BlobResourceContents{"file:///logo.png", "iVBORw0KGgo=", "image/png"};
+
+    mcp::CallToolResult result;
+    result.content.emplace_back(mcp::AudioContent{.data = "UklGRg==", .mimeType = "audio/wav"});
+    result.content.emplace_back(link);
+    result.content.emplace_back(text_resource);
+    result.content.emplace_back(blob_resource);
+
+    const json wire = result;
+    ASSERT_EQ(wire.at("content").size(), 4U);
+    EXPECT_EQ(wire["content"][0],
+              (json{{"type", "audio"}, {"data", "UklGRg=="}, {"mimeType", "audio/wav"}}));
+    EXPECT_EQ(wire["content"][1]["type"], "resource_link");
+    EXPECT_EQ(wire["content"][1]["size"], 52'428'800);
+    EXPECT_EQ(wire["content"][1]["_meta"], (json{{"origin", "archive"}}));
+    EXPECT_EQ(wire["content"][2]["type"], "resource");
+    EXPECT_EQ(wire["content"][2]["resource"]["text"], "# Notes");
+    EXPECT_EQ(wire["content"][2]["_meta"], (json{{"revision", 3}}));
+    EXPECT_EQ(wire["content"][3]["resource"]["blob"], "iVBORw0KGgo=");
+    EXPECT_FALSE(wire["content"][3].contains("_meta"));
+    EXPECT_FALSE(wire["content"][3].contains("annotations"));
+
+    const auto decoded = wire.get<mcp::CallToolResult>();
+    ASSERT_EQ(decoded.content.size(), 4U);
+
+    const auto& audio = std::get<mcp::AudioContent>(decoded.content[0]);
+    EXPECT_EQ(audio.data, "UklGRg==");
+    EXPECT_EQ(audio.mimeType, "audio/wav");
+
+    const auto& decoded_link = std::get<mcp::ResourceLink>(decoded.content[1]);
+    EXPECT_EQ(decoded_link.uri, link.uri);
+    EXPECT_EQ(decoded_link.name, link.name);
+    EXPECT_EQ(decoded_link.description, link.description);
+    EXPECT_EQ(decoded_link.mimeType, link.mimeType);
+    EXPECT_EQ(decoded_link.size, link.size);
+    EXPECT_EQ(decoded_link.meta, link.meta);
+    ASSERT_TRUE(decoded_link.annotations.has_value());
+    EXPECT_EQ(decoded_link.annotations->lastModified, "2026-10-01T00:00:00Z");
+    EXPECT_EQ(decoded_link.annotations->priority, 0.5);
+    EXPECT_EQ(decoded_link.title, link.title);
+    ASSERT_TRUE(decoded_link.icons.has_value());
+    ASSERT_EQ(decoded_link.icons->size(), 1U);
+    EXPECT_EQ(decoded_link.icons->front().source, "https://example.com/pdf.png");
+    EXPECT_EQ(decoded_link.icons->front().mimeType, "image/png");
+
+    const auto& decoded_text = std::get<mcp::EmbeddedResource>(decoded.content[2]);
+    const auto& text_contents = std::get<mcp::TextResourceContents>(decoded_text.resource);
+    EXPECT_EQ(text_contents.uri, "file:///notes.md");
+    EXPECT_EQ(text_contents.text, "# Notes");
+    EXPECT_EQ(text_contents.mimeType, "text/markdown");
+    EXPECT_EQ(decoded_text.meta, (json{{"revision", 3}}));
+    ASSERT_TRUE(decoded_text.annotations.has_value());
+    EXPECT_EQ(decoded_text.annotations->priority, 1.0);
+
+    const auto& decoded_blob = std::get<mcp::EmbeddedResource>(decoded.content[3]);
+    const auto& blob_contents = std::get<mcp::BlobResourceContents>(decoded_blob.resource);
+    EXPECT_EQ(blob_contents.blob, "iVBORw0KGgo=");
+    EXPECT_EQ(blob_contents.mimeType, "image/png");
+    EXPECT_FALSE(decoded_blob.meta.has_value());
+    EXPECT_FALSE(decoded_blob.annotations.has_value());
+}
+
+// A content block is decoded by its type, so one whose type is unknown, whose members do not fit
+// its type, or whose embedded resource is neither text nor a blob is refused rather than read as
+// something else.
+TEST(ProtocolTest, ContentBlocksThatDoNotFitTheirTypeAreRefused) {
+    EXPECT_THROW(static_cast<void>(json{{"type", "video"}, {"data", "AAAA"}}.get<mcp::ContentBlock>()),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(
+            json{{"type", "resource"}, {"resource", {{"uri", "file:///x"}}}}.get<mcp::ContentBlock>()),
+        std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(json{{"type", "audio"}, {"data", "AAAA"}}.get<mcp::ContentBlock>()),
+                 nlohmann::json::exception);
+    EXPECT_THROW(
+        static_cast<void>(
+            json{{"type", "resource"}, {"uri", "file:///x"}, {"name", "x"}}.get<mcp::ResourceLink>()),
+        std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(json{{"type", "resource_link"},
+                                        {"resource", {{"uri", "file:///x"}, {"text", "t"}}}}
+                                       .get<mcp::EmbeddedResource>()),
+                 std::invalid_argument);
+}
+
 TEST(ProtocolTest, ToolSerialization) {
     mcp::Tool tool;
     tool.name = "test-tool";

@@ -198,6 +198,60 @@ TEST(SkillsValidationTest, ReportsEachRuleTheExtensionPutsOnAnEntry) {
     EXPECT_FALSE(skills::validate_skill(not_skill_file).empty());
 }
 
+// Each rule is reported in its own words, so a server author can tell which one an entry breaks.
+// The entries below break one rule each and otherwise follow every rule, including the name's
+// match with the last path segment.
+TEST(SkillsValidationTest, NamesTheRuleAnEntryBreaks) {
+    const auto digest = skills::sha256_digest("x");
+    const auto entry = [&digest](const std::string& name) {
+        mcp::Skill skill;
+        skill.uri = "skill://acme/" + name + "/SKILL.md";
+        skill.frontmatter = {{"name", name}, {"description", "d"}};
+        skill.resources = {{skill.uri, digest, 1}};
+        return skill;
+    };
+    const auto problems_of = [](const mcp::Skill& skill) {
+        std::string joined;
+        for (const auto& problem : skills::validate_skill(skill)) {
+            joined += problem + "\n";
+        }
+        return joined;
+    };
+
+    EXPECT_EQ(problems_of(entry("refunds")), "");
+    for (const auto& name : std::vector<std::string>{"Refunds", "-refunds", "refunds-", "re--funds",
+                                                     "re_funds", std::string(65, 'a')}) {
+        SCOPED_TRACE(name);
+        const auto problems = problems_of(entry(name));
+        EXPECT_NE(problems.find("is not a valid skill name"), std::string::npos) << problems;
+    }
+    EXPECT_EQ(problems_of(entry(std::string(64, 'a'))), "");
+
+    auto no_description = entry("refunds");
+    no_description.frontmatter["description"] = "";
+    auto long_description = entry("refunds");
+    long_description.frontmatter["description"] = std::string(1025, 'd');
+    for (const auto& skill : {no_description, long_description}) {
+        const auto problems = problems_of(skill);
+        EXPECT_NE(problems.find("description must be 1 to 1024 characters"), std::string::npos)
+            << problems;
+    }
+    auto longest_description = entry("refunds");
+    longest_description.frontmatter["description"] = std::string(1024, 'd');
+    EXPECT_EQ(problems_of(longest_description), "");
+
+    auto negative_size = entry("refunds");
+    negative_size.resources.push_back({"skill://acme/refunds/ref.md", digest, -1});
+    EXPECT_NE(problems_of(negative_size).find("size of skill://acme/refunds/ref.md is negative"),
+              std::string::npos)
+        << problems_of(negative_size);
+
+    auto empty_path = entry("refunds");
+    empty_path.resources.push_back({"skill://acme/refunds/", digest, 1});
+    EXPECT_NE(problems_of(empty_path).find("path is empty"), std::string::npos)
+        << problems_of(empty_path);
+}
+
 TEST(SkillsCapabilityTest, SettingsAndDetection) {
     EXPECT_EQ(skills::server_settings(false), json::object());
     EXPECT_EQ(skills::server_settings(true), (json{{"directoryRead", true}}));

@@ -1055,6 +1055,28 @@ TEST_F(ServerToolOutputTest, ErrorResultsAreNotChecked) {
     EXPECT_TRUE(responses[1].at("result").value("isError", false));
 }
 
+// A tool with an outputSchema owes structuredContent in every result that is not an error, so one
+// without it fails the call instead of reaching the client as if it conformed.
+TEST_F(ServerToolOutputTest, ResultWithoutStructuredContentIsAnInternalError) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    mcp::Tool tool;
+    tool.name = "measure";
+    tool.inputSchema = {{"type", "object"}};
+    tool.outputSchema = {{"type", "object"}};
+    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+        return mcp::make_tool_text_result("seven");
+    });
+
+    auto responses = call_tool(setup, "measure");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("error")) << responses[1];
+    const auto& error = responses[1].at("error");
+    EXPECT_EQ(error.at("code"), mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    const auto message = error.at("message").get<std::string>();
+    EXPECT_NE(message.find("must return structuredContent"), std::string::npos) << message;
+}
+
 TEST_F(ServerToolOutputTest, CheckCanBeTurnedOff) {
     ServerSetup setup(io_ctx_, tool_capabilities());
     setup.server.set_tool_validation({.validate_structured_content = false});

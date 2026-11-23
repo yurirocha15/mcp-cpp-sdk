@@ -1537,4 +1537,53 @@ TEST_F(ClientCoreTest, ResultWithNullErrorMemberIsNotAProtocolViolation) {
     EXPECT_TRUE(outcome.reported.empty()) << "a well-formed response was reported as an error";
 }
 
+// A response must carry exactly one of `result` and `error`. One with both, or with neither,
+// still names its request, so that request fails at once instead of waiting out its deadline,
+// and the session goes on.
+TEST_F(ClientCoreTest, ResponseWithBothOrNeitherOfResultAndErrorFailsOnlyItsOwnRequest) {
+    const std::vector<std::function<nlohmann::json(const std::string&)>> responses = {
+        [](const std::string& id) {
+            return nlohmann::json{{"jsonrpc", "2.0"},
+                                  {"id", id},
+                                  {"result", nlohmann::json::object()},
+                                  {"error", {{"code", -32000}, {"message", "also failed"}}}};
+        },
+        [](const std::string& id) { return nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}}; },
+    };
+    for (const auto& response : responses) {
+        boost::asio::io_context io_ctx;
+        const auto outcome = send_two_requests(io_ctx, [&response](const std::string& id) {
+            return std::vector<nlohmann::json>{response(id)};
+        });
+        SCOPED_TRACE(response("1").dump());
+
+        ASSERT_TRUE(outcome.first_threw) << "the malformed response was taken as a result";
+        EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
+        EXPECT_NE(outcome.first_message.find("exactly one of result or error"), std::string::npos)
+            << "actual: " << outcome.first_message;
+        EXPECT_TRUE(outcome.second_succeeded)
+            << "the session died on one malformed response: " << outcome.second_failure;
+    }
+}
+
+// With strict validation, the default, a message without `"jsonrpc": "2.0"` or with a method that
+// is not a string is reported and dropped. The answer that follows still completes the request.
+TEST_F(ClientCoreTest, MessagesThatAreNotJsonRpcTwoAreReportedAndDropped) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"id", id}, {"result", {{"from", "no jsonrpc member"}}}},
+            {{"jsonrpc", "1.0"}, {"id", id}, {"result", {{"from", "another version"}}}},
+            {{"jsonrpc", "2.0"}, {"method", 42}},
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", nlohmann::json::object()}}};
+    });
+
+    EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on a message that is not JSON-RPC 2.0: " << outcome.second_failure;
+    ASSERT_EQ(outcome.reported.size(), 3U) << "a drop was silent";
+    for (const auto& reported : outcome.reported) {
+        EXPECT_EQ(reported.code, mcp::constants::jsonrpc::g_PARSE_ERROR) << reported.message;
+    }
+}
+
 }  // namespace client_core_test

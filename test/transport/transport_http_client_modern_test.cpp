@@ -33,6 +33,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace transport_http_client_modern_test {
@@ -2127,6 +2128,156 @@ TEST(HttpClientModern, EventWithoutAnEndIsCutOffAtTheMessageLimit) {
     });
 
     EXPECT_NE(failure.find("too long"), std::string::npos) << failure;
+}
+
+// One line without its end is bounded on its own, before it can become part of an event: the
+// call ends at the message limit instead of buffering the line for as long as the server sends.
+TEST(HttpClientModern, LineWithoutAnEndIsCutOffAtTheMessageLimit) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.rpc_method() != "tools/call") {
+            return modern_reply(request, json::array());
+        }
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        reply.stream.push_back({"data: ", nullptr});
+        const std::string mebibyte(std::size_t{1024} * 1024, 'x');
+        for (int sent = 0; sent < 17; ++sent) {
+            reply.stream.push_back({mebibyte, nullptr});
+        }
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    auto options = modern_options();
+    // The call ends at the message limit; its timeout only reports a stream that is never cut off.
+    options.request_timeout = g_hang_guard;
+    mcp::Client client(transport, io.get_executor(), options);
+
+    std::string failure;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("stream", "1.0");
+        try {
+            json arguments = json::object();
+            co_await client.call_tool("slow", arguments);
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        client.close();
+    });
+
+    EXPECT_NE(failure.find("An SSE line from the server is too long"), std::string::npos) << failure;
+}
+
+// The stream of a response is read as the SSE standard reads one: comment and unknown fields are
+// skipped, CRLF ends a line as LF does, a line may arrive in pieces, and the data lines of one
+// event are joined with a newline. A last event the stream ends without its blank line is still
+// read.
+TEST(HttpClientModern, StreamWithCrlfLinesSplitLinesAndAnUnendedLastEventIsRead) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.rpc_method() != "tools/call") {
+            return modern_reply(request, json::array());
+        }
+        const auto message = request.parsed();
+        const auto progress = json{{"jsonrpc", "2.0"},
+                                   {"method", "notifications/progress"},
+                                   {"params", {{"progressToken", "t1"}, {"progress", 1}, {"total", 2}}}}
+                                  .dump();
+        const auto result =
+            rpc_result(message, {{"resultType", "complete"},
+                                 {"content", json::array({{{"type", "text"}, {"text", "done"}}})}})
+                .dump();
+        const auto half = progress.size() / 2;
+        const auto comma = result.find(',');
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        reply.stream.push_back({": keep-alive\r\n\r\n", nullptr});
+        reply.stream.push_back(
+            {"event: message\r\nretry: 1000\r\ndata: " + progress.substr(0, half), nullptr});
+        reply.stream.push_back({progress.substr(half) + "\r\n\r\n", nullptr});
+        reply.stream.push_back(
+            {"data: " + result.substr(0, comma + 1) + "\r\ndata: " + result.substr(comma + 1),
+             nullptr});
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+    int progress_seen = 0;
+    client.on_progress([&progress_seen](const mcp::ProgressNotificationParams& params) {
+        if (params.progress == 1 && params.total == 2) {
+            ++progress_seen;
+        }
+    });
+
+    json result;
+    std::string failure;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("stream", "1.0");
+        json params = {
+            {"name", "slow"}, {"arguments", json::object()}, {"_meta", {{"progressToken", "t1"}}}};
+        try {
+            result = co_await client.send_request("tools/call", params);
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(progress_seen, 1);
+    ASSERT_TRUE(result.is_object()) << failure;
+    EXPECT_EQ(result["content"][0]["text"], "done");
+}
+
+// A legacy server may answer a POST with its whole event stream as the body. That body is read
+// the same way: CRLF line ends, an event whose data spans several lines, and a last event without
+// the blank line that ends it.
+TEST(HttpClientLegacy, EventStreamBodyWithCrlfMultiLineDataAndNoFinalBlankLineIsRead) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        const auto message = request.parsed();
+        const auto method = message.is_object() ? message.value("method", "") : "";
+        if (method == "initialize") {
+            auto reply = json_reply(rpc_result(message, legacy_initialize_result()));
+            reply.headers.emplace_back("Mcp-Session-Id", "session-1");
+            return reply;
+        }
+        if (method != "tools/call") {
+            Reply accepted;
+            accepted.status = 202;
+            return accepted;
+        }
+        const auto result =
+            rpc_result(message, {{"content", json::array({{{"type", "text"}, {"text", "done"}}})}})
+                .dump();
+        const auto comma = result.find(',');
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        reply.body = ": comment\r\nevent: message\r\nid: 7\r\ndata: " + result.substr(0, comma + 1) +
+                     "\r\ndata: " + result.substr(comma + 1);
+        return reply;
+    });
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
+
+    std::string text;
+    std::string failure;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        try {
+            co_await client.connect("legacy", "1.0");
+            json arguments = json::object();
+            const auto result = co_await client.call_tool("slow", arguments);
+            if (!result.content.empty() &&
+                std::holds_alternative<mcp::TextContent>(result.content[0])) {
+                text = std::get<mcp::TextContent>(result.content[0]).text;
+            }
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(text, "done") << failure;
 }
 
 namespace {

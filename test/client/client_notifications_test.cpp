@@ -613,4 +613,185 @@ TEST_F(ClientNotificationsTest, ThrowingNotificationCallbackDoesNotStopReadLoop)
         << "actual: " << outcome.reported.front().message;
 }
 
+namespace {
+
+// Connects a legacy client to a scripted peer that answers initialize itself and every other
+// request with the messages @p answer returns for it, runs @p body on the connected client, and
+// returns what ClientOptions::on_protocol_error saw. @p written receives every message the client
+// sent.
+std::vector<mcp::Error> run_with_scripted_peer(
+    boost::asio::io_context& io_ctx,
+    const std::function<std::vector<nlohmann::json>(const nlohmann::json& request)>& answer,
+    const std::function<mcp::Task<void>(mcp::Client&)>& body,
+    std::vector<nlohmann::json>* written = nullptr) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw = transport.get();
+
+    std::vector<mcp::Error> reported;
+    mcp::ClientOptions options;
+    // Bounded, so that a swallowed response surfaces as a test failure instead of a stalled run.
+    options.request_timeout = g_hang_guard;
+    options.on_protocol_error = [&reported](const mcp::Error& error) { reported.push_back(error); };
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
+    mcp::Client client(transport, io_ctx.get_executor(), options);
+
+    raw->set_on_write([&](std::string_view msg) {
+        const auto request = nlohmann::json::parse(msg);
+        if (written != nullptr) {
+            written->push_back(request);
+        }
+        if (!request.contains("id")) {
+            return;
+        }
+        if (request.value("method", "") == "initialize") {
+            raw->enqueue_message(nlohmann::json{
+                {"jsonrpc", "2.0"}, {"id", request.at("id")}, {"result", make_initialize_result()}}
+                                     .dump());
+            return;
+        }
+        for (const auto& message : answer(request)) {
+            raw->enqueue_message(message.dump());
+        }
+    });
+
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        static_cast<void>(co_await client.connect("test-client", "1.0"));
+        co_await body(client);
+        raw->close();
+    });
+
+    io_ctx.run();
+    return reported;
+}
+
+nlohmann::json empty_result_for(const nlohmann::json& request) {
+    return {{"jsonrpc", "2.0"}, {"id", request.at("id")}, {"result", nlohmann::json::object()}};
+}
+
+}  // namespace
+
+// RequestOptions::on_progress receives the progress of its own request, under the token the
+// application put in `_meta`. Progress params that cannot be decoded, and a callback that throws,
+// are reported; neither costs the request its result, and none of it reaches Client::on_progress.
+TEST_F(ClientNotificationsTest, RequestProgressCallbackSurvivesBadProgressAndItsOwnThrow) {
+    std::vector<double> progress_seen;
+    int unrouted = 0;
+    nlohmann::json sent_token;
+    bool answered = false;
+    std::string failure;
+
+    const auto reported = run_with_scripted_peer(
+        io_ctx_,
+        [&sent_token](const nlohmann::json& request) {
+            sent_token = request.at("params").at("_meta").at("progressToken");
+            const auto progress = [&request](nlohmann::json value) {
+                return nlohmann::json{
+                    {"jsonrpc", "2.0"},
+                    {"method", "notifications/progress"},
+                    {"params",
+                     {{"progressToken", request.at("params").at("_meta").at("progressToken")},
+                      {"progress", std::move(value)}}}};
+            };
+            return std::vector<nlohmann::json>{progress(1),
+                                               progress("half"),
+                                               progress(2),
+                                               {{"jsonrpc", "2.0"},
+                                                {"id", request.at("id")},
+                                                {"result", {{"content", nlohmann::json::array()}}}}};
+        },
+        [&](mcp::Client& client) -> mcp::Task<void> {
+            client.on_progress([&unrouted](const mcp::ProgressNotificationParams&) { ++unrouted; });
+            mcp::RequestOptions options;
+            options.on_progress = [&progress_seen](const mcp::ProgressNotificationParams& params) {
+                if (params.progress == 1) {
+                    throw std::runtime_error("progress bar is gone");
+                }
+                progress_seen.push_back(params.progress);
+            };
+            nlohmann::json params = {{"name", "slow"},
+                                     {"arguments", nlohmann::json::object()},
+                                     {"_meta", {{"progressToken", 7}}}};
+            try {
+                static_cast<void>(co_await client.send_request("tools/call", params, options));
+                answered = true;
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+        });
+
+    EXPECT_TRUE(answered) << "the request failed: " << failure;
+    EXPECT_EQ(sent_token, nlohmann::json(7)) << "the application's token was replaced";
+    EXPECT_EQ(progress_seen, std::vector<double>{2});
+    EXPECT_EQ(unrouted, 0) << "progress of a request with a callback reached Client::on_progress";
+    ASSERT_EQ(reported.size(), 2U);
+    EXPECT_EQ(reported[0].code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_NE(reported[0].message.find("Progress callback threw"), std::string::npos)
+        << "actual: " << reported[0].message;
+    EXPECT_NE(reported[0].message.find("progress bar is gone"), std::string::npos)
+        << "actual: " << reported[0].message;
+    EXPECT_EQ(reported[1].code, mcp::constants::jsonrpc::g_INVALID_PARAMS);
+    EXPECT_NE(reported[1].message.find("Malformed progress notification params"), std::string::npos)
+        << "actual: " << reported[1].message;
+}
+
+// Options the client cannot honour fail the call before anything is sent: a timeout that is not
+// positive, and, with an on_progress callback, params that are not an object, a `_meta` that is not
+// an object or a progress token that is neither a string nor an integer. The session goes on.
+TEST_F(ClientNotificationsTest, RequestOptionsThatCannotBeHonouredFailBeforeTheRequestIsSent) {
+    std::vector<nlohmann::json> written;
+    std::vector<std::string> outcomes;
+    bool pinged = false;
+
+    const auto reported = run_with_scripted_peer(
+        io_ctx_,
+        [](const nlohmann::json& request) {
+            return std::vector<nlohmann::json>{empty_result_for(request)};
+        },
+        [&](mcp::Client& client) -> mcp::Task<void> {
+            const std::vector<std::chrono::milliseconds> unusable_timeouts = {
+                std::chrono::milliseconds(0), std::chrono::milliseconds(-1)};
+            for (const auto timeout : unusable_timeouts) {
+                mcp::RequestOptions options;
+                options.timeout = timeout;
+                try {
+                    static_cast<void>(co_await client.send_request("ping", std::nullopt, options));
+                    outcomes.emplace_back("sent");
+                } catch (const std::invalid_argument&) {
+                    outcomes.emplace_back("invalid_argument");
+                }
+            }
+            const std::vector<nlohmann::json> unusable_params = {
+                nlohmann::json::array({1}),
+                {{"_meta", "not an object"}},
+                {{"_meta", {{"progressToken", 1.5}}}},
+            };
+            for (const auto& params : unusable_params) {
+                mcp::RequestOptions options;
+                options.on_progress = [](const mcp::ProgressNotificationParams&) {};
+                try {
+                    static_cast<void>(co_await client.send_request("ping", params, options));
+                    outcomes.emplace_back("sent");
+                } catch (const mcp::McpError& error) {
+                    outcomes.emplace_back(error.code() == mcp::constants::jsonrpc::g_INVALID_PARAMS
+                                              ? "invalid_params"
+                                              : error.what());
+                }
+            }
+            co_await client.ping();
+            pinged = true;
+        },
+        &written);
+
+    EXPECT_EQ(outcomes,
+              (std::vector<std::string>{"invalid_argument", "invalid_argument", "invalid_params",
+                                        "invalid_params", "invalid_params"}));
+    EXPECT_TRUE(pinged) << "the session did not survive the refused calls";
+    int pings = 0;
+    for (const auto& message : written) {
+        pings += message.value("method", "") == "ping" ? 1 : 0;
+    }
+    EXPECT_EQ(pings, 1) << "a refused call reached the wire";
+    EXPECT_TRUE(reported.empty());
+}
+
 }  // namespace client_notifications_test
