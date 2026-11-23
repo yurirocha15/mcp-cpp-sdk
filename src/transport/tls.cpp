@@ -339,8 +339,9 @@ std::shared_ptr<const TlsClientContext> TlsClientContext::create(const TlsClient
         for (const auto& directory : roots->directories) {
             X509_STORE_load_path(store, directory.c_str());
         }
-        if (roots->certificates.empty() && roots->directories.empty()) {
-            // Whatever this OpenSSL was built to look at.
+        // With none where the platform keeps them, whatever this OpenSSL was built to look at.
+        // Variables that name none leave none, since they replace the system's authorities.
+        if (roots->certificates.empty() && roots->directories.empty() && !roots->from_environment) {
             SSL_CTX_set_default_verify_paths(context);
         }
         ERR_clear_error();

@@ -121,6 +121,9 @@ These changes in behavior need no change to compile:
   comment.
 - A client's request no longer fails when the server cancels a request of its
   own that has the same id, as it does for an elicitation it stops waiting for.
+- A client trusts no authority when `SSL_CERT_FILE` or `SSL_CERT_DIR` is set but
+  names none, instead of OpenSSL's defaults; with OpenSSL 3.0, a missing
+  `SSL_CERT_DIR` failed handshakes.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

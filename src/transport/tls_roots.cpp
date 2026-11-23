@@ -243,7 +243,8 @@ std::shared_ptr<const SystemRoots> system_roots() {
         return *s_cached;
     }
     auto roots = std::make_shared<SystemRoots>();
-    if (!read_environment(*roots)) {
+    roots->from_environment = read_environment(*roots);
+    if (!roots->from_environment) {
         read_platform(*roots);
     }
     if (!roots->certificates.empty() || !roots->directories.empty()) {
