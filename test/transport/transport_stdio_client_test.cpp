@@ -301,6 +301,35 @@ TEST(StdioClientTransport, UnexpectedExitIsReportedAndFailsPendingCalls) {
     EXPECT_EQ(status->code, 7);
 }
 
+// The exit callback observes: one that throws changes nothing, and the transport ends as after any
+// exit.
+TEST(StdioClientTransport, AThrowingExitCallbackChangesNothing) {
+    Harness harness;
+    std::atomic<bool> called{false};
+    bool read_failed = false;
+    std::optional<mcp::ProcessExit> status;
+    auto options = server_options("exit-at-once", {"3"});
+    options.on_exit = [&called](const mcp::ProcessExit&) {
+        called = true;
+        throw std::runtime_error("the exit sink is gone");
+    };
+    harness.run([&]() -> mcp::Task<void> {
+        mcp::StdioClientTransport transport(harness.io.get_executor(), options);
+        try {
+            co_await transport.read_message();
+        } catch (const std::runtime_error&) {
+            read_failed = true;
+        }
+        const bool seen = co_await wait_until([&called] { return called.load(); });
+        EXPECT_TRUE(seen);
+        status = transport.exit_status();
+    });
+    EXPECT_TRUE(read_failed);
+    ASSERT_TRUE(status.has_value());
+    EXPECT_EQ(status->code, 3);
+    EXPECT_FALSE(status->requested);
+}
+
 TEST(StdioClientTransport, ReadFailsAndWriteFailsAfterTheServerEnds) {
     Harness harness;
     bool read_failed = false;

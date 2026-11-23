@@ -439,6 +439,56 @@ TEST_F(ClientCoreTest, RequestsFailImmediatelyBeforeConnect) {
     EXPECT_THROW(static_cast<void>(client.send_notification("notifications/test", std::nullopt)),
                  mcp::McpError);
     EXPECT_THROW(static_cast<void>(client.ping()), mcp::McpError);
+    EXPECT_THROW(static_cast<void>(client.start_tool("echo", nlohmann::json::object())), mcp::McpError);
+    EXPECT_TRUE(transport->written().empty());
+}
+
+// A client connects once. connect() on a client already closed fails with CONNECTION_CLOSED and
+// sends nothing, and a second connect() on a connected client is refused without another handshake.
+TEST_F(ClientCoreTest, ConnectIsRefusedAfterCloseAndOnAConnectedClient) {
+    auto closed_transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    mcp::Client closed_client(closed_transport, io_ctx_.get_executor(), legacy_client_options());
+    closed_client.close();
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    raw_transport->set_on_write([raw_transport](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (json_msg.contains("id")) {
+            raw_transport->enqueue_message(
+                make_result_response(json_msg["id"].get<std::string>(), make_initialize_result())
+                    .dump());
+        }
+    });
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+
+    std::optional<int> closed_code;
+    std::optional<int> second_code;
+    std::string second_message;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            co_await closed_client.connect("test-client", "0.1");
+        } catch (const mcp::McpError& error) {
+            closed_code = error.code();
+        }
+        co_await client.connect("test-client", "0.1");
+        try {
+            co_await client.connect("test-client", "0.1");
+        } catch (const mcp::McpError& error) {
+            second_code = error.code();
+            second_message = error.what();
+        }
+        raw_transport->close();
+    });
+    io_ctx_.run();
+
+    ASSERT_TRUE(closed_code.has_value());
+    EXPECT_EQ(*closed_code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_TRUE(closed_transport->written().empty());
+    ASSERT_TRUE(second_code.has_value());
+    EXPECT_EQ(*second_code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_NE(second_message.find("already been initialized"), std::string::npos) << second_message;
+    EXPECT_EQ(raw_transport->written().size(), 2U);
 }
 
 TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {

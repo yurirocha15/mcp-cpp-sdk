@@ -591,27 +591,34 @@ TEST_F(ClientNotificationsTest, MessageNestedBeyondTheDepthLimitIsDroppedNotFata
 
 // The notification callback is application code and it runs on the read loop. A bug in it is the
 // application's to fix, not grounds for the SDK to tear down the connection -- but it must not
-// vanish either, or the application cannot find the bug.
+// vanish either, or the application cannot find the bug. A callback that throws something other
+// than an exception is reported by its method alone.
 TEST_F(ClientNotificationsTest, ThrowingNotificationCallbackDoesNotStopReadLoop) {
     const auto outcome = deliver_notifications(
         io_ctx_,
         {{{"jsonrpc", "2.0"},
           {"method", "notifications/message"},
-          {"params", nlohmann::json::object()}}},
+          {"params", nlohmann::json::object()}},
+         {{"jsonrpc", "2.0"}, {"method", "notifications/tools/list_changed"}}},
         [](mcp::Client& client) {
             client.on_notification("notifications/message", [](const nlohmann::json&) {
                 throw std::runtime_error("callback blew up");
             });
+            client.on_notification("notifications/tools/list_changed",
+                                   [](const nlohmann::json&) { throw 42; });
         });
 
     EXPECT_TRUE(outcome.survived) << "the session died on a throwing application callback: "
                                   << outcome.failure;
-    ASSERT_EQ(outcome.reported.size(), 1U) << "the throw was silent";
-    EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
-    EXPECT_NE(outcome.reported.front().message.find("notifications/message"), std::string::npos)
-        << "actual: " << outcome.reported.front().message;
-    EXPECT_NE(outcome.reported.front().message.find("callback blew up"), std::string::npos)
-        << "actual: " << outcome.reported.front().message;
+    ASSERT_EQ(outcome.reported.size(), 2U) << "a throw was silent";
+    EXPECT_EQ(outcome.reported[0].code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_NE(outcome.reported[0].message.find("notifications/message"), std::string::npos)
+        << "actual: " << outcome.reported[0].message;
+    EXPECT_NE(outcome.reported[0].message.find("callback blew up"), std::string::npos)
+        << "actual: " << outcome.reported[0].message;
+    EXPECT_EQ(outcome.reported[1].code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_EQ(outcome.reported[1].message,
+              "Notification callback for notifications/tools/list_changed threw");
 }
 
 namespace {
