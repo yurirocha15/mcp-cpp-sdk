@@ -656,6 +656,61 @@ TEST(HttpClientModern, InvalidXMcpHeaderToolsExcluded) {
     EXPECT_EQ(raw.requests[2].header("Mcp-Param-Region"), "eu");
 }
 
+// The header annotations of a tools/list read in pages add up across the pages, and a listing that
+// starts over without a cursor forgets the tools it no longer lists.
+TEST(HttpClientModern, ToolHeadersAddUpAcrossPagesAndStartOverWithANewListing) {
+    const auto header_tool = [](const std::string& name, const std::string& argument,
+                                const std::string& header) {
+        return json{{"name", name},
+                    {"inputSchema",
+                     {{"type", "object"},
+                      {"properties", {{argument, {{"type", "string"}, {"x-mcp-header", header}}}}}}}};
+    };
+    int listings = 0;
+    asio::io_context io;
+    RawServer raw(io, [&](const Recorded& request) {
+        if (request.rpc_method() != "tools/list") {
+            return modern_reply(request, json::array());
+        }
+        const auto message = request.parsed();
+        json result = {{"resultType", "complete"}};
+        if (message.value("params", json::object()).contains("cursor")) {
+            result["tools"] = json::array({header_tool("b", "zone", "Zone")});
+        } else if (++listings == 1) {
+            result["tools"] = json::array({header_tool("a", "region", "Region")});
+            result["nextCursor"] = "2";
+        } else {
+            result["tools"] = json::array({header_tool("b", "zone", "Zone")});
+        }
+        return json_reply(rpc_result(message, result));
+    });
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), modern_options());
+
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("pages", "1.0");
+        co_await client.list_tools();
+        const std::optional<std::string> next = "2";
+        co_await client.list_tools(next);
+        json region = {{"region", "eu"}};
+        json zone = {{"zone", "z1"}};
+        co_await client.call_tool("a", region);
+        co_await client.call_tool("b", zone);
+        co_await client.list_tools();
+        co_await client.call_tool("a", region);
+        co_await client.call_tool("b", zone);
+        client.close();
+    });
+
+    ASSERT_EQ(raw.requests.size(), 8u);
+    for (const std::size_t call : {3u, 4u, 6u, 7u}) {
+        EXPECT_EQ(raw.requests[call].rpc_method(), "tools/call") << raw.requests[call].body;
+    }
+    EXPECT_EQ(raw.requests[3].header("Mcp-Param-Region"), "eu");
+    EXPECT_EQ(raw.requests[4].header("Mcp-Param-Zone"), "z1");
+    EXPECT_FALSE(raw.requests[6].header("Mcp-Param-Region").has_value());
+    EXPECT_EQ(raw.requests[7].header("Mcp-Param-Zone"), "z1");
+}
+
 TEST(HttpClientModern, HeaderMismatchRefreshThenRetry) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
@@ -1811,20 +1866,28 @@ TEST(HttpClientLegacy, InitializeRefusedWithAnErrorStatusReportsTheJsonRpcError)
     }
 }
 
-// The body of such an error may leave the id out or null; it still answers the initialize.
+// The body of such an error may leave the id out or null, and the jsonrpc member out; it still
+// answers the initialize.
 TEST(HttpClientLegacy, InitializeErrorWithoutAnIdStillReachesTheCaller) {
-    const auto error = legacy_connect_error(400, [](const json&) {
-        return json{{"jsonrpc", "2.0"},
-                    {"id", nullptr},
-                    {"error", {{"code", -32600}, {"message", "Bad Request: unsupported version"}}}};
-    });
-    EXPECT_NE(error.find("unsupported version"), std::string::npos) << error;
+    const json error_object = {{"code", -32600}, {"message", "Bad Request: unsupported version"}};
+    for (const auto& body : {json{{"jsonrpc", "2.0"}, {"id", nullptr}, {"error", error_object}},
+                             json{{"error", error_object}}}) {
+        SCOPED_TRACE(body.dump());
+        const auto error = legacy_connect_error(400, [&body](const json&) { return body; });
+        EXPECT_NE(error.find("unsupported version"), std::string::npos) << error;
+    }
 }
 
-// A body that is not a JSON-RPC error leaves the plain HTTP status error.
+// A body that is not a JSON-RPC error, or whose error has no integer code, leaves the plain HTTP
+// status error.
 TEST(HttpClientLegacy, InitializeRefusedWithoutAJsonRpcErrorReportsTheStatus) {
-    const auto error = legacy_connect_error(400, [](const json&) { return json{{"detail", "no"}}; });
-    EXPECT_NE(error.find("status 400"), std::string::npos) << error;
+    for (const auto& body : {json{{"detail", "no"}}, json::array({1, 2}), json{{"error", "refused"}},
+                             json{{"error", {{"code", "-32600"}, {"message", "refused"}}}},
+                             json{{"error", {{"code", -32600.5}, {"message", "refused"}}}}}) {
+        SCOPED_TRACE(body.dump());
+        const auto error = legacy_connect_error(400, [&body](const json&) { return body; });
+        EXPECT_NE(error.find("status 400"), std::string::npos) << error;
+    }
 }
 
 /// The HTTP status of the HttpStatusError nested in @p error, the McpError a client call threw.
