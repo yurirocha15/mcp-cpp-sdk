@@ -474,6 +474,87 @@ TEST_F(LegacyStreamTest, SessionManagerGetStreamCarriesWhatBelongsToNoRequest) {
     EXPECT_EQ(notification.value("method", ""), "notifications/tools/list_changed") << notification;
 }
 
+// Without a GET stream, what belongs to no request goes on the stream of the only POST waiting.
+// With several waiting it is held, and goes on the stream of the next response, ahead of it.
+TEST_F(LegacyStreamTest, SessionManagerSendsWhatBelongsToNoRequestOnAWaitingPostWithoutAGet) {
+    constexpr unsigned short port = 19457;
+    auto manager = make_manager(port);
+    std::vector<json> alone;
+    std::vector<json> first;
+    std::vector<json> second;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            const auto session = co_await start_session(executor, port);
+            const auto headers = session_headers(session);
+
+            auto only = std::make_shared<Exchange>(executor);
+            const auto body_only = call_tool(2, "wait", json{{"tag", "only"}}).dump();
+            co_await only->open(port, http::verb::post, body_only, headers);
+            const auto log = co_await only->next_message();
+            alone.push_back(log.value_or(json()));
+            co_await shared_->last_server()->notify_tools_list_changed();
+            const auto change = co_await only->next_message();
+            alone.push_back(change.value_or(json()));
+            shared_->released = true;
+            for (;;) {
+                auto message = co_await only->next_message();
+                if (!message) {
+                    break;
+                }
+                alone.push_back(std::move(*message));
+            }
+
+            shared_->released = false;
+            auto a = std::make_shared<Exchange>(executor);
+            auto b = std::make_shared<Exchange>(executor);
+            const auto body_a = call_tool(3, "wait", json{{"tag", "a"}}).dump();
+            const auto body_b = call_tool(4, "wait", json{{"tag", "b"}}).dump();
+            co_await a->open(port, http::verb::post, body_a, headers);
+            co_await b->open(port, http::verb::post, body_b, headers);
+            const auto log_a = co_await a->next_message();
+            first.push_back(log_a.value_or(json()));
+            const auto log_b = co_await b->next_message();
+            second.push_back(log_b.value_or(json()));
+            co_await shared_->last_server()->notify_tools_list_changed();
+            shared_->released = true;
+            for (;;) {
+                auto message = co_await a->next_message();
+                if (!message) {
+                    break;
+                }
+                first.push_back(std::move(*message));
+            }
+            for (;;) {
+                auto message = co_await b->next_message();
+                if (!message) {
+                    break;
+                }
+                second.push_back(std::move(*message));
+            }
+        },
+        [&] { manager->close(); });
+
+    const auto method_of = [](const json& message) { return message.value("method", ""); };
+    ASSERT_EQ(alone.size(), 3U);
+    EXPECT_EQ(alone[0]["params"]["data"], "only") << alone[0];
+    EXPECT_EQ(method_of(alone[1]), "notifications/tools/list_changed") << alone[1];
+    EXPECT_EQ(text_of(alone[2]), "done-only") << alone[2];
+
+    // Both tools end together, so either response may be the next one.
+    auto& carrier = first.size() == 3 ? first : second;
+    auto& other = first.size() == 3 ? second : first;
+    ASSERT_EQ(carrier.size(), 3U);
+    ASSERT_EQ(other.size(), 2U);
+    EXPECT_EQ(method_of(carrier[0]), "notifications/message") << carrier[0];
+    EXPECT_EQ(method_of(carrier[1]), "notifications/tools/list_changed") << carrier[1];
+    EXPECT_TRUE(carrier[2].contains("result")) << carrier[2];
+    EXPECT_EQ(method_of(other[0]), "notifications/message") << other[0];
+    EXPECT_TRUE(other[1].contains("result")) << other[1];
+    EXPECT_EQ(text_of(first.back()), "done-a") << first.back();
+    EXPECT_EQ(text_of(second.back()), "done-b") << second.back();
+}
+
 // A client that left a stream before its response resumes it with Last-Event-ID, and gets the rest
 // of it live, ending with the response.
 TEST_F(LegacyStreamTest, SessionManagerResumesAStreamTheClientLeft) {
