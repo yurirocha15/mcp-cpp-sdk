@@ -2355,6 +2355,36 @@ TEST(ProtocolTest, ResourceTemplateDecodesExplicitNullOptionals) {
     EXPECT_FALSE(tmpl.icons.has_value());
 }
 
+// Every optional member of a resource template is read from, and written back under, its wire
+// name.
+TEST(ProtocolTest, ResourceTemplateRoundTripsEveryMember) {
+    const json wire = {{"uriTemplate", "file:///{path}"},
+                       {"name", "files"},
+                       {"title", "Project files"},
+                       {"description", "Files of the project"},
+                       {"mimeType", "text/plain"},
+                       {"icons", json::array({{{"src", "https://example.com/files.png"},
+                                               {"mimeType", "image/png"},
+                                               {"sizes", json::array({"48x48"})},
+                                               {"theme", "dark"}}})},
+                       {"annotations",
+                        {{"audience", json::array({"user", "assistant"})},
+                         {"lastModified", "2026-01-02T03:04:05Z"},
+                         {"priority", 0.5}}},
+                       {"_meta", {{"example.com/owner", "docs"}}}};
+
+    const auto tmpl = wire.get<mcp::ResourceTemplate>();
+    EXPECT_EQ(tmpl.title, "Project files");
+    ASSERT_TRUE(tmpl.icons.has_value());
+    ASSERT_EQ(tmpl.icons->size(), 1U);
+    EXPECT_EQ(tmpl.icons->front().source, "https://example.com/files.png");
+    ASSERT_TRUE(tmpl.annotations.has_value());
+    EXPECT_EQ(tmpl.annotations->priority, 0.5);
+    ASSERT_TRUE(tmpl.meta.has_value());
+    EXPECT_EQ(tmpl.meta->at("example.com/owner"), "docs");
+    EXPECT_EQ(json(tmpl), wire);
+}
+
 TEST(ProtocolTest, ToolDecodesExplicitNullOptionals) {
     json tool_json = {{"name", "add"},          {"inputSchema", {{"type", "object"}}},
                       {"description", nullptr}, {"title", nullptr},

@@ -238,6 +238,21 @@ int main(int argc, char** argv) {
         ::signal(SIGTERM, SIG_IGN);
     }
 #endif
+    // Counts its starts in the file argv[2]. The second start serves 2026-07-28 requests only, so
+    // it refuses a legacy client's initialize.
+    bool refuse_initialize = false;
+    if (mode == "refuse-second-initialize" && argc > 2) {
+        int starts = 0;
+        {
+            std::ifstream in(argv[2]);
+            in >> starts;
+        }
+        {
+            std::ofstream out(argv[2], std::ios::trunc);
+            out << starts + 1 << '\n';
+        }
+        refuse_initialize = starts == 1;
+    }
     mcp::ServerCapabilities capabilities;
     // listChanged lets a subscriptions/listen stream take notify_tools_changed's notification.
     capabilities.tools = mcp::ServerCapabilities::ToolsCapability{.listChanged = true};
@@ -245,6 +260,9 @@ int main(int argc, char** argv) {
     capabilities.prompts = mcp::ServerCapabilities::PromptsCapability{};
     capabilities.completions = json::object();
     mcp::Server server(mcp::Implementation{"stdio-test-server", "1.0"}, capabilities);
+    if (refuse_initialize) {
+        server.set_protocol_policy({.serve_legacy = false});
+    }
     add_tools(server, argc, argv);
     add_resource_and_prompt(server);
     std::cerr << "test server started" << '\n' << std::flush;

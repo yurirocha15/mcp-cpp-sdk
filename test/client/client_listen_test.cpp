@@ -211,6 +211,114 @@ TEST(ClientListen, AckSubsetDetected) {
                     {"resourceSubscriptions", json::array({"file:///a", "file:///b"})}}));
 }
 
+// An acknowledgment is the server's output, read leniently: a member of the wrong type, or a list
+// entry that is not a string, counts as not honored instead of failing listen(). The first
+// acknowledgment of a stream stands; a later one changes nothing.
+TEST(ClientListen, AcknowledgmentsAreReadLenientlyAndOnlyOnce) {
+    Harness harness;
+    mcp::SubscriptionFilter requested;
+    requested.toolsListChanged = true;
+    requested.promptsListChanged = true;
+    requested.resourceSubscriptions = {"file:///a", "file:///b"};
+    requested.taskIds = {"task-1"};
+
+    mcp::Subscription partly;
+    mcp::Subscription unreadable;
+    std::vector<std::string> partly_methods;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("listen-client", "1.0");
+        harness.honor = [](const json&) {
+            return json{{"toolsListChanged", "yes"},
+                        {"promptsListChanged", true},
+                        {"resourceSubscriptions", json::array({"file:///a", 7})},
+                        {"taskIds", "task-1"}};
+        };
+        partly = co_await harness.client->listen(requested);
+        harness.honor = [](const json&) { return json("everything"); };
+        unreadable = co_await harness.client->listen(requested);
+        const json id = partly.id();
+        json everything = {{"notifications", json(requested)}};
+        harness.deliver(
+            notification_of(id, "notifications/subscriptions/acknowledged", std::move(everything)));
+        harness.deliver(notification_of(id, "notifications/tools/list_changed"));
+        harness.deliver(closing_result(id));
+        // Everything before the closing result has been read once the stream has ended.
+        partly_methods = co_await drain(partly);
+    });
+
+    EXPECT_EQ(partly_methods, std::vector<std::string>{"notifications/tools/list_changed"});
+    EXPECT_FALSE(partly.acknowledged().toolsListChanged);
+    EXPECT_TRUE(partly.acknowledged().promptsListChanged);
+    EXPECT_EQ(partly.acknowledged().resourceSubscriptions, std::vector<std::string>{"file:///a"});
+    EXPECT_TRUE(partly.acknowledged().taskIds.empty());
+    const auto missing = partly.unhonored();
+    EXPECT_TRUE(missing.toolsListChanged);
+    EXPECT_FALSE(missing.promptsListChanged);
+    EXPECT_EQ(missing.resourceSubscriptions, std::vector<std::string>{"file:///b"});
+    EXPECT_EQ(missing.taskIds, std::vector<std::string>{"task-1"});
+    EXPECT_EQ(unreadable.acknowledged(), mcp::SubscriptionFilter{});
+    EXPECT_EQ(unreadable.unhonored(), requested);
+}
+
+// A filter written by to_json() reads back the same; a flag that is absent reads as off, and a
+// list that is absent or null as empty.
+TEST(ClientListen, FilterReadsBackFromJson) {
+    mcp::SubscriptionFilter filter;
+    filter.toolsListChanged = true;
+    filter.resourcesListChanged = true;
+    filter.resourceSubscriptions = {"file:///a"};
+    filter.taskIds = {"task-1", "task-2"};
+    EXPECT_EQ(json(filter).get<mcp::SubscriptionFilter>(), filter);
+    EXPECT_EQ(json(mcp::SubscriptionFilter{}), json::object());
+
+    const auto sparse =
+        json{{"promptsListChanged", true}, {"resourceSubscriptions", nullptr}, {"taskIds", nullptr}}
+            .get<mcp::SubscriptionFilter>();
+    mcp::SubscriptionFilter prompts_only;
+    prompts_only.promptsListChanged = true;
+    EXPECT_EQ(sparse, prompts_only);
+    EXPECT_THROW(static_cast<void>(json{{"taskIds", "task-1"}}.get<mcp::SubscriptionFilter>()),
+                 json::exception);
+}
+
+// A handle that no listen() made is not attached to a stream: it reads as cancelled, next() yields
+// nothing and close() sends nothing. Blocking calls need a stream of a client built from an
+// Endpoint, so neither it nor a stream of a client on the application's loop has them.
+TEST(ClientListen, HandlesWithoutABlockingLoopSayWhatTheyAre) {
+    const mcp::Subscription detached;
+    EXPECT_EQ(detached.end_reason(), mcp::SubscriptionEnd::eCancelled);
+    EXPECT_FALSE(detached.end_error().has_value());
+    EXPECT_EQ(detached.dropped_events(), 0U);
+    EXPECT_EQ(detached.requested(), mcp::SubscriptionFilter{});
+    EXPECT_EQ(detached.unhonored(), mcp::SubscriptionFilter{});
+    EXPECT_THROW(static_cast<void>(detached.sync()), std::logic_error);
+
+    Harness harness;
+    mcp::SubscriptionFilter tools;
+    tools.toolsListChanged = true;
+    bool next_was_empty = false;
+    bool sync_refused = false;
+    harness.run([&]() -> mcp::Task<void> {
+        auto copy = detached;
+        co_await copy.close();
+        const auto event = co_await copy.next();
+        next_was_empty = !event.has_value();
+        co_await harness.client->connect("listen-client", "1.0");
+        const auto stream = co_await harness.client->listen(tools);
+        try {
+            static_cast<void>(stream.sync());
+        } catch (const std::logic_error&) {
+            sync_refused = true;
+        }
+    });
+
+    EXPECT_TRUE(next_was_empty);
+    EXPECT_TRUE(sync_refused);
+    for (const auto& message : harness.seen) {
+        EXPECT_NE(message.value("method", ""), "notifications/cancelled") << message;
+    }
+}
+
 // "Each subscription is identified by the JSON-RPC request ID of its subscriptions/listen request,
 // and every notification on the stream carries that ID ... so clients can demultiplex them."
 TEST(ClientListen, TwoListensDemux) {

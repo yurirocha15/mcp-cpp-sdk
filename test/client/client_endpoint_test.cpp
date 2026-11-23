@@ -24,6 +24,8 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -247,6 +249,41 @@ TEST(ClientEndpointTest, TheClientClosesWhenThePolicyAllowsNoMoreStarts) {
               mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
     EXPECT_EQ(failure_code([&] { client.sync().list_tools(); }),
               mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+}
+
+// A start that fails uses one of the restarts the policy allows. A restarted server that refuses a
+// legacy session's initialize is ended, and the next start, when the policy allows one, serves the
+// client; when it allows none, the client closes.
+TEST(ClientEndpointTest, AStartThatCannotInitializeUsesARestart) {
+    for (const std::size_t max_restarts : {std::size_t{2}, std::size_t{1}}) {
+        SCOPED_TRACE(max_restarts);
+        const auto counter =
+            std::filesystem::temp_directory_path() /
+            ("mcp-sdk-starts-" + std::to_string(max_restarts) + "-" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        mcp::ClientOptions options;
+        options.protocol = mcp::ClientProtocol::legacy();
+        int starts = 0;
+        {
+            mcp::Client client(
+                mcp::Endpoint::stdio(
+                    test_server({"refuse-second-initialize", counter.string()}),
+                    {.max_restarts = max_restarts, .delay = std::chrono::milliseconds(10)}),
+                options);
+            client.sync().connect("endpoint-test", "1.0");
+            EXPECT_EQ(failure_code([&] { client.sync().call_tool("crash", crash(3)); }),
+                      mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+            EXPECT_EQ(failure_code([&] { static_cast<void>(client.sync().list_tools()); }),
+                      max_restarts == 2 ? 0 : mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+        }
+        {
+            std::ifstream in(counter);
+            in >> starts;
+        }
+        std::error_code ignored;
+        std::filesystem::remove(counter, ignored);
+        EXPECT_EQ(starts, static_cast<int>(max_restarts) + 1);
+    }
 }
 
 // A server that exits with status 0 is shutting down by choice, unless the policy says otherwise.
