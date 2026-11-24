@@ -4,6 +4,7 @@
 #include <mcp/core/export.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -37,7 +38,7 @@ namespace detail {
  * @details Every value other than `allowed` means the SDK refused the target. Refusal happens
  * before host resolution, so a refused target is never contacted.
  */
-enum class MetadataUrlDecision {
+enum class MetadataUrlDecision : std::uint8_t {
     eAllowed,           ///< Target passed every configured control.
     eMalformedUrl,      ///< URL could not be decomposed into scheme, host and port, including a
                         ///< port that is not a plain decimal number or a host that is nothing but dots.

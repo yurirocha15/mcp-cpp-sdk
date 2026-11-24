@@ -176,7 +176,7 @@ struct OAuthDiscoveryClient::Impl {
     }
 
     static Task<ProtectedResourceMetadata> discover_protected_resource(
-        std::shared_ptr<Impl> owner, std::string resource_url,
+        std::shared_ptr<Impl> owner, const std::string& resource_url,
         const std::optional<std::string>& challenge_metadata_url,
         ProtectedResourceAcceptor accept = {}) {
         // A challenge-supplied URL is its own cache key, so a server that moves its metadata is

@@ -434,7 +434,7 @@ struct StreamableHttpSessionManager::Impl {
 
     static void request_connection_close(const std::shared_ptr<Connection>& connection) {
         boost::asio::post(connection->get_executor(),
-                          [connection]() { close_connection_now(connection); });
+                          [connection] { close_connection_now(connection); });
     }
 
     bool register_connection(const std::shared_ptr<Connection>& connection) {
@@ -493,7 +493,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     std::shared_ptr<detail_session_mgr::SessionRuntime> create_session(
-        boost::asio::any_io_executor conn_strand, std::string principal) {
+        const boost::asio::any_io_executor& conn_strand, std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             return nullptr;
         }
@@ -1723,7 +1723,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     static void signal_timer(const std::shared_ptr<boost::asio::steady_timer>& timer) {
-        boost::asio::dispatch(timer->get_executor(), [timer]() { (void)timer->cancel(); });
+        boost::asio::dispatch(timer->get_executor(), [timer] { (void)timer->cancel(); });
     }
 
     /// Routes a message the session's server wrote: a response to the stream of its POST, which
@@ -2120,7 +2120,7 @@ void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl)
         }
     }
 
-    boost::asio::post(impl->listener_strand, [impl]() {
+    boost::asio::post(impl->listener_strand, [impl] {
         boost::system::error_code ec;
         (void)impl->acceptor.cancel(ec);
         (void)impl->acceptor.close(ec);

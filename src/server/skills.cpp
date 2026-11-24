@@ -39,7 +39,10 @@ void require_plain_path(const std::string& path, const std::string& what) {
     }
     for (const auto& segment : split_path(path)) {
         if (segment.empty() || segment == "." || segment == "..") {
-            throw std::invalid_argument(what + " has an empty, . or .. segment: " + path);
+            std::string message = what;
+            message += " has an empty, . or .. segment: ";
+            message += path;
+            throw std::invalid_argument(message);
         }
     }
 }

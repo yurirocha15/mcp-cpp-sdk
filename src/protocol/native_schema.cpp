@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <array>
-#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -171,19 +170,17 @@ bool has_keyword(std::string_view keyword, SchemaDialect dialect) {
 /// Whether @p value has a `$ref` or `$dynamicRef` member at any depth.
 bool mentions_reference(const nlohmann::json& value) {
     if (value.is_array()) {
-        return std::ranges::any_of(value,
+        return std::ranges::any_of(value.get_ref<const nlohmann::json::array_t&>(),
                                    [](const nlohmann::json& item) { return mentions_reference(item); });
     }
     if (!value.is_object()) {
         return false;
     }
-    for (const auto& [name, member] : value.items()) {
-        if (name == "$ref" || name == "$dynamicRef" || name == "$recursiveRef" ||
-            mentions_reference(member)) {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(value.get_ref<const nlohmann::json::object_t&>(), [](const auto& entry) {
+        const auto& [name, member] = entry;
+        return name == "$ref" || name == "$dynamicRef" || name == "$recursiveRef" ||
+               mentions_reference(member);
+    });
 }
 
 /// A size keyword's value, or nothing when it is not a non-negative number. One beyond std::size_t
@@ -550,9 +547,12 @@ class Compiler {
             if (!value.is_string()) {
                 return false;
             }
-            const auto kind = keyword == "$ref"          ? ReferenceKind::eRef
-                              : keyword == "$dynamicRef" ? ReferenceKind::eDynamic
-                                                         : ReferenceKind::eRecursive;
+            auto kind = ReferenceKind::eRecursive;
+            if (keyword == "$ref") {
+                kind = ReferenceKind::eRef;
+            } else if (keyword == "$dynamicRef") {
+                kind = ReferenceKind::eDynamic;
+            }
             pending_.push_back(
                 {.node = &node,
                  .target = resolve_uri(resource.uri, value.get_ref<const std::string&>()),
@@ -882,7 +882,10 @@ class Compiler {
             walked += escape_pointer_token(token);
             pointer += '/';
             pointer += escape_pointer_token(token);
-            const auto on_the_way = locations_.find(base + "#" + walked);
+            std::string location = base;
+            location += '#';
+            location += walked;
+            const auto on_the_way = locations_.find(location);
             if (on_the_way != locations_.end()) {
                 const auto& place = places_.at(on_the_way->second);
                 resource = place.resource;
@@ -972,7 +975,8 @@ bool is_multiple_of(double value, double divisor) {
     return std::fabs(remainder) < std::fabs(epsilon);
 }
 
-/// Thrown when pattern matching needs more steps than the validation's budget holds.
+/// Thrown when pattern matching needs more steps than the validation's budget holds. Not a
+/// std::exception, as WorkBudgetExceeded is not.
 struct PatternBudgetExceeded {};
 
 /// Work charged for reading a whole string: one unit per this many bytes.
@@ -1000,8 +1004,8 @@ std::optional<std::string> lenient_base64_decode(std::string_view text) {
         }
         buffer = (buffer << encoding::g_BASE64_DIGIT_BITS) | static_cast<unsigned>(digit);
         bits += encoding::g_BASE64_DIGIT_BITS;
-        if (bits >= CHAR_BIT) {
-            bits -= CHAR_BIT;
+        if (bits >= encoding::g_BITS_PER_BYTE) {
+            bits -= encoding::g_BITS_PER_BYTE;
             decoded.push_back(static_cast<char>((buffer >> bits) & encoding::g_BYTE_MASK));
         }
     }
@@ -1042,14 +1046,14 @@ struct Annotations {
             members.resize(other.members.size(), 0);
         }
         for (std::size_t i = 0; i < other.members.size(); ++i) {
-            members[i] = static_cast<char>(members[i] | other.members[i]);
+            members[i] = static_cast<char>(members[i] != 0 || other.members[i] != 0);
         }
         items = std::max(items, other.items);
         if (item_flags.size() < other.item_flags.size()) {
             item_flags.resize(other.item_flags.size(), 0);
         }
         for (std::size_t i = 0; i < other.item_flags.size(); ++i) {
-            item_flags[i] = static_cast<char>(item_flags[i] | other.item_flags[i]);
+            item_flags[i] = static_cast<char>(item_flags[i] != 0 || other.item_flags[i] != 0);
         }
     }
 };
@@ -1188,7 +1192,6 @@ class Evaluation {
         return true;
     }
 
-   private:
     /// Adds @p resource to the dynamic scope until destroyed, when the document needs a dynamic
     /// scope and @p resource is not already the innermost entry.
     class ScopeEntry {
@@ -1306,6 +1309,7 @@ class Evaluation {
         explicit Frame(Evaluation& evaluation) : evaluation_(evaluation) {
             charge(evaluation_.work_, evaluation_.depth_ + 1);
             if (++evaluation_.depth_ > mcp::detail::constants::schema::g_MAX_EVAL_DEPTH) {
+                // NOLINTNEXTLINE(bugprone-std-exception-baseclass): see the declaration.
                 throw EvaluationTooDeep{};
             }
         }
@@ -1479,6 +1483,7 @@ class Evaluation {
     bool matches(const Regex& regex, const std::string& text) {
         const auto matched = regex.search(text, pattern_steps_);
         if (!matched) {
+            // NOLINTNEXTLINE(bugprone-std-exception-baseclass): see the declaration.
             throw PatternBudgetExceeded();
         }
         return *matched;
@@ -1662,7 +1667,7 @@ class Evaluation {
             return false;
         }
         if ((!node.property_names.empty() || !node.pattern_regexes.empty() ||
-             node.additional_properties) &&
+             node.additional_properties != nullptr) &&
             (!check_members(node, object))) {
             return false;
         }
@@ -1704,14 +1709,13 @@ class Evaluation {
     }
 
     MCP_SCHEMA_NOINLINE bool check_property_names(const Node& node, const nlohmann::json& object) {
-        for (const auto& [name, member] : object.get_ref<const nlohmann::json::object_t&>()) {
-            charge(work_, 1 + (name.size() / g_NAME_BYTES_PER_UNIT));
-            const AnnotationScope annotations(*this, nullptr);
-            if (!check(*node.property_names_schema, nlohmann::json(name))) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(object.get_ref<const nlohmann::json::object_t&>(),
+                                   [this, &node](const auto& entry) {
+                                       const std::string& name = entry.first;
+                                       charge(work_, 1 + (name.size() / g_NAME_BYTES_PER_UNIT));
+                                       const AnnotationScope annotations(*this, nullptr);
+                                       return check(*node.property_names_schema, nlohmann::json(name));
+                                   });
     }
 
     MCP_SCHEMA_NOINLINE bool check_property_count(const Node& node, const nlohmann::json& object) {

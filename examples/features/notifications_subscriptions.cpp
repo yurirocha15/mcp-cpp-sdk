@@ -20,6 +20,7 @@
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
+#include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -181,7 +182,7 @@ int main() {
                     std::cout << "[Server] Triggering notify_prompts_list_changed (nobody listens)\n";
                     co_await server.notify_prompts_list_changed();
 
-                    const char* expected[] = {
+                    const std::array expected{
                         "notifications/resources/updated",
                         "notifications/tools/list_changed",
                         "notifications/resources/list_changed",

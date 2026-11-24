@@ -213,6 +213,8 @@ class MCP_API ITransport {
      *
      * @param observer The observer, replacing any earlier one; empty to remove it.
      */
+    // Overrides keep the observer, so it is passed by value.
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     virtual void set_interaction_observer(InteractionObserver observer) { static_cast<void>(observer); }
 };
 

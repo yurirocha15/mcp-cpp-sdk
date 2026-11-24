@@ -10,10 +10,12 @@
 #include <openssl/rand.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace sealed_token = mcp::detail::constants::sealed_token;
@@ -49,9 +51,9 @@ bool derive_key(const SealKey& master, const std::uint8_t* salt, DerivedGuard& o
     if (!ctx) {
         return false;
     }
-    char digest[] = "SHA256";
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, digest, 0),
+    std::string digest = "SHA256";
+    const std::array params{
+        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, digest.data(), 0),
         OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY,
                                           const_cast<std::uint8_t*>(master.secret().data()),
                                           master.secret().size()),
@@ -62,7 +64,7 @@ bool derive_key(const SealKey& master, const std::uint8_t* salt, DerivedGuard& o
                                           sealed_token::g_HKDF_INFO.size()),
         OSSL_PARAM_construct_end(),
     };
-    return EVP_KDF_derive(ctx.get(), out.key.data(), out.key.size(), params) == 1;
+    return EVP_KDF_derive(ctx.get(), out.key.data(), out.key.size(), params.data()) == 1;
 }
 
 int to_int(std::size_t value) { return static_cast<int>(value); }

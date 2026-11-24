@@ -36,9 +36,13 @@ class EnterpriseFlow final : public detail::GrantFlow {
           client_(std::move(config.client)),
           provider_(std::move(provider)) {
         if (!idp_client_.method) {
-            idp_client_.method = idp_client_.private_key_jwt ? "private_key_jwt"
-                                 : idp_client_.client_secret ? "client_secret_post"
-                                                             : "none";
+            if (idp_client_.private_key_jwt) {
+                idp_client_.method = "private_key_jwt";
+            } else if (idp_client_.client_secret) {
+                idp_client_.method = "client_secret_post";
+            } else {
+                idp_client_.method = "none";
+            }
         }
         if (!client_.method && !client_.private_key_jwt && !client_.client_secret) {
             client_.method = "none";

@@ -46,7 +46,11 @@ class SocketDeadline {
 
     ~SocketDeadline() {
         state_->socket = nullptr;
-        state_->timer.cancel();
+        try {
+            state_->timer.cancel();
+        } catch (...) {
+            // steady_timer::cancel() is not noexcept, and a destructor has no caller to report to.
+        }
     }
 
     /// Did the deadline pass and close the socket?

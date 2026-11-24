@@ -19,7 +19,7 @@ namespace mcp {
  *         dropped when it is not needed for that.
  */
 template <typename TransportPtr>
-auto graceful_shutdown(boost::asio::io_context& io_ctx, TransportPtr transport,
+auto graceful_shutdown(boost::asio::io_context& io_ctx, const TransportPtr& transport,
                        std::chrono::milliseconds timeout =
                            std::chrono::milliseconds(mcp::constants::shutdown::g_TIMEOUT_MS)) {
     transport->close();

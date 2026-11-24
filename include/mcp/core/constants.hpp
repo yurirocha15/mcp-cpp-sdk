@@ -18,7 +18,7 @@ inline constexpr std::size_t g_DEFAULT_CAPACITY = 1024;
 
 /// Most bytes of events one replay store keeps. Older events are dropped first, and the newest is
 /// kept whatever its size.
-inline constexpr std::size_t g_MAX_BYTES = 32U * 1024U * 1024U;
+inline constexpr std::size_t g_MAX_BYTES = std::size_t{32} * 1024 * 1024;
 
 }  // namespace event_store
 
@@ -371,7 +371,7 @@ inline constexpr std::string_view g_DIRECTORY_MIME_TYPE = "inode/directory";
 inline constexpr std::size_t g_MAX_RESOURCES_PER_SKILL = 512;
 
 /// Most bytes a skill's listed files may add up to (16 MiB).
-inline constexpr std::int64_t g_MAX_SKILL_BYTES = 16 * 1024 * 1024;
+inline constexpr std::int64_t g_MAX_SKILL_BYTES = std::int64_t{16} * 1024 * 1024;
 
 /// The default of SkillsOptions::ttl_ms.
 inline constexpr std::int64_t g_DEFAULT_TTL_MS = 300000;
@@ -477,7 +477,7 @@ inline constexpr std::size_t g_DEFAULT_MAX_STEP_UPS_PER_REQUEST = 1;
 namespace metadata_policy {
 
 /// Most response body bytes accepted from a metadata or token endpoint.
-inline constexpr std::size_t g_DEFAULT_MAX_BYTES = 256 * 1024;
+inline constexpr std::size_t g_DEFAULT_MAX_BYTES = std::size_t{256} * 1024;
 
 /// Most redirects followed while fetching a metadata document.
 inline constexpr std::size_t g_DEFAULT_MAX_REDIRECTS = 3;
@@ -495,7 +495,7 @@ namespace http_server {
  * inflates by 4/3. Eight mebibytes carries roughly 6 MB of raw content, while still bounding what one
  * unauthenticated connection can make a server allocate.
  */
-inline constexpr std::size_t g_DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
+inline constexpr std::size_t g_DEFAULT_MAX_REQUEST_BODY_BYTES = std::size_t{8} * 1024 * 1024;
 
 /// The default of SessionLimits::max_sessions.
 inline constexpr std::size_t g_DEFAULT_MAX_SESSIONS = 10000;
@@ -540,10 +540,10 @@ inline constexpr std::size_t g_DEFAULT_MAX_PARKED = 1024;
 inline constexpr std::size_t g_DEFAULT_MAX_PARKED_PER_PRINCIPAL = 64;
 
 /// The default of MrtrOptions::max_parked_bytes.
-inline constexpr std::size_t g_DEFAULT_MAX_PARKED_BYTES = 64U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_PARKED_BYTES = std::size_t{64} * 1024 * 1024;
 
 /// The default of MrtrOptions::max_parked_bytes_per_principal.
-inline constexpr std::size_t g_DEFAULT_MAX_PARKED_BYTES_PER_PRINCIPAL = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_PARKED_BYTES_PER_PRINCIPAL = std::size_t{16} * 1024 * 1024;
 
 /// The default of MrtrOptions::state_ttl.
 inline constexpr std::chrono::milliseconds g_DEFAULT_STATE_TTL = std::chrono::minutes(5);
@@ -552,7 +552,7 @@ inline constexpr std::chrono::milliseconds g_DEFAULT_STATE_TTL = std::chrono::mi
 inline constexpr std::size_t g_DEFAULT_MAX_ROUNDS = 16;
 
 /// The default of MrtrOptions::max_state_bytes.
-inline constexpr std::size_t g_DEFAULT_MAX_STATE_BYTES = 32U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_STATE_BYTES = std::size_t{32} * 1024;
 
 }  // namespace mrtr
 

@@ -3,6 +3,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -126,11 +127,11 @@ std::string format_www_authenticate(const BearerChallengeConfig& config) {
         std::string_view key;
         std::string_view value;
     };
-    const Parameter parameters[] = {
-        {.key = "realm", .value = config.realm},
-        {.key = "error", .value = config.error},
-        {.key = "scope", .value = config.scope},
-        {.key = "resource_metadata", .value = config.resource_metadata},
+    const std::array parameters{
+        Parameter{.key = "realm", .value = config.realm},
+        Parameter{.key = "error", .value = config.error},
+        Parameter{.key = "scope", .value = config.scope},
+        Parameter{.key = "resource_metadata", .value = config.resource_metadata},
     };
 
     for (const auto& [key, value] : parameters) {

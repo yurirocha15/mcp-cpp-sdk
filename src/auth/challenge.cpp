@@ -159,7 +159,7 @@ std::vector<BearerChallenge> parse_www_authenticate(std::string_view header_valu
     std::vector<BearerChallenge> challenges;
     std::optional<BearerChallenge> current;
 
-    const auto flush = [&challenges, &current]() {
+    const auto flush = [&challenges, &current] {
         if (current) {
             challenges.push_back(std::move(*current));
             current.reset();

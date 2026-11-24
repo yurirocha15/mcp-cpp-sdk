@@ -246,7 +246,7 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
                    impl_, methods::g_TOOLS_LIST, make_paginated_params(cursor), request_options)));
 }
 
-Task<CallToolResult> Client::call_tool_with(CallToolParams params,
+Task<CallToolResult> Client::call_tool_with(const CallToolParams& params,
                                             const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
@@ -255,24 +255,22 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params,
             throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                            "Client must connect before sending requests");
         }
-        return Impl::call_tool_following(impl_, nlohmann::json(std::move(params)), std::move(check),
+        return Impl::call_tool_following(impl_, nlohmann::json(params), std::move(check),
                                          request_options);
     }
     return checked_call_result(
-        send_request(methods::g_TOOLS_CALL, nlohmann::json(std::move(params)), request_options),
-        std::move(check));
+        send_request(methods::g_TOOLS_CALL, nlohmann::json(params), request_options), std::move(check));
 }
 
 Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(
-    CallToolParams params, const RequestOptions& request_options) {
+    const CallToolParams& params, const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
         throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "Client must connect before sending requests");
     }
-    return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check),
-                            request_options);
+    return Impl::start_tool(impl_, nlohmann::json(params), std::move(check), request_options);
 }
 
 TaskHandle Client::task_handle(std::string id) {

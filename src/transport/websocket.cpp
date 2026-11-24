@@ -29,6 +29,7 @@
 #include <boost/beast/websocket/stream.hpp>
 #include <boost/system/system_error.hpp>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <exception>
 #include <memory>
@@ -64,7 +65,13 @@ struct OperationWaiter {
         signal.expires_at(mcp::detail::constants::websocket::g_NEVER);
     }
 
-    void wake() noexcept { signal.cancel(); }
+    void wake() noexcept {
+        try {
+            signal.cancel();
+        } catch (...) {
+            // steady_timer::cancel() is not noexcept; a failed wake-up has no caller to report to.
+        }
+    }
 
     asio::steady_timer signal;
     bool granted{false};
@@ -190,7 +197,7 @@ class SerializedWriteGate {
 // ============================================================================
 
 struct WebSocketServerTransport::Impl {
-    enum class HandshakeState {
+    enum class HandshakeState : std::uint8_t {
         ePending,
         eAccepting,
         eOpen,
@@ -530,7 +537,7 @@ void WebSocketServerTransport::close() {
     if (state->closed.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
-    asio::post(state->strand, [state]() { Impl::close_on_strand(state); });
+    asio::post(state->strand, [state] { Impl::close_on_strand(state); });
 }
 
 // ============================================================================
@@ -538,7 +545,7 @@ void WebSocketServerTransport::close() {
 // ============================================================================
 
 struct WebSocketClientTransport::Impl {
-    enum class ConnectionState {
+    enum class ConnectionState : std::uint8_t {
         eDisconnected,
         eConnecting,
         eConnected,
@@ -834,7 +841,7 @@ void WebSocketClientTransport::close() {
     if (state->closed.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
-    asio::post(state->strand, [state]() { Impl::close_on_strand(state); });
+    asio::post(state->strand, [state] { Impl::close_on_strand(state); });
 }
 
 }  // namespace mcp

@@ -17,7 +17,7 @@
 #include <string>
 
 namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 
 int main() {
     try {

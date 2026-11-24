@@ -378,7 +378,7 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
         entry->in_flight.reset();
     }
     for (auto& victim : evicted) {
-        finish_eviction(std::move(victim), MrtrEvictionReason::eCapacity, *options);
+        finish_eviction(victim, MrtrEvictionReason::eCapacity, *options);
     }
     expiry->expires_after(options->ttl);
     expiry->async_wait(
@@ -472,10 +472,10 @@ void Server::Impl::evict_parked(const std::string& token, MrtrEvictionReason rea
         parked_requests.erase(found);
         options = mrtr_options;
     }
-    finish_eviction(std::move(victim), reason, *options);
+    finish_eviction(victim, reason, *options);
 }
 
-void Server::Impl::finish_eviction(ParkedRequest victim, MrtrEvictionReason reason,
+void Server::Impl::finish_eviction(const ParkedRequest& victim, MrtrEvictionReason reason,
                                    const MrtrOptions& options) {
     auto& counter = reason == MrtrEvictionReason::eExpired ? mrtr_counters->evicted_ttl
                                                            : mrtr_counters->evicted_cap;

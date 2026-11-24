@@ -36,6 +36,9 @@ inline constexpr std::string_view g_BASE64URL_ALPHABET =
 /// Size of a SHA-256 digest, in bytes.
 inline constexpr std::size_t g_SHA256_DIGEST_LENGTH = 32;
 
+/// The bits of one byte.
+inline constexpr unsigned g_BITS_PER_BYTE = CHAR_BIT;
+
 /// The number of distinct byte values.
 inline constexpr std::size_t g_BYTE_VALUES = 256;
 
@@ -242,7 +245,7 @@ inline constexpr std::size_t g_READ_CHUNK_BYTES = 8192;
 inline constexpr int g_STATUS_BAD_REQUEST = 400;
 
 /// The most a single response body or SSE line may hold before the exchange is abandoned.
-inline constexpr std::size_t g_MAX_MODERN_MESSAGE_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_MAX_MODERN_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
 
 /// How many times one request's event stream is resumed after it ends without the response.
 inline constexpr int g_MAX_STREAM_RESUMES = 3;
@@ -296,7 +299,7 @@ namespace modern_exchange {
 inline constexpr std::size_t g_WATCH_READ_SIZE = 4096;
 
 /// Read-ahead held at once; past this the watch stops until the request is answered.
-inline constexpr std::size_t g_MAX_READ_AHEAD = 64 * 1024;
+inline constexpr std::size_t g_MAX_READ_AHEAD = std::size_t{64} * 1024;
 
 }  // namespace modern_exchange
 
@@ -324,12 +327,12 @@ inline constexpr int g_STDERR_DESCRIPTOR = 2;
 inline constexpr int g_FIRST_PRIVATE_DESCRIPTOR = 3;
 
 /// The WebSocket transports' default limit, so a message fits every transport or none.
-inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
 
-inline constexpr std::size_t g_READ_CHUNK_BYTES = 64U * 1024U;
+inline constexpr std::size_t g_READ_CHUNK_BYTES = std::size_t{64} * 1024;
 
 /// Input is read ahead of read_message() up to this many bytes.
-inline constexpr std::size_t g_MAX_READ_AHEAD_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_MAX_READ_AHEAD_BYTES = std::size_t{16} * 1024 * 1024;
 
 /// What an empty line costs in the queue, so short lines cannot fill memory unnoticed.
 inline constexpr std::size_t g_INPUT_LINE_OVERHEAD = 64;
@@ -346,7 +349,7 @@ namespace stdio_client {
 /// find.
 inline constexpr int g_EXEC_FAILED_STATUS = 127;
 
-inline constexpr std::size_t g_CHUNK_BYTES = 64U * 1024U;
+inline constexpr std::size_t g_CHUNK_BYTES = std::size_t{64} * 1024;
 
 /// How long a killed process may take to be seen as ended, which the destructor of a Client that
 /// launched it waits on top of the process's stdin_close_wait and terminate_wait.
@@ -368,7 +371,7 @@ namespace websocket {
 inline constexpr auto g_NEVER = std::chrono::steady_clock::time_point::max();
 
 /// What Beast defaults to, and what the stdio transport uses.
-inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
 
 }  // namespace websocket
 
@@ -409,12 +412,12 @@ inline constexpr std::size_t g_DEFAULT_MAX_IN_FLIGHT_REQUESTS = 1024;
 inline constexpr std::chrono::milliseconds g_DEFAULT_REVERSE_REQUEST_TIMEOUT = std::chrono::minutes(10);
 
 /// The default of Server::set_max_in_flight_bytes().
-inline constexpr std::size_t g_DEFAULT_MAX_IN_FLIGHT_BYTES = 256U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_IN_FLIGHT_BYTES = std::size_t{256} * 1024 * 1024;
 
 /// Resources one session may subscribe to, and the bytes of their URIs together.
 inline constexpr std::size_t g_MAX_SUBSCRIPTIONS = 4096;
 
-inline constexpr std::size_t g_MAX_SUBSCRIPTION_BYTES = 8U * 1024U * 1024U;
+inline constexpr std::size_t g_MAX_SUBSCRIPTION_BYTES = std::size_t{8} * 1024 * 1024;
 
 /// The longest tool name the tools page of the specification allows.
 inline constexpr std::size_t g_MAX_TOOL_NAME_LENGTH = 128;
@@ -561,7 +564,7 @@ inline constexpr std::array<std::string_view, 5> g_SCHEMA_MAP_KEYWORDS = {
 };
 
 /// The largest integer an `x-mcp-header` argument may hold: 2^53 - 1.
-inline constexpr std::int64_t g_MAX_SAFE_HEADER_INTEGER = (std::int64_t{1} << 53) - 1;
+inline constexpr std::int64_t g_MAX_SAFE_HEADER_INTEGER = 9'007'199'254'740'991;
 
 }  // namespace param_headers
 
@@ -600,7 +603,7 @@ inline constexpr std::size_t g_HEADER_SIZE = 1 + g_KID_SIZE + g_SALT_SIZE;
 /// The shortest valid token: header, no ciphertext, tag.
 inline constexpr std::size_t g_MIN_TOKEN_BYTES = g_HEADER_SIZE + g_TAG_SIZE;
 
-inline constexpr std::size_t g_DEFAULT_MAX_TOKEN_CHARS = 64 * 1024;
+inline constexpr std::size_t g_DEFAULT_MAX_TOKEN_CHARS = std::size_t{64} * 1024;
 
 }  // namespace sealed_token
 
@@ -713,8 +716,9 @@ struct Block {
 
 /// The address a.b.c.d in host byte order.
 constexpr std::uint32_t address(std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) {
-    return (std::uint32_t{a} << (3U * CHAR_BIT)) | (std::uint32_t{b} << (2U * CHAR_BIT)) |
-           (std::uint32_t{c} << CHAR_BIT) | std::uint32_t{d};
+    constexpr unsigned bits = encoding::g_BITS_PER_BYTE;
+    return (std::uint32_t{a} << (3U * bits)) | (std::uint32_t{b} << (2U * bits)) |
+           (std::uint32_t{c} << bits) | std::uint32_t{d};
 }
 
 /// Loopback, 127.0.0.0/8 (RFC 1122).

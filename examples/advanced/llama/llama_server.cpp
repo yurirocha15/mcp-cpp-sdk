@@ -20,7 +20,7 @@
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 
 struct AppOptions {
     std::string transport = "stdio";

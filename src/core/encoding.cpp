@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -29,7 +28,7 @@ std::string encode_base64(std::string_view bytes, std::string_view alphabet, boo
         const std::size_t count = std::min<std::size_t>(3, bytes.size() - index);
         std::uint32_t group = 0;
         for (std::size_t i = 0; i < 3; ++i) {
-            group = (group << CHAR_BIT) | (i < count ? byte_at(bytes, index + i) : 0U);
+            group = (group << encoding::g_BITS_PER_BYTE) | (i < count ? byte_at(bytes, index + i) : 0U);
         }
         // n bytes take n + 1 digits.
         for (std::size_t digit = 0; digit <= count; ++digit) {
@@ -104,7 +103,7 @@ std::optional<std::string> base64_decode(std::string_view text) {
         }
         // Four digits hold three bytes; each `=` stands for one byte fewer.
         for (std::size_t byte = 0; byte < 3 - padding; ++byte) {
-            const auto shift = static_cast<unsigned>(2 - byte) * CHAR_BIT;
+            const auto shift = static_cast<unsigned>(2 - byte) * encoding::g_BITS_PER_BYTE;
             bytes += static_cast<char>((group >> shift) & encoding::g_BYTE_MASK);
         }
     }
@@ -130,8 +129,8 @@ std::optional<std::string> base64url_decode(std::string_view text) {
         }
         accumulator = (accumulator << encoding::g_BASE64_DIGIT_BITS) | static_cast<unsigned>(value);
         bits += encoding::g_BASE64_DIGIT_BITS;
-        if (bits >= CHAR_BIT) {
-            bits -= CHAR_BIT;
+        if (bits >= encoding::g_BITS_PER_BYTE) {
+            bits -= encoding::g_BITS_PER_BYTE;
             out += static_cast<char>((accumulator >> bits) & encoding::g_BYTE_MASK);
             accumulator &= (1U << bits) - 1U;
         }
@@ -174,7 +173,8 @@ std::optional<std::string> percent_decode(std::string_view text) {
         if (high < 0 || low < 0) {
             return std::nullopt;
         }
-        decoded += static_cast<char>((high << encoding::g_HEX_DIGIT_BITS) | low);
+        decoded += static_cast<char>((static_cast<unsigned>(high) << encoding::g_HEX_DIGIT_BITS) |
+                                     static_cast<unsigned>(low));
         index += 2;
     }
     return decoded;

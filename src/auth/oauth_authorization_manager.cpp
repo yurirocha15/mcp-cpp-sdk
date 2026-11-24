@@ -617,7 +617,7 @@ struct OAuthAuthorizationManager::Impl {
         if (!flight) {
             return;
         }
-        net::dispatch(flight_strand, [flight = std::move(flight)]() {
+        net::dispatch(flight_strand, [flight = std::move(flight)] {
             flight->timer.expires_at(net::steady_timer::time_point::min());
         });
     }

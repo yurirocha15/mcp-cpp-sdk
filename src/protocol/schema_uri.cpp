@@ -13,9 +13,7 @@ std::string remove_dot_segments(std::string_view input) {
     while (!input.empty()) {
         if (input.starts_with("../")) {
             input.remove_prefix(3);
-        } else if (input.starts_with("./")) {
-            input.remove_prefix(2);
-        } else if (input.starts_with("/./")) {
+        } else if (input.starts_with("./") || input.starts_with("/./")) {
             input.remove_prefix(2);
         } else if (input == "/.") {
             input = "/";

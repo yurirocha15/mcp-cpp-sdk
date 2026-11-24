@@ -21,7 +21,8 @@ std::string generate_secure_session_id() {
 
     std::string session_id;
     session_id.reserve(mcp::detail::constants::session::g_LENGTH);
-    for (const unsigned char value : random_bytes) {
+    for (const unsigned char byte : random_bytes) {
+        const unsigned value = byte;
         session_id.push_back(
             encoding::g_HEX_DIGITS[(value >> encoding::g_HEX_DIGIT_BITS) & encoding::g_HEX_DIGIT_MASK]);
         if (session_id.size() == mcp::detail::constants::session::g_LENGTH) {

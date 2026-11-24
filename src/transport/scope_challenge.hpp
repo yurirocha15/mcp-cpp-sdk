@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <mcp/transport/http_types.hpp>
 
 #include <algorithm>
@@ -14,7 +15,7 @@ namespace mcp::detail {
 
 /// What the scope check decided about one request.
 struct ScopeCheck {
-    enum class Outcome {
+    enum class Outcome : std::uint8_t {
         eAllowed,
         eInsufficient,
         eFailed,

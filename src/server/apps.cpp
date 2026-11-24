@@ -37,7 +37,10 @@ void add_view_resource(Server& server, const ViewResource& view) {
     const nlohmann::json result = read;
 
     server.add_resource<ReadResourceRequestParams, nlohmann::json>(
-        resource, [result](const ReadResourceRequestParams&) { return result; });
+        resource, [result](const ReadResourceRequestParams&) {
+            // Each read answers with its own copy.
+            return result;  // NOLINT(performance-no-automatic-move)
+        });
 }
 
 Tool link_tool_to_view(Tool tool, const ToolMeta& meta) {

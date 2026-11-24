@@ -34,7 +34,7 @@
 namespace jsonrpc = mcp::constants::jsonrpc;
 
 namespace asio = boost::asio;
-using json = nlohmann::json;
+using nlohmann::json;
 
 namespace {
 
@@ -47,8 +47,11 @@ const char* era_name(mcp::ProtocolEra era) {
     return era == mcp::ProtocolEra::eModern ? "modern" : "legacy";
 }
 
-const std::string g_RESOURCE_URI = "mcp://example/counter";
-const mcp::Implementation g_CLIENT_INFO{.name = "legacy-protocols-example-client", .version = "1.0.0"};
+constexpr const char* g_RESOURCE_URI = "mcp://example/counter";
+
+mcp::Implementation client_info() {
+    return {.name = "legacy-protocols-example-client", .version = "1.0.0"};
+}
 
 std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy) {
     mcp::ServerCapabilities caps;
@@ -86,7 +89,7 @@ std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy
 mcp::Task<void> serve(std::shared_ptr<mcp::Server> server, std::shared_ptr<mcp::ITransport> transport,
                       asio::any_io_executor executor) {
     try {
-        co_await server->run(std::move(transport), std::move(executor));
+        co_await server->run(std::move(transport), executor);
     } catch (const std::exception& error) {
         std::cerr << "[Server] Error: " << error.what() << '\n';
     }
@@ -137,7 +140,7 @@ mcp::Task<bool> exercise_pinned_version(const char* version, const asio::any_io_
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
+            co_await client.connect(client_info(), mcp::ClientCapabilities{});
         ok &= check(connected.era == mcp::ProtocolEra::eLegacy && connected.protocolVersion == version,
                     std::string("pinned(\"") + version + "\") gives a " + era_name(connected.era) +
                         " session of " + connected.protocolVersion);
@@ -159,7 +162,7 @@ mcp::Task<bool> exercise_legacy_pin(const asio::any_io_executor& executor) {
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
+            co_await client.connect(client_info(), mcp::ClientCapabilities{});
         ok &= check(
             connected.era == mcp::ProtocolEra::eLegacy &&
                 connected.protocolVersion == mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION,
@@ -193,7 +196,7 @@ mcp::Task<bool> exercise_subscribe(const asio::any_io_executor& executor) {
         list_changed = true;
     });
 
-    co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
+    co_await client.connect(client_info(), mcp::ClientCapabilities{});
 
     const std::optional<json> subscribe_params = json{{"uri", g_RESOURCE_URI}};
     co_await client.send_request("resources/subscribe", subscribe_params);
@@ -234,7 +237,7 @@ mcp::Task<bool> exercise_legacy_only_policy(const asio::any_io_executor& executo
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
+            co_await client.connect(client_info(), mcp::ClientCapabilities{});
         ok &= check(
             connected.era == mcp::ProtocolEra::eLegacy && connected.protocolVersion == "2025-03-26",
             "an automatic() client lands in a legacy session of " + connected.protocolVersion);
@@ -255,7 +258,7 @@ mcp::Task<bool> exercise_modern_only_policy(const asio::any_io_executor& executo
 
     bool refused = false;
     try {
-        co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
+        co_await client.connect(client_info(), mcp::ClientCapabilities{});
     } catch (const mcp::McpError& error) {
         std::cout << "  initialize refused: " << error.what() << '\n';
         refused = error.code() == jsonrpc::g_METHOD_NOT_FOUND;
@@ -276,7 +279,7 @@ mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) 
 
     {
         mcp::ConnectResult connected =
-            co_await client.connect(g_CLIENT_INFO, mcp::ClientCapabilities{});
+            co_await client.connect(client_info(), mcp::ClientCapabilities{});
         ok &= check(
             connected.era == mcp::ProtocolEra::eModern,
             std::string("pinned(\"2026-07-28\") gives a ") + era_name(connected.era) + " session");

@@ -46,8 +46,9 @@ namespace mcp::detail {
  */
 class LoopGate final : public boost::asio::execution_context::service {
    public:
-    // Asio finds the service by this name.
-    static inline boost::asio::execution_context::id id;  // NOLINT(readability-identifier-naming)
+    // Asio finds the service by this name; its constructor does nothing.
+    // NOLINTNEXTLINE(readability-identifier-naming,bugprone-throwing-static-initialization)
+    static inline boost::asio::execution_context::id id;
 
     /// A Context call that runs on this gate's context for a coroutine of another one.
     class Call {
@@ -155,18 +156,19 @@ class HandBackCore final : public LoopGate::Call {
             return;
         }
         if constexpr (std::is_void_v<T>) {
-            boost::asio::post(waiter_, [handler = std::move(*handler), error]() mutable {
-                std::move(handler)(error);
-            });
+            boost::asio::post(waiter_,
+                              [handler = std::move(*handler), error = std::move(error)]() mutable {
+                                  std::move(handler)(std::move(error));
+                              });
         } else {
             T result{};
             if constexpr (sizeof...(Values) == 1) {
                 result = std::move(values...);
             }
-            boost::asio::post(
-                waiter_, [handler = std::move(*handler), error, result = std::move(result)]() mutable {
-                    std::move(handler)(error, std::move(result));
-                });
+            boost::asio::post(waiter_, [handler = std::move(*handler), error = std::move(error),
+                                        result = std::move(result)]() mutable {
+                std::move(handler)(std::move(error), std::move(result));
+            });
         }
         // Done under the gate as well: ending the work reaches the context too.
         waiter_ = boost::asio::any_io_executor();
@@ -213,8 +215,13 @@ class HandBack {
     HandBack& operator=(const HandBack&) = delete;
     HandBack& operator=(HandBack&&) = delete;
     ~HandBack() {
-        if (core_) {
+        if (!core_) {
+            return;
+        }
+        try {
             core_->fail();
+        } catch (...) {
+            // A destructor has no caller to report the failure to.
         }
     }
 

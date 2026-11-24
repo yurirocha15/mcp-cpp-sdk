@@ -88,6 +88,7 @@ class Checker {
        public:
         explicit Level(Checker& checker) : checker_(checker) {
             if (++checker_.depth_ > checker_.max_depth_) {
+                // NOLINTNEXTLINE(bugprone-std-exception-baseclass): see the declaration.
                 throw EvaluationTooDeep{};
             }
         }
@@ -364,13 +365,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!schema(member)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return schema(member);
+                                   });
     }
 
     /// An object whose members are string arrays.
@@ -378,13 +378,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!string_array(member)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return string_array(member);
+                                   });
     }
 
     /// An object whose members are schemas or string arrays.
@@ -392,13 +391,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!(member.is_array() ? string_array(member) : schema(member))) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return member.is_array() ? string_array(member) : schema(member);
+                                   });
     }
 
     bool anchor(const nlohmann::json& value) {
@@ -414,13 +412,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!boolean(member)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return boolean(member);
+                                   });
     }
 
     static std::string expected(std::string_view wanted, const nlohmann::json& found) {

@@ -257,24 +257,24 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& req
     // client that goes away cancels the request.
     auto request_id = request_json.at("id");
     auto answering = dispatch(std::move(request_json), std::move(request_context));
-    boost::asio::co_spawn(
-        start.dispatch_executor, std::move(answering),
-        [exchange, request_id = std::move(request_id)](std::exception_ptr error, std::string wire) {
-            if (error) {
-                wire = mcp::detail::dump_json(nlohmann::json{
-                    {"jsonrpc", "2.0"},
-                    {"id", request_id},
-                    {
-                        "error",
-                        {
-                            {"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
-                            {"message", "Internal error"},
-                        },
-                    },
-                });
-            }
-            exchange->finish(std::move(wire));
-        });
+    boost::asio::co_spawn(start.dispatch_executor, std::move(answering),
+                          [exchange, request_id = std::move(request_id)](
+                              const std::exception_ptr& error, std::string wire) {
+                              if (error) {
+                                  wire = mcp::detail::dump_json(nlohmann::json{
+                                      {"jsonrpc", "2.0"},
+                                      {"id", request_id},
+                                      {
+                                          "error",
+                                          {
+                                              {"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
+                                              {"message", "Internal error"},
+                                          },
+                                      },
+                                  });
+                              }
+                              exchange->finish(std::move(wire));
+                          });
     return exchange;
 }
 

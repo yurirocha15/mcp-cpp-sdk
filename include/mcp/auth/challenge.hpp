@@ -3,6 +3,7 @@
 #include <mcp/core/export.hpp>
 #include <mcp/transport/http_types.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -114,7 +115,7 @@ parse_authorization_response(const std::string& redirect_url);
 /**
  * @brief Outcome of validating an authorization response against its request record.
  */
-enum class AuthorizationResponseStatus {
+enum class AuthorizationResponseStatus : std::uint8_t {
     eAccepted,        ///< Response is authentic and carries a code.
     eStateMissing,    ///< Response omitted `state` although the request sent one.
     eStateMismatch,   ///< Returned `state` did not match the recorded value.

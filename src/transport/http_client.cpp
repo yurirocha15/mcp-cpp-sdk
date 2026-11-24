@@ -2104,7 +2104,7 @@ void HttpClientTransport::close() {
     }
 
     auto shared_state = impl_->state;
-    net::post(shared_state->timer.get_executor(), [shared_state]() { shared_state->timer.cancel(); });
+    net::post(shared_state->timer.get_executor(), [shared_state] { shared_state->timer.cancel(); });
 
     auto close_target = std::make_shared<Impl::CloseTarget>(Impl::CloseTarget{
         .path = impl_->path,

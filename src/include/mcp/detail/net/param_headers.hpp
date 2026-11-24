@@ -186,6 +186,7 @@ inline bool parse_header_integer(std::string_view text, std::int64_t& value) {
         return false;
     }
     const auto* end = whole.data() + whole.size();
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage): from_chars stops at end.
     const auto [stop, error] = std::from_chars(whole.data(), end, value);
     return error == std::errc{} && stop == end;
 }

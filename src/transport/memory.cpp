@@ -58,7 +58,13 @@ struct MemoryTransportState {
     explicit MemoryTransportState(const boost::asio::any_io_executor& executor)
         : strand(mcp::detail::make_strand_executor(executor)) {}
 
-    ~MemoryTransportState() { close_endpoint(lock_peer()); }
+    ~MemoryTransportState() {
+        try {
+            close_endpoint(lock_peer());
+        } catch (...) {
+            // A destructor has no caller to report a failed close to.
+        }
+    }
 
     std::shared_ptr<MemoryTransportState> lock_peer() const {
         std::scoped_lock lock(peer_mutex);
@@ -75,7 +81,7 @@ struct MemoryTransportState {
             return;
         }
 
-        boost::asio::post(state->strand, [state]() {
+        boost::asio::post(state->strand, [state] {
             for (auto& weak_waiter : state->read_waiters) {
                 if (auto waiter = weak_waiter.lock()) {
                     waiter->wake();

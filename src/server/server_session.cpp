@@ -195,7 +195,7 @@ Task<nlohmann::json> Server::invoke_tool(const std::string& tool_name, const nlo
         std::nullopt);
 }
 
-Task<void> Server::run(std::shared_ptr<ITransport> transport, Executor executor) {
+Task<void> Server::run(std::shared_ptr<ITransport> transport, const Executor& executor) {
     // Deliberately not a coroutine: reading impl_ here, on the caller's thread, hands the session
     // a reference that outlives this Server rather than one that is read again later.
     return Impl::run(impl_, std::move(transport), executor.get());

@@ -8,6 +8,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -200,7 +201,7 @@ void read_platform(SystemRoots& roots) {
 
 void read_platform(SystemRoots& roots) {
     // The CA bundles of the common distributions; the first one present is used.
-    static constexpr const char* s_bundles[] = {
+    static constexpr std::array s_bundles{
         "/etc/ssl/certs/ca-certificates.crt",                 // Debian, Ubuntu, Arch, Gentoo
         "/etc/pki/tls/certs/ca-bundle.crt",                   // Fedora, RHEL
         "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",  // CentOS, RHEL 7

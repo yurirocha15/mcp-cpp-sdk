@@ -148,9 +148,11 @@ class DescriptorStreambuf final : public std::streambuf {
 };
 
 /// The buffers the process's standard streams started with. A program can replace them, and then
-/// std::cin and std::cout no longer stand for the descriptors.
+/// std::cin and std::cout no longer stand for the descriptors. rdbuf() only reads a pointer.
+// NOLINTBEGIN(bugprone-throwing-static-initialization)
 std::streambuf* const g_PROCESS_STDIN_BUFFER = std::cin.rdbuf();
 std::streambuf* const g_PROCESS_STDOUT_BUFFER = std::cout.rdbuf();
+// NOLINTEND(bugprone-throwing-static-initialization)
 
 /// Whether @p buffer is the process's own buffer for @p descriptor: the one the stream started with,
 /// or the one libstdc++ puts in its place when the program calls std::ios::sync_with_stdio(false).
@@ -442,7 +444,13 @@ struct StdioTransport::Impl {
             read_signal.expires_at(std::chrono::steady_clock::time_point::max());
         }
 
-        void wake_reader() noexcept { read_signal.cancel(); }
+        void wake_reader() noexcept {
+            try {
+                read_signal.cancel();
+            } catch (...) {
+                // steady_timer::cancel() is not noexcept; a failed wake-up has no caller to report to.
+            }
+        }
 
         std::ostream& output;
         boost::asio::strand<boost::asio::any_io_executor> strand;
@@ -555,7 +563,9 @@ struct StdioTransport::Impl {
         }
     }
 
+    // Runs as a thread's body, where an exception that escapes ends the process either way.
     template <typename NextLine>
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     static void read_lines(NextLine next_line, const std::shared_ptr<Pump>& pump) noexcept {
         std::string failure;
         try {
@@ -624,7 +634,7 @@ struct StdioTransport::Impl {
             reader_started = true;
             if (reads_stdin_descriptor()) {
                 shared_state->pump->open_wake_pipe(shared_state->closed);
-                reader_thread = std::thread([pump = shared_state->pump]() {
+                reader_thread = std::thread([pump = shared_state->pump] {
                     DescriptorLines lines(mcp::detail::constants::stdio::g_STDIN_DESCRIPTOR,
                                           pump->wake_read);
                     read_lines([&lines](std::string& line,
@@ -632,7 +642,7 @@ struct StdioTransport::Impl {
                                pump);
                 });
             } else {
-                reader_thread = std::thread([&in = input, pump = shared_state->pump]() {
+                reader_thread = std::thread([&in = input, pump = shared_state->pump] {
                     std::vector<char> chunk(mcp::detail::constants::stdio::g_READ_CHUNK_BYTES);
                     read_lines(
                         [&in, &chunk](std::string& line, std::size_t limit) {
@@ -648,13 +658,15 @@ struct StdioTransport::Impl {
     /// Reports @p waiter's write finished, on the strand. Takes `pump.mutex` being held.
     static void complete_write(const std::shared_ptr<SharedState>& shared_state,
                                std::shared_ptr<WriteWaiter> waiter, bool written) {
-        boost::asio::post(shared_state->strand, [waiter = std::move(waiter), written]() {
+        boost::asio::post(shared_state->strand, [waiter = std::move(waiter), written] {
             waiter->done = true;
             waiter->written = written;
             waiter->signal.cancel();
         });
     }
 
+    // Runs as a thread's body, where an exception that escapes ends the process either way.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     static void write_lines(std::ostream& output, const std::shared_ptr<Pump>& pump) noexcept {
 #ifndef _WIN32
         // A reader that went away is a failed write here, not a signal that ends the process. The
@@ -714,7 +726,7 @@ struct StdioTransport::Impl {
             writer_started = true;
             writer_thread =
                 std::thread([&output = state->output, pump = state->pump, keep_owned = owned_output,
-                             keep_raw = raw_stdout]() { write_lines(output, pump); });
+                             keep_raw = raw_stdout] { write_lines(output, pump); });
         }
     }
 
@@ -746,7 +758,7 @@ struct StdioTransport::Impl {
         }
 
         if (first_close) {
-            boost::asio::post(shared_state->strand, [shared_state]() { shared_state->wake_reader(); });
+            boost::asio::post(shared_state->strand, [shared_state] { shared_state->wake_reader(); });
         }
     }
 

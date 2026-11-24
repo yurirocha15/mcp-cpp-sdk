@@ -210,10 +210,8 @@ std::string authenticate_token_request(const ClientAuthentication& credentials,
         }
     } else if (credentials.private_key_jwt && acceptable("private_key_jwt")) {
         method = "private_key_jwt";
-    } else if (credentials.client_secret && lists_nothing) {
+    } else if (credentials.client_secret && (lists_nothing || lists(listed, "client_secret_basic"))) {
         // RFC 8414 section 2: a server that lists nothing accepts client_secret_basic.
-        method = "client_secret_basic";
-    } else if (credentials.client_secret && lists(listed, "client_secret_basic")) {
         method = "client_secret_basic";
     } else if (credentials.client_secret && lists(listed, "client_secret_post")) {
         method = "client_secret_post";

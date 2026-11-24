@@ -10,6 +10,7 @@
 #include <mcp/protocol/tools.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -54,7 +55,7 @@ struct ResourceMeta {
 };
 
 /// Who may call a tool that links a view.
-enum class Visibility {
+enum class Visibility : std::uint8_t {
     eModel,  ///< Visible to and callable by the model.
     eApp,    ///< Callable by the view, from the server that serves it.
 };

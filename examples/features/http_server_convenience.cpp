@@ -33,7 +33,7 @@
 #include <thread>
 
 namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 
 int main() {
     try {
@@ -90,7 +90,7 @@ int main() {
         std::cout << "Server will run in background thread\n";
 
         // Spawn server in background thread
-        std::thread server_thread([&server, http_port]() {
+        std::thread server_thread([&server, http_port] {
             try {
                 // This convenience method handles everything:
                 // - Creates io_context

@@ -53,6 +53,15 @@ bool has_type(const nlohmann::json& value, std::string_view type) {
 
 namespace {
 
+/// -1, 0 or 1 as @p a is less than, equal to or greater than @p b. Unordered doubles give 0.
+template <typename T>
+int order(const T& a, const T& b) {
+    if (a < b) {
+        return -1;
+    }
+    return a > b ? 1 : 0;
+}
+
 /// Compares the integer @p integer with the finite double @p number exactly: negative, zero or
 /// positive as @p integer is less than, equal to or greater than @p number. Converting the integer
 /// to a double instead would round integers beyond 2^53.
@@ -98,12 +107,12 @@ int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
         if (left_unsigned && right_unsigned) {
             const auto a = left.get<std::uint64_t>();
             const auto b = right.get<std::uint64_t>();
-            return a < b ? -1 : (a > b ? 1 : 0);
+            return order(a, b);
         }
         if (!left_unsigned && !right_unsigned) {
             const auto a = left.get<std::int64_t>();
             const auto b = right.get<std::int64_t>();
-            return a < b ? -1 : (a > b ? 1 : 0);
+            return order(a, b);
         }
         if (left_unsigned) {
             const auto b = right.get<std::int64_t>();
@@ -111,7 +120,7 @@ int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
                 return 1;
             }
             const auto a = left.get<std::uint64_t>();
-            return std::cmp_less(a, b) ? -1 : (std::cmp_greater(a, b) ? 1 : 0);
+            return order(a, static_cast<std::uint64_t>(b));
         }
         return -compare_numbers(right, left);
     }
@@ -123,7 +132,7 @@ int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
     }
     const double a = left.get<double>();
     const double b = right.get<double>();
-    return a < b ? -1 : (a > b ? 1 : 0);
+    return order(a, b);
 }
 
 bool is_non_finite(const nlohmann::json& value) {
@@ -132,6 +141,7 @@ bool is_non_finite(const nlohmann::json& value) {
 
 void charge(std::size_t& work, std::size_t cost) {
     if (work < cost) {
+        // NOLINTNEXTLINE(bugprone-std-exception-baseclass): see the declaration.
         throw WorkBudgetExceeded{};
     }
     work -= cost;
@@ -155,7 +165,8 @@ bool json_equal(const nlohmann::json& left, const nlohmann::json& right, std::si
         return false;
     }
     if (left.is_array()) {
-        return std::ranges::equal(left, right,
+        return std::ranges::equal(left.get_ref<const nlohmann::json::array_t&>(),
+                                  right.get_ref<const nlohmann::json::array_t&>(),
                                   [&work](const nlohmann::json& one, const nlohmann::json& other) {
                                       return json_equal(one, other, work);
                                   });
@@ -186,7 +197,7 @@ std::size_t equality_hash(const nlohmann::json& value) {
         constexpr unsigned g_right = 2;
         return seed ^ (part + g_golden + (seed << g_left) + (seed >> g_right));
     };
-    enum Kind : std::size_t {
+    enum Kind : std::uint8_t {
         eNumber = 1,
         eString,
         eArray,

@@ -797,7 +797,7 @@ class MCP_API Server {
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
      */
-    Task<void> run(std::shared_ptr<ITransport> transport, Executor executor);
+    Task<void> run(std::shared_ptr<ITransport> transport, const Executor& executor);
 
     /**
      * @brief Run the server on stdio (stdin/stdout), blocking until shutdown.

@@ -4,12 +4,15 @@ namespace methods = mcp::constants::methods;
 
 namespace mcp {
 
-Context Server::Impl::make_context(
-    std::shared_ptr<std::atomic<bool>> cancelled, std::optional<ProgressToken> progress_token,
-    std::shared_ptr<const RequestMetadata> request_meta, bool session_request,
-    MessageSender notifications, std::shared_ptr<const std::string> principal,
-    std::shared_ptr<detail::MrtrEntry> mrtr, std::shared_ptr<const std::string> related_request,
-    std::shared_ptr<detail::InlineInput> inline_input, std::shared_ptr<detail::TaskRun> task_run) {
+Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
+                                   std::optional<ProgressToken> progress_token,
+                                   std::shared_ptr<const RequestMetadata> request_meta,
+                                   bool session_request, MessageSender notifications,
+                                   std::shared_ptr<const std::string> principal,
+                                   const std::shared_ptr<detail::MrtrEntry>& mrtr,
+                                   const std::shared_ptr<const std::string>& related_request,
+                                   const std::shared_ptr<detail::InlineInput>& inline_input,
+                                   const std::shared_ptr<detail::TaskRun>& task_run) {
     ITransport* transport = &null_transport();
     auto session = session_snapshot();
     std::uint64_t epoch = 0;
@@ -50,7 +53,7 @@ Context Server::Impl::make_context(
         };
     } else if (inline_input) {
         request_sender = [inline_input](std::string method, std::optional<nlohmann::json> params,
-                                        std::optional<std::string>) -> Task<nlohmann::json> {
+                                        const std::optional<std::string>&) -> Task<nlohmann::json> {
             nlohmann::json request = {{"method", std::move(method)}};
             if (params) {
                 request["params"] = std::move(*params);
@@ -62,15 +65,15 @@ Context Server::Impl::make_context(
         };
     } else if (request_meta) {
         // A server never sends a request of its own to a 2026-07-28 client.
-        request_sender = [](std::string, std::optional<nlohmann::json>,
-                            std::optional<std::string>) -> Task<nlohmann::json> {
+        request_sender = [](const std::string&, const std::optional<nlohmann::json>&,
+                            const std::optional<std::string>&) -> Task<nlohmann::json> {
             throw std::runtime_error(
                 "server-to-client requests are unavailable for a 2026-07-28 request");
         };
     } else {
         request_sender = [impl = shared_from_this(), session, epoch, cancelled, related_request](
-                             std::string method, std::optional<nlohmann::json> params,
-                             std::optional<std::string>) -> Task<nlohmann::json> {
+                             const std::string& method, const std::optional<nlohmann::json>& params,
+                             const std::optional<std::string>&) -> Task<nlohmann::json> {
             if (session && Impl::session_epoch(*session) != epoch) {
                 throw std::runtime_error("the client ended the session this request belongs to");
             }
@@ -294,10 +297,11 @@ Task<std::string> Server::Impl::dispatch_request_wire(
         }
 
         // A client that arrives after the previous one ended its session starts uninitialized.
-        const auto session_state = !enforce_lifecycle ? LifecycleState::eReady
-                                   : transport_started_new_session()
-                                       ? LifecycleState::eUninitialized
-                                       : lifecycle.load(std::memory_order_relaxed);
+        auto session_state = LifecycleState::eReady;
+        if (enforce_lifecycle) {
+            session_state = transport_started_new_session() ? LifecycleState::eUninitialized
+                                                            : lifecycle.load(std::memory_order_relaxed);
+        }
 
         if (method == methods::g_INITIALIZE) {
             if (enforce_lifecycle && session_state != LifecycleState::eUninitialized) {
@@ -1163,7 +1167,7 @@ Task<std::string> Server::Impl::handle_complete_wire(const nlohmann::json& json_
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), scope, std::move(handler_result));
 }
 
-std::string Server::Impl::make_result_wire(const RequestId& id, nlohmann::json result) {
+std::string Server::Impl::make_result_wire(const RequestId& id, const nlohmann::json& result) {
     // The text JSONRPCResultResponse serializes to, members in the order nlohmann::json sorts them,
     // written around the result rather than moving it into a response object.
     std::string wire = R"({"id":)";

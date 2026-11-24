@@ -117,7 +117,7 @@ struct OAuthClientTransport::Impl {
                   OAuthClientTransportOptions replay_options)
         : inner(std::move(wrapped)),
           authenticator(std::move(token_authenticator)),
-          options(std::move(replay_options)) {}
+          options(replay_options) {}
 
     static void erase_pending_locked(Impl& owner, PendingMap::iterator iter) {
         owner.pending_bytes -= iter->second.retained_bytes;
@@ -516,10 +516,10 @@ OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
             "OAuthClientTransport requires an inner transport and authenticator");
     }
 
-    impl_ = std::make_shared<Impl>(std::move(inner), std::move(authenticator), std::move(options));
+    impl_ = std::make_shared<Impl>(std::move(inner), std::move(authenticator), options);
     if (const auto http_transport = std::dynamic_pointer_cast<mcp::HttpClientTransport>(impl_->inner)) {
         std::weak_ptr<Authenticator> weak_authenticator = impl_->authenticator;
-        http_transport->set_bearer_token_provider([weak_authenticator]() {
+        http_transport->set_bearer_token_provider([weak_authenticator] {
             const auto active_authenticator = weak_authenticator.lock();
             return active_authenticator ? active_authenticator->get_access_token() : std::string{};
         });

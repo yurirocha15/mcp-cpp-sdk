@@ -25,8 +25,9 @@ class MCP_API HttpStatusError : public std::runtime_error {
      * @param message Human-readable error description.
      * @param authenticate_challenge Optional WWW-Authenticate header value.
      */
-    HttpStatusError(unsigned int status, std::string message, std::string authenticate_challenge = {})
-        : std::runtime_error(std::move(message)),
+    HttpStatusError(unsigned int status, const std::string& message,
+                    std::string authenticate_challenge = {})
+        : std::runtime_error(message),
           status_(status),
           authenticate_challenge_(std::move(authenticate_challenge)) {}
 

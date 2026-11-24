@@ -51,13 +51,12 @@ inline Task<void> clear_throw_if_cancelled_on_return(Task<void> task) {
 /// co_spawn(executor, task, use_awaitable): runs `task` on `executor` and resumes the caller with
 /// its outcome. A cancellation of the caller is forwarded to `task`.
 template <typename Executor, typename T>
-Task<T> spawn_awaitable(Executor executor, Task<T> task) {
+Task<T> spawn_awaitable(const Executor& executor, Task<T> task) {
 #if BOOST_VERSION >= 107700 && BOOST_VERSION < 108500
-    return boost::asio::co_spawn(std::move(executor),
-                                 clear_throw_if_cancelled_on_return(std::move(task)),
+    return boost::asio::co_spawn(executor, clear_throw_if_cancelled_on_return(std::move(task)),
                                  boost::asio::use_awaitable);
 #else
-    return boost::asio::co_spawn(std::move(executor), std::move(task), boost::asio::use_awaitable);
+    return boost::asio::co_spawn(executor, std::move(task), boost::asio::use_awaitable);
 #endif
 }
 

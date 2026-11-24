@@ -56,8 +56,8 @@
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace http = beast::http;
-using tcp = asio::ip::tcp;
-using json = nlohmann::json;
+using asio::ip::tcp;
+using nlohmann::json;
 
 namespace {
 
@@ -82,7 +82,7 @@ std::string percent_decode(std::string_view encoded) {
             const int hi = hex_value(encoded[i + 1]);
             const int lo = hex_value(encoded[i + 2]);
             if (hi >= 0 && lo >= 0) {
-                decoded.push_back(static_cast<char>((hi << 4) | lo));
+                decoded.push_back(static_cast<char>((hi * 16) + lo));
                 i += 2;
                 continue;
             }
@@ -125,7 +125,7 @@ mcp::CallToolResult make_text_result(std::string text, std::optional<bool> is_er
     mcp::TextContent content;
     content.text = std::move(text);
     result.content.emplace_back(std::move(content));
-    result.isError = std::move(is_error);
+    result.isError = is_error;
     result.structuredContent = std::move(structured);
     return result;
 }
@@ -194,7 +194,7 @@ class MockOAuthServer {
     }
 
    private:
-    static http::response<http::string_body> make_json_response(http::status status, int version,
+    static http::response<http::string_body> make_json_response(http::status status, unsigned version,
                                                                 const json& payload) {
         http::response<http::string_body> response{status, version};
         response.set(http::field::content_type, "application/json");
@@ -204,7 +204,8 @@ class MockOAuthServer {
         return response;
     }
 
-    static http::response<http::string_body> make_json_body_response(http::status status, int version,
+    static http::response<http::string_body> make_json_body_response(http::status status,
+                                                                     unsigned version,
                                                                      std::string body) {
         http::response<http::string_body> response{status, version};
         response.set(http::field::content_type, "application/json");

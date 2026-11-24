@@ -1962,7 +1962,7 @@ void HttpServerTransport::close() {
         }
     }
 
-    boost::asio::post(impl->strand, [impl]() {
+    boost::asio::post(impl->strand, [impl] {
         boost::system::error_code ec;
         (void)impl->acceptor.cancel(ec);
         (void)impl->acceptor.close(ec);
@@ -1982,7 +1982,7 @@ void HttpServerTransport::close() {
     });
 
     boost::asio::post(impl->state->timer.get_executor(),
-                      [state = impl->state]() { state->timer.cancel(); });
+                      [state = impl->state] { state->timer.cancel(); });
 }
 
 Task<void> HttpServerTransport::listen() {

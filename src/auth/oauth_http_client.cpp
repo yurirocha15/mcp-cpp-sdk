@@ -161,7 +161,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
               proxy(std::move(proxy_options)) {}
 
         /// Prepares the next hop, on a fresh connection, to the URL just parsed.
-        void reset() {
+        void prepare_next_hop() {
             endpoints.clear();
             stream.reset();
             auto next = std::make_shared<mcp::detail::ConnectPlan>();
@@ -508,7 +508,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             }
         }
         for (auto& exchange : exchanges) {
-            net::post(strand, [exchange]() {
+            net::post(strand, [exchange] {
                 exchange->resolver.cancel();
                 if (exchange->stream) {
                     beast::error_code ec;
@@ -643,7 +643,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             // Every hop, including each redirect target, is validated afresh before it is reached.
             enforce_url_policy(exchange->policy, exchange->url);
             exchange->parsed = parse_url(exchange->url);
-            exchange->reset();
+            exchange->prepare_next_hop();
 
             http::request<http::empty_body> request(
                 http::verb::get, exchange->plan->request_target(exchange->parsed.path),
@@ -694,7 +694,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
         enforce_url_policy(exchange->policy, exchange->url);
         exchange->parsed = parse_url(exchange->url);
-        exchange->reset();
+        exchange->prepare_next_hop();
 
         http::request<http::string_body> request(http::verb::post,
                                                  exchange->plan->request_target(exchange->parsed.path),
@@ -881,7 +881,7 @@ std::size_t live_scope_latch_count() { return detail::OAuthScopeState::live_coun
 
 }  // namespace internal
 
-OAuthHttpClientScope OAuthHttpClient::make_scope() { return {impl_, impl_->new_scope()}; }
+OAuthHttpClientScope OAuthHttpClient::make_scope() { return {impl_, Impl::new_scope()}; }
 
 OAuthHttpClientScope::OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl,
                                            std::shared_ptr<detail::OAuthScopeState> state)

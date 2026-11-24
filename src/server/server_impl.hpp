@@ -763,15 +763,11 @@ inline bool is_valid_notification_envelope(const nlohmann::json& message) {
 }
 
 inline bool is_valid_response_envelope(const nlohmann::json& message) {
-    if (!message.is_object() || !has_valid_request_id(message) || message.contains("method") ||
-        !message.contains("jsonrpc") || !message.at("jsonrpc").is_string() ||
-        message.at("jsonrpc") != "2.0" || (message.contains("result") == has_error_member(message))) {
-        return false;
-    }
-
     // An error that cannot be decoded still answers the request it names: dispatch_response
     // fails that request instead of leaving its handler waiting.
-    return true;
+    return message.is_object() && has_valid_request_id(message) && !message.contains("method") &&
+           message.contains("jsonrpc") && message.at("jsonrpc").is_string() &&
+           message.at("jsonrpc") == "2.0" && message.contains("result") != has_error_member(message);
 }
 
 /// An error that answers no request it can name leaves out `id`: MCP's schema gives an error
@@ -1410,7 +1406,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// @p checked_modern, when set, says that the caller found the envelope valid and whether the
     /// request names its protocol version in _meta.
     Task<std::string> dispatch_request_wire(
-        nlohmann::json json_msg, bool enforce_lifecycle,
+        nlohmann::json incoming, bool enforce_lifecycle,
         std::shared_ptr<std::atomic<bool>> cancelled = nullptr,
         std::shared_ptr<const detail::ParamHeaderValues> param_headers = nullptr,
         MessageSender notifications = {}, std::function<void(std::function<void()>)> watch_cancel = {},
@@ -1512,10 +1508,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                          std::shared_ptr<const RequestMetadata> request_meta = nullptr,
                          bool session_request = true, MessageSender notifications = {},
                          std::shared_ptr<const std::string> principal = nullptr,
-                         std::shared_ptr<detail::MrtrEntry> mrtr = nullptr,
-                         std::shared_ptr<const std::string> related_request = nullptr,
-                         std::shared_ptr<detail::InlineInput> inline_input = nullptr,
-                         std::shared_ptr<detail::TaskRun> task_run = nullptr);
+                         const std::shared_ptr<detail::MrtrEntry>& mrtr = nullptr,
+                         const std::shared_ptr<const std::string>& related_request = nullptr,
+                         const std::shared_ptr<detail::InlineInput>& inline_input = nullptr,
+                         const std::shared_ptr<detail::TaskRun>& task_run = nullptr);
     TypeErasedHandler build_middleware_chain(TypeErasedHandler final_handler);
     /// Calls @p final_handler through the middleware, which without any is a plain call. The
     /// handler must stay where it is until the call ends: one in a node of a std::map does.
@@ -1580,7 +1576,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                                    const std::shared_ptr<const std::string>& principal,
                                                    std::string_view method, const std::string& digest);
     void evict_parked(const std::string& token, MrtrEvictionReason reason);
-    void finish_eviction(ParkedRequest victim, MrtrEvictionReason reason, const MrtrOptions& options);
+    void finish_eviction(const ParkedRequest& victim, MrtrEvictionReason reason,
+                         const MrtrOptions& options);
     void abandon_all_parked();
 
     /// Serves tasks/get, tasks/update and tasks/cancel.
@@ -1611,7 +1608,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                                                      const Listener& listener);
     /// Sends the state of a task to the subscriptions/listen streams that asked for it.
     static Task<void> notify_task(std::shared_ptr<Impl> impl, std::shared_ptr<const TaskRecord> record);
-    static Task<void> notify_task_if_alive(std::weak_ptr<Impl> impl,
+    static Task<void> notify_task_if_alive(std::weak_ptr<Impl> weak,
                                            std::shared_ptr<const TaskRecord> record);
     /// Cancels the handlers of the tasks that run in this process.
     void abandon_tasks();

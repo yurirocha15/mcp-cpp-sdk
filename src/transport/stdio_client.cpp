@@ -63,7 +63,8 @@
 #include <crt_externs.h>
 #define MCP_ENVIRON (*_NSGetEnviron())
 #elif !defined(_WIN32)
-extern char** environ;
+// Not every unistd.h declares it.
+extern char** environ;  // NOLINT(readability-redundant-declaration)
 #define MCP_ENVIRON environ
 #endif
 
@@ -163,16 +164,16 @@ std::mutex& spawn_mutex() {
 /// dup2() calls never overwrite one of them and no other process inherits them. The caller holds
 /// spawn_mutex().
 void make_pipe(UniqueFd& read_end, UniqueFd& write_end) {
-    int raw[2];
+    std::array<int, 2> raw{};
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) ||       \
     defined(__DragonFly__)
     // Both ends are close-on-exec from the moment they exist.
-    if (::pipe2(raw, O_CLOEXEC) != 0) {
+    if (::pipe2(raw.data(), O_CLOEXEC) != 0) {
         throw TransportError(TransportError::Kind::eConnect,
                              std::string("Cannot create a pipe: ") + std::strerror(errno));
     }
 #else
-    if (::pipe(raw) != 0) {
+    if (::pipe(raw.data()) != 0) {
         throw TransportError(TransportError::Kind::eConnect,
                              std::string("Cannot create a pipe: ") + std::strerror(errno));
     }
@@ -248,8 +249,9 @@ void ignore_broken_pipe_signal() {
     static std::once_flag s_once;
     std::call_once(s_once, [] {
         struct sigaction current{};
+        // sa_flags and SA_SIGINFO are ints, as POSIX declares them.
         if (::sigaction(SIGPIPE, nullptr, &current) == 0 && current.sa_handler == SIG_DFL &&
-            (current.sa_flags & SA_SIGINFO) == 0) {
+            (current.sa_flags & SA_SIGINFO) == 0) {  // NOLINT(bugprone-signed-bitwise)
             ::signal(SIGPIPE, SIG_IGN);
         }
     });
@@ -301,9 +303,12 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
     make_pipe(report_read, report_write);
 
     const bool own_tree = options.own_process_tree;
-    const int stderr_target = options.stderr_mode == StderrMode::eCapture   ? stderr_write.get()
-                              : options.stderr_mode == StderrMode::eDiscard ? null_device.get()
-                                                                            : -1;
+    int stderr_target = -1;
+    if (options.stderr_mode == StderrMode::eCapture) {
+        stderr_target = stderr_write.get();
+    } else if (options.stderr_mode == StderrMode::eDiscard) {
+        stderr_target = null_device.get();
+    }
     // Signals stay blocked across fork() so that no handler of this process runs in the child. The
     // sigset calls are unqualified because macOS defines them as macros.
     sigset_t everything;
@@ -320,19 +325,17 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
         sigset_t none;
         sigemptyset(&none);
         ::pthread_sigmask(SIG_SETMASK, &none, nullptr);
-        int failure = 0;
-        if (own_tree && ::setpgid(0, 0) != 0) {
-            failure = errno;
-        } else if (::dup2(stdin_read.get(), STDIN_FILENO) < 0 ||
-                   ::dup2(stdout_write.get(), STDOUT_FILENO) < 0 ||
-                   (stderr_target >= 0 && ::dup2(stderr_target, STDERR_FILENO) < 0)) {
-            failure = errno;
-        } else if (!working_directory.empty() && ::chdir(working_directory.c_str()) != 0) {
-            failure = errno;
-        } else {
+        // Each step runs only when the ones before it succeeded, and execve() returns only when it
+        // fails, so errno holds the failure of the step that stopped the child.
+        const bool prepared = !(own_tree && ::setpgid(0, 0) != 0) &&
+                              ::dup2(stdin_read.get(), STDIN_FILENO) >= 0 &&
+                              ::dup2(stdout_write.get(), STDOUT_FILENO) >= 0 &&
+                              (stderr_target < 0 || ::dup2(stderr_target, STDERR_FILENO) >= 0) &&
+                              (working_directory.empty() || ::chdir(working_directory.c_str()) == 0);
+        if (prepared) {
             ::execve(program.c_str(), argv.data(), envp.data());
-            failure = errno;
         }
+        const int failure = errno;
         const ssize_t ignored = ::write(report_write.get(), &failure, sizeof failure);
         static_cast<void>(ignored);
         ::_exit(mcp::detail::constants::stdio_client::g_EXEC_FAILED_STATUS);
@@ -781,7 +784,13 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
           stderr_pipe(strand),
           chunk(mcp::detail::constants::stdio_client::g_CHUNK_BYTES) {}
 
-    ~Impl() { finish(false); }
+    ~Impl() {
+        try {
+            finish(false);
+        } catch (...) {
+            // A destructor has no caller to report a failed shutdown to.
+        }
+    }
 
     /// Starts the process and the thread that waits for it.
     void start() {
@@ -1140,7 +1149,13 @@ StdioClientTransport::StdioClientTransport(const Executor& executor, StdioProces
     impl_->start();
 }
 
-StdioClientTransport::~StdioClientTransport() { impl_->finish(true); }
+StdioClientTransport::~StdioClientTransport() {
+    try {
+        impl_->finish(true);
+    } catch (...) {
+        // A destructor has no caller to report a failed shutdown to.
+    }
+}
 
 Task<std::string> StdioClientTransport::read_message() {
     auto impl = impl_;

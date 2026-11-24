@@ -442,7 +442,13 @@ RestartingStdioTransport::RestartingStdioTransport(const Executor& executor,
     state_->launch();
 }
 
-RestartingStdioTransport::~RestartingStdioTransport() { close(); }
+RestartingStdioTransport::~RestartingStdioTransport() {
+    try {
+        close();
+    } catch (...) {
+        // A destructor has no caller to report a failed close to.
+    }
+}
 
 Task<std::string> RestartingStdioTransport::read_message() {
     return detail::spawn_awaitable(state_->strand, State::read(state_));

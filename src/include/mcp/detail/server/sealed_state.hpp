@@ -45,7 +45,7 @@ class SealKey {
     std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KEY_SIZE> secret_;
 };
 
-enum class SealError {
+enum class SealError : std::uint8_t {
     eNone,
     /// The ring has no keys.
     eNoKey,
@@ -55,7 +55,7 @@ enum class SealError {
     eCryptoFailure,
 };
 
-enum class OpenError {
+enum class OpenError : std::uint8_t {
     eNone,
     eEmpty,
     /// Longer than the cap; checked before any decoding.

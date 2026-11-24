@@ -201,7 +201,7 @@ Example of triggering list notifications:
 .. literalinclude:: ../../examples/features/notifications_subscriptions.cpp
    :language: cpp
    :start-after: co_await server.notify_resource_updated(resource_uri);
-   :end-before: const char* expected[]
+   :end-before: const std::array expected{
    :dedent: 20
    :linenos:
    :caption: Triggering list change notifications for tools, resources, and prompts.
