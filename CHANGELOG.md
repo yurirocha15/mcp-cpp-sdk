@@ -121,6 +121,8 @@ These changes in behavior need no change to compile:
   the source location that Boost adds to it.
 - The LLDB example returns a command that LLDB fails as a tool error instead of
   as its output.
+- `run_stdio()` and `run_http()` no longer risk a crash in `pthread_detach()`
+  when they return at the shutdown deadline while handlers still run.
 
 ## [0.3.0] - 2026-11-17
 

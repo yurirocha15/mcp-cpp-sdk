@@ -112,7 +112,7 @@ void ShutdownDeadline::finish() {
 
 void destroy_loop(std::unique_ptr<boost::asio::io_context> io_ctx) {
     if (awaits_elsewhere(io_ctx->get_executor())) {
-        std::thread([io_ctx = std::move(io_ctx)]() mutable { io_ctx.reset(); }).detach();
+        run_detached([io_ctx = std::move(io_ctx)]() mutable { io_ctx.reset(); });
     }
 }
 
