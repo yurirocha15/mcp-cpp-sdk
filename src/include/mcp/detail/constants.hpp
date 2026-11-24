@@ -342,6 +342,10 @@ inline constexpr std::chrono::seconds g_FINAL_FLUSH_WAIT{1};
 /// Pipe buffer size and shutdown capabilities of the stdio client process handling.
 namespace stdio_client {
 
+/// The exit status of a child whose exec failed, the status POSIX shells give a command they cannot
+/// find.
+inline constexpr int g_EXEC_FAILED_STATUS = 127;
+
 inline constexpr std::size_t g_CHUNK_BYTES = 64U * 1024U;
 
 /// How long a killed process may take to be seen as ended, which the destructor of a Client that

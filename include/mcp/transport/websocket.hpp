@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/tls.hpp>
 #include <mcp/transport/transport.hpp>
@@ -174,7 +175,8 @@ class MCP_API WebSocketClientTransport final : public ITransport {
      */
     WebSocketClientTransport(const Executor& executor, std::string host, std::string port,
                              std::string path = "/",
-                             std::chrono::milliseconds connect_timeout = std::chrono::seconds(30));
+                             std::chrono::milliseconds connect_timeout =
+                                 mcp::constants::websocket::g_DEFAULT_CONNECT_TIMEOUT);
 
     ~WebSocketClientTransport() override;
 

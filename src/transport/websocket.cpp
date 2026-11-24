@@ -216,8 +216,8 @@ struct WebSocketServerTransport::Impl {
     detail::HostPolicy host_policy;
     /// Set once the handshake starts; the Origin policy and the limits are fixed from then on.
     bool configuration_locked{false};
-    std::chrono::milliseconds handshake_timeout{std::chrono::seconds(30)};
-    std::chrono::milliseconds idle_timeout{std::chrono::minutes(5)};
+    std::chrono::milliseconds handshake_timeout{mcp::constants::websocket::g_DEFAULT_HANDSHAKE_TIMEOUT};
+    std::chrono::milliseconds idle_timeout{mcp::constants::websocket::g_DEFAULT_IDLE_TIMEOUT};
     std::size_t max_message_bytes{mcp::detail::constants::websocket::g_DEFAULT_MAX_MESSAGE_BYTES};
 
     Impl(asio::ip::tcp::socket socket, std::shared_ptr<const TlsServerContext> tls_arg)

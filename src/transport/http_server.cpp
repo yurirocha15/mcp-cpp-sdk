@@ -1007,7 +1007,8 @@ struct HttpServerTransport::Impl {
         // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
         // request of the server's own reaches it while the handler waits for the answer.
         const auto accept_it = request.find(http::field::accept);
-        if (!is_initialize_request(request_json) && request.version() >= 11 &&
+        if (!is_initialize_request(request_json) &&
+            request.version() >= mcp::detail::constants::http_client::g_VERSION_11 &&
             !json_only_.load(std::memory_order_acquire) && accept_it != request.end() &&
             detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
                 std::string_view::npos) {
@@ -1713,7 +1714,8 @@ struct HttpServerTransport::Impl {
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::chrono::steady_clock::time_point session_last_used;
     /// Guarded by configuration_mutex.
-    std::chrono::milliseconds session_idle_timeout{std::chrono::minutes(5)};
+    std::chrono::milliseconds session_idle_timeout{
+        mcp::constants::http_server::g_DEFAULT_SESSION_IDLE_TIMEOUT};
     std::unordered_set<std::string> sessionless_request_ids;
     std::string sentinel_id_prefix;
     std::uint64_t sentinel_id_counter{0};

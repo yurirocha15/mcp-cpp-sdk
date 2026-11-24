@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mcp/detail/constants.hpp"
 #include "mcp/detail/net/connection.hpp"
 #include "mcp/detail/transport/http_response_write.hpp"
 #include "mcp/detail/transport/incoming_request.hpp"
@@ -321,7 +322,7 @@ inline Task<bool> read_request_within_limits(Connection& stream, boost::beast::f
     }
     // A client that sent "Expect: 100-continue" may wait for this before it sends the body.
     // HTTP/1.0 has no interim responses.
-    if (head.version() >= 11 && !parser.is_done() &&
+    if (head.version() >= mcp::detail::constants::http_client::g_VERSION_11 && !parser.is_done() &&
         boost::beast::iequals(head[http::field::expect], "100-continue")) {
         constexpr std::string_view continue_response = "HTTP/1.1 100 Continue\r\n\r\n";
         try {

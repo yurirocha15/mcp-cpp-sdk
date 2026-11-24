@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/client/client_protocol.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/notification_rate_limit.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/schema.hpp>
@@ -43,9 +44,9 @@ struct ResponseCacheOptions {
     /// Whether the client keeps results. Off unless set.
     bool enabled{false};
     /// Most results kept at once; the one closest to going stale makes room. Must be positive.
-    std::size_t max_entries{512};
+    std::size_t max_entries{mcp::constants::client::g_DEFAULT_RESPONSE_CACHE_ENTRIES};
     /// Longest a result is kept, whatever its `ttlMs` says. Must be positive.
-    std::chrono::milliseconds max_ttl{std::chrono::hours(24)};
+    std::chrono::milliseconds max_ttl{mcp::constants::client::g_DEFAULT_RESPONSE_CACHE_MAX_TTL};
 };
 
 /** @brief How one cacheable call uses the response cache; see ResponseCacheOptions. */
@@ -72,7 +73,7 @@ struct ClientOptions {
      * positive. A modern server that needs longer to start than this is not misclassified for
      * good: when it then rejects initialize naming modern versions, the client probes once more.
      */
-    std::chrono::milliseconds probe_timeout{std::chrono::milliseconds(3000)};
+    std::chrono::milliseconds probe_timeout{mcp::constants::client::g_DEFAULT_PROBE_TIMEOUT};
     /**
      * @brief Invoked each time connect() decides an era.
      *
@@ -91,7 +92,7 @@ struct ClientOptions {
      * positive: the constructor throws std::invalid_argument otherwise, and there is no value that
      * disables the deadline.
      */
-    std::chrono::milliseconds request_timeout{std::chrono::seconds(30)};
+    std::chrono::milliseconds request_timeout{mcp::constants::client::g_DEFAULT_REQUEST_TIMEOUT};
     /**
      * @brief Memory the server's requests being answered, and the answers not yet written, may
      * take before the client stops reading. 256 MiB unless set; must be positive.
@@ -99,7 +100,8 @@ struct ClientOptions {
      * A request is counted as its parsed JSON takes memory, which can be far more than its text.
      * The client also stops reading while it answers 1024 requests of the server.
      */
-    std::size_t max_incoming_request_bytes{std::size_t{256} * 1024 * 1024};
+    std::size_t max_incoming_request_bytes{
+        mcp::constants::client::g_DEFAULT_MAX_INCOMING_REQUEST_BYTES};
     /** @brief Reject malformed JSON-RPC envelopes received from the peer. */
     bool strict_protocol_validation{true};
     /**
@@ -133,7 +135,7 @@ struct ClientOptions {
      * @brief How often the client polls a task whose state names no interval. One second unless
      * set; must be positive.
      */
-    std::chrono::milliseconds task_poll_interval{std::chrono::seconds(1)};
+    std::chrono::milliseconds task_poll_interval{mcp::constants::client::g_DEFAULT_TASK_POLL_INTERVAL};
     /**
      * @brief How long call_tool() and TaskHandle::wait() follow one task before they give up with
      * mcp::constants::jsonrpc::g_REQUEST_TIMEOUT. Thirty minutes unless set; must be positive.
@@ -144,7 +146,7 @@ struct ClientOptions {
      * throws, since nothing else holds the task; the cancel is best effort. Each poll is limited
      * by request_timeout like any other request, and call_tool() takes no per-request options.
      */
-    std::chrono::milliseconds task_timeout{std::chrono::minutes(30)};
+    std::chrono::milliseconds task_timeout{mcp::constants::client::g_DEFAULT_TASK_TIMEOUT};
     /**
      * @brief Check the schemas of the tools the server lists.
      *
@@ -186,7 +188,7 @@ struct ClientOptions {
      * Subscription::dropped_events(). Must be positive: the constructor throws
      * std::invalid_argument otherwise.
      */
-    std::size_t subscription_queue_limit{1024};
+    std::size_t subscription_queue_limit{mcp::constants::client::g_DEFAULT_SUBSCRIPTION_QUEUE_LIMIT};
     /// @brief Whether and how the client keeps results the server says it may reuse.
     ResponseCacheOptions response_cache;
     /**

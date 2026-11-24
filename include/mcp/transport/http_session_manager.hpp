@@ -33,11 +33,11 @@ struct SessionLimits {
     /// Sessions at once. An initialize past it is answered 503. A session costs about 31 KiB
     /// before it does anything, so this bounds what an unauthenticated client can make a server
     /// hold; a bearer token validator refuses such a client before any session exists.
-    std::size_t max_sessions{10000};
+    std::size_t max_sessions{mcp::constants::http_server::g_DEFAULT_MAX_SESSIONS};
     /// How long a session lives after its last request, unless a request of it is still running,
     /// or zero to keep it until its DELETE. A client that leaves without one is otherwise kept
     /// until the process ends.
-    std::chrono::milliseconds idle_timeout{std::chrono::minutes(5)};
+    std::chrono::milliseconds idle_timeout{mcp::constants::http_server::g_DEFAULT_SESSION_IDLE_TIMEOUT};
 };
 
 /**

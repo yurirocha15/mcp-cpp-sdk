@@ -1543,7 +1543,7 @@ struct StreamableHttpSessionManager::Impl {
         // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
         // request of the server's own reaches it while the handler waits for the answer.
         const auto accept_it = request.find(http::field::accept);
-        if (!is_initialize && request.version() >= 11 &&
+        if (!is_initialize && request.version() >= mcp::detail::constants::http_client::g_VERSION_11 &&
             !json_only_mode_->load(std::memory_order_acquire) && accept_it != request.end() &&
             detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
                 std::string_view::npos) {

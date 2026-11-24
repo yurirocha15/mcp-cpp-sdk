@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/skills.hpp>
 #include <mcp/server/server.hpp>
@@ -55,11 +56,11 @@ struct SkillsOptions {
     /// Declare `directoryRead` and serve `resources/directory/read`.
     bool directory_read{true};
     /// `ttlMs` the listings and entries carry.
-    std::int64_t ttl_ms{300000};
+    std::int64_t ttl_ms{mcp::constants::skills::g_DEFAULT_TTL_MS};
     /// `cacheScope` the listings and entries carry.
     CacheScope cache_scope{CacheScope::ePublic};
     /// Entries or children per page of `skills/list` and `resources/directory/read`; at least 1.
-    std::size_t page_size{100};
+    std::size_t page_size{mcp::constants::skills::g_DEFAULT_PAGE_SIZE};
 };
 
 /**

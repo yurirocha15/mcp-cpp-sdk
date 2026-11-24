@@ -220,7 +220,8 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& req
                                                       ModernDispatchRef dispatch) {
     const auto accept_it = request.find(http::field::accept);
     const bool streams =
-        !start.json_only && request.version() >= 11 && accept_it != request.end() &&
+        !start.json_only && request.version() >= mcp::detail::constants::http_client::g_VERSION_11 &&
+        accept_it != request.end() &&
         to_std_string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
     auto exchange = std::make_shared<ModernExchange>(start.strand, start.options, streams, start.budget,
                                                      start.budget_limit);

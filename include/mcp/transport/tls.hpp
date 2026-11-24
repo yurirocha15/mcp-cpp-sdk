@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -120,7 +121,7 @@ struct TlsServerOptions {
     TlsVersion min_version{TlsVersion::eTls12};
     /// How long an HTTP server transport waits for a client to finish the handshake. Zero or less
     /// means no limit. A WebSocketServerTransport uses its own handshake timeout instead.
-    std::chrono::milliseconds handshake_timeout{std::chrono::seconds(5)};
+    std::chrono::milliseconds handshake_timeout{mcp::constants::tls::g_DEFAULT_HANDSHAKE_TIMEOUT};
     /// Handshakes an HTTP server transport runs at once; a connection past it is closed as soon as
     /// it is accepted. Zero takes a quarter of HttpConnectionLimits::max_connections as resolved,
     /// and at least one.

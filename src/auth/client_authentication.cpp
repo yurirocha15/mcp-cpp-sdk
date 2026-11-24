@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <mcp/auth/client_authentication.hpp>
+#include <string_view>
 
 #include <openssl/bio.h>
 #include <openssl/bn.h>
@@ -47,11 +48,13 @@ KeyPtr load_private_key(const std::string& pem) {
 }
 
 bool is_p256(EVP_PKEY* key) {
-    std::array<char, 32> group{};
+    constexpr std::string_view p256 = "prime256v1";
+    // Room for P-256's name and a terminating null: a longer name does not fit, and is not P-256's.
+    std::array<char, p256.size() + 1> group{};
     std::size_t length = 0;
     return EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME, group.data(), group.size(),
                                           &length) == 1 &&
-           std::string(group.data(), length) == "prime256v1";
+           std::string_view(group.data(), length) == p256;
 }
 
 /// The algorithms @p key can sign with, most widely accepted first.

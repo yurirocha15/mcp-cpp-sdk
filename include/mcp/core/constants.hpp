@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -37,6 +38,36 @@ namespace client {
 /// in ms. Covers StdioProcessOptions' default stdin_close_wait and terminate_wait; a launched
 /// server whose waits add up to more is waited for that long.
 inline constexpr int g_CLOSE_WAIT_MS = 5000;
+
+/// The default of ClientOptions::probe_timeout.
+inline constexpr std::chrono::milliseconds g_DEFAULT_PROBE_TIMEOUT{3000};
+
+/// The default of ClientOptions::request_timeout.
+inline constexpr std::chrono::milliseconds g_DEFAULT_REQUEST_TIMEOUT = std::chrono::seconds(30);
+
+/// The default of ClientOptions::max_incoming_request_bytes.
+inline constexpr std::size_t g_DEFAULT_MAX_INCOMING_REQUEST_BYTES = std::size_t{256} * 1024 * 1024;
+
+/// The default of ClientOptions::task_poll_interval.
+inline constexpr std::chrono::milliseconds g_DEFAULT_TASK_POLL_INTERVAL = std::chrono::seconds(1);
+
+/// The default of ClientOptions::task_timeout.
+inline constexpr std::chrono::milliseconds g_DEFAULT_TASK_TIMEOUT = std::chrono::minutes(30);
+
+/// The default of ClientOptions::subscription_queue_limit.
+inline constexpr std::size_t g_DEFAULT_SUBSCRIPTION_QUEUE_LIMIT = 1024;
+
+/// The default of ResponseCacheOptions::max_entries.
+inline constexpr std::size_t g_DEFAULT_RESPONSE_CACHE_ENTRIES = 512;
+
+/// The default of ResponseCacheOptions::max_ttl.
+inline constexpr std::chrono::milliseconds g_DEFAULT_RESPONSE_CACHE_MAX_TTL = std::chrono::hours(24);
+
+/// The default of RequestOptions::max_input_rounds.
+inline constexpr int g_DEFAULT_MAX_INPUT_ROUNDS = 8;
+
+/// The default of RequestOptions::max_input_requests.
+inline constexpr int g_DEFAULT_MAX_INPUT_REQUESTS = 32;
 
 }  // namespace client
 
@@ -342,6 +373,12 @@ inline constexpr std::size_t g_MAX_RESOURCES_PER_SKILL = 512;
 /// Most bytes a skill's listed files may add up to (16 MiB).
 inline constexpr std::int64_t g_MAX_SKILL_BYTES = 16 * 1024 * 1024;
 
+/// The default of SkillsOptions::ttl_ms.
+inline constexpr std::int64_t g_DEFAULT_TTL_MS = 300000;
+
+/// The default of SkillsOptions::page_size.
+inline constexpr std::size_t g_DEFAULT_PAGE_SIZE = 100;
+
 }  // namespace skills
 
 /// Tasks extension identifier and result type.
@@ -353,6 +390,19 @@ inline constexpr std::string_view g_EXTENSION_ID = "io.modelcontextprotocol/task
 
 /// @brief The `resultType` of a CreateTaskResult.
 inline constexpr std::string_view g_RESULT_TYPE_TASK = "task";
+
+/// The default of TaskOptions::ttl.
+inline constexpr std::chrono::milliseconds g_DEFAULT_TTL = std::chrono::hours(1);
+
+/// The default of TaskOptions::poll_interval.
+inline constexpr std::chrono::milliseconds g_DEFAULT_POLL_INTERVAL = std::chrono::seconds(2);
+
+/// The default of TaskOptions::max_tasks_per_principal and
+/// InMemoryTaskStoreOptions::max_tasks_per_owner.
+inline constexpr std::size_t g_DEFAULT_MAX_TASKS_PER_OWNER = 100;
+
+/// The default of TaskOptions::max_tasks and InMemoryTaskStoreOptions::max_tasks.
+inline constexpr std::size_t g_DEFAULT_MAX_TASKS = 10000;
 
 }  // namespace tasks
 
@@ -406,6 +456,21 @@ inline constexpr std::size_t g_DEFAULT_VERIFIER_LENGTH = 64;
 /// Seconds a cached discovery response is kept by default.
 inline constexpr std::size_t g_DEFAULT_CACHE_TTL_SECONDS = 300;
 
+/// The default of PrivateKeyJwtConfig::lifetime.
+inline constexpr std::chrono::seconds g_DEFAULT_CLIENT_ASSERTION_LIFETIME{60};
+
+/// The default of OAuthClientTransportOptions::max_pending_requests.
+inline constexpr std::size_t g_DEFAULT_MAX_PENDING_REQUESTS = 256;
+
+/// The default of OAuthClientTransportOptions::max_pending_request_bytes.
+inline constexpr std::size_t g_DEFAULT_MAX_PENDING_REQUEST_BYTES = std::size_t{16} * 1024 * 1024;
+
+/// The default of OAuthClientTransportOptions::pending_request_ttl.
+inline constexpr std::chrono::milliseconds g_DEFAULT_PENDING_REQUEST_TTL = std::chrono::minutes(5);
+
+/// The default of OAuthClientTransportOptions::max_step_ups_per_request.
+inline constexpr std::size_t g_DEFAULT_MAX_STEP_UPS_PER_REQUEST = 1;
+
 }  // namespace oauth
 
 /// Defaults of the fetch policy for authorization metadata documents.
@@ -432,6 +497,122 @@ namespace http_server {
  */
 inline constexpr std::size_t g_DEFAULT_MAX_REQUEST_BODY_BYTES = 8 * 1024 * 1024;
 
+/// The default of SessionLimits::max_sessions.
+inline constexpr std::size_t g_DEFAULT_MAX_SESSIONS = 10000;
+
+/// The default of SessionLimits::idle_timeout and HttpServerTransport::set_session_idle_timeout().
+inline constexpr std::chrono::milliseconds g_DEFAULT_SESSION_IDLE_TIMEOUT = std::chrono::minutes(5);
+
+/// The default of HttpConnectionLimits::request_read_timeout.
+inline constexpr std::chrono::milliseconds g_DEFAULT_REQUEST_READ_TIMEOUT = std::chrono::seconds(60);
+
+/// The default of HttpConnectionLimits::max_requests.
+inline constexpr std::size_t g_DEFAULT_MAX_REQUESTS = 4096;
+
+/// The default of HttpConnectionLimits::max_request_bytes.
+inline constexpr std::size_t g_DEFAULT_MAX_REQUEST_BYTES = std::size_t{1024} * 1024 * 1024;
+
+/// The default of StreamOptions::keepalive_interval.
+inline constexpr std::chrono::milliseconds g_DEFAULT_KEEPALIVE_INTERVAL = std::chrono::seconds(15);
+
+/// The default of StreamOptions::disconnect_probe_interval.
+inline constexpr std::chrono::milliseconds g_DEFAULT_DISCONNECT_PROBE_INTERVAL =
+    std::chrono::seconds(1);
+
+/// The default of StreamOptions::max_queued_notifications.
+inline constexpr std::size_t g_DEFAULT_MAX_QUEUED_NOTIFICATIONS = 4096;
+
+/// The default of StreamOptions::max_queued_bytes.
+inline constexpr std::size_t g_DEFAULT_MAX_QUEUED_BYTES = std::size_t{1024} * 1024;
+
 }  // namespace http_server
+
+/// Defaults of the multi-round-trip request support (MrtrOptions).
+namespace mrtr {
+
+/// The default of MrtrOptions::ttl.
+inline constexpr std::chrono::milliseconds g_DEFAULT_TTL = std::chrono::minutes(5);
+
+/// The default of MrtrOptions::max_parked.
+inline constexpr std::size_t g_DEFAULT_MAX_PARKED = 1024;
+
+/// The default of MrtrOptions::max_parked_per_principal.
+inline constexpr std::size_t g_DEFAULT_MAX_PARKED_PER_PRINCIPAL = 64;
+
+/// The default of MrtrOptions::max_parked_bytes.
+inline constexpr std::size_t g_DEFAULT_MAX_PARKED_BYTES = 64U * 1024U * 1024U;
+
+/// The default of MrtrOptions::max_parked_bytes_per_principal.
+inline constexpr std::size_t g_DEFAULT_MAX_PARKED_BYTES_PER_PRINCIPAL = 16U * 1024U * 1024U;
+
+/// The default of MrtrOptions::state_ttl.
+inline constexpr std::chrono::milliseconds g_DEFAULT_STATE_TTL = std::chrono::minutes(5);
+
+/// The default of MrtrOptions::max_rounds.
+inline constexpr std::size_t g_DEFAULT_MAX_ROUNDS = 16;
+
+/// The default of MrtrOptions::max_state_bytes.
+inline constexpr std::size_t g_DEFAULT_MAX_STATE_BYTES = 32U * 1024U;
+
+}  // namespace mrtr
+
+/// Defaults of JSON Schema validation (SchemaOptions).
+namespace schema {
+
+/// The default of SchemaOptions::max_instance_depth.
+inline constexpr std::size_t g_DEFAULT_MAX_INSTANCE_DEPTH = 64;
+
+/// The default of SchemaOptions::max_reported_violations.
+inline constexpr std::size_t g_DEFAULT_MAX_REPORTED_VIOLATIONS = 8;
+
+/// The default of SchemaOptions::base_pattern_steps.
+inline constexpr std::size_t g_DEFAULT_BASE_PATTERN_STEPS = 16'000'000;
+
+/// The default of SchemaOptions::pattern_steps_per_text_byte.
+inline constexpr std::size_t g_DEFAULT_PATTERN_STEPS_PER_TEXT_BYTE = 64;
+
+/// The default of SchemaOptions::max_evaluation_work.
+inline constexpr std::size_t g_DEFAULT_MAX_EVALUATION_WORK = 256'000'000;
+
+/// The default of SchemaOptions::max_pattern_instructions.
+inline constexpr std::size_t g_DEFAULT_MAX_PATTERN_INSTRUCTIONS = 1'000'000;
+
+}  // namespace schema
+
+/// Defaults of the stdio client transport.
+namespace stdio {
+
+/// The default of StdioProcessOptions::stdin_close_wait and StdioProcessOptions::terminate_wait.
+inline constexpr std::chrono::milliseconds g_DEFAULT_SHUTDOWN_WAIT = std::chrono::seconds(2);
+
+/// The default of StdioProcessOptions::max_message_bytes.
+inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
+
+/// The default of StdioRestartPolicy::delay.
+inline constexpr std::chrono::milliseconds g_DEFAULT_RESTART_DELAY{500};
+
+}  // namespace stdio
+
+/// Defaults of the TLS contexts.
+namespace tls {
+
+/// The default of TlsServerOptions::handshake_timeout.
+inline constexpr std::chrono::milliseconds g_DEFAULT_HANDSHAKE_TIMEOUT = std::chrono::seconds(5);
+
+}  // namespace tls
+
+/// Defaults of the WebSocket transports.
+namespace websocket {
+
+/// The default connect timeout of WebSocketClientTransport.
+inline constexpr std::chrono::milliseconds g_DEFAULT_CONNECT_TIMEOUT = std::chrono::seconds(30);
+
+/// The default of WebSocketServerTransport::set_handshake_timeout().
+inline constexpr std::chrono::milliseconds g_DEFAULT_HANDSHAKE_TIMEOUT = std::chrono::seconds(30);
+
+/// The default of WebSocketServerTransport::set_idle_timeout().
+inline constexpr std::chrono::milliseconds g_DEFAULT_IDLE_TIMEOUT = std::chrono::minutes(5);
+
+}  // namespace websocket
 
 }  // namespace mcp::constants

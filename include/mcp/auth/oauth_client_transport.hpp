@@ -2,6 +2,7 @@
 
 #include <mcp/auth/authenticator.hpp>
 #include <mcp/core/async_fwd.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -22,14 +23,18 @@ namespace mcp::auth {
  * and retry does not depend on this cache.
  */
 struct OAuthClientTransportOptions {
-    std::size_t max_pending_requests{256};                    ///< Maximum retained request count.
-    std::size_t max_pending_request_bytes{16 * 1024 * 1024};  ///< Approximate retained wire/key bytes.
-    std::chrono::milliseconds pending_request_ttl{std::chrono::minutes(5)};  ///< Replay eligibility.
+    std::size_t max_pending_requests{
+        mcp::constants::oauth::g_DEFAULT_MAX_PENDING_REQUESTS};  ///< Maximum retained request count.
+    std::size_t max_pending_request_bytes{
+        mcp::constants::oauth::g_DEFAULT_MAX_PENDING_REQUEST_BYTES};  ///< Approximate retained wire/key
+                                                                      ///< bytes.
+    std::chrono::milliseconds pending_request_ttl{
+        mcp::constants::oauth::g_DEFAULT_PENDING_REQUEST_TTL};  ///< Replay eligibility.
     /// Step-up authorizations per request: each answers a 403 whose challenge says
     /// `insufficient_scope` by asking the authenticator, and so usually the user, to authorize the
     /// wider scope. Past it the request fails with that 403. Zero leaves every such 403 to the
     /// caller, as an HttpStatusError carrying the challenge.
-    std::size_t max_step_ups_per_request{1};
+    std::size_t max_step_ups_per_request{mcp::constants::oauth::g_DEFAULT_MAX_STEP_UPS_PER_REQUEST};
 };
 
 /**

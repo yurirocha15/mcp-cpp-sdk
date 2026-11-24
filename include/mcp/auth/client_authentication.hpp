@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/auth/oauth.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/http_types.hpp>
 
@@ -27,7 +28,7 @@ struct PrivateKeyJwtConfig {
     /// algorithms the authorization server lists in `token_endpoint_auth_signing_alg_values_supported`.
     std::optional<std::string> algorithm;
     /// How long each assertion is valid, from the moment it is signed.
-    std::chrono::seconds lifetime{60};
+    std::chrono::seconds lifetime{mcp::constants::oauth::g_DEFAULT_CLIENT_ASSERTION_LIFETIME};
     /// The `aud` claim. Defaults to the authorization server's issuer identifier, or to the token
     /// endpoint URL when its metadata names no issuer.
     std::optional<std::string> audience;

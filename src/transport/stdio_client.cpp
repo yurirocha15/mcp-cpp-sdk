@@ -335,7 +335,7 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
         }
         const ssize_t ignored = ::write(report_write.get(), &failure, sizeof failure);
         static_cast<void>(ignored);
-        ::_exit(127);
+        ::_exit(mcp::detail::constants::stdio_client::g_EXEC_FAILED_STATUS);
     }
     const int fork_error = errno;
     ::pthread_sigmask(SIG_SETMASK, &previous, nullptr);

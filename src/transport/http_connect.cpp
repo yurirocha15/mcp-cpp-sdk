@@ -99,7 +99,7 @@ Task<void> establish(std::shared_ptr<Connection> connection,
                                                     : error.code());
         }
         const auto status = tunnel->parser.get().result_int();
-        if (status < 200 || status > 299) {
+        if (beast::http::to_status_class(status) != beast::http::status_class::successful) {
             throw TransportError(TransportError::Kind::eConnect,
                                  "The proxy refused the tunnel to " +
                                      sanitize_for_diagnostics(authority) + " with status " +
