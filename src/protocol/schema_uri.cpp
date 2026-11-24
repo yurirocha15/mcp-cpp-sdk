@@ -11,15 +11,15 @@ namespace {
 std::string remove_dot_segments(std::string_view input) {
     std::string output;
     while (!input.empty()) {
-        if (input.substr(0, 3) == "../") {
+        if (input.starts_with("../")) {
             input.remove_prefix(3);
-        } else if (input.substr(0, 2) == "./") {
+        } else if (input.starts_with("./")) {
             input.remove_prefix(2);
-        } else if (input.substr(0, 3) == "/./") {
+        } else if (input.starts_with("/./")) {
             input.remove_prefix(2);
         } else if (input == "/.") {
             input = "/";
-        } else if (input.substr(0, 4) == "/../" || input == "/..") {
+        } else if (input.starts_with("/../") || input == "/..") {
             if (input == "/..") {
                 input = "/";
             } else {
@@ -108,7 +108,7 @@ UriReference parse_uri_reference(std::string_view text) {
             text.remove_prefix(colon + 1);
         }
     }
-    if (text.substr(0, 2) == "//") {
+    if (text.starts_with("//")) {
         text.remove_prefix(2);
         const auto slash = text.find('/');
         reference.authority = std::string(text.substr(0, slash));

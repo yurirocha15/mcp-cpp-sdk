@@ -61,7 +61,7 @@ inline bool exceeds_json_depth(std::string_view text,
 /// is not valid JSON or nests deeper than mcp::detail::constants::peer_json::g_MAX_DEPTH.
 inline nlohmann::json parse_peer_json(std::string_view text) {
     if (exceeds_json_depth(text)) {
-        return nlohmann::json(nlohmann::json::value_t::discarded);
+        return {nlohmann::json::value_t::discarded};
     }
     nlohmann::json value;
     if (parse_json_fast(text, value)) {

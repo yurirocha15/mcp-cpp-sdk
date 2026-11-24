@@ -52,7 +52,7 @@ class EnterpriseFlow final : public detail::GrantFlow {
         auto assertion = co_await provider_();
         auto text = mcp::detail::hex_encode(mcp::detail::digest_bytes(
             mcp::detail::sha256(assertion.token_type + '\n' + assertion.token)));
-        co_return detail::GrantIdentity{std::move(text), std::move(assertion)};
+        co_return detail::GrantIdentity{.key = std::move(text), .state = std::move(assertion)};
     }
 
     void check_server(const AuthServerMetadata& server) const override {
@@ -81,7 +81,7 @@ class EnterpriseFlow final : public detail::GrantFlow {
         // The assertion read while naming the identity is the one exchanged.
         const auto* held = std::any_cast<IdentityAssertion>(&target.identity.state);
         IdentityAssertion assertion;
-        if (held) {
+        if (held != nullptr) {
             assertion = *held;
         } else {
             assertion = co_await provider_();

@@ -131,7 +131,7 @@ struct RestartingStdioTransport::State {
         if (!scanned->method.empty()) {
             const auto earlier = incoming.find(id);
             if (earlier == incoming.end() || earlier->second.generation == generation) {
-                incoming.insert_or_assign(id, Incoming{generation, {}});
+                incoming.insert_or_assign(id, Incoming{.generation = generation, .original = {}});
                 return;
             }
             const nlohmann::json alias =
@@ -140,7 +140,8 @@ struct RestartingStdioTransport::State {
             auto alias_id = alias.dump();
             message = with_id(message, alias);
             renamed.insert_or_assign(id, alias_id);
-            incoming.insert_or_assign(std::move(alias_id), Incoming{generation, id});
+            incoming.insert_or_assign(std::move(alias_id),
+                                      Incoming{.generation = generation, .original = id});
             return;
         }
         if (const auto found = outstanding.find(id); found != outstanding.end()) {

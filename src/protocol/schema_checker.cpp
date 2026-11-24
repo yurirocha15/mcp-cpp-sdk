@@ -23,7 +23,7 @@ bool is_ascii_digit(char c) { return c >= '0' && c <= '9'; }
 /// 2019-09, `^[A-Za-z_][-A-Za-z0-9._]*$` in 2020-12.
 bool is_anchor_name(std::string_view name, SchemaDialect dialect) {
     const bool modern = dialect >= D::eDraft202012;
-    if (name.empty() || !(is_ascii_letter(name.front()) || (modern && name.front() == '_'))) {
+    if (name.empty() || (!is_ascii_letter(name.front()) && (!modern || name.front() != '_'))) {
         return false;
     }
     return std::all_of(name.begin() + 1, name.end(), [modern](char c) {
@@ -68,9 +68,10 @@ class Checker {
         }
         if (dialect_ == D::eDraft4) {
             // The draft-04 metaschema's `dependencies`: a boolean exclusive bound needs its bound.
-            for (const auto& [exclusive, bound] :
-                 {std::pair<const char*, const char*>{"exclusiveMaximum", "maximum"},
-                  std::pair<const char*, const char*>{"exclusiveMinimum", "minimum"}}) {
+            for (const auto& [exclusive, bound] : {
+                     std::pair<const char*, const char*>{"exclusiveMaximum", "maximum"},
+                     std::pair<const char*, const char*>{"exclusiveMinimum", "minimum"},
+                 }) {
                 if (value.contains(exclusive) && !value.contains(bound)) {
                     return fail(std::string(exclusive) + " requires " + bound);
                 }
@@ -434,7 +435,7 @@ class Checker {
             pointer += '/';
             pointer += escape_pointer_token(token);
         }
-        problem_ = SchemaProblem{std::move(pointer), std::move(message)};
+        problem_ = SchemaProblem{.path = std::move(pointer), .message = std::move(message)};
         return false;
     }
 

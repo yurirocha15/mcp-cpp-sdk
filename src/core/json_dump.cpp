@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string_view>
+#include <utility>
 
 namespace encoding = mcp::detail::constants::encoding;
 namespace unicode_limits = mcp::detail::constants::unicode;
@@ -202,7 +203,7 @@ class Writer {
         at = plain_end;
         constexpr std::size_t block = mcp::detail::constants::json_text::g_BLOCK_BYTES;
         while (at < end) {
-            if (static_cast<std::size_t>(end - at) >= block) {
+            if (std::cmp_greater_equal(end - at, block)) {
                 std::uint64_t word = 0;
                 std::memcpy(&word, at, sizeof word);
                 if (!json_text::needs_attention(word)) {

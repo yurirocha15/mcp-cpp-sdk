@@ -157,7 +157,11 @@ void from_json(const nlohmann::json& json_obj, EmbeddedResource& res) {
 
 void to_json(nlohmann::json& json_obj, const ToolUseContent& content) {
     json_obj = nlohmann::json{
-        {"type", content.type}, {"id", content.id}, {"name", content.name}, {"input", content.input}};
+        {"type", content.type},
+        {"id", content.id},
+        {"name", content.name},
+        {"input", content.input},
+    };
     if (content.meta) {
         json_obj["_meta"] = *content.meta;
     }
@@ -177,7 +181,10 @@ void from_json(const nlohmann::json& json_obj, ToolUseContent& content) {
 
 void to_json(nlohmann::json& json_obj, const ToolResultContent& content) {
     json_obj = nlohmann::json{
-        {"type", content.type}, {"toolUseId", content.toolUseId}, {"content", content.content}};
+        {"type", content.type},
+        {"toolUseId", content.toolUseId},
+        {"content", content.content},
+    };
     if (content.isError) {
         json_obj["isError"] = *content.isError;
     }

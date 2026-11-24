@@ -19,7 +19,7 @@
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/asio/write.hpp>
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #include <boost/asio/windows/stream_handle.hpp>
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -58,7 +58,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
 // A shared library cannot refer to environ directly on macOS.
 #include <crt_externs.h>
 #define MCP_ENVIRON (*_NSGetEnviron())
@@ -70,7 +70,7 @@ extern char** environ;
 namespace mcp {
 namespace {
 
-#if defined(_WIN32)
+#ifdef _WIN32
 using PipeStream = boost::asio::windows::stream_handle;
 #else
 using PipeStream = boost::asio::posix::stream_descriptor;
@@ -79,7 +79,7 @@ using PipeStream = boost::asio::posix::stream_descriptor;
 /// Whether a read that failed with @p error found the end of the process's output. A Windows pipe
 /// reports the end as ERROR_BROKEN_PIPE ("The pipe has been ended"), not as the end of file.
 bool is_end_of_output(const boost::system::error_code& error) {
-#if defined(_WIN32)
+#ifdef _WIN32
     if (error == boost::asio::error::broken_pipe) {
         return true;
     }
@@ -101,7 +101,7 @@ struct ProcessState {
     /// The process leads its own process group (POSIX) or runs in a job object (Windows) that the
     /// shutdown signals as a whole.
     bool own_tree = false;
-#if defined(_WIN32)
+#ifdef _WIN32
     HANDLE process = nullptr;
     HANDLE job = nullptr;
 #else
@@ -111,7 +111,7 @@ struct ProcessState {
 
 /// The pipe ends a launch leaves with the parent; a stderr end is unused (empty) unless captured.
 struct Launched {
-#if defined(_WIN32)
+#ifdef _WIN32
     HANDLE stdin_write = nullptr;
     HANDLE stdout_read = nullptr;
     HANDLE stderr_read = nullptr;
@@ -122,7 +122,7 @@ struct Launched {
 #endif
 };
 
-#if !defined(_WIN32)
+#ifndef _WIN32
 
 class UniqueFd {
    public:
@@ -262,12 +262,14 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
     argument_strings.push_back(options.command);
     argument_strings.insert(argument_strings.end(), options.arguments.begin(), options.arguments.end());
     std::vector<char*> argv;
+    argv.reserve(argument_strings.size());
     for (auto& argument : argument_strings) {
         argv.push_back(argument.data());
     }
     argv.push_back(nullptr);
     auto environment = environment_strings(options);
     std::vector<char*> envp;
+    envp.reserve(environment.size());
     for (auto& variable : environment) {
         envp.push_back(variable.data());
     }
@@ -370,7 +372,7 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
     state.pid = pid;
     state.id = static_cast<std::uint64_t>(pid);
     state.own_tree = own_tree;
-#if defined(__APPLE__)
+#ifdef __APPLE__
     ::fcntl(stdin_write.get(), F_SETNOSIGPIPE, 1);
 #endif
     Launched launched;
@@ -388,7 +390,7 @@ void wait_for_process(ProcessState& state) {
     do {
         waited = ::waitid(P_PID, static_cast<id_t>(state.pid), &info, WEXITED | WNOWAIT);
     } while (waited != 0 && errno == EINTR);
-    std::lock_guard lock(state.mutex);
+    std::scoped_lock lock(state.mutex);
     if (waited != 0) {
         // The system reaped the child on its own (SIGCHLD is ignored, or another waiter took it):
         // the status is not known and the process id may already belong to another process, so
@@ -785,12 +787,12 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
     void start() {
         const auto launched = launch_process(options, *proc);
         {
-            std::lock_guard lock(proc->mutex);
+            std::scoped_lock lock(proc->mutex);
             proc->started = true;
         }
         stdin_pipe.assign(launched.stdin_write);
         stdout_pipe.assign(launched.stdout_read);
-#if defined(_WIN32)
+#ifdef _WIN32
         const bool has_stderr = launched.stderr_read != nullptr;
 #else
         const bool has_stderr = launched.stderr_read >= 0;
@@ -818,7 +820,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
         ProcessExit exit;
         boost::asio::any_io_executor work;
         {
-            std::lock_guard lock(proc->mutex);
+            std::scoped_lock lock(proc->mutex);
             exit = proc->exit;
             work = std::move(exit_work);
             exit_work = boost::asio::any_io_executor();
@@ -867,7 +869,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
         }
         bool running = false;
         {
-            std::lock_guard lock(proc->mutex);
+            std::scoped_lock lock(proc->mutex);
             running = proc->started && !proc->exited;
             // A process whose output has already ended is on its way out by itself.
             proc->close_requested = proc->started && !output_ended.load();
@@ -884,7 +886,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
             boost::asio::post(strand, [self = shared_from_this()] { self->close_now(); });
         }
         if (running) {
-            std::lock_guard lock(thread_mutex);
+            std::scoped_lock lock(thread_mutex);
             if (!escalator.joinable()) {
                 escalator =
                     std::thread(escalate, proc, options.stdin_close_wait, options.terminate_wait);
@@ -916,7 +918,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
         }
         std::thread to_join;
         {
-            std::lock_guard lock(thread_mutex);
+            std::scoped_lock lock(thread_mutex);
             to_join = std::move(escalator);
         }
         if (to_join.joinable()) {
@@ -926,7 +928,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
             reaper.join();
         }
         {
-            std::lock_guard lock(proc->mutex);
+            std::scoped_lock lock(proc->mutex);
             exit_work = boost::asio::any_io_executor();
         }
         release_process(*proc);
@@ -971,8 +973,8 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
                 co_return line;
             }
             if (self->pending.size() > self->options.max_message_bytes &&
-                !(self->pending.size() - 1 == self->options.max_message_bytes &&
-                  self->pending.back() == '\r')) {
+                (self->pending.size() - 1 != self->options.max_message_bytes ||
+                 self->pending.back() != '\r')) {
                 throw too_long();
             }
             if (self->read_error) {
@@ -1101,7 +1103,7 @@ struct StdioClientTransport::Impl : std::enable_shared_from_this<Impl> {
             co_await timer->async_wait(
                 boost::asio::redirect_error(boost::asio::use_awaitable, ignored));
         }
-        std::lock_guard lock(self->proc->mutex);
+        std::scoped_lock lock(self->proc->mutex);
         co_return self->proc->exit;
     }
 
@@ -1165,7 +1167,7 @@ Task<ProcessExit> StdioClientTransport::shutdown() {
 }
 
 std::optional<ProcessExit> StdioClientTransport::exit_status() const {
-    std::lock_guard lock(impl_->proc->mutex);
+    std::scoped_lock lock(impl_->proc->mutex);
     if (!impl_->proc->exited) {
         return std::nullopt;
     }

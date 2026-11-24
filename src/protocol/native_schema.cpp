@@ -28,7 +28,7 @@
 // The evaluation recurses through a few functions for every subschema it enters. Message building
 // stays out of them, in functions that are not inlined, so that their frames stay small in every
 // build and the deepest evaluation fits a small thread stack.
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #define MCP_SCHEMA_NOINLINE __declspec(noinline)
 #else
 #define MCP_SCHEMA_NOINLINE __attribute__((noinline))
@@ -130,28 +130,30 @@ bool has_keyword(std::string_view keyword, SchemaDialect dialect) {
         SchemaDialect last;
     };
     using D = SchemaDialect;
-    static constexpr std::array<Span, 20> s_spans = {{
-        {"$anchor", D::eDraft201909, D::eDraft202012},
-        {"$defs", D::eDraft201909, D::eDraft202012},
-        {"$dynamicAnchor", D::eDraft202012, D::eDraft202012},
-        {"$dynamicRef", D::eDraft202012, D::eDraft202012},
-        {"$recursiveAnchor", D::eDraft201909, D::eDraft201909},
-        {"$recursiveRef", D::eDraft201909, D::eDraft201909},
-        {"additionalItems", D::eDraft4, D::eDraft201909},
-        {"const", D::eDraft6, D::eDraft202012},
-        {"contains", D::eDraft6, D::eDraft202012},
-        {"contentEncoding", D::eDraft4, D::eDraft7},
-        {"contentMediaType", D::eDraft4, D::eDraft7},
-        {"dependencies", D::eDraft4, D::eDraft7},
-        {"dependentRequired", D::eDraft201909, D::eDraft202012},
-        {"dependentSchemas", D::eDraft201909, D::eDraft202012},
-        {"if", D::eDraft7, D::eDraft202012},
-        {"maxContains", D::eDraft201909, D::eDraft202012},
-        {"minContains", D::eDraft201909, D::eDraft202012},
-        {"prefixItems", D::eDraft202012, D::eDraft202012},
-        {"propertyNames", D::eDraft6, D::eDraft202012},
-        {"unevaluatedItems", D::eDraft201909, D::eDraft202012},
-    }};
+    static constexpr std::array<Span, 20> s_spans = {
+        {
+            {.keyword = "$anchor", .first = D::eDraft201909, .last = D::eDraft202012},
+            {.keyword = "$defs", .first = D::eDraft201909, .last = D::eDraft202012},
+            {.keyword = "$dynamicAnchor", .first = D::eDraft202012, .last = D::eDraft202012},
+            {.keyword = "$dynamicRef", .first = D::eDraft202012, .last = D::eDraft202012},
+            {.keyword = "$recursiveAnchor", .first = D::eDraft201909, .last = D::eDraft201909},
+            {.keyword = "$recursiveRef", .first = D::eDraft201909, .last = D::eDraft201909},
+            {.keyword = "additionalItems", .first = D::eDraft4, .last = D::eDraft201909},
+            {.keyword = "const", .first = D::eDraft6, .last = D::eDraft202012},
+            {.keyword = "contains", .first = D::eDraft6, .last = D::eDraft202012},
+            {.keyword = "contentEncoding", .first = D::eDraft4, .last = D::eDraft7},
+            {.keyword = "contentMediaType", .first = D::eDraft4, .last = D::eDraft7},
+            {.keyword = "dependencies", .first = D::eDraft4, .last = D::eDraft7},
+            {.keyword = "dependentRequired", .first = D::eDraft201909, .last = D::eDraft202012},
+            {.keyword = "dependentSchemas", .first = D::eDraft201909, .last = D::eDraft202012},
+            {.keyword = "if", .first = D::eDraft7, .last = D::eDraft202012},
+            {.keyword = "maxContains", .first = D::eDraft201909, .last = D::eDraft202012},
+            {.keyword = "minContains", .first = D::eDraft201909, .last = D::eDraft202012},
+            {.keyword = "prefixItems", .first = D::eDraft202012, .last = D::eDraft202012},
+            {.keyword = "propertyNames", .first = D::eDraft6, .last = D::eDraft202012},
+            {.keyword = "unevaluatedItems", .first = D::eDraft201909, .last = D::eDraft202012},
+        },
+    };
     if (keyword == "then" || keyword == "else") {
         return dialect >= D::eDraft7;
     }
@@ -231,7 +233,7 @@ std::optional<std::vector<std::string>> string_list(const nlohmann::json& value)
 /// @p uri as the schema author wrote it when it is relative to the document without `$id`.
 std::string_view without_default_base(std::string_view uri) {
     const auto base = mcp::detail::constants::schema::g_DEFAULT_BASE_URI;
-    if (uri.substr(0, base.size()) == base) {
+    if (uri.starts_with(base)) {
         uri.remove_prefix(base.size());
         if (!uri.empty() && uri.front() == '/') {
             uri.remove_prefix(1);
@@ -283,7 +285,7 @@ class Compiler {
     enum class ReferenceKind : unsigned char {
         eRef,
         eDynamic,
-        eRecursive
+        eRecursive,
     };
 
     struct PendingReference {
@@ -314,13 +316,13 @@ class Compiler {
 
     /// A new resource at @p uri whose root is @p value; null when another has that URI.
     Resource* add_resource(std::string uri, const nlohmann::json& value, SchemaDialect dialect) {
-        if (roots_.count(uri) != 0) {
+        if (roots_.contains(uri)) {
             return nullptr;
         }
         auto& resource = document_.resources.emplace_back();
         resource.uri = uri;
         resource.dialect = dialect;
-        roots_.emplace(std::move(uri), ResourceRoot{&value, &resource});
+        roots_.emplace(std::move(uri), ResourceRoot{.value = &value, .resource = &resource});
         return &resource;
     }
 
@@ -400,7 +402,7 @@ class Compiler {
 
     void record(const std::string& key, Node& node, Resource& resource, const std::string& pointer) {
         locations_.emplace(key, &node);
-        places_.emplace(&node, Place{&resource, pointer});
+        places_.emplace(&node, Place{.resource = &resource, .pointer = pointer});
     }
 
     /// Compiles @p schema, at @p pointer in @p outer, into @p node; false when it is not supported.
@@ -552,7 +554,9 @@ class Compiler {
                               : keyword == "$dynamicRef" ? ReferenceKind::eDynamic
                                                          : ReferenceKind::eRecursive;
             pending_.push_back(
-                {&node, resolve_uri(resource.uri, value.get_ref<const std::string&>()), kind});
+                {.node = &node,
+                 .target = resolve_uri(resource.uri, value.get_ref<const std::string&>()),
+                 .kind = kind});
             return true;
         }
         if (keyword == "$anchor" || keyword == "$dynamicAnchor") {
@@ -1064,7 +1068,7 @@ class Evaluation {
    public:
     Evaluation(const Document& document, std::size_t max_violations, std::size_t& pattern_steps,
                std::size_t& work, ValidationResult& result)
-        : root_{&result.violations, max_violations},
+        : root_{.violations = &result.violations, .limit = max_violations},
           sink_(&root_),
           pattern_steps_(pattern_steps),
           work_(work),
@@ -1102,11 +1106,10 @@ class Evaluation {
             if (!check_array(node, value)) {
                 return false;
             }
-        } else if (value.is_object()) {
-            if (!check_object(node, value)) {
-                return false;
-            }
+        } else if ((value.is_object()) && (!check_object(node, value))) {
+            return false;
         }
+
         return !node.has_applicators || check_applicators(node, value);
     }
 
@@ -1116,7 +1119,7 @@ class Evaluation {
     MCP_SCHEMA_NOINLINE bool check_content(const Node& node, const std::string& text) {
         const bool base64 = node.content_encoding && *node.content_encoding == "base64";
         if (node.content_encoding) {
-            charge(work_, 1 + text.size() / g_CONTENT_BYTES_PER_UNIT);
+            charge(work_, 1 + (text.size() / g_CONTENT_BYTES_PER_UNIT));
             if (base64 && !lenient_base64_decode(text) && !report("Content is not a base64 string")) {
                 return false;
             }
@@ -1126,7 +1129,7 @@ class Evaluation {
             }
         }
         if (node.content_media_type) {
-            charge(work_, 1 + text.size() / g_CONTENT_BYTES_PER_UNIT);
+            charge(work_, 1 + (text.size() / g_CONTENT_BYTES_PER_UNIT));
             std::optional<std::string> decoded;
             if (base64) {
                 decoded = lenient_base64_decode(text);
@@ -1157,13 +1160,13 @@ class Evaluation {
         if (node.reject_all) {
             return report("No value is allowed here");
         }
-        if (!node.types.empty() &&
-            std::none_of(node.types.begin(), node.types.end(),
-                         [&](const std::string& type) { return has_type(value, type); })) {
-            if (!report_type(node.types, value)) {
-                return false;
-            }
+        if ((!node.types.empty() &&
+             std::none_of(node.types.begin(), node.types.end(),
+                          [&](const std::string& type) { return has_type(value, type); })) &&
+            (!report_type(node.types, value))) {
+            return false;
         }
+
         if (node.enum_values && std::none_of(node.enum_values->begin(), node.enum_values->end(),
                                              [&](const nlohmann::json& allowed) {
                                                  return json_equal(allowed, value, work_);
@@ -1349,9 +1352,9 @@ class Evaluation {
             std::size_t index = 0;
             for (const auto& [name, member] : value.get_ref<const nlohmann::json::object_t&>()) {
                 if (!local.has_member(index)) {
-                    charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
+                    charge(work_, 1 + (name.size() / g_NAME_BYTES_PER_UNIT));
                     if (node.unevaluated_properties->reject_all) {
-                        const LocationScope location(*this, Location{&name, 0});
+                        const LocationScope location(*this, Location{.name = &name, .index = 0});
                         more = report_concat("Unevaluated property '", name, "' is not allowed");
                     } else {
                         more = check_member(*node.unevaluated_properties, name, member);
@@ -1369,7 +1372,7 @@ class Evaluation {
                 if (!local.has_item(index)) {
                     charge(work_, 1);
                     if (node.unevaluated_items->reject_all) {
-                        const LocationScope location(*this, Location{{}, index});
+                        const LocationScope location(*this, Location{.name = {}, .index = index});
                         more = report_size("Unevaluated item ", index, " is not allowed");
                     } else {
                         more = check_item(*node.unevaluated_items, value[index], index);
@@ -1412,7 +1415,7 @@ class Evaluation {
     bool passes(const Node& node, const nlohmann::json& value,
                 std::vector<SchemaViolation>* buffer = nullptr, std::size_t limit = 0,
                 Annotations* annotations = nullptr) {
-        Sink sink{buffer, limit};
+        Sink sink{.violations = buffer, .limit = limit};
         const SinkScope scope(*this, sink);
         const AnnotationScope annotation_scope(*this, annotations);
         (void)check(node, value);
@@ -1487,7 +1490,7 @@ class Evaluation {
             return false;
         }
         if (node.min_length || node.max_length) {
-            charge(work_, 1 + text.size() / g_STRING_BYTES_PER_UNIT);
+            charge(work_, 1 + (text.size() / g_STRING_BYTES_PER_UNIT));
             const auto length = code_point_count(text);
             if (node.min_length && length < *node.min_length &&
                 !report_size("Number of characters must be at least ", *node.min_length)) {
@@ -1507,7 +1510,7 @@ class Evaluation {
 
     /// Checks @p item, element @p index of the array being checked, against @p node.
     bool check_item(const Node& node, const nlohmann::json& item, std::size_t index) {
-        const LocationScope scope(*this, Location{{}, index});
+        const LocationScope scope(*this, Location{.name = {}, .index = index});
         if (annotations_ == nullptr) {
             return check(node, item);
         }
@@ -1524,7 +1527,7 @@ class Evaluation {
                 return false;
             }
         }
-        if (node.items) {
+        if (node.items != nullptr) {
             for (std::size_t index = node.prefix_items.size(); index < array.size(); ++index) {
                 if (!check_item(*node.items, array[index], index)) {
                     return false;
@@ -1535,7 +1538,7 @@ class Evaluation {
             annotations_->items =
                 std::max(annotations_->items, node.items != nullptr ? array.size() : prefix);
         }
-        if (node.contains && !check_contains(node, array)) {
+        if ((node.contains != nullptr) && !check_contains(node, array)) {
             return false;
         }
         return (!node.unique_items && !node.min_items && !node.max_items) ||
@@ -1584,7 +1587,7 @@ class Evaluation {
 
     /// Checks @p member, named @p name, against @p node, at its own location.
     bool check_member(const Node& node, const std::string& name, const nlohmann::json& member) {
-        const LocationScope scope(*this, Location{&name, 0});
+        const LocationScope scope(*this, Location{.name = &name, .index = 0});
         if (annotations_ == nullptr) {
             return check(node, member);
         }
@@ -1595,7 +1598,7 @@ class Evaluation {
     bool check_members(const Node& node, const nlohmann::json& object) {
         std::size_t position = 0;
         for (const auto& [name, member] : object.get_ref<const nlohmann::json::object_t&>()) {
-            charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
+            charge(work_, 1 + (name.size() / g_NAME_BYTES_PER_UNIT));
             const auto here = position++;
             bool evaluated = false;
             if (const Node* property = find_property(node, name)) {
@@ -1611,7 +1614,7 @@ class Evaluation {
             if ((evaluated || node.additional_properties != nullptr) && annotations_ != nullptr) {
                 annotations_->member(here, object.size());
             }
-            if (evaluated || !node.additional_properties) {
+            if (evaluated || (node.additional_properties == nullptr)) {
                 continue;
             }
             if (node.additional_properties->reject_all) {
@@ -1651,7 +1654,7 @@ class Evaluation {
     }
 
     MCP_SCHEMA_NOINLINE bool report_additional(const std::string& name) {
-        const LocationScope scope(*this, Location{&name, 0});
+        const LocationScope scope(*this, Location{.name = &name, .index = 0});
         return report_concat("Additional property '", name, "' is not allowed");
     }
 
@@ -1660,13 +1663,13 @@ class Evaluation {
             !check_required(node, object)) {
             return false;
         }
-        if (!node.property_names.empty() || !node.pattern_regexes.empty() ||
-            node.additional_properties) {
-            if (!check_members(node, object)) {
-                return false;
-            }
+        if ((!node.property_names.empty() || !node.pattern_regexes.empty() ||
+             node.additional_properties) &&
+            (!check_members(node, object))) {
+            return false;
         }
-        if (node.property_names_schema && !check_property_names(node, object)) {
+
+        if ((node.property_names_schema != nullptr) && !check_property_names(node, object)) {
             return false;
         }
         for (std::size_t i = 0; i < node.dependent_schema_names.size(); ++i) {
@@ -1704,7 +1707,7 @@ class Evaluation {
 
     MCP_SCHEMA_NOINLINE bool check_property_names(const Node& node, const nlohmann::json& object) {
         for (const auto& [name, member] : object.get_ref<const nlohmann::json::object_t&>()) {
-            charge(work_, 1 + name.size() / g_NAME_BYTES_PER_UNIT);
+            charge(work_, 1 + (name.size() / g_NAME_BYTES_PER_UNIT));
             const AnnotationScope annotations(*this, nullptr);
             if (!check(*node.property_names_schema, nlohmann::json(name))) {
                 return false;
@@ -1756,10 +1759,7 @@ class Evaluation {
         for (std::size_t i = 1; i < node.any_of.size() && (!matched || annotations_ != nullptr); ++i) {
             matched = passes_annotated(*node.any_of[i], value) || matched;
         }
-        if (!matched && !report_with("Value does not match any of the anyOf schemas", first)) {
-            return false;
-        }
-        return true;
+        return !(!matched && !report_with("Value does not match any of the anyOf schemas", first));
     }
 
     /// `oneOf`, kept out of check_applicators() like check_any_of().
@@ -1797,11 +1797,11 @@ class Evaluation {
         if (!node.one_of.empty() && !check_one_of(node, value)) {
             return false;
         }
-        if (node.not_schema && passes(*node.not_schema, value) &&
+        if ((node.not_schema != nullptr) && passes(*node.not_schema, value) &&
             !report("Value must not be valid against the not schema")) {
             return false;
         }
-        if (node.if_schema) {
+        if (node.if_schema != nullptr) {
             const Node* branch =
                 passes_annotated(*node.if_schema, value) ? node.then_schema : node.else_schema;
             if (branch != nullptr && !check(*branch, value)) {
@@ -1883,8 +1883,8 @@ class Evaluation {
             return false;
         }
         if (sink_->violations->size() < sink_->limit) {
-            sink_->violations->push_back(
-                {sanitize_for_diagnostics(path()), sanitize_for_diagnostics(message)});
+            sink_->violations->push_back({.instance_path = sanitize_for_diagnostics(path()),
+                                          .message = sanitize_for_diagnostics(message)});
         }
         return sink_->violations->size() < sink_->limit;
     }
@@ -1941,7 +1941,8 @@ void NativeSchema::validate(const nlohmann::json& instance, std::size_t max_viol
     if (const auto reason = evaluate(instance, max_violations, pattern_steps, work, result)) {
         result.valid = false;
         result.violations.clear();
-        result.violations.push_back({"", "validation stopped: " + std::string(*reason)});
+        result.violations.push_back(
+            {.instance_path = "", .message = "validation stopped: " + std::string(*reason)});
     }
 }
 

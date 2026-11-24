@@ -52,7 +52,7 @@ struct GrantTarget {
 /// request is a complete grant, so the extra requests cost round trips and nothing else.
 class GrantFlow : public std::enable_shared_from_this<GrantFlow> {
    public:
-    GrantFlow(const net::any_io_executor& executor, std::shared_ptr<TokenStore> token_store,
+    GrantFlow(net::any_io_executor executor, std::shared_ptr<TokenStore> token_store,
               std::string server_url, MetadataFetchPolicy policy, HostResolver host_resolver,
               std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy,
               std::optional<std::string> scope);

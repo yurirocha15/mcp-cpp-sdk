@@ -83,7 +83,7 @@ class LoopGate final : public boost::asio::execution_context::service {
     void shutdown() override {
         std::vector<std::weak_ptr<Call>> calls;
         {
-            const std::lock_guard lock(state_->mutex);
+            const std::scoped_lock lock(state_->mutex);
             state_->open = false;
             calls.swap(state_->calls);
         }
@@ -120,7 +120,7 @@ class HandBackCore final : public LoopGate::Call {
           ended_(ended),
           awaited_(elsewhere) {
         if (awaited_) {
-            const std::lock_guard lock(gate_->mutex);
+            const std::scoped_lock lock(gate_->mutex);
             ++gate_->awaited;
         }
     }
@@ -182,7 +182,7 @@ class HandBackCore final : public LoopGate::Call {
         }
         awaited_ = false;
         {
-            const std::lock_guard lock(gate_->mutex);
+            const std::scoped_lock lock(gate_->mutex);
             --gate_->awaited;
         }
         gate_->settled.notify_all();
@@ -224,7 +224,7 @@ class HandBack {
         std::exchange(core_, nullptr)->resume(std::move(error));
     }
 
-    void operator()(std::exception_ptr error, typename Core::Value value)
+    void operator()(std::exception_ptr error, Core::Value value)
         requires(!std::is_void_v<T>)
     {
         std::exchange(core_, nullptr)->resume(std::move(error), std::move(value));
@@ -252,7 +252,7 @@ inline bool apart(const boost::asio::any_io_executor& first,
 /// destruction then waits for that work.
 inline bool awaits_elsewhere(const boost::asio::any_io_executor& executor) {
     const auto gate = gate_of(executor);
-    const std::lock_guard lock(gate->mutex);
+    const std::scoped_lock lock(gate->mutex);
     return gate->awaited != 0;
 }
 
@@ -317,7 +317,7 @@ struct LoopInitiation {
             gate_of(waiter), std::forward<Handler>(handler), waiter, "The server has stopped",
             apart(loop, waiter));
         Back back(core);
-        const std::lock_guard lock(gate->mutex);
+        const std::scoped_lock lock(gate->mutex);
         if (!gate->open) {
             return;
         }
@@ -382,7 +382,7 @@ struct LoopRequestSender {
             std::optional<std::string> key;
         };
         auto request = std::make_shared<const Request>(
-            Request{std::move(method), std::move(params), std::move(key)});
+            Request{.method = std::move(method), .params = std::move(params), .key = std::move(key)});
         return run_on_loop<nlohmann::json>(gate, loop, [inner = inner, request] {
             return (*inner)(request->method, request->params, request->key);
         });
@@ -410,12 +410,18 @@ struct ContextRouting {
         const auto* routed_message = context.message_sender_.target<LoopMessageSender>();
         if (context.message_sender_ && (routed_message == nullptr || routed_message->gate != gate)) {
             context.message_sender_ = LoopMessageSender{
-                gate, loop, std::make_shared<const MessageSender>(std::move(context.message_sender_))};
+                .gate = gate,
+                .loop = loop,
+                .inner = std::make_shared<const MessageSender>(std::move(context.message_sender_)),
+            };
         }
         const auto* routed_request = context.sender_.target<LoopRequestSender>();
         if (context.sender_ && (routed_request == nullptr || routed_request->gate != gate)) {
             context.sender_ = LoopRequestSender{
-                gate, loop, std::make_shared<const RequestSender>(std::move(context.sender_))};
+                .gate = gate,
+                .loop = loop,
+                .inner = std::make_shared<const RequestSender>(std::move(context.sender_)),
+            };
         }
     }
 };

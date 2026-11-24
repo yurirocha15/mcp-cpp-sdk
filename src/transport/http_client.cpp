@@ -253,7 +253,8 @@ struct HttpClientTransport::Impl {
         std::string session_id;
         std::string last_event_id;
         std::string protocol_version{
-            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+        };
         std::optional<std::string> initialize_request_key;
         /// The initialize request that started the session, repeated to start a new one when the
         /// server has forgotten it. Touched on the strand only.
@@ -304,7 +305,8 @@ struct HttpClientTransport::Impl {
                 detail::close_connection(*idle_connections.front().stream);
                 idle_connections.pop_front();
             }
-            idle_connections.push_back(IdleConnection{std::move(stream), std::move(plan), now});
+            idle_connections.push_back(
+                IdleConnection{.stream = std::move(stream), .plan = std::move(plan), .since = now});
         }
 
         /// The most recently used kept connection made the way @p plan says that the server has
@@ -456,13 +458,13 @@ struct HttpClientTransport::Impl {
     }
 
     [[nodiscard]] std::string connection_server_name() const {
-        std::lock_guard lock(settings_mutex);
+        std::scoped_lock lock(settings_mutex);
         return server_name;
     }
 
     /// How a connection opened now is made.
     [[nodiscard]] std::shared_ptr<const detail::ConnectPlan> current_plan() const {
-        std::lock_guard lock(settings_mutex);
+        std::scoped_lock lock(settings_mutex);
         return plan;
     }
 
@@ -526,7 +528,7 @@ struct HttpClientTransport::Impl {
     }
 
     static bool starts_with(std::string_view value, std::string_view prefix) {
-        return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
+        return value.size() >= prefix.size() && value.starts_with(prefix);
     }
 
     void enqueue_message(std::string message_text) const {
@@ -537,7 +539,7 @@ struct HttpClientTransport::Impl {
     void capture_session_id(const StringResponse& response) {
         auto header_iter = response.find("MCP-Session-Id");
         if (header_iter != response.end()) {
-            std::lock_guard lock(state->metadata_mutex);
+            std::scoped_lock lock(state->metadata_mutex);
             state->session_id = std::string(header_iter->value());
         }
     }
@@ -605,8 +607,10 @@ struct HttpClientTransport::Impl {
 
     /// What of an initialize result the Client relies on: the protocol version and capabilities.
     static nlohmann::json terms_of(const nlohmann::json& result) {
-        return nlohmann::json{{"protocolVersion", result.value("protocolVersion", nlohmann::json())},
-                              {"capabilities", result.value("capabilities", nlohmann::json())}};
+        return nlohmann::json{
+            {"protocolVersion", result.value("protocolVersion", nlohmann::json())},
+            {"capabilities", result.value("capabilities", nlohmann::json())},
+        };
     }
 
     /// The terms of the initialize result @p response carries for the initialize @p sent, as
@@ -791,7 +795,7 @@ struct HttpClientTransport::Impl {
     std::function<std::string()> pin_bearer_token_provider() const {
         std::function<std::string()> provider;
         {
-            std::lock_guard lock(provider_mutex);
+            std::scoped_lock lock(provider_mutex);
             provider = bearer_token_provider;
         }
         // A bearer token in clear text can be read and replayed by anyone on the path. A loopback
@@ -893,7 +897,7 @@ struct HttpClientTransport::Impl {
                                    std::function<std::string()> bearer_token_provider) {
         auto& state = *impl->state;
         {
-            std::lock_guard lock(state.metadata_mutex);
+            std::scoped_lock lock(state.metadata_mutex);
             state.session_id.clear();
             state.last_event_id.clear();
         }
@@ -1131,7 +1135,7 @@ struct HttpClientTransport::Impl {
         if (decoder.last_id().empty()) {
             return;
         }
-        std::lock_guard lock(state->metadata_mutex);
+        std::scoped_lock lock(state->metadata_mutex);
         state->last_event_id = decoder.last_id();
     }
 
@@ -1303,7 +1307,7 @@ struct HttpClientTransport::Impl {
     void warn(const std::string& text) const {
         std::function<void(const std::string&)> handler;
         {
-            std::lock_guard lock(provider_mutex);
+            std::scoped_lock lock(provider_mutex);
             handler = warning_handler;
         }
         if (handler) {
@@ -1405,7 +1409,7 @@ struct HttpClientTransport::Impl {
             const auto number = value.get<double>();
             constexpr auto limit =
                 static_cast<double>(mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER);
-            if (!(number >= -limit && number <= limit) ||
+            if (number < -limit || number > limit ||
                 number != static_cast<double>(static_cast<std::int64_t>(number))) {
                 return std::nullopt;
             }
@@ -1786,10 +1790,12 @@ struct HttpClientTransport::Impl {
             if (*cursor) {
                 params["cursor"] = **cursor;
             }
-            refresh->message = nlohmann::json{{"jsonrpc", "2.0"},
-                                              {"id", refresh->id},
-                                              {"method", methods::g_TOOLS_LIST},
-                                              {"params", params}};
+            refresh->message = nlohmann::json{
+                {"jsonrpc", "2.0"},
+                {"id", refresh->id},
+                {"method", methods::g_TOOLS_LIST},
+                {"params", params},
+            };
             refresh->body = mcp::detail::dump_json(refresh->message);
             co_await run_exchange(impl, refresh, false);
             if (!refresh->final_message) {
@@ -1860,7 +1866,10 @@ struct HttpClientTransport::Impl {
 
     static std::string error_response(const ModernCall& call, int code, const std::string& message) {
         return mcp::detail::dump_json(nlohmann::json{
-            {"jsonrpc", "2.0"}, {"id", call.id}, {"error", {{"code", code}, {"message", message}}}});
+            {"jsonrpc", "2.0"},
+            {"id", call.id},
+            {"error", {{"code", code}, {"message", message}}},
+        });
     }
 
     /// Reads an event stream to its end after the request that opened it has been sent. Whatever
@@ -2007,12 +2016,12 @@ HttpClientTransport::~HttpClientTransport() {
 }
 
 std::string HttpClientTransport::session_id() const {
-    std::lock_guard lock(impl_->state->metadata_mutex);
+    std::scoped_lock lock(impl_->state->metadata_mutex);
     return impl_->state->session_id;
 }
 
 std::string HttpClientTransport::last_event_id() const {
-    std::lock_guard lock(impl_->state->metadata_mutex);
+    std::scoped_lock lock(impl_->state->metadata_mutex);
     return impl_->state->last_event_id;
 }
 
@@ -2032,12 +2041,12 @@ void HttpClientTransport::set_reinitialize_on_expired_session(bool enabled) {
 /// pinned, and the next one picks up the new value.
 
 void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
-    std::lock_guard lock(impl_->provider_mutex);
+    std::scoped_lock lock(impl_->provider_mutex);
     impl_->bearer_token_provider = std::move(provider);
 }
 
 void HttpClientTransport::set_warning_handler(std::function<void(const std::string&)> handler) {
-    std::lock_guard lock(impl_->provider_mutex);
+    std::scoped_lock lock(impl_->provider_mutex);
     impl_->warning_handler = std::move(handler);
 }
 
@@ -2049,7 +2058,7 @@ void HttpClientTransport::set_tls(std::shared_ptr<const TlsClientContext> contex
     if (!impl_->https) {
         throw std::invalid_argument("TLS settings need an https:// URL");
     }
-    std::lock_guard lock(impl_->settings_mutex);
+    std::scoped_lock lock(impl_->settings_mutex);
     impl_->tls_context = std::move(context);
     impl_->rebuild_plan();
 }
@@ -2062,14 +2071,14 @@ void HttpClientTransport::set_server_name(std::string name) {
     if (name.empty()) {
         throw std::invalid_argument("The TLS server name is empty");
     }
-    std::lock_guard lock(impl_->settings_mutex);
+    std::scoped_lock lock(impl_->settings_mutex);
     impl_->server_name = std::move(name);
     impl_->rebuild_plan();
 }
 
 void HttpClientTransport::set_proxy(ProxyOptions options) {
     detail::validate_proxy_options(options);
-    std::lock_guard lock(impl_->settings_mutex);
+    std::scoped_lock lock(impl_->settings_mutex);
     impl_->proxy = std::move(options);
     impl_->rebuild_plan();
 }
@@ -2098,7 +2107,11 @@ void HttpClientTransport::close() {
     net::post(shared_state->timer.get_executor(), [shared_state]() { shared_state->timer.cancel(); });
 
     auto close_target = std::make_shared<Impl::CloseTarget>(Impl::CloseTarget{
-        impl_->path, impl_->authority, impl_->current_plan(), impl_->pin_bearer_token_provider()});
+        .path = impl_->path,
+        .authority = impl_->authority,
+        .plan = impl_->current_plan(),
+        .bearer_token_provider = impl_->pin_bearer_token_provider(),
+    });
     net::co_spawn(
         impl_->strand,
         [shared_state, close_target = std::move(close_target)]() -> boost::asio::awaitable<void> {
@@ -2185,7 +2198,7 @@ void HttpClientTransport::close() {
                 shared_state->stream_plan.reset();
             }
             {
-                std::lock_guard lock(shared_state->metadata_mutex);
+                std::scoped_lock lock(shared_state->metadata_mutex);
                 shared_state->session_id.clear();
             }
             co_return;

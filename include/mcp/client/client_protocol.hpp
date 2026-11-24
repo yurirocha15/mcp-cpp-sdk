@@ -100,7 +100,8 @@ struct EraDecision {
 /** @brief What connect() learned about the server. */
 struct ConnectResult {
     ProtocolEra era{
-        ProtocolEra::eLegacy};  ///< The era of this session; fixed for the client's lifetime.
+        ProtocolEra::eLegacy,
+    };  ///< The era of this session; fixed for the client's lifetime.
     /// The version in use: the one initialize negotiated (legacy) or the one every request names.
     std::string protocolVersion;
     ServerCapabilities capabilities;           ///< Capabilities the server declared.

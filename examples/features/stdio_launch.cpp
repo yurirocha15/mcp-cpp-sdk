@@ -36,7 +36,7 @@ std::string server_program(int argc, char** argv) {
     if (argc > 1) {
         return argv[1];
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     const char* name = "example-server-simple.exe";
 #else
     const char* name = "example-server-simple";
@@ -95,7 +95,8 @@ int main(int argc, char** argv) {
                     {
                         StdioSessionOptions options;
                         options.process = process;
-                        options.client_info = Implementation{"stdio-launch-example", "1.0"};
+                        options.client_info =
+                            Implementation{.name = "stdio-launch-example", .version = "1.0"};
                         options.restart.max_restarts = 2;
                         options.on_connected = [](Client&,
                                                   const ConnectResult& connected) -> Task<void> {

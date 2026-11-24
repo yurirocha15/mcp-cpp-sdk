@@ -2,6 +2,8 @@
 /// @brief The request and response path of Client::Impl: sending requests and notifications, the read
 /// loop and the dispatch of what the server sends, and the pending requests.
 
+#include <algorithm>
+
 #include "client_impl.hpp"
 
 namespace mcp {
@@ -124,7 +126,7 @@ Client::Impl::ProgressRoute Client::Impl::route_progress(const std::shared_ptr<I
     }
     auto key = std::make_shared<const std::string>(token.correlation_key());
     {
-        std::lock_guard lock(state->handlers_mutex);
+        std::scoped_lock lock(state->handlers_mutex);
         if (!state->progress_routes.emplace(*key, route).second) {
             throw std::invalid_argument(
                 "The request's progress token is already used by another request in flight");
@@ -159,7 +161,7 @@ bool Client::Impl::deliver_request_progress(const std::shared_ptr<Impl>& state,
     std::shared_ptr<ProgressRouteState> route;
     {
         const auto key = token->get<ProgressToken>().correlation_key();
-        std::lock_guard lock(state->handlers_mutex);
+        std::scoped_lock lock(state->handlers_mutex);
         const auto found = state->progress_routes.find(key);
         if (found == state->progress_routes.end()) {
             return false;
@@ -176,7 +178,7 @@ bool Client::Impl::deliver_request_progress(const std::shared_ptr<Impl>& state,
         return true;
     }
     // As for any notification callback, a throw is reported and the session carries on.
-    std::lock_guard lock(route->mutex);
+    std::scoped_lock lock(route->mutex);
     if (!route->open) {
         return true;
     }
@@ -279,8 +281,11 @@ void Client::Impl::request_close(const std::shared_ptr<Impl>& state, std::string
     }
 
     boost::asio::post(state->strand, [state, message = std::move(message)]() mutable {
-        fail_pending_requests(state, Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
-                                           std::move(message), std::nullopt});
+        fail_pending_requests(state, Error{
+                                         .code = mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                         .message = std::move(message),
+                                         .data = std::nullopt,
+                                     });
         state->transport->close();
         state->incoming_requests_wake.cancel();
         for (const auto& pause : state->poll_pauses) {
@@ -312,7 +317,7 @@ Task<nlohmann::json> Client::Impl::send_request_wire(std::shared_ptr<Impl> state
     {
         auto id_key = request_correlation_key(id);
         {
-            std::lock_guard lock(state->pending_requests_mutex);
+            std::scoped_lock lock(state->pending_requests_mutex);
             auto [iter, inserted] = state->pending_requests.try_emplace(
                 id_key, std::make_unique<PendingRequest>(state->strand, timeout));
             if (!inserted) {
@@ -370,7 +375,7 @@ Task<nlohmann::json> Client::Impl::send_request_wire(std::shared_ptr<Impl> state
     bool timed_out = false;
     {
         const auto id_key = request_correlation_key(id);
-        std::lock_guard lock(state->pending_requests_mutex);
+        std::scoped_lock lock(state->pending_requests_mutex);
         auto iter = state->pending_requests.find(id_key);
         if (iter == state->pending_requests.end()) {
             throw McpError(mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
@@ -378,8 +383,11 @@ Task<nlohmann::json> Client::Impl::send_request_wire(std::shared_ptr<Impl> state
         }
         if (!iter->second->completed) {
             iter->second->cancel_write_before_start->store(true, std::memory_order_release);
-            iter->second->error = Error{mcp::constants::jsonrpc::g_REQUEST_TIMEOUT, "Request timed out",
-                                        nlohmann::json{{"id", std::to_string(id)}}};
+            iter->second->error = Error{
+                .code = mcp::constants::jsonrpc::g_REQUEST_TIMEOUT,
+                .message = "Request timed out",
+                .data = nlohmann::json{{"id", std::to_string(id)}},
+            };
             iter->second->completed = true;
             timed_out = true;
         }
@@ -433,14 +441,15 @@ void Client::Impl::cancel_request(const std::shared_ptr<Impl>& state, int64_t id
                                   const std::optional<std::string>& reason) {
     {
         const auto id_key = request_correlation_key(id);
-        std::lock_guard lock(state->pending_requests_mutex);
+        std::scoped_lock lock(state->pending_requests_mutex);
         const auto iter = state->pending_requests.find(id_key);
         if (iter == state->pending_requests.end() || iter->second->completed) {
             return;
         }
         // A write still queued is dropped, and a response that arrives later finds no request.
         iter->second->cancel_write_before_start->store(true, std::memory_order_release);
-        iter->second->error = Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED, "Request cancelled"};
+        iter->second->error =
+            Error{.code = mcp::constants::jsonrpc::g_REQUEST_CANCELLED, .message = "Request cancelled"};
         iter->second->completed = true;
         signal_pending_request(*iter->second);
     }
@@ -517,15 +526,20 @@ Task<void> Client::Impl::read_loop(std::shared_ptr<Impl> state) {
         }
     } catch (const std::exception& error) {
         state->closed.store(true, std::memory_order_release);
-        fail_pending_requests(
-            state, Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
-                         "Client read loop stopped: " + detail::sanitize_for_diagnostics(error.what()),
-                         std::nullopt});
+        fail_pending_requests(state, Error{
+                                         .code = mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                         .message = "Client read loop stopped: " +
+                                                    detail::sanitize_for_diagnostics(error.what()),
+                                         .data = std::nullopt,
+                                     });
         state->transport->close();
     } catch (...) {
         state->closed.store(true, std::memory_order_release);
-        fail_pending_requests(state, Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
-                                           "Client read loop stopped", std::nullopt});
+        fail_pending_requests(state, Error{
+                                         .code = mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                         .message = "Client read loop stopped",
+                                         .data = std::nullopt,
+                                     });
         state->transport->close();
     }
 }
@@ -602,7 +616,8 @@ void Client::Impl::report_protocol_error(const std::shared_ptr<Impl>& state, int
         return;
     }
     try {
-        state->options.on_protocol_error(Error{code, std::move(message), std::nullopt});
+        state->options.on_protocol_error(
+            Error{.code = code, .message = std::move(message), .data = std::nullopt});
     } catch (...) {
         // The hook exists to report failures; a failure of the hook itself has no listener.
     }
@@ -632,9 +647,11 @@ void Client::Impl::dispatch_response(const std::shared_ptr<Impl>& state,
     const bool has_error = detail::has_json_value(json_message, "error");
     const bool has_result = json_message.contains("result");
     if (has_error == has_result) {
-        iter->second->error =
-            Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
-                  "JSON-RPC response must contain exactly one of result or error", std::nullopt};
+        iter->second->error = Error{
+            .code = mcp::constants::jsonrpc::g_INVALID_REQUEST,
+            .message = "JSON-RPC response must contain exactly one of result or error",
+            .data = std::nullopt,
+        };
     } else if (has_error) {
         // An undecodable `error` member still identifies the request it answers. Fail that
         // request now rather than drop the response and leave the caller waiting out its
@@ -642,10 +659,12 @@ void Client::Impl::dispatch_response(const std::shared_ptr<Impl>& state,
         try {
             iter->second->error = json_message.at("error").get<Error>();
         } catch (const std::exception& decode_error) {
-            iter->second->error = Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
-                                        "Malformed JSON-RPC error object: " +
-                                            detail::sanitize_for_diagnostics(decode_error.what()),
-                                        std::nullopt};
+            iter->second->error = Error{
+                .code = mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                .message = "Malformed JSON-RPC error object: " +
+                           detail::sanitize_for_diagnostics(decode_error.what()),
+                .data = std::nullopt,
+            };
         }
     } else {
         iter->second->result = json_message.at("result");
@@ -687,7 +706,7 @@ void Client::Impl::dispatch_notification(const std::shared_ptr<Impl>& state,
 
     NotificationCallback callback;
     {
-        std::lock_guard lock(state->handlers_mutex);
+        std::scoped_lock lock(state->handlers_mutex);
         auto iter = state->notification_handlers.find(method);
         if (iter != state->notification_handlers.end()) {
             callback = iter->second;
@@ -720,7 +739,7 @@ Task<void> Client::Impl::dispatch_incoming_request(std::shared_ptr<Impl> state,
 
     RequestHandler request_handler;
     {
-        std::lock_guard lock(state->handlers_mutex);
+        std::scoped_lock lock(state->handlers_mutex);
         auto iter = state->request_handlers.find(method);
         if (iter != state->request_handlers.end()) {
             request_handler = iter->second;
@@ -783,7 +802,7 @@ std::string Client::Impl::make_error_wire(const RequestId& id, int code, std::st
 
 bool Client::Impl::deadline_moved(const std::shared_ptr<Impl>& state, int64_t id) {
     const auto id_key = request_correlation_key(id);
-    std::lock_guard lock(state->pending_requests_mutex);
+    std::scoped_lock lock(state->pending_requests_mutex);
     const auto iter = state->pending_requests.find(id_key);
     return iter != state->pending_requests.end() && !iter->second->completed &&
            std::chrono::steady_clock::now() < iter->second->deadline;
@@ -791,7 +810,7 @@ bool Client::Impl::deadline_moved(const std::shared_ptr<Impl>& state, int64_t id
 
 void Client::Impl::on_interaction(const std::shared_ptr<Impl>& state, std::string_view key,
                                   bool waiting) {
-    std::lock_guard lock(state->pending_requests_mutex);
+    std::scoped_lock lock(state->pending_requests_mutex);
     const auto iter = state->pending_requests.find(key);
     if (iter == state->pending_requests.end()) {
         return;
@@ -822,7 +841,7 @@ void Client::Impl::complete_request_write(const std::shared_ptr<Impl>& state, co
         return;
     }
 
-    std::lock_guard lock(state->pending_requests_mutex);
+    std::scoped_lock lock(state->pending_requests_mutex);
     auto iter = state->pending_requests.find(id_key);
     if (iter == state->pending_requests.end() || iter->second->completed ||
         std::chrono::steady_clock::now() >= iter->second->deadline) {
@@ -830,8 +849,8 @@ void Client::Impl::complete_request_write(const std::shared_ptr<Impl>& state, co
     }
 
     if (state->closed.load(std::memory_order_acquire)) {
-        iter->second->error =
-            Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Client transport is closed"};
+        iter->second->error = Error{.code = mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                                    .message = "Client transport is closed"};
     } else {
         iter->second->write_error = std::move(write_error);
     }
@@ -841,13 +860,13 @@ void Client::Impl::complete_request_write(const std::shared_ptr<Impl>& state, co
 
 void Client::Impl::erase_pending_request(const std::shared_ptr<Impl>& state,
                                          const std::string& id_key) {
-    std::lock_guard lock(state->pending_requests_mutex);
+    std::scoped_lock lock(state->pending_requests_mutex);
     state->pending_requests.erase(id_key);
 }
 
 void Client::Impl::fail_pending_requests(const std::shared_ptr<Impl>& state, const Error& error) {
     end_subscriptions(state, error);
-    std::lock_guard lock(state->pending_requests_mutex);
+    std::scoped_lock lock(state->pending_requests_mutex);
     for (auto& [id, pending_request] : state->pending_requests) {
         static_cast<void>(id);
         if (!pending_request->completed) {
@@ -889,7 +908,7 @@ std::optional<nlohmann::json> Client::Impl::with_request_meta(
         }
     }
     {
-        std::lock_guard lock(handlers_mutex);
+        std::scoped_lock lock(handlers_mutex);
         meta[std::string(mcp::constants::meta::g_META_CLIENT_INFO)] = client_info;
     }
     if (level) {

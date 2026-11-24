@@ -51,12 +51,15 @@ int main() {
 
         // A tools/list result of a 2026-07-28 request tells the client how long it may reuse the
         // page. Without this call the hint is ttlMs 0 and cacheScope private.
-        server.set_cache_hints(CacheTarget::eToolsList, CacheHint{30000, CacheScope::ePublic});
+        server.set_cache_hints(CacheTarget::eToolsList,
+                               CacheHint{.ttlMs = 30000, .scope = CacheScope::ePublic});
 
         // Register 12 tools to demonstrate pagination
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"value", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"value"})}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"value", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"value"})},
+        };
 
         for (int i = 1; i <= 12; ++i) {
             std::string tool_name = "tool_" + std::to_string(i);
@@ -66,8 +69,17 @@ int main() {
                 tool_name, description, tool_schema, [i](const nlohmann::json& args) -> nlohmann::json {
                     std::string text = "Tool " + std::to_string(i) +
                                        " executed with: " + args.at("value").get<std::string>();
-                    return {{"content", nlohmann::json::array({nlohmann::json{
-                                            {"type", "text"}, {"text", std::move(text)}}})}};
+                    return {
+                        {
+                            "content",
+                            nlohmann::json::array({
+                                nlohmann::json{
+                                    {"type", "text"},
+                                    {"text", std::move(text)},
+                                },
+                            }),
+                        },
+                    };
                 });
         }
 

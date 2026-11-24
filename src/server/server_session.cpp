@@ -92,9 +92,15 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     timer->expires_after(timeout);
     {
         const auto id_key = RequestId{std::to_string(id)}.correlation_key();
-        const auto [pending_it, inserted] = session->pending_requests.try_emplace(
-            id_key, PendingRequest{
-                        timer, {}, std::nullopt, false, session_epoch(*session), std::move(cancelled)});
+        const auto [pending_it, inserted] =
+            session->pending_requests.try_emplace(id_key, PendingRequest{
+                                                              .timer = timer,
+                                                              .result = {},
+                                                              .error = std::nullopt,
+                                                              .completed = false,
+                                                              .epoch = session_epoch(*session),
+                                                              .caller_cancelled = std::move(cancelled),
+                                                          });
         static_cast<void>(pending_it);
         if (!inserted) {
             throw std::runtime_error("duplicate pending request id: " + id_key);
@@ -121,8 +127,11 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
             const auto id_key = RequestId{std::to_string(id)}.correlation_key();
             const auto pending_it = session->pending_requests.find(id_key);
             if (pending_it != session->pending_requests.end() && !pending_it->second.completed) {
-                pending_it->second.error = Error{mcp::constants::jsonrpc::g_REQUEST_TIMEOUT,
-                                                 "The client did not answer in time", std::nullopt};
+                pending_it->second.error = Error{
+                    .code = mcp::constants::jsonrpc::g_REQUEST_TIMEOUT,
+                    .message = "The client did not answer in time",
+                    .data = std::nullopt,
+                };
                 pending_it->second.completed = true;
                 pending_it->second.given_up = true;
             }
@@ -181,8 +190,9 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
 }
 
 Task<nlohmann::json> Server::invoke_tool(const std::string& tool_name, const nlohmann::json& args) {
-    return impl_->invoke_tool_impl(CallToolParams{tool_name, args, std::nullopt}, nullptr,
-                                   std::nullopt);
+    return impl_->invoke_tool_impl(
+        CallToolParams{.name = tool_name, .arguments = args, .meta = std::nullopt}, nullptr,
+        std::nullopt);
 }
 
 Task<void> Server::run(std::shared_ptr<ITransport> transport, Executor executor) {
@@ -215,7 +225,7 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
                 detail::bind_server(*http_transport, {});
             }
         }
-    } unbinder{session->transport};
+    } unbinder{.transport = session->transport};
     session->memory_transport = dynamic_cast<MemoryTransport*>(session->transport.get());
     session->session_pipe = dynamic_cast<detail::SessionPipe*>(session->transport.get());
     // HttpServerTransport is the one transport that can end a session (on HTTP DELETE) and start a
@@ -226,13 +236,16 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
         session->http_transport = http_transport;
         unbinder.http_transport = http_transport;
         detail::bind_server(*http_transport,
-                            {impl->supported_versions(),
-                             [weak = std::weak_ptr<Impl>(impl)](nlohmann::json json_msg,
-                                                                RequestContext request_context) {
-                                 return Impl::dispatch_for_http(weak, std::move(json_msg),
-                                                                std::move(request_context));
-                             },
-                             executor});
+                            {
+                                .served_versions = impl->supported_versions(),
+                                .modern_dispatch =
+                                    [weak = std::weak_ptr<Impl>(impl)](nlohmann::json json_msg,
+                                                                       RequestContext request_context) {
+                                        return Impl::dispatch_for_http(weak, std::move(json_msg),
+                                                                       std::move(request_context));
+                                    },
+                                .dispatch_executor = executor,
+                            });
     }
     session->strand =
         std::make_unique<boost::asio::any_io_executor>(detail::make_strand_executor(executor));
@@ -248,7 +261,7 @@ Task<void> Server::Impl::run(std::shared_ptr<Impl> impl, std::shared_ptr<ITransp
 Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     auto session = std::move(new_session);
     {
-        std::lock_guard lock(session_mutex);
+        std::scoped_lock lock(session_mutex);
         if (this->session) {
             throw std::runtime_error("Server already has an active session");
         }
@@ -266,7 +279,7 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
         Unregister(Unregister&&) = delete;
         Unregister& operator=(Unregister&&) = delete;
         ~Unregister() {
-            std::lock_guard lock(impl_.session_mutex);
+            std::scoped_lock lock(impl_.session_mutex);
             if (impl_.session == session_) {
                 impl_.session.reset();
             }
@@ -294,7 +307,7 @@ Task<void> Server::Impl::read_session(std::shared_ptr<Session> session) {
             std::shared_ptr<const std::string> principal;
             bool parse_failed = false;
             try {
-                if (session->memory_transport) {
+                if (session->memory_transport != nullptr) {
                     auto message = co_await detail::MemoryTransportAccess::read_json_until_closed(
                         *session->memory_transport);
                     if (!message) {
@@ -597,8 +610,11 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
             // parked until the reverse request timed out, counting against the limit on requests.
             for (auto& [pending_id, pending] : session->pending_requests) {
                 if (pending.caller_cancelled == it->second && !pending.completed) {
-                    pending.error = Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
-                                          "The request was cancelled", std::nullopt};
+                    pending.error = Error{
+                        .code = mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                        .message = "The request was cancelled",
+                        .data = std::nullopt,
+                    };
                     pending.completed = true;
                     pending.given_up = true;
                     pending.timer->cancel();
@@ -609,7 +625,7 @@ void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
     }
 }
 
-void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
+void Server::Impl::dispatch_response(const nlohmann::json& json_msg) const {
     auto session = session_snapshot();
     if (!is_valid_response_envelope(json_msg) || !session) {
         return;
@@ -632,8 +648,11 @@ void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
             it->second.error = json_msg.at("error").get<Error>();
         } catch (const std::exception&) {
             // Still an answer: the request failed, and the handler must not wait on.
-            it->second.error = Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
-                                     "Malformed JSON-RPC error object", std::nullopt};
+            it->second.error = Error{
+                .code = mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                .message = "Malformed JSON-RPC error object",
+                .data = std::nullopt,
+            };
         }
     } else if (json_msg.contains("result")) {
         it->second.result = json_msg.at("result");
@@ -644,7 +663,7 @@ void Server::Impl::dispatch_response(const nlohmann::json& json_msg) {
 }
 
 Task<void> Server::Impl::send_notification(const std::string& method,
-                                           const std::optional<nlohmann::json>& params) {
+                                           const std::optional<nlohmann::json>& params) const {
     auto session = session_snapshot();
     if (!session || session->stopping.load(std::memory_order_acquire)) {
         co_return;

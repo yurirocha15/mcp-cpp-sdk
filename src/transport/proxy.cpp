@@ -2,6 +2,7 @@
 
 #include "mcp/detail/text/encoding.hpp"
 
+#include <algorithm>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/network_v4.hpp>
 #include <boost/asio/ip/network_v6.hpp>
@@ -105,7 +106,7 @@ bool entry_matches(const std::string& raw_entry, const std::string& host, const 
     if (!error) {
         return host_is_address && entry_address == address;
     }
-    if (entry_host.rfind("*.", 0) == 0) {
+    if (entry_host.starts_with("*.")) {
         entry_host.erase(0, 2);
     } else if (!entry_host.empty() && entry_host.front() == '.') {
         entry_host.erase(0, 1);

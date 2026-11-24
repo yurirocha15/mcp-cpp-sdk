@@ -52,18 +52,23 @@ int main() {
         Server server(server_info, server_caps);
 
         // Register a simple echo tool
-        nlohmann::json echo_schema = {{"type", "object"},
-                                      {"properties", {{"message", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"message"})}};
+        nlohmann::json echo_schema = {
+            {"type", "object"},
+            {"properties", {{"message", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"message"})},
+        };
 
-        server.add_tool("echo", "Echo tool for benchmarking", echo_schema,
-                        [](const nlohmann::json& args) -> nlohmann::json {
-                            std::string msg = args.at("message").get<std::string>();
-                            return nlohmann::json{
-                                {"content", nlohmann::json::array(
-                                                {nlohmann::json{{"type", "text"}, {"text", msg}}})},
-                            };
-                        });
+        server.add_tool(
+            "echo", "Echo tool for benchmarking", echo_schema,
+            [](const nlohmann::json& args) -> nlohmann::json {
+                std::string msg = args.at("message").get<std::string>();
+                return nlohmann::json{
+                    {
+                        "content",
+                        nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", msg}}}),
+                    },
+                };
+            });
 
         // ========== CLIENT SETUP ==========
         Implementation client_info;

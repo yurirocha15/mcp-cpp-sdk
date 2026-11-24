@@ -168,7 +168,7 @@ class Collector {
                 throw refuse("repeats the header name " + name);
             }
         }
-        headers.push_back({name, path});
+        headers.push_back({.name = name, .path = path});
     }
 };
 
@@ -279,7 +279,7 @@ inline std::optional<std::string> param_header_mismatch(const std::vector<ParamH
                 const auto number = value->get<double>();
                 constexpr auto limit = static_cast<double>(
                     mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER);
-                if (!(number >= -limit && number <= limit) ||
+                if (number < -limit || number > limit ||
                     number != static_cast<double>(static_cast<std::int64_t>(number))) {
                     return header_name + " cannot carry the argument's value";
                 }

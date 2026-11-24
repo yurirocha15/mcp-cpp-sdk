@@ -42,10 +42,13 @@ namespace {
 const json g_ADD_INPUT_SCHEMA = {
     {"type", "object"},
     {"properties", {{"a", {{"type", "integer"}}}, {"b", {{"type", "integer"}}}}},
-    {"required", json::array({"a", "b"})}};
-const json g_ADD_OUTPUT_SCHEMA = {{"type", "object"},
-                                  {"properties", {{"sum", {{"type", "integer"}}}}},
-                                  {"required", json::array({"sum"})}};
+    {"required", json::array({"a", "b"})},
+};
+const json g_ADD_OUTPUT_SCHEMA = {
+    {"type", "object"},
+    {"properties", {{"sum", {{"type", "integer"}}}}},
+    {"required", json::array({"sum"})},
+};
 
 std::atomic<int> g_add_handler_runs{0};
 
@@ -101,7 +104,7 @@ void add_tools(mcp::Server& server) {
 std::unique_ptr<mcp::Server> make_server(const std::string& name) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-    return std::make_unique<mcp::Server>(mcp::Implementation{name, "1.0.0"}, caps);
+    return std::make_unique<mcp::Server>(mcp::Implementation{.name = name, .version = "1.0.0"}, caps);
 }
 
 mcp::Task<void> serve(mcp::Server* server, std::shared_ptr<mcp::ITransport> transport,

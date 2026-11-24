@@ -56,14 +56,25 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"message", {{"type", "string"}}}}}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"message", {{"type", "string"}}}}},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "echo", "Echo benchmark tool", tool_schema, [](nlohmann::json args) -> nlohmann::json {
                 std::string msg = args.value("message", "ping");
-                return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                                      {"type", "text"}, {"text", msg}}})}};
+                return nlohmann::json{
+                    {
+                        "content",
+                        nlohmann::json::array({
+                            nlohmann::json{
+                                {"type", "text"},
+                                {"text", msg},
+                            },
+                        }),
+                    },
+                };
             });
 
         asio::co_spawn(

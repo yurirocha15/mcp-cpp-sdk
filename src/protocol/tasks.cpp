@@ -9,11 +9,13 @@
 namespace mcp {
 
 void to_json(nlohmann::json& json_obj, const TaskData& task) {
-    json_obj = nlohmann::json{{"taskId", task.taskId},
-                              {"status", task.status},
-                              {"createdAt", task.createdAt},
-                              {"lastUpdatedAt", task.lastUpdatedAt},
-                              {"ttlMs", task.ttlMs ? nlohmann::json(*task.ttlMs) : nlohmann::json()}};
+    json_obj = nlohmann::json{
+        {"taskId", task.taskId},
+        {"status", task.status},
+        {"createdAt", task.createdAt},
+        {"lastUpdatedAt", task.lastUpdatedAt},
+        {"ttlMs", task.ttlMs ? nlohmann::json(*task.ttlMs) : nlohmann::json()},
+    };
     if (task.statusMessage) {
         json_obj["statusMessage"] = *task.statusMessage;
     }

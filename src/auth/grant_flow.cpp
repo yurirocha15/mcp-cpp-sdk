@@ -42,11 +42,11 @@ struct GrantFlow::Operation {
     TokenResponse token;
 };
 
-GrantFlow::GrantFlow(const net::any_io_executor& executor, std::shared_ptr<TokenStore> token_store,
+GrantFlow::GrantFlow(net::any_io_executor executor, std::shared_ptr<TokenStore> token_store,
                      std::string server_url, MetadataFetchPolicy policy, HostResolver host_resolver,
                      std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy,
                      std::optional<std::string> scope)
-    : executor_(executor),
+    : executor_(std::move(executor)),
       token_store_(std::move(token_store)),
       server_url_(std::move(server_url)),
       policy_(std::move(policy)),
@@ -74,7 +74,7 @@ Task<GrantIdentity> GrantFlow::identity() { co_return GrantIdentity{}; }
 void GrantFlow::check_server(const AuthServerMetadata& /*server*/) const {}
 
 void GrantFlow::record(const GrantTarget& target, const TokenResponse& token) {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     last_target_ = target;
     granted_scope_ = token.scope ? token.scope : target.scope;
     cache_[{target.server.issuer, target.identity.key}] = {token, target.scope};
@@ -127,18 +127,20 @@ Task<bool> GrantFlow::run(std::shared_ptr<Operation> operation) {
         }
         if (operation->challenge && operation->challenge->error &&
             *operation->challenge->error == "insufficient_scope") {
-            std::lock_guard lock(owner.mutex_);
+            std::scoped_lock lock(owner.mutex_);
             scope = union_scopes(scope, owner.granted_scope_);
         }
     }
 
     // Awaited first: GCC 11 mishandles a co_await inside a braced initializer.
     auto identity = co_await owner.identity();
-    operation->target =
-        GrantTarget{*operation->resource, *operation->server, scope, std::move(identity)};
+    operation->target = GrantTarget{.resource = *operation->resource,
+                                    .server = *operation->server,
+                                    .scope = scope,
+                                    .identity = std::move(identity)};
 
     if (operation->reuse_cache) {
-        std::lock_guard lock(owner.mutex_);
+        std::scoped_lock lock(owner.mutex_);
         const auto cached =
             owner.cache_.find({operation->server->issuer, operation->target.identity.key});
         if (cached != owner.cache_.end() && !cached->second.first.is_expired() &&
@@ -165,7 +167,7 @@ Task<bool> GrantFlow::handle_challenge(std::string www_authenticate) {
     operation->owner = shared_from_this();
     operation->challenge = challenge;
     {
-        std::lock_guard lock(operation->owner->mutex_);
+        std::scoped_lock lock(operation->owner->mutex_);
         if (operation->owner->closed_) {
             throw std::runtime_error("OAuth authorization closed");
         }
@@ -180,7 +182,7 @@ Task<bool> GrantFlow::authorize() {
     operation->owner = shared_from_this();
     operation->reuse_cache = true;
     {
-        std::lock_guard lock(operation->owner->mutex_);
+        std::scoped_lock lock(operation->owner->mutex_);
         if (operation->owner->closed_) {
             throw std::runtime_error("OAuth authorization closed");
         }
@@ -194,7 +196,7 @@ Task<bool> GrantFlow::run_renewal(std::shared_ptr<GrantFlow> self) {
     std::shared_ptr<OAuthHttpClient> client;
     GrantTarget target;
     {
-        std::lock_guard lock(self->mutex_);
+        std::scoped_lock lock(self->mutex_);
         if (self->closed_ || !self->last_target_) {
             co_return false;
         }
@@ -222,7 +224,7 @@ Task<bool> GrantFlow::renew() { return run_renewal(shared_from_this()); }
 void GrantFlow::cancel_pending() {
     std::shared_ptr<OAuthHttpClient> stale;
     {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (closed_) {
             return;
         }
@@ -235,7 +237,7 @@ void GrantFlow::cancel_pending() {
 void GrantFlow::close() {
     std::shared_ptr<OAuthHttpClient> client;
     {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         closed_ = true;
         client = http_client_;
     }

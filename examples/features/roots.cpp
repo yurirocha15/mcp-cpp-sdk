@@ -51,9 +51,11 @@ int main() {
         Server server(server_info, server_caps);
 
         // ========== TOOL REGISTRATION ==========
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", nlohmann::json::object()},
-                                      {"required", nlohmann::json::array()}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", nlohmann::json::object()},
+            {"required", nlohmann::json::array()},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "discover_roots", "Discovers and displays the client's declared root URIs", tool_schema,
@@ -77,19 +79,31 @@ int main() {
                         if (root.name) {
                             output += " (" + *root.name + ")";
                         }
-                        output += "\n";
+                        output += '\n';
                     }
 
                     co_return nlohmann::json{
-                        {"content",
-                         nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", output}}})},
-                        {"isError", false}};
+                        {
+                            "content",
+                            nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", output}}}),
+                        },
+                        {"isError", false},
+                    };
                 } catch (const std::exception& e) {
                     std::cout << "Tool: Error requesting roots: " << e.what() << "\n";
                     std::string error_msg = "Error: " + std::string(e.what());
-                    co_return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                                             {"type", "text"}, {"text", error_msg}}})},
-                                             {"isError", true}};
+                    co_return nlohmann::json{
+                        {
+                            "content",
+                            nlohmann::json::array({
+                                nlohmann::json{
+                                    {"type", "text"},
+                                    {"text", error_msg},
+                                },
+                            }),
+                        },
+                        {"isError", true},
+                    };
                 }
             });
 
@@ -118,7 +132,8 @@ int main() {
                     // Declare roots that the client can access
                     std::vector<Root> client_roots = {
                         Root{.uri = "file:///workspace/", .name = "Workspace"},
-                        Root{.uri = "mcp://docs/", .name = "Documentation"}};
+                        Root{.uri = "mcp://docs/", .name = "Documentation"},
+                    };
 
                     std::cout << "Client: Setting " << client_roots.size() << " root(s)\n";
                     for (const auto& root : client_roots) {

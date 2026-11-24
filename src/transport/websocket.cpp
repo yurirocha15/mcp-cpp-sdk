@@ -127,9 +127,9 @@ class ReadReservation {
 
 class SerializedWriteGate {
    public:
-    SerializedWriteGate(const asio::any_io_executor& executor, const std::atomic<bool>& closed,
+    SerializedWriteGate(asio::any_io_executor executor, const std::atomic<bool>& closed,
                         std::string_view transport_name)
-        : executor_(executor), closed_(closed), transport_name_(transport_name) {}
+        : executor_(std::move(executor)), closed_(closed), transport_name_(transport_name) {}
 
     Task<void> acquire() {
         require_open(closed_, transport_name_);
@@ -250,7 +250,7 @@ struct WebSocketServerTransport::Impl {
     enum class Admission : std::uint8_t {
         eAllowed,
         eHostRefused,
-        eOriginRefused
+        eOriginRefused,
     };
 
     /// Fix the policies for the handshake and say whether an upgrade naming `host` (none when
@@ -260,7 +260,7 @@ struct WebSocketServerTransport::Impl {
         boost::system::error_code endpoint_error;
         const auto local_endpoint = ws.next_layer().socket().local_endpoint(endpoint_error);
         const bool loopback_connection = endpoint_error || detail::is_loopback_endpoint(local_endpoint);
-        std::lock_guard lock(configuration_mutex);
+        std::scoped_lock lock(configuration_mutex);
         configuration_locked = true;
         if (!host_policy.allows(host, loopback_connection)) {
             return Admission::eHostRefused;
@@ -330,7 +330,7 @@ struct WebSocketServerTransport::Impl {
                              : "WebSocketServerTransport refused an upgrade from Origin " + *origin);
         }
         co_await state->ws.async_accept(upgrade, asio::use_awaitable);
-        std::lock_guard lock(state->configuration_mutex);
+        std::scoped_lock lock(state->configuration_mutex);
         state->ws.read_message_max(state->max_message_bytes);
         state->effective_idle_timeout = effective_connect_timeout(state->idle_timeout);
         // A peer that answers the pings stays connected however quiet the session is.
@@ -484,7 +484,7 @@ Task<void> WebSocketServerTransport::write_message(std::string_view message) {
 }
 
 void WebSocketServerTransport::set_allowed_origins(std::vector<std::string> origins) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->allowed_origins.clear();
     impl_->allowed_origins.reserve(origins.size());
@@ -495,32 +495,32 @@ void WebSocketServerTransport::set_allowed_origins(std::vector<std::string> orig
 }
 
 void WebSocketServerTransport::set_allow_all_origins(bool allow_all) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->allow_all_origins = allow_all;
 }
 
 void WebSocketServerTransport::set_allowed_hosts(const std::vector<std::string>& hosts) {
     detail::HostPolicy policy(hosts);
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->host_policy = std::move(policy);
 }
 
 void WebSocketServerTransport::set_handshake_timeout(std::chrono::milliseconds timeout) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->handshake_timeout = timeout;
 }
 
 void WebSocketServerTransport::set_idle_timeout(std::chrono::milliseconds timeout) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->idle_timeout = timeout;
 }
 
 void WebSocketServerTransport::set_max_message_bytes(std::size_t bytes) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->max_message_bytes = bytes;
 }
@@ -627,7 +627,7 @@ struct WebSocketClientTransport::Impl {
     /// anything else uses the stream. Returns the name to check the certificate against, or
     /// nothing for a plain connection.
     std::optional<std::string> lock_configuration_and_prepare_stream() {
-        std::lock_guard lock(configuration_mutex);
+        std::scoped_lock lock(configuration_mutex);
         configuration_locked = true;
         if (!use_tls) {
             return std::nullopt;
@@ -813,7 +813,7 @@ void WebSocketClientTransport::set_tls(const TlsClientOptions& options) {
 }
 
 void WebSocketClientTransport::set_tls(std::shared_ptr<const TlsClientContext> context) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->use_tls = true;
     impl_->tls_context = std::move(context);
@@ -824,7 +824,7 @@ void WebSocketClientTransport::set_server_name(std::string name) {
     if (name.empty()) {
         throw std::invalid_argument("The TLS server name is empty");
     }
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->server_name = std::move(name);
 }

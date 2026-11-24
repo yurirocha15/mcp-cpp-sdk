@@ -67,19 +67,21 @@ inline void serialize_response_head(const StringResponse& response, std::vector<
     const auto status = response.result_int();
     constexpr unsigned g_ten = 10;
     constexpr unsigned g_hundred = 100;
-    const std::array<char, 13> start = {'H',
-                                        'T',
-                                        'T',
-                                        'P',
-                                        '/',
-                                        static_cast<char>('0' + version / g_ten),
-                                        '.',
-                                        static_cast<char>('0' + version % g_ten),
-                                        ' ',
-                                        static_cast<char>('0' + status / g_hundred),
-                                        static_cast<char>('0' + (status / g_ten) % g_ten),
-                                        static_cast<char>('0' + status % g_ten),
-                                        ' '};
+    const std::array<char, 13> start = {
+        'H',
+        'T',
+        'T',
+        'P',
+        '/',
+        static_cast<char>('0' + (version / g_ten)),
+        '.',
+        static_cast<char>('0' + (version % g_ten)),
+        ' ',
+        static_cast<char>('0' + (status / g_hundred)),
+        static_cast<char>('0' + ((status / g_ten) % g_ten)),
+        static_cast<char>('0' + (status % g_ten)),
+        ' ',
+    };
     append(std::string_view(start.data(), start.size()));
     const auto reason = response.reason();
     append(std::string_view(reason.data(), reason.size()));
@@ -105,8 +107,10 @@ auto async_write_response(AsyncWriteStream& stream, const StringResponse& respon
         return boost::beast::http::async_write(stream, response, boost::asio::use_awaitable);
     }
     serialize_response_head(response, head);
-    const std::array<boost::asio::const_buffer, 2> buffers = {boost::asio::buffer(head),
-                                                              boost::asio::buffer(response.body())};
+    const std::array<boost::asio::const_buffer, 2> buffers = {
+        boost::asio::buffer(head),
+        boost::asio::buffer(response.body()),
+    };
     return boost::asio::async_write(stream, buffers, boost::asio::use_awaitable);
 }
 

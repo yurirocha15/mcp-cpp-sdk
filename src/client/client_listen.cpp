@@ -40,7 +40,7 @@ Task<Subscription> Client::Impl::listen(std::shared_ptr<Impl> state, const Subsc
     const auto key = std::make_shared<const std::string>(request_correlation_key(id));
     stream->forget = [weak_state, key] {
         if (auto active = weak_state.lock()) {
-            std::lock_guard lock(active->subscriptions_mutex);
+            std::scoped_lock lock(active->subscriptions_mutex);
             active->subscriptions.erase(*key);
         }
     };
@@ -66,7 +66,7 @@ Task<Subscription> Client::Impl::listen_on_strand(std::shared_ptr<Impl> state,
                                                   std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     {
-        std::lock_guard lock(state->subscriptions_mutex);
+        std::scoped_lock lock(state->subscriptions_mutex);
         state->subscriptions.emplace(stream->id.correlation_key(), stream);
     }
     // The stream is registered before the closed check, so a connection that ends from here on
@@ -119,7 +119,7 @@ Task<Subscription> Client::Impl::listen_on_strand(std::shared_ptr<Impl> state,
     if (outcome == detail::SubscriptionState::AckWait::eEnded) {
         std::optional<Error> failure;
         {
-            std::lock_guard lock(stream->mutex);
+            std::scoped_lock lock(stream->mutex);
             failure = stream->failure;
         }
         if (failure) {
@@ -160,7 +160,7 @@ void Client::Impl::route_to_subscription(const std::shared_ptr<Impl>& state, con
     }
     std::shared_ptr<detail::SubscriptionState> stream;
     {
-        std::lock_guard lock(state->subscriptions_mutex);
+        std::scoped_lock lock(state->subscriptions_mutex);
         const auto found = state->subscriptions.find(named->get<RequestId>().correlation_key());
         if (found == state->subscriptions.end()) {
             return;
@@ -171,7 +171,7 @@ void Client::Impl::route_to_subscription(const std::shared_ptr<Impl>& state, con
         stream->acknowledge(honored_filter(params));
         return;
     }
-    stream->push(SubscriptionEvent{method, params});
+    stream->push(SubscriptionEvent{.method = method, .params = params});
 }
 
 void Client::Impl::end_subscription_from_response(const std::shared_ptr<Impl>& state,
@@ -179,7 +179,7 @@ void Client::Impl::end_subscription_from_response(const std::shared_ptr<Impl>& s
                                                   const nlohmann::json& json_message) {
     std::shared_ptr<detail::SubscriptionState> stream;
     {
-        std::lock_guard lock(state->subscriptions_mutex);
+        std::scoped_lock lock(state->subscriptions_mutex);
         const auto found = state->subscriptions.find(id_key);
         if (found == state->subscriptions.end()) {
             return;
@@ -197,10 +197,12 @@ void Client::Impl::end_subscription_from_response(const std::shared_ptr<Impl>& s
             stream->finish(end, std::move(error));
         } catch (const std::exception& decode_error) {
             stream->finish(SubscriptionEnd::eFailed,
-                           Error{mcp::constants::jsonrpc::g_INVALID_REQUEST,
-                                 "Malformed JSON-RPC error object: " +
-                                     detail::sanitize_for_diagnostics(decode_error.what()),
-                                 std::nullopt});
+                           Error{
+                               .code = mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                               .message = "Malformed JSON-RPC error object: " +
+                                          detail::sanitize_for_diagnostics(decode_error.what()),
+                               .data = std::nullopt,
+                           });
         }
         return;
     }
@@ -219,7 +221,7 @@ bool Client::Impl::end_subscription_from_cancel(const std::shared_ptr<Impl>& sta
     }
     std::shared_ptr<detail::SubscriptionState> stream;
     {
-        std::lock_guard lock(state->subscriptions_mutex);
+        std::scoped_lock lock(state->subscriptions_mutex);
         const auto found = state->subscriptions.find(named->get<RequestId>().correlation_key());
         if (found == state->subscriptions.end()) {
             return false;
@@ -234,7 +236,7 @@ bool Client::Impl::end_subscription_from_cancel(const std::shared_ptr<Impl>& sta
 void Client::Impl::end_subscriptions(const std::shared_ptr<Impl>& state, const Error& error) {
     std::map<std::string, std::shared_ptr<detail::SubscriptionState>, std::less<>> open;
     {
-        std::lock_guard lock(state->subscriptions_mutex);
+        std::scoped_lock lock(state->subscriptions_mutex);
         open.swap(state->subscriptions);
     }
     for (auto& [key, stream] : open) {

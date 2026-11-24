@@ -34,11 +34,11 @@ class TokenBucket {
         if (limit_.burst == 0) {
             return true;
         }
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         const auto elapsed = std::chrono::duration<double>(now - refilled_).count();
         if (elapsed > 0.0) {
             tokens_ =
-                std::min(static_cast<double>(limit_.burst), tokens_ + elapsed * limit_.per_second);
+                std::min(static_cast<double>(limit_.burst), tokens_ + (elapsed * limit_.per_second));
             refilled_ = now;
         }
         if (tokens_ < 1.0) {

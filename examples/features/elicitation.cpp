@@ -51,12 +51,19 @@ const mcp::ElicitationSchema& contact_form() {
         built.add("name", StringSchema{.title = "Full Name", .minLength = 1}, true)
             .add("email", StringSchema{.title = "Email Address", .format = "email"}, true)
             .add("priority",
-                 TitledEnumSchema{.title = "Priority Level",
-                                  .options = {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}},
-                                  .defaultValue = "medium"})
+                 TitledEnumSchema{
+                     .title = "Priority Level",
+                     .options = {{.value = "low", .title = "Low"},
+                                 {.value = "medium", .title = "Medium"},
+                                 {.value = "high", .title = "High"}},
+                     .defaultValue = "medium",
+                 })
             .add("topics",
                  MultiSelectEnumSchema{
-                     .title = "Topics", .minItems = 1, .enumValues = {"bugs", "features", "docs"}})
+                     .title = "Topics",
+                     .minItems = 1,
+                     .enumValues = {"bugs", "features", "docs"},
+                 })
             .add("age", NumberSchema{.integer = true, .title = "Age", .minimum = 18})
             .add("subscribe", BooleanSchema{.title = "Send me updates", .defaultValue = false});
         return built;
@@ -84,9 +91,11 @@ int main() {
         Server server(server_info, server_caps);
 
         // ========== TOOL REGISTRATION ==========
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"task", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"task"})}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"task", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"task"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "request_user_info", "A tool that elicits user information via form-based elicitation",
@@ -108,8 +117,17 @@ int main() {
                 std::cout << "Tool: Received elicitation result\n";
 
                 auto make_result = [](const std::string& text) {
-                    return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                                          {"type", "text"}, {"text", text}}})}};
+                    return nlohmann::json{
+                        {
+                            "content",
+                            nlohmann::json::array({
+                                nlohmann::json{
+                                    {"type", "text"},
+                                    {"text", text},
+                                },
+                            }),
+                        },
+                    };
                 };
 
                 if (result.action == ElicitAction::eAccept) {
@@ -194,7 +212,8 @@ int main() {
                                 {"priority", "high"},
                                 {"topics", nlohmann::json::array({"bugs", "docs"})},
                                 {"age", 36},
-                                {"subscribe", true}};
+                                {"subscribe", true},
+                            };
 
                             std::cout << "Client: Submitting form with data: " << form_data.dump()
                                       << "\n";

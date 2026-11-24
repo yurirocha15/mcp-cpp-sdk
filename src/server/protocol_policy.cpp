@@ -2,6 +2,7 @@
 
 #include "server_impl.hpp"
 
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -32,10 +33,9 @@ std::string negotiate_protocol_version(std::string_view requested, const ServerP
     }
     // mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS is oldest first, so the last one allowed is
     // the newest.
-    for (auto version = mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.rbegin();
-         version != mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.rend(); ++version) {
-        if (policy_allows_legacy_version(policy, *version)) {
-            return std::string(*version);
+    for (auto version : std::views::reverse(mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS)) {
+        if (policy_allows_legacy_version(policy, version)) {
+            return std::string(version);
         }
     }
     return std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION);

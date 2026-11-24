@@ -16,7 +16,7 @@
 #include <system_error>
 #include <vector>
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #elif defined(_WIN32)
@@ -67,7 +67,7 @@ bool read_environment(SystemRoots& roots) {
         read_pem_file(file, roots);
     }
     if (has_directories) {
-#if defined(_WIN32)
+#ifdef _WIN32
         constexpr char separator = ';';
 #else
         constexpr char separator = ':';
@@ -86,7 +86,7 @@ bool read_environment(SystemRoots& roots) {
     return has_file || has_directories;
 }
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
 
 template <typename T>
 struct CfRelease {
@@ -238,7 +238,7 @@ std::shared_ptr<const SystemRoots> system_roots() {
     static std::mutex s_mutex;
     // Never destroyed: contexts may still be created while the process exits.
     static auto* s_cached = new std::shared_ptr<const SystemRoots>();
-    std::lock_guard lock(s_mutex);
+    std::scoped_lock lock(s_mutex);
     if (*s_cached) {
         return *s_cached;
     }

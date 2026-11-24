@@ -32,7 +32,7 @@ inline std::string encode_header_value(std::string_view value) {
     const bool padded = !value.empty() && (value.front() == ' ' || value.front() == '\t' ||
                                            value.back() == ' ' || value.back() == '\t');
     const bool sentinel_like = value.size() >= prefix.size() + suffix.size() &&
-                               value.substr(0, prefix.size()) == prefix &&
+                               value.starts_with(prefix) &&
                                value.substr(value.size() - suffix.size()) == suffix;
     if (is_valid_header_value(value) && !padded && !sentinel_like) {
         return std::string(value);
@@ -52,7 +52,7 @@ inline std::optional<std::string> decode_header_value(std::string_view value) {
     }
     constexpr std::string_view prefix = "=?base64?";
     constexpr std::string_view suffix = "?=";
-    if (value.size() >= prefix.size() + suffix.size() && value.substr(0, prefix.size()) == prefix &&
+    if (value.size() >= prefix.size() + suffix.size() && value.starts_with(prefix) &&
         value.substr(value.size() - suffix.size()) == suffix) {
         return base64_decode(value.substr(prefix.size(), value.size() - prefix.size() - suffix.size()));
     }

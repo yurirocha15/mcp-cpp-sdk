@@ -46,10 +46,15 @@ int main() {
         // Define a tool with arguments that support completion
         nlohmann::json tool_schema = {
             {"type", "object"},
-            {"properties",
-             {{"language", {{"type", "string"}, {"description", "Programming language"}}},
-              {"framework", {{"type", "string"}, {"description", "Framework name"}}}}},
-            {"required", nlohmann::json::array({"language"})}};
+            {
+                "properties",
+                {
+                    {"language", {{"type", "string"}, {"description", "Programming language"}}},
+                    {"framework", {{"type", "string"}, {"description", "Framework name"}}},
+                },
+            },
+            {"required", nlohmann::json::array({"language"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "code_analyzer", "Analyzes code in a specific language and framework", tool_schema,
@@ -64,7 +69,10 @@ int main() {
                 std::cout << "\n";
 
                 co_return nlohmann::json{
-                    {"status", "analyzed"}, {"language", language}, {"framework", framework}};
+                    {"status", "analyzed"},
+                    {"language", language},
+                    {"framework", framework},
+                };
             });
 
         // ========== COMPLETION PROVIDER ==========
@@ -77,27 +85,29 @@ int main() {
             // Provide completions based on argument name
             if (params.argument.name == "language") {
                 // Language completions
-                std::vector<std::string> languages = {"C++",        "C",    "Python", "JavaScript",
-                                                      "TypeScript", "Java", "Go",     "Rust",
-                                                      "Ruby",       "PHP"};
+                std::vector<std::string> languages = {
+                    "C++",  "C",  "Python", "JavaScript", "TypeScript",
+                    "Java", "Go", "Rust",   "Ruby",       "PHP",
+                };
 
                 // Filter by partial match
                 std::string partial = params.argument.value;
                 for (const auto& lang : languages) {
-                    if (lang.find(partial) == 0) {  // Starts with partial
+                    if (lang.starts_with(partial)) {  // Starts with partial
                         result.completion.values.push_back(lang);
                     }
                 }
             } else if (params.argument.name == "framework") {
                 // Framework completions
-                std::vector<std::string> frameworks = {"React", "Vue",    "Angular", "Django",
-                                                       "Flask", "Spring", "Express", "FastAPI",
-                                                       "Rails", "Laravel"};
+                std::vector<std::string> frameworks = {
+                    "React",  "Vue",     "Angular", "Django", "Flask",
+                    "Spring", "Express", "FastAPI", "Rails",  "Laravel",
+                };
 
                 // Filter by partial match
                 std::string partial = params.argument.value;
                 for (const auto& fw : frameworks) {
-                    if (fw.find(partial) == 0) {  // Starts with partial
+                    if (fw.starts_with(partial)) {  // Starts with partial
                         result.completion.values.push_back(fw);
                     }
                 }
@@ -153,7 +163,7 @@ int main() {
                     lang_arg.value = "C";
 
                     CompleteParams lang_params;
-                    lang_params.ref = PromptReference{"ref/prompt", "code_analyzer"};
+                    lang_params.ref = PromptReference{.type = "ref/prompt", .name = "code_analyzer"};
                     lang_params.argument = lang_arg;
 
                     auto lang_result = co_await client.complete(lang_params);
@@ -170,7 +180,7 @@ int main() {
                     fw_arg.value = "R";
 
                     CompleteParams fw_params;
-                    fw_params.ref = PromptReference{"ref/prompt", "code_analyzer"};
+                    fw_params.ref = PromptReference{.type = "ref/prompt", .name = "code_analyzer"};
                     fw_params.argument = fw_arg;
 
                     auto fw_result = co_await client.complete(fw_params);
@@ -187,7 +197,8 @@ int main() {
                     all_lang_arg.value = "";
 
                     CompleteParams all_lang_params;
-                    all_lang_params.ref = PromptReference{"ref/prompt", "code_analyzer"};
+                    all_lang_params.ref =
+                        PromptReference{.type = "ref/prompt", .name = "code_analyzer"};
                     all_lang_params.argument = all_lang_arg;
 
                     auto all_lang_result = co_await client.complete(all_lang_params);

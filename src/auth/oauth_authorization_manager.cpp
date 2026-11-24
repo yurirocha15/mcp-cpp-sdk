@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mcp/auth/oauth_authorization_manager.hpp>
 #include <mcp/auth/oauth_discovery.hpp>
 #include <mcp/auth/pkce.hpp>
@@ -278,7 +279,7 @@ struct OAuthAuthorizationManager::Impl {
         }
         std::optional<std::string> granted;
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             granted = granted_scope_for(owner, issuer);
         }
         return union_scopes(selected, granted);
@@ -304,7 +305,7 @@ struct OAuthAuthorizationManager::Impl {
         }
         std::optional<std::string> granted;
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             granted = granted_scope_for(owner, issuer);
         }
         if (!granted) {
@@ -520,7 +521,7 @@ struct OAuthAuthorizationManager::Impl {
             operation->auth_metadata = co_await operation->discovery->discover_auth_server(
                 operation->resource_metadata->authorization_servers.front());
         } catch (...) {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             if (operation->flight->cancelled) {
                 throw std::runtime_error("OAuth authorization attempt was cancelled");
             }
@@ -567,7 +568,7 @@ struct OAuthAuthorizationManager::Impl {
         operation->token_config = build_token_config(owner, *operation->auth_metadata,
                                                      operation->request, operation->identity);
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             // cancel() stops a leader through its aborted client, but one served discovery from the
             // cache with a pre-registered identity makes no network call before the consent
             // callback, so the abort alone would not keep it from prompting the user.
@@ -588,7 +589,7 @@ struct OAuthAuthorizationManager::Impl {
         operation->token = co_await operation->http_client->exchange_code(
             operation->token_config, *operation->response.code, operation->request.code_verifier);
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             // Recorded only now that this server issued a token. Until then the stored refresh token
             // still belongs to the server before it, and a refresh must keep going there: a step-up
             // that fails at consent or at the exchange must not point it at the new server.
@@ -597,7 +598,7 @@ struct OAuthAuthorizationManager::Impl {
             // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
             const auto& granted_scope =
                 operation->token.scope ? operation->token.scope : operation->request.scope;
-            owner.granted = GrantedScope{operation->request.issuer, granted_scope};
+            owner.granted = GrantedScope{.issuer = operation->request.issuer, .scope = granted_scope};
         }
         owner.token_store->store(owner.config.server_url, operation->token);
         co_return true;
@@ -670,7 +671,7 @@ struct OAuthAuthorizationManager::Impl {
         std::exception_ptr failure;
         bool succeeded = false;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             // close() expires the same timer to release a follower parked here; a follower that
             // wakes because the manager closed gets a clear error rather than the misleading "not
             // authorized" that the leader's own outcome would otherwise report. Checked before the
@@ -719,7 +720,7 @@ struct OAuthAuthorizationManager::Impl {
         }
 
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             // After cancel() the manager may already be running a newer flight; that one is not
             // this leader's to end.
             if (owner->flight == finished) {
@@ -753,7 +754,7 @@ struct OAuthAuthorizationManager::Impl {
         std::shared_ptr<Flight> joined;
         auto operation = std::make_shared<ChallengeOperation>();
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             // Checked in the same critical section that reads or creates `flight`: close() also
             // takes this lock, so the two can never interleave as a new flight being created right
             // after close() already ran past it, unnoticed. (http_client's own sticky abort would
@@ -784,7 +785,7 @@ struct OAuthAuthorizationManager::Impl {
         auto operation = std::make_shared<RefreshOperation>();
         std::shared_ptr<Flight> joined;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (!owner->token_config || owner->closed) {
                 return return_false();
             }
@@ -819,7 +820,7 @@ struct OAuthAuthorizationManager::Impl {
             failure = std::current_exception();
         }
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (owner->refresh_flight == finished) {
                 owner->refresh_flight.reset();
             }
@@ -849,7 +850,7 @@ struct OAuthAuthorizationManager::Impl {
         std::exception_ptr failure;
         bool succeeded = false;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (flight->finished) {
                 failure = flight->failure;
                 succeeded = flight->succeeded;
@@ -928,7 +929,7 @@ struct OAuthAuthorizationManager::Impl {
         std::shared_ptr<Flight> refresh;
         std::shared_ptr<OAuthHttpClient> client;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (owner->closed) {
                 return;
             }
@@ -953,7 +954,7 @@ struct OAuthAuthorizationManager::Impl {
         std::shared_ptr<Flight> refresh;
         std::shared_ptr<OAuthHttpClient> client;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (owner->closed || (!owner->flight && !owner->refresh_flight)) {
                 return;
             }
@@ -1057,12 +1058,12 @@ void OAuthAuthorizationManager::close() { Impl::close(impl_); }
 void OAuthAuthorizationManager::cancel_pending() { Impl::cancel(impl_); }
 
 std::optional<AuthorizationRequest> OAuthAuthorizationManager::last_authorization_request() const {
-    std::lock_guard lock(impl_->state_mutex);
+    std::scoped_lock lock(impl_->state_mutex);
     return impl_->last_request;
 }
 
 std::optional<OAuthClientInformation> OAuthAuthorizationManager::last_client_identity() const {
-    std::lock_guard lock(impl_->state_mutex);
+    std::scoped_lock lock(impl_->state_mutex);
     return impl_->last_identity;
 }
 

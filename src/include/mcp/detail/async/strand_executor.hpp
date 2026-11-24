@@ -17,7 +17,7 @@ namespace mcp::detail {
 /// Without type information (BOOST_ASIO_NO_TYPEID) the answer is always no.
 template <typename Target>
 [[nodiscard]] inline bool holds_executor_of_type(const boost::asio::any_io_executor& executor) {
-#if !defined(BOOST_ASIO_NO_TYPEID)
+#ifndef BOOST_ASIO_NO_TYPEID
     return executor.target_type() == typeid(Target) && executor.target<Target>() != nullptr;
 #else
     (void)executor;
@@ -58,9 +58,9 @@ inline boost::asio::any_io_executor make_strand_executor(const boost::asio::any_
     }
     if (holds_executor_of_type<IoContextExecutor>(base)) {
         const auto& io_context_executor = *base.target<IoContextExecutor>();
-        return boost::asio::any_io_executor(boost::asio::make_strand(io_context_executor));
+        return {boost::asio::make_strand(io_context_executor)};
     }
-    return boost::asio::any_io_executor(boost::asio::make_strand(base));
+    return {boost::asio::make_strand(base)};
 }
 
 }  // namespace mcp::detail

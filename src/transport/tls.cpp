@@ -366,7 +366,8 @@ net::ssl::context& TlsContextAccess::native(const TlsServerContext& context) {
 }
 
 TlsContextAccess::ServerLimits TlsContextAccess::limits(const TlsServerContext& context) {
-    return {context.impl_->handshake_timeout, context.impl_->max_pending_handshakes};
+    return {.handshake_timeout = context.impl_->handshake_timeout,
+            .max_pending_handshakes = context.impl_->max_pending_handshakes};
 }
 
 std::shared_ptr<const TlsClientContext> default_client_context() {
@@ -376,7 +377,7 @@ std::shared_ptr<const TlsClientContext> default_client_context() {
 }
 
 std::string openssl_path(const std::filesystem::path& path) {
-#if defined(_WIN32)
+#ifdef _WIN32
     const auto utf8 = path.u8string();
     return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
 #else
@@ -497,21 +498,23 @@ TlsError describe_handshake_failure(const boost::system::error_code& error, SSL*
 
 TlsError handshake_failure(const boost::system::error_code& error, SSL* ssl, const std::string& host,
                            bool timed_out) {
-    return describe_handshake_failure(error, ssl, {"TLS to " + host + " failed: ", "server", host},
-                                      timed_out);
+    return describe_handshake_failure(
+        error, ssl, {.prefix = "TLS to " + host + " failed: ", .peer = "server", .host = host},
+        timed_out);
 }
 
 TlsError server_handshake_failure(const boost::system::error_code& error, SSL* ssl,
                                   const std::string& client, bool timed_out) {
-    return describe_handshake_failure(error, ssl, {"TLS from " + client + " failed: ", "client", {}},
-                                      timed_out);
+    return describe_handshake_failure(
+        error, ssl, {.prefix = "TLS from " + client + " failed: ", .peer = "client", .host = {}},
+        timed_out);
 }
 
 bool is_tls_truncation(const boost::system::error_code& error) {
     if (error == net::ssl::error::stream_truncated) {
         return true;
     }
-#if defined(SSL_R_UNEXPECTED_EOF_WHILE_READING)
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
     return is_ssl_error(error) && ssl_reason(error) == SSL_R_UNEXPECTED_EOF_WHILE_READING;
 #else
     return false;

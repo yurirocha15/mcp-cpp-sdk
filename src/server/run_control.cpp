@@ -27,21 +27,23 @@ RunControl::BoundPort::~BoundPort() { control_.port_.store(0, std::memory_order_
 
 RunControl::Registration RunControl::add(std::function<void()> stop,
                                          std::optional<boost::asio::any_io_executor> loop) {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     const auto id = next_id_++;
-    runs_.emplace(id, Run{std::move(stop), std::move(loop), std::this_thread::get_id()});
+    runs_.emplace(
+        id,
+        Run{.stop = std::move(stop), .loop = std::move(loop), .thread = std::this_thread::get_id()});
     return {shared_from_this(), id};
 }
 
 void RunControl::remove(std::uint64_t id) {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     runs_.erase(id);
 }
 
 void RunControl::stop_all() {
     // The mutex stays held while each run is told to end, so that no run's loop is destroyed
     // in between: a run deregisters, under the same mutex, before its loop goes.
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     for (const auto& [id, run] : runs_) {
         run.stop();
     }
@@ -50,7 +52,7 @@ void RunControl::stop_all() {
 void RunControl::run_blocking(const std::function<Task<void>()>& start) {
     std::future<void> done;
     {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         const Run* owned = nullptr;
         for (const auto& [id, run] : runs_) {
             if (run.loop) {
@@ -87,7 +89,7 @@ void RunControl::run_blocking(const std::function<Task<void>()>& start) {
 ShutdownDeadline::~ShutdownDeadline() { finish(); }
 
 void ShutdownDeadline::start(boost::asio::io_context& io_ctx, std::chrono::milliseconds timeout) {
-    const std::lock_guard lock(mutex_);
+    const std::scoped_lock lock(mutex_);
     if (thread_.joinable() || finished_) {
         return;
     }
@@ -101,7 +103,7 @@ void ShutdownDeadline::start(boost::asio::io_context& io_ctx, std::chrono::milli
 
 void ShutdownDeadline::finish() {
     {
-        const std::lock_guard lock(mutex_);
+        const std::scoped_lock lock(mutex_);
         finished_ = true;
     }
     finished_changed_.notify_all();

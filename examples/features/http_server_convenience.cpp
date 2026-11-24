@@ -69,9 +69,11 @@ int main() {
         Server server(server_info, server_caps);
 
         // Register a simple echo tool
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"text", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"text"})}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"text", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"text"})},
+        };
 
         server.add_tool<nlohmann::json, CallToolResult>(
             "echo", "Echo the input text", tool_schema,

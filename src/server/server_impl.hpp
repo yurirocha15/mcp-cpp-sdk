@@ -23,6 +23,7 @@
 #include "mrtr.hpp"
 #include "task_run.hpp"
 
+#include <algorithm>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
@@ -111,13 +112,13 @@ template <typename Derived>
 class BySchemaCache {
    public:
     std::shared_ptr<const Derived> find(const CompiledSchema& schema) {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         const auto entry = entries_.find(&schema.schema());
         return entry == entries_.end() ? nullptr : entry->second.lock();
     }
 
     void insert(const std::shared_ptr<const Derived>& derived) {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (entries_.size() >= g_max_entries) {
             std::erase_if(entries_, [](const auto& entry) { return entry.second.expired(); });
             if (entries_.size() >= g_max_entries) {
@@ -243,7 +244,7 @@ inline CompiledToolSchemas compile_tool_schemas(const std::string& name,
             auto headers = detail::collect_param_headers(input_schema);
             if (compiled) {
                 param_headers = std::make_shared<const ToolParamHeaders>(
-                    ToolParamHeaders{*compiled, std::move(headers)});
+                    ToolParamHeaders{.schema = *compiled, .headers = std::move(headers)});
             }
         } catch (const std::invalid_argument& error) {
             throw refuse(SchemaError::Category::eInvalidSchema, "inputSchema", error.what());
@@ -260,7 +261,9 @@ inline CompiledToolSchemas compile_tool_schemas(const std::string& name,
     if (output_schema != nullptr) {
         output = compile(*output_schema, "outputSchema");
     }
-    return {std::move(input), std::move(output), std::move(param_headers)};
+    return {.input = std::move(input),
+            .output = std::move(output),
+            .param_headers = std::move(param_headers)};
 }
 
 /// One state of a URI template's matching automaton.
@@ -405,14 +408,26 @@ inline void append_regex_literal(std::string& pattern, char ch) {
 }
 
 inline void append_literal_state(std::vector<UriMatchState>& states, char ch) {
-    states.push_back({UriMatchState::Kind::eLiteral, ch, {}, states.size() + 1, 0});
+    states.push_back({.kind = UriMatchState::Kind::eLiteral,
+                      .literal = ch,
+                      .excluded = {},
+                      .next = states.size() + 1,
+                      .alternative = 0});
 }
 
 /// `[^excluded]+`
 inline void append_run_states(std::vector<UriMatchState>& states, std::string_view excluded) {
     const auto first = states.size();
-    states.push_back({UriMatchState::Kind::eExcept, 0, excluded, first + 1, 0});
-    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first, first + 2});
+    states.push_back({.kind = UriMatchState::Kind::eExcept,
+                      .literal = 0,
+                      .excluded = excluded,
+                      .next = first + 1,
+                      .alternative = 0});
+    states.push_back({.kind = UriMatchState::Kind::eSplit,
+                      .literal = 0,
+                      .excluded = {},
+                      .next = first,
+                      .alternative = first + 2});
 }
 
 /// `(?:<prefix>[^excluded]+)?` when `non_empty`, else `(?:<prefix>[^excluded]*)?`.
@@ -420,24 +435,64 @@ inline void append_prefixed_run_states(std::vector<UriMatchState>& states, char 
                                        std::string_view excluded, bool non_empty) {
     const auto first = states.size();
     const auto end = first + 4;
-    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 1, end});
-    states.push_back({UriMatchState::Kind::eLiteral, prefix, {}, first + 2, 0});
+    states.push_back({.kind = UriMatchState::Kind::eSplit,
+                      .literal = 0,
+                      .excluded = {},
+                      .next = first + 1,
+                      .alternative = end});
+    states.push_back({.kind = UriMatchState::Kind::eLiteral,
+                      .literal = prefix,
+                      .excluded = {},
+                      .next = first + 2,
+                      .alternative = 0});
     if (non_empty) {
-        states.push_back({UriMatchState::Kind::eExcept, 0, excluded, first + 3, 0});
-        states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 2, end});
+        states.push_back({.kind = UriMatchState::Kind::eExcept,
+                          .literal = 0,
+                          .excluded = excluded,
+                          .next = first + 3,
+                          .alternative = 0});
+        states.push_back({.kind = UriMatchState::Kind::eSplit,
+                          .literal = 0,
+                          .excluded = {},
+                          .next = first + 2,
+                          .alternative = end});
     } else {
-        states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 3, end});
-        states.push_back({UriMatchState::Kind::eExcept, 0, excluded, first + 2, 0});
+        states.push_back({.kind = UriMatchState::Kind::eSplit,
+                          .literal = 0,
+                          .excluded = {},
+                          .next = first + 3,
+                          .alternative = end});
+        states.push_back({.kind = UriMatchState::Kind::eExcept,
+                          .literal = 0,
+                          .excluded = excluded,
+                          .next = first + 2,
+                          .alternative = 0});
     }
 }
 
 /// `(?:\.[^/?#]+)*`, the label expansion's `(?:\.[^/?#]+(?:\.[^/?#]+)*)?`.
 inline void append_label_states(std::vector<UriMatchState>& states) {
     const auto first = states.size();
-    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 1, first + 4});
-    states.push_back({UriMatchState::Kind::eLiteral, '.', {}, first + 2, 0});
-    states.push_back({UriMatchState::Kind::eExcept, 0, "/?#", first + 3, 0});
-    states.push_back({UriMatchState::Kind::eSplit, 0, {}, first + 2, first});
+    states.push_back({.kind = UriMatchState::Kind::eSplit,
+                      .literal = 0,
+                      .excluded = {},
+                      .next = first + 1,
+                      .alternative = first + 4});
+    states.push_back({.kind = UriMatchState::Kind::eLiteral,
+                      .literal = '.',
+                      .excluded = {},
+                      .next = first + 2,
+                      .alternative = 0});
+    states.push_back({.kind = UriMatchState::Kind::eExcept,
+                      .literal = 0,
+                      .excluded = "/?#",
+                      .next = first + 3,
+                      .alternative = 0});
+    states.push_back({.kind = UriMatchState::Kind::eSplit,
+                      .literal = 0,
+                      .excluded = {},
+                      .next = first + 2,
+                      .alternative = first});
 }
 
 inline void append_uri_expression_pattern(std::string& pattern, std::vector<UriMatchState>& states,
@@ -527,9 +582,13 @@ inline UriTemplatePattern compile_uri_template(std::string_view uri_template) {
         index = close + 1;
     }
     pattern += '$';
-    states.push_back({UriMatchState::Kind::eMatch, 0, {}, 0, 0});
+    states.push_back({.kind = UriMatchState::Kind::eMatch,
+                      .literal = 0,
+                      .excluded = {},
+                      .next = 0,
+                      .alternative = 0});
 
-    return UriTemplatePattern{std::move(pattern), std::move(states)};
+    return UriTemplatePattern{.source = std::move(pattern), .matcher = std::move(states)};
 }
 
 // Before 2026-07-28 structuredContent is an object; a 2026-07-28 response may hold any JSON value.
@@ -581,12 +640,12 @@ inline nlohmann::json normalize_structured_tool_result(nlohmann::json result, bo
         if (is_serialized_call_tool_result(result, modern)) {
             return result;
         }
-        return nlohmann::json(make_tool_structured_result(std::move(result)));
+        return {make_tool_structured_result(std::move(result))};
     }
     if (result.is_string()) {
-        return nlohmann::json(make_tool_text_result(result.get<std::string>()));
+        return {make_tool_text_result(result.get<std::string>())};
     }
-    return nlohmann::json(make_tool_text_result(mcp::detail::dump_json(result)));
+    return {make_tool_text_result(mcp::detail::dump_json(result))};
 }
 
 /// The `_meta` of a message that belongs to the subscriptions/listen request with id @p listen_id.
@@ -640,7 +699,7 @@ inline CallToolView view_call_tool_params(const nlohmann::json& message) {
         if (detail::has_json_value(params, "_meta")) {
             meta = &params.at("_meta");
         }
-        return {&name.get_ref<const std::string&>(), arguments, meta};
+        return {.name = &name.get_ref<const std::string&>(), .arguments = arguments, .meta = meta};
     } catch (const nlohmann::json::exception& error) {
         throw InvalidParamsError("Invalid tools/call params: " + std::string(error.what()));
     } catch (const std::invalid_argument& error) {
@@ -720,7 +779,8 @@ inline bool is_valid_response_envelope(const nlohmann::json& message) {
 inline std::string make_invalid_request_wire(const nlohmann::json& message, std::string_view reason) {
     nlohmann::json wire = {
         {"jsonrpc", "2.0"},
-        {"error", {{"code", mcp::constants::jsonrpc::g_INVALID_REQUEST}, {"message", reason}}}};
+        {"error", {{"code", mcp::constants::jsonrpc::g_INVALID_REQUEST}, {"message", reason}}},
+    };
     if (message.is_object() && has_valid_request_id(message)) {
         wire["id"] = message.at("id");
     }
@@ -730,7 +790,8 @@ inline std::string make_invalid_request_wire(const nlohmann::json& message, std:
 inline std::string make_parse_error_wire() {
     return mcp::detail::dump_json(nlohmann::json{
         {"jsonrpc", "2.0"},
-        {"error", {{"code", mcp::constants::jsonrpc::g_PARSE_ERROR}, {"message", "Parse error"}}}});
+        {"error", {{"code", mcp::constants::jsonrpc::g_PARSE_ERROR}, {"message", "Parse error"}}},
+    });
 }
 
 inline bool policy_allows_legacy_version(const ServerProtocolPolicy& policy, std::string_view version) {
@@ -787,7 +848,7 @@ class NullTransport : public ITransport {
         throw std::runtime_error("stateless direct dispatch has no readable transport");
     }
 
-    Task<void> write_message(std::string_view) override { co_return; }
+    Task<void> write_message(std::string_view /*message*/) override { co_return; }
 
     void close() override {}
 };
@@ -927,7 +988,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         /// out before it, so the message waits in `pending` and the request sends it afterwards.
         /// Returns whether the caller is to send it.
         bool deliver_or_defer(const std::shared_ptr<const std::string>& message) {
-            std::lock_guard lock(gate);
+            std::scoped_lock lock(gate);
             if (acknowledged) {
                 return true;
             }
@@ -1243,7 +1304,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// The servers sharing this one's registry that are still alive, this one included.
     [[nodiscard]] std::vector<std::shared_ptr<Impl>> registry_members() {
         std::vector<std::shared_ptr<Impl>> alive;
-        std::lock_guard lock(registry->members_mutex);
+        std::scoped_lock lock(registry->members_mutex);
         auto& members = registry->members;
         members.erase(std::remove_if(members.begin(), members.end(),
                                      [&alive](const std::weak_ptr<Impl>& member) {
@@ -1265,7 +1326,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
 
     /// Whether the client's initialize request declared `sampling.context`.
     [[nodiscard]] bool client_declares_sampling_context() const {
-        std::lock_guard lock(client_capabilities_mutex);
+        std::scoped_lock lock(client_capabilities_mutex);
         const auto sampling = client_capabilities.find("sampling");
         return sampling != client_capabilities.end() && sampling->is_object() &&
                sampling->contains("context");
@@ -1318,7 +1379,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     static Task<std::string> dispatch_for_http(std::weak_ptr<Impl> weak, nlohmann::json json_msg,
                                                RequestContext request_context);
     void dispatch_notification(const nlohmann::json& json_msg);
-    void dispatch_response(const nlohmann::json& json_msg);
+    void dispatch_response(const nlohmann::json& json_msg) const;
     /// Sends a request to the client. @p related_request, when set, is the id as JSON text of the
     /// client request whose handler asks (see RequestScope::related_request).
     Task<nlohmann::json> send_request(std::shared_ptr<std::atomic<bool>> caller_cancelled,
@@ -1337,15 +1398,15 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     static Task<void> write_to_session(const Session& session, std::shared_ptr<const std::string> wire,
                                        const std::shared_ptr<const std::string>& related_request);
     Task<void> send_notification(const std::string& method,
-                                 const std::optional<nlohmann::json>& params);
+                                 const std::optional<nlohmann::json>& params) const;
     /// send_notification() as part of a notification to every session sharing the registry: a
     /// session that cannot take it, such as one closing meanwhile, misses it without stopping the
     /// notification of the others.
     Task<void> send_broadcast(const std::string& method);
     /// notify_resource_updated() in the same way.
     Task<void> broadcast_resource_updated(const std::string& uri);
-    Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
-                                                 std::shared_ptr<const std::string> uri);
+    static Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
+                                                        std::shared_ptr<const std::string> uri);
 
     Task<void> dispatch_request(nlohmann::json json_msg, std::shared_ptr<const std::string> principal);
     /// @p checked_modern, when set, says that the caller found the envelope valid and whether the
@@ -1362,16 +1423,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
                                            RequestScope scope);
     /// Where the notifications of a request go, given how it arrived. Sets @p transport and
     /// @p epoch to the session's transport and session when that is the route.
-    MessageSender notification_route(std::shared_ptr<std::atomic<bool>> cancelled,
-                                     const std::shared_ptr<const RequestMetadata>& request_meta,
-                                     bool session_request, MessageSender notifications,
-                                     const std::shared_ptr<Session>& session, ITransport** transport,
-                                     std::uint64_t* epoch,
-                                     std::shared_ptr<const std::string> related_request = nullptr);
+    static MessageSender notification_route(
+        std::shared_ptr<std::atomic<bool>> cancelled,
+        const std::shared_ptr<const RequestMetadata>& request_meta, bool session_request,
+        MessageSender notifications, const std::shared_ptr<Session>& session, ITransport** transport,
+        std::uint64_t* epoch, std::shared_ptr<const std::string> related_request = nullptr);
     Task<std::string> handle_initialize_wire(const nlohmann::json& json_msg, bool update_lifecycle);
     Task<std::string> handle_shutdown_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
-    Task<std::string> handle_discover_wire(const nlohmann::json& json_msg, const RequestScope& scope);
+    static Task<std::string> handle_ping_wire(const nlohmann::json& json_msg);
+    Task<std::string> handle_discover_wire(const nlohmann::json& json_msg,
+                                           const RequestScope& scope) const;
     Task<std::string> handle_extension_wire(const nlohmann::json& json_msg, const RequestScope& scope,
                                             const TypeErasedHandler& handler);
     Task<std::string> handle_tools_call_wire(const nlohmann::json& json_msg, const RequestScope& scope);
@@ -1486,7 +1547,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     [[nodiscard]] std::string initialize_not_served_wire(const RequestId& id) const;
     [[nodiscard]] std::string unsupported_version_wire(const RequestId& id,
                                                        std::string requested) const;
-    std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
+    std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg) const;
 
     /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
     /// client for input: the request is then answered input_required, and a retry carrying its

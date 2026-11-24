@@ -40,9 +40,10 @@ SplitResource split_resource(std::string_view resource) {
     }
 
     if (authority_end == std::string_view::npos) {
-        return SplitResource{trimmed, {}};
+        return SplitResource{.origin = trimmed, .path = {}};
     }
-    return SplitResource{trimmed.substr(0, authority_end), trimmed.substr(authority_end)};
+    return SplitResource{.origin = trimmed.substr(0, authority_end),
+                         .path = trimmed.substr(authority_end)};
 }
 
 /// @brief Reject an explicit metadata path that cannot be appended to an origin as it stands.
@@ -126,10 +127,10 @@ std::string format_www_authenticate(const BearerChallengeConfig& config) {
         std::string_view value;
     };
     const Parameter parameters[] = {
-        {"realm", config.realm},
-        {"error", config.error},
-        {"scope", config.scope},
-        {"resource_metadata", config.resource_metadata},
+        {.key = "realm", .value = config.realm},
+        {.key = "error", .value = config.error},
+        {.key = "scope", .value = config.scope},
+        {.key = "resource_metadata", .value = config.resource_metadata},
     };
 
     for (const auto& [key, value] : parameters) {

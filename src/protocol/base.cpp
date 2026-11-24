@@ -25,9 +25,9 @@ namespace {
     }
     if (value.is_number_float()) {
         const auto number = value.get<double>();
-        return !(number >= static_cast<double>(std::numeric_limits<int>::min()) &&
-                 number <= static_cast<double>(std::numeric_limits<int>::max()) &&
-                 number == std::trunc(number));
+        return number < static_cast<double>(std::numeric_limits<int>::min()) ||
+               number > static_cast<double>(std::numeric_limits<int>::max()) ||
+               number != std::trunc(number);
     }
     return false;
 }

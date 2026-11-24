@@ -183,7 +183,7 @@ struct OAuthDiscoveryClient::Impl {
         // never served an entry discovered through the well-known fallback.
         auto cache_key = challenge_metadata_url.value_or(resource_url);
         {
-            std::lock_guard lock(owner->cache_mutex);
+            std::scoped_lock lock(owner->cache_mutex);
             const auto iter = owner->resource_cache.find(cache_key);
             if (iter != owner->resource_cache.end() && !iter->second.is_expired()) {
                 return return_accepted_cached(
@@ -218,7 +218,7 @@ struct OAuthDiscoveryClient::Impl {
     static Task<AuthServerMetadata> discover_auth_server(std::shared_ptr<Impl> owner,
                                                          std::string issuer_url) {
         {
-            std::lock_guard lock(owner->cache_mutex);
+            std::scoped_lock lock(owner->cache_mutex);
             const auto iter = owner->auth_cache.find(issuer_url);
             if (iter != owner->auth_cache.end() && !iter->second.is_expired()) {
                 return return_cached(std::make_shared<AuthServerMetadata>(iter->second.data));
@@ -273,10 +273,10 @@ struct OAuthDiscoveryClient::Impl {
             }
 
             {
-                std::lock_guard lock(operation->owner->cache_mutex);
+                std::scoped_lock lock(operation->owner->cache_mutex);
                 operation->owner->resource_cache[operation->cache_key] = {
-                    *operation->metadata,
-                    std::chrono::steady_clock::now() + operation->owner->cache_ttl,
+                    .data = *operation->metadata,
+                    .expires_at = std::chrono::steady_clock::now() + operation->owner->cache_ttl,
                 };
             }
             co_return *operation->metadata;
@@ -292,10 +292,10 @@ struct OAuthDiscoveryClient::Impl {
                 operation->response = co_await operation->owner->http_client->get_json(url);
                 operation->metadata = operation->response.get<AuthServerMetadata>();
 
-                std::lock_guard lock(operation->owner->cache_mutex);
+                std::scoped_lock lock(operation->owner->cache_mutex);
                 operation->owner->auth_cache[operation->cache_key] = {
-                    *operation->metadata,
-                    std::chrono::steady_clock::now() + operation->owner->cache_ttl,
+                    .data = *operation->metadata,
+                    .expires_at = std::chrono::steady_clock::now() + operation->owner->cache_ttl,
                 };
                 co_return *operation->metadata;
             } catch (const MetadataPolicyError&) {
@@ -343,12 +343,12 @@ Task<AuthServerMetadata> OAuthDiscoveryClient::discover_auth_server(const std::s
 
 void OAuthDiscoveryClient::forget_protected_resource(
     const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url) {
-    std::lock_guard lock(impl_->cache_mutex);
+    std::scoped_lock lock(impl_->cache_mutex);
     impl_->resource_cache.erase(challenge_metadata_url.value_or(resource_url));
 }
 
 void OAuthDiscoveryClient::clear_cache() {
-    std::lock_guard lock(impl_->cache_mutex);
+    std::scoped_lock lock(impl_->cache_mutex);
     impl_->resource_cache.clear();
     impl_->auth_cache.clear();
 }

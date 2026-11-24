@@ -57,16 +57,18 @@ inline const std::string* requested_protocol_version(const nlohmann::json& messa
 /// Reads a logging level by its spec name. The enum's JSON conversion maps an unknown name to the
 /// first level instead of failing, so names are matched here.
 inline bool parse_logging_level(const nlohmann::json& value, LoggingLevel& level) {
-    static constexpr std::array<std::pair<std::string_view, LoggingLevel>, 8> s_levels{{
-        {"emergency", LoggingLevel::eEmergency},
-        {"alert", LoggingLevel::eAlert},
-        {"critical", LoggingLevel::eCritical},
-        {"error", LoggingLevel::eError},
-        {"warning", LoggingLevel::eWarning},
-        {"notice", LoggingLevel::eNotice},
-        {"info", LoggingLevel::eInfo},
-        {"debug", LoggingLevel::eDebug},
-    }};
+    static constexpr std::array<std::pair<std::string_view, LoggingLevel>, 8> s_levels{
+        {
+            {"emergency", LoggingLevel::eEmergency},
+            {"alert", LoggingLevel::eAlert},
+            {"critical", LoggingLevel::eCritical},
+            {"error", LoggingLevel::eError},
+            {"warning", LoggingLevel::eWarning},
+            {"notice", LoggingLevel::eNotice},
+            {"info", LoggingLevel::eInfo},
+            {"debug", LoggingLevel::eDebug},
+        },
+    };
     if (!value.is_string()) {
         return false;
     }
@@ -97,8 +99,11 @@ inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann:
 
     const auto capabilities = meta.find(mcp::constants::meta::g_META_CLIENT_CAPABILITIES);
     if (capabilities == meta.end()) {
-        return {nullptr, "Missing " + std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES) +
-                             " in _meta"};
+        return {
+            .metadata = nullptr,
+            .error = "Missing " + std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES) +
+                     " in _meta",
+        };
     }
     try {
         if (!capabilities->is_object()) {
@@ -106,8 +111,11 @@ inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann:
         }
         metadata->clientCapabilities = capabilities->get<ClientCapabilities>();
     } catch (const std::exception&) {
-        return {nullptr, "Invalid " + std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES) +
-                             " in _meta"};
+        return {
+            .metadata = nullptr,
+            .error = "Invalid " + std::string(mcp::constants::meta::g_META_CLIENT_CAPABILITIES) +
+                     " in _meta",
+        };
     }
 
     if (const auto client_info = meta.find(mcp::constants::meta::g_META_CLIENT_INFO);
@@ -118,8 +126,11 @@ inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann:
             }
             metadata->clientInfo = client_info->get<Implementation>();
         } catch (const std::exception&) {
-            return {nullptr,
-                    "Invalid " + std::string(mcp::constants::meta::g_META_CLIENT_INFO) + " in _meta"};
+            return {
+                .metadata = nullptr,
+                .error =
+                    "Invalid " + std::string(mcp::constants::meta::g_META_CLIENT_INFO) + " in _meta",
+            };
         }
     }
 
@@ -127,13 +138,15 @@ inline RequestMetaParse parse_request_meta(const std::shared_ptr<const nlohmann:
         log_level != meta.end() && !log_level->is_null()) {
         LoggingLevel level{};
         if (!parse_logging_level(*log_level, level)) {
-            return {nullptr,
-                    "Invalid " + std::string(mcp::constants::meta::g_META_LOG_LEVEL) + " in _meta"};
+            return {
+                .metadata = nullptr,
+                .error = "Invalid " + std::string(mcp::constants::meta::g_META_LOG_LEVEL) + " in _meta",
+            };
         }
         metadata->logLevel = level;
     }
 
-    return {std::move(metadata), {}};
+    return {.metadata = std::move(metadata), .error = {}};
 }
 
 }  // namespace mcp::detail

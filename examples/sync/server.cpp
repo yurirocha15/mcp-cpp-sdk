@@ -30,21 +30,23 @@ int main(int argc, char** argv) {
     server.set_handler_executor(pool.executor());
 
     // Tools.
-    server.add_tool("greet", "Greets someone by name",
-                    mcp::tool_params({{"name", "string", "Who to greet"}}),
-                    [](const nlohmann::json& args) -> nlohmann::json {
-                        return "Hello, " + args.at("name").get<std::string>() + "!";
-                    });
+    server.add_tool(
+        "greet", "Greets someone by name",
+        mcp::tool_params({{.name = "name", .type = "string", .description = "Who to greet"}}),
+        [](const nlohmann::json& args) -> nlohmann::json {
+            return "Hello, " + args.at("name").get<std::string>() + "!";
+        });
 
     // Logging and progress. A server that logs declares the logging capability.
     server.capabilities().logging = nlohmann::json::object();
-    server.add_tool("compose_greeting", "Composes a greeting, logging and reporting progress",
-                    mcp::tool_params({{"name", "string", "Who to greet"}}),
-                    [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
-                        co_await ctx.log_info("Composing a greeting");
-                        co_await ctx.report_progress(1, 1);
-                        co_return "Hello, " + args.at("name").get<std::string>() + "!";
-                    });
+    server.add_tool(
+        "compose_greeting", "Composes a greeting, logging and reporting progress",
+        mcp::tool_params({{.name = "name", .type = "string", .description = "Who to greet"}}),
+        [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
+            co_await ctx.log_info("Composing a greeting");
+            co_await ctx.report_progress(1, 1);
+            co_return "Hello, " + args.at("name").get<std::string>() + "!";
+        });
 
     // Resources.
     server.add_text_resource("greeter://motd", "Message of the day",
@@ -56,15 +58,16 @@ int main(int argc, char** argv) {
     auto last = std::make_shared<std::string>("nobody");
     auto last_mutex = std::make_shared<std::mutex>();
     server.add_text_resource(last_uri, "The last name remembered", [last, last_mutex] {
-        const std::lock_guard lock(*last_mutex);
+        const std::scoped_lock lock(*last_mutex);
         return *last;
     });
     server.capabilities().resources->subscribe = true;
     server.add_tool(
-        "remember", "Remembers a name", mcp::tool_params({{"name", "string", "The name"}}),
+        "remember", "Remembers a name",
+        mcp::tool_params({{.name = "name", .type = "string", .description = "The name"}}),
         [&server, &last_uri, last, last_mutex](const nlohmann::json& args) -> nlohmann::json {
             {
-                const std::lock_guard lock(*last_mutex);
+                const std::scoped_lock lock(*last_mutex);
                 *last = args.at("name").get<std::string>();
             }
             server.sync().notify_resource_updated(last_uri);
@@ -86,32 +89,35 @@ int main(int argc, char** argv) {
     });
 
     // Elicitation: a tool asks the user, through the client, to fill in a form.
-    server.add_tool("greet_formally", "Greets someone by the title the user gives",
-                    mcp::tool_params({{"name", "string", "Who to greet"}}),
-                    [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
-                        mcp::ElicitRequestFormParams form;
-                        form.message = "How should they be addressed?";
-                        form.requestedSchema =
-                            mcp::tool_params({{"title", "string", "Such as Dr. or Ms."}});
-                        const mcp::ElicitRequestParams question = form;
-                        const auto answer = co_await ctx.elicit(question);
-                        const auto title = answer.action == mcp::ElicitAction::eAccept && answer.content
-                                               ? answer.content->value("title", std::string()) + " "
-                                               : std::string();
-                        co_return "Hello, " + title + args.at("name").get<std::string>() + "!";
-                    });
+    server.add_tool(
+        "greet_formally", "Greets someone by the title the user gives",
+        mcp::tool_params({{.name = "name", .type = "string", .description = "Who to greet"}}),
+        [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
+            mcp::ElicitRequestFormParams form;
+            form.message = "How should they be addressed?";
+            form.requestedSchema = mcp::tool_params(
+                {{.name = "title", .type = "string", .description = "Such as Dr. or Ms."}});
+            const mcp::ElicitRequestParams question = form;
+            const auto answer = co_await ctx.elicit(question);
+            const auto title = answer.action == mcp::ElicitAction::eAccept && answer.content
+                                   ? answer.content->value("title", std::string()) + " "
+                                   : std::string();
+            co_return "Hello, " + title + args.at("name").get<std::string>() + "!";
+        });
 
     // Sampling: a tool asks the client's model for a reply.
     server.add_tool(
         "write_greeting", "Asks the client's model to write a greeting",
-        mcp::tool_params({{"name", "string", "Who to greet"}}),
+        mcp::tool_params({{.name = "name", .type = "string", .description = "Who to greet"}}),
         [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
             mcp::CreateMessageRequestParams request;
             request.maxTokens = 100;
-            request.messages.push_back(
-                {mcp::Role::eUser,
-                 mcp::TextContent{.text = "Write a greeting for " + args.at("name").get<std::string>()},
-                 std::nullopt});
+            request.messages.push_back({
+                .role = mcp::Role::eUser,
+                .content = mcp::TextContent{.text = "Write a greeting for " +
+                                                    args.at("name").get<std::string>()},
+                .meta = std::nullopt,
+            });
             const auto reply = co_await ctx.sample_llm(request);
             const auto* block = std::get_if<mcp::ContentBlock>(&reply.content);
             const auto* text = block != nullptr ? std::get_if<mcp::TextContent>(block) : nullptr;
@@ -150,7 +156,8 @@ int main(int argc, char** argv) {
     mcp::Tool card;
     card.name = "greeting_card";
     card.description = "Shows a greeting card";
-    card.inputSchema = mcp::tool_params({{"name", "string", "Who to greet"}});
+    card.inputSchema =
+        mcp::tool_params({{.name = "name", .type = "string", .description = "Who to greet"}});
     mcp::apps::add_view_tool(
         server, card, {.resourceUri = view.uri, .visibility = std::nullopt},
         [](const nlohmann::json& args) -> nlohmann::json {
@@ -161,13 +168,17 @@ int main(int argc, char** argv) {
     mcp::skills::SkillsExtension skills(server);
     mcp::skills::SkillDefinition greeting;
     greeting.path = "greeting";
-    greeting.frontmatter = {{"name", "greeting"},
-                            {"description", "How to greet people with the greet tool"}};
-    greeting.files.push_back({"SKILL.md",
-                              "---\nname: greeting\ndescription: How to greet people with the "
-                              "greet tool\n---\nCall greet with the person's name.\n",
-                              std::nullopt,
-                              {}});
+    greeting.frontmatter = {
+        {"name", "greeting"},
+        {"description", "How to greet people with the greet tool"},
+    };
+    greeting.files.push_back({
+        .path = "SKILL.md",
+        .content = "---\nname: greeting\ndescription: How to greet people with the "
+                   "greet tool\n---\nCall greet with the person's name.\n",
+        .mime_type = std::nullopt,
+        .generate = {},
+    });
     skills.add_skill(std::move(greeting));
 
     // HTTP until a signal: run_http() runs the event loop and handles SIGINT and SIGTERM, and

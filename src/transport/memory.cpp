@@ -61,12 +61,12 @@ struct MemoryTransportState {
     ~MemoryTransportState() { close_endpoint(lock_peer()); }
 
     std::shared_ptr<MemoryTransportState> lock_peer() const {
-        std::lock_guard lock(peer_mutex);
+        std::scoped_lock lock(peer_mutex);
         return peer.lock();
     }
 
     void set_peer(const std::shared_ptr<MemoryTransportState>& new_peer) {
-        std::lock_guard lock(peer_mutex);
+        std::scoped_lock lock(peer_mutex);
         peer = new_peer;
     }
 
@@ -232,7 +232,9 @@ Task<std::optional<detail::MemoryTransportAccess::RelatedMessage>> read_related_
     }
     auto related_request = std::move(message->related_request);
     co_return detail::MemoryTransportAccess::RelatedMessage{
-        detail::MemoryTransportState::as_string(std::move(*message)), std::move(related_request)};
+        .message = detail::MemoryTransportState::as_string(std::move(*message)),
+        .related_request = std::move(related_request),
+    };
 }
 
 // A read touches the queue and the waiters, which belong to the endpoint's strand. A reader whose

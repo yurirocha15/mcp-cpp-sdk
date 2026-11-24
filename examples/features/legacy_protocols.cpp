@@ -48,7 +48,7 @@ const char* era_name(mcp::ProtocolEra era) {
 }
 
 const std::string g_RESOURCE_URI = "mcp://example/counter";
-const mcp::Implementation g_CLIENT_INFO{"legacy-protocols-example-client", "1.0.0"};
+const mcp::Implementation g_CLIENT_INFO{.name = "legacy-protocols-example-client", .version = "1.0.0"};
 
 std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy) {
     mcp::ServerCapabilities caps;
@@ -58,16 +58,25 @@ std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy
     caps.resources = resources;
 
     auto server = std::make_shared<mcp::Server>(
-        mcp::Implementation{"legacy-protocols-example-server", "1.0.0"}, caps);
+        mcp::Implementation{.name = "legacy-protocols-example-server", .version = "1.0.0"}, caps);
 
     mcp::Resource resource;
     resource.uri = g_RESOURCE_URI;
     resource.name = "counter";
     resource.mimeType = "text/plain";
     server->add_resource<json, json>(resource, [](const json& /*params*/) -> json {
-        return json{{"contents", json::array({json{{"uri", g_RESOURCE_URI},
-                                                   {"mimeType", "text/plain"},
-                                                   {"text", "counter value: 1"}}})}};
+        return json{
+            {
+                "contents",
+                json::array({
+                    json{
+                        {"uri", g_RESOURCE_URI},
+                        {"mimeType", "text/plain"},
+                        {"text", "counter value: 1"},
+                    },
+                }),
+            },
+        };
     });
 
     server->set_protocol_policy(policy);

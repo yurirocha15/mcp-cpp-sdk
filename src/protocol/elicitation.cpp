@@ -149,7 +149,7 @@ std::int64_t integer_bound(double value, bool is_minimum) {
 /// throws std::invalid_argument.
 std::int64_t integer_default(double value) {
     constexpr double k_limit = 9223372036854775808.0;
-    if (!(value >= -k_limit && value < k_limit) || std::trunc(value) != value) {
+    if (value < -k_limit || value >= k_limit || std::trunc(value) != value) {
         throw std::invalid_argument("An integer elicitation field's default is not an int64 integer");
     }
     return static_cast<std::int64_t>(value);
@@ -407,9 +407,11 @@ void from_json(const nlohmann::json& json_obj, ElicitRequestURLParams& params) {
 }
 
 void to_json(nlohmann::json& json_obj, const ElicitRequestFormParams& params) {
-    json_obj = nlohmann::json{{"mode", params.mode},
-                              {"message", params.message},
-                              {"requestedSchema", params.requestedSchema}};
+    json_obj = nlohmann::json{
+        {"mode", params.mode},
+        {"message", params.message},
+        {"requestedSchema", params.requestedSchema},
+    };
     if (params.meta) {
         json_obj["_meta"] = *params.meta;
     }

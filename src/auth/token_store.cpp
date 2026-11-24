@@ -58,12 +58,12 @@ InMemoryTokenStore::InMemoryTokenStore() : impl_(std::make_unique<Impl>()) {}
 InMemoryTokenStore::~InMemoryTokenStore() = default;
 
 void InMemoryTokenStore::store(const std::string& server_url, TokenResponse token) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     impl_->tokens[server_url] = std::move(token);
 }
 
 std::optional<TokenResponse> InMemoryTokenStore::load(const std::string& server_url) const {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     const auto iter = impl_->tokens.find(server_url);
     if (iter == impl_->tokens.end()) {
         return std::nullopt;
@@ -72,7 +72,7 @@ std::optional<TokenResponse> InMemoryTokenStore::load(const std::string& server_
 }
 
 void InMemoryTokenStore::remove(const std::string& server_url) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     impl_->tokens.erase(server_url);
 }
 

@@ -7,12 +7,14 @@ int main() {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
 
-        mcp::Implementation info{"hello-server", "1.0.0"};
+        mcp::Implementation info{.name = "hello-server", .version = "1.0.0"};
         mcp::Server server(info, caps);
 
-        nlohmann::json schema = {{"type", "object"},
-                                 {"properties", {{"name", {{"type", "string"}}}}},
-                                 {"required", nlohmann::json::array({"name"})}};
+        nlohmann::json schema = {
+            {"type", "object"},
+            {"properties", {{"name", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"name"})},
+        };
 
         server.add_tool("hello", "Greets the user", schema,
                         [](const nlohmann::json& args) -> nlohmann::json {

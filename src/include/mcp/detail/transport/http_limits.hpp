@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-#if !defined(_WIN32)
+#ifndef _WIN32
 #include <sys/resource.h>
 #endif
 
@@ -43,7 +43,7 @@ inline std::size_t resolved_max_connections(std::size_t configured) {
         return configured;
     }
     constexpr std::size_t fallback = 4096;
-#if !defined(_WIN32)
+#ifndef _WIN32
     rlimit descriptors{};
     if (::getrlimit(RLIMIT_NOFILE, &descriptors) == 0 && descriptors.rlim_cur != RLIM_INFINITY) {
         const auto limit = static_cast<std::size_t>(descriptors.rlim_cur);
@@ -128,7 +128,8 @@ struct ArrivingStringBody {
         reader(boost::beast::http::header<isRequest, Fields>& /*header*/, value_type& body)
             : body_(body) {}
 
-        void init(const boost::optional<std::uint64_t>& /*length*/, boost::beast::error_code& error) {
+        static void init(const boost::optional<std::uint64_t>& /*length*/,
+                         boost::beast::error_code& error) {
             error = {};
         }
 
@@ -148,7 +149,7 @@ struct ArrivingStringBody {
             return extra;
         }
 
-        void finish(boost::beast::error_code& error) { error = {}; }
+        static void finish(boost::beast::error_code& error) { error = {}; }
 
        private:
         value_type& body_;

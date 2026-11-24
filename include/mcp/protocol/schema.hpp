@@ -146,8 +146,9 @@ class MCP_API CompiledSchema {
      * @throws SchemaError when the schema or one of @p documents cannot be compiled, or when more
      * than 64 documents or a key that is not an absolute URI without a fragment is given.
      */
-    static CompiledSchema compile(const nlohmann::json& schema, const SchemaOptions& options = {},
-                                  const SchemaDocuments& documents = {});
+    static CompiledSchema compile(
+        const nlohmann::json& schema,
+        const SchemaOptions& options = {} const SchemaDocuments& documents = {});
 
     /// Validate @p instance against the schema.
     [[nodiscard]] ValidationResult validate(const nlohmann::json& instance) const;

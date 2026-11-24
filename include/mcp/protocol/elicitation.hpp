@@ -130,8 +130,8 @@ inline TitledEnumSchema to_titled(const EnumSchema& schema) {
     titled.defaultValue = schema.defaultValue;
     for (std::size_t i = 0; i < schema.enumValues.size(); ++i) {
         const bool named = schema.enumNames && i < schema.enumNames->size();
-        titled.options.push_back(
-            {schema.enumValues[i], named ? (*schema.enumNames)[i] : schema.enumValues[i]});
+        titled.options.push_back({.value = schema.enumValues[i],
+                                  .title = named ? (*schema.enumNames)[i] : schema.enumValues[i]});
     }
     return titled;
 }
@@ -395,7 +395,7 @@ MCP_API void from_json(const nlohmann::json& json_obj, ElicitRequest& value);
 enum class ElicitAction : std::uint8_t {
     eAccept,   ///< User submitted the form/confirmed the action.
     eDecline,  ///< User explicitly declined the action.
-    eCancel    ///< User dismissed without making an explicit choice.
+    eCancel,   ///< User dismissed without making an explicit choice.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const ElicitAction& action);

@@ -35,7 +35,7 @@ ProxyOptions ProxyOptions::from_environment() {
     } else {
         // A CGI program: a request's Proxy header arrives as HTTP_PROXY. Windows matches variable
         // names without regard to case, so there http_proxy is that same variable.
-#if !defined(_WIN32)
+#ifndef _WIN32
         options.http_proxy = environment("http_proxy");
 #endif
     }

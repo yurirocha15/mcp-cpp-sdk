@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace sealed_token = mcp::detail::constants::sealed_token;
 
@@ -59,7 +60,8 @@ bool derive_key(const SealKey& master, const std::uint8_t* salt, DerivedGuard& o
         OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO,
                                           const_cast<char*>(sealed_token::g_HKDF_INFO.data()),
                                           sealed_token::g_HKDF_INFO.size()),
-        OSSL_PARAM_construct_end()};
+        OSSL_PARAM_construct_end(),
+    };
     return EVP_KDF_derive(ctx.get(), out.key.data(), out.key.size(), params) == 1;
 }
 
@@ -82,15 +84,15 @@ Codec::Codec(std::vector<SealKey> keys, std::size_t max_token_chars)
 
 SealResult Codec::seal(std::string_view payload) const {
     if (keys_.empty()) {
-        return {{}, SealError::eNoKey};
+        return {.token = {}, .error = SealError::eNoKey};
     }
     const std::size_t raw_size =
         sealed_token::g_HEADER_SIZE + payload.size() + sealed_token::g_TAG_SIZE;
-    const std::size_t encoded_size = (raw_size * 4 + 2) / 3;
+    const std::size_t encoded_size = ((raw_size * 4) + 2) / 3;
     if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) -
                              sealed_token::g_MIN_TOKEN_BYTES ||
         encoded_size > max_token_chars_) {
-        return {{}, SealError::eTooLarge};
+        return {.token = {}, .error = SealError::eTooLarge};
     }
 
     const SealKey& key = keys_.front();
@@ -100,16 +102,16 @@ SealResult Codec::seal(std::string_view payload) const {
     std::memcpy(out + 1, key.kid().data(), sealed_token::g_KID_SIZE);
     std::uint8_t* salt = out + 1 + sealed_token::g_KID_SIZE;
     if (RAND_bytes(salt, to_int(sealed_token::g_SALT_SIZE)) != 1) {
-        return {{}, SealError::eCryptoFailure};
+        return {.token = {}, .error = SealError::eCryptoFailure};
     }
 
     DerivedGuard derived;
     if (!derive_key(key, salt, derived)) {
-        return {{}, SealError::eCryptoFailure};
+        return {.token = {}, .error = SealError::eCryptoFailure};
     }
     const std::unique_ptr<EVP_CIPHER_CTX, CipherCtxDeleter> ctx(EVP_CIPHER_CTX_new());
     if (!ctx) {
-        return {{}, SealError::eCryptoFailure};
+        return {.token = {}, .error = SealError::eCryptoFailure};
     }
     const std::array<std::uint8_t, sealed_token::g_NONCE_SIZE> nonce{};
     std::uint8_t* ciphertext = out + sealed_token::g_HEADER_SIZE;
@@ -130,34 +132,34 @@ SealResult Codec::seal(std::string_view payload) const {
          EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_GET_TAG, to_int(sealed_token::g_TAG_SIZE),
                              ciphertext + payload.size()) == 1;
     if (!ok) {
-        return {{}, SealError::eCryptoFailure};
+        return {.token = {}, .error = SealError::eCryptoFailure};
     }
-    return {base64url_encode(raw), SealError::eNone};
+    return {.token = base64url_encode(raw), .error = SealError::eNone};
 }
 
 OpenResult Codec::open(std::string_view token) const {
     if (token.empty()) {
-        return {{}, OpenError::eEmpty};
+        return {.payload = {}, .error = OpenError::eEmpty};
     }
     if (token.size() > max_token_chars_) {
-        return {{}, OpenError::eTooLarge};
+        return {.payload = {}, .error = OpenError::eTooLarge};
     }
     const auto decoded = base64url_decode(token);
     if (!decoded) {
-        return {{}, OpenError::eBadEncoding};
+        return {.payload = {}, .error = OpenError::eBadEncoding};
     }
     if (decoded->size() < sealed_token::g_MIN_TOKEN_BYTES) {
-        return {{}, OpenError::eTruncated};
+        return {.payload = {}, .error = OpenError::eTruncated};
     }
     const auto* raw = reinterpret_cast<const std::uint8_t*>(decoded->data());
     if (raw[0] != sealed_token::g_VERSION) {
-        return {{}, OpenError::eBadVersion};
+        return {.payload = {}, .error = OpenError::eBadVersion};
     }
     const auto found = std::find_if(keys_.begin(), keys_.end(), [&](const SealKey& key) {
         return std::memcmp(key.kid().data(), raw + 1, sealed_token::g_KID_SIZE) == 0;
     });
     if (found == keys_.end()) {
-        return {{}, OpenError::eUnknownKid};
+        return {.payload = {}, .error = OpenError::eUnknownKid};
     }
 
     const std::uint8_t* salt = raw + 1 + sealed_token::g_KID_SIZE;
@@ -167,11 +169,11 @@ OpenResult Codec::open(std::string_view token) const {
 
     DerivedGuard derived;
     if (!derive_key(*found, salt, derived)) {
-        return {{}, OpenError::eCryptoFailure};
+        return {.payload = {}, .error = OpenError::eCryptoFailure};
     }
     const std::unique_ptr<EVP_CIPHER_CTX, CipherCtxDeleter> ctx(EVP_CIPHER_CTX_new());
     if (!ctx) {
-        return {{}, OpenError::eCryptoFailure};
+        return {.payload = {}, .error = OpenError::eCryptoFailure};
     }
     const std::array<std::uint8_t, sealed_token::g_NONCE_SIZE> nonce{};
     std::string payload(cipher_size, '\0');
@@ -179,27 +181,27 @@ OpenResult Codec::open(std::string_view token) const {
     if (EVP_DecryptInit_ex(ctx.get(), EVP_aes_256_gcm(), nullptr, derived.key.data(), nonce.data()) !=
             1 ||
         EVP_DecryptUpdate(ctx.get(), nullptr, &len, raw, to_int(sealed_token::g_HEADER_SIZE)) != 1) {
-        return {{}, OpenError::eCryptoFailure};
+        return {.payload = {}, .error = OpenError::eCryptoFailure};
     }
     if (cipher_size != 0 &&
         (EVP_DecryptUpdate(ctx.get(), reinterpret_cast<unsigned char*>(payload.data()), &len,
                            ciphertext, to_int(cipher_size)) != 1 ||
-         static_cast<std::size_t>(len) != cipher_size)) {
-        return {{}, OpenError::eCryptoFailure};
+         std::cmp_not_equal(len, cipher_size))) {
+        return {.payload = {}, .error = OpenError::eCryptoFailure};
     }
     std::array<std::uint8_t, sealed_token::g_TAG_SIZE> tag_copy;
     std::memcpy(tag_copy.data(), tag, sealed_token::g_TAG_SIZE);
     if (EVP_CIPHER_CTX_ctrl(ctx.get(), EVP_CTRL_AEAD_SET_TAG, to_int(sealed_token::g_TAG_SIZE),
                             tag_copy.data()) != 1) {
-        return {{}, OpenError::eCryptoFailure};
+        return {.payload = {}, .error = OpenError::eCryptoFailure};
     }
     int final_len = 0;
     if (EVP_DecryptFinal_ex(ctx.get(), reinterpret_cast<unsigned char*>(payload.data()) + cipher_size,
                             &final_len) != 1) {
         OPENSSL_cleanse(payload.data(), payload.size());
-        return {{}, OpenError::eAuthenticationFailed};
+        return {.payload = {}, .error = OpenError::eAuthenticationFailed};
     }
-    return {std::move(payload), OpenError::eNone};
+    return {.payload = std::move(payload), .error = OpenError::eNone};
 }
 
 }  // namespace mcp::detail::sealed_state

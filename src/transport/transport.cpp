@@ -16,7 +16,7 @@ namespace mcp {
 
 Task<IncomingMessage> ITransport::read_incoming() {
     auto message = co_await read_message();
-    co_return IncomingMessage{std::move(message), {}};
+    co_return IncomingMessage{.message = std::move(message), .principal = {}};
 }
 
 Task<void> ITransport::write_related_message(std::string_view message,
@@ -43,14 +43,16 @@ bool is_error(const boost::system::error_code& code, const boost::system::error_
 bool is_connection_end(const boost::system::error_code& code) {
     namespace error = boost::asio::error;
     using http_error = boost::beast::http::error;
-    for (const boost::system::error_code end :
-         {boost::system::error_code(error::eof), boost::system::error_code(error::connection_reset),
-          boost::system::error_code(error::connection_aborted),
-          boost::system::error_code(error::broken_pipe),
-          boost::system::error_code(error::not_connected),
-          boost::system::error_code(http_error::end_of_stream),
-          boost::system::error_code(http_error::partial_message),
-          boost::system::error_code(boost::beast::websocket::error::closed)}) {
+    for (const boost::system::error_code end : {
+             boost::system::error_code(error::eof),
+             boost::system::error_code(error::connection_reset),
+             boost::system::error_code(error::connection_aborted),
+             boost::system::error_code(error::broken_pipe),
+             boost::system::error_code(error::not_connected),
+             boost::system::error_code(http_error::end_of_stream),
+             boost::system::error_code(http_error::partial_message),
+             boost::system::error_code(boost::beast::websocket::error::closed),
+         }) {
         if (is_error(code, end)) {
             return true;
         }

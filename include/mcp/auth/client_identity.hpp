@@ -165,7 +165,7 @@ class MCP_API InMemoryClientCredentialStore : public ClientCredentialStore {
      * @param issuer Authorization server issuer used as the storage key.
      * @return The stored credentials, if present.
      */
-    std::optional<OAuthClientInformation> load(const std::string& issuer) const override;
+    [[nodiscard]] std::optional<OAuthClientInformation> load(const std::string& issuer) const override;
 
     /**
      * @brief Remove credentials from the in-memory cache.

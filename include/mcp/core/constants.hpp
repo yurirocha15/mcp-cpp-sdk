@@ -251,15 +251,19 @@ inline constexpr std::string_view g_LATEST_LEGACY_PROTOCOL_VERSION = g_PROTOCOL_
  * @details initialize negotiates only these versions, whatever the newest supported version is.
  */
 inline constexpr std::array<std::string_view, 4> g_LEGACY_PROTOCOL_VERSIONS = {
-    g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
-    g_PROTOCOL_VERSION_2025_11_25};
+    g_PROTOCOL_VERSION_2024_11_05,
+    g_PROTOCOL_VERSION_2025_03_26,
+    g_PROTOCOL_VERSION_2025_06_18,
+    g_PROTOCOL_VERSION_2025_11_25,
+};
 
 /**
  * @brief Protocol versions whose requests carry their version in `_meta` and need no
  * initialize (2026-07-28 and later).
  */
 inline constexpr std::array<std::string_view, 1> g_MODERN_PROTOCOL_VERSIONS = {
-    g_PROTOCOL_VERSION_2026_07_28};
+    g_PROTOCOL_VERSION_2026_07_28,
+};
 
 /**
  * @brief Every protocol version this SDK supports: the legacy versions, then the modern ones.
@@ -271,7 +275,8 @@ inline constexpr std::array<std::string_view, 1> g_MODERN_PROTOCOL_VERSIONS = {
  */
 inline constexpr std::array<std::string_view, 5> g_SUPPORTED_PROTOCOL_VERSIONS = {
     g_PROTOCOL_VERSION_2024_11_05, g_PROTOCOL_VERSION_2025_03_26, g_PROTOCOL_VERSION_2025_06_18,
-    g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28};
+    g_PROTOCOL_VERSION_2025_11_25, g_PROTOCOL_VERSION_2026_07_28,
+};
 
 }  // namespace protocol
 

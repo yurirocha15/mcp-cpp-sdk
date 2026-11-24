@@ -80,7 +80,7 @@ class EventStore {
     std::string append(std::string data, std::string stream = {}) {
         auto id = std::to_string(++next_id_);
         stored_bytes_ += data.size();
-        events_.push_back(StoredEvent{id, std::move(stream), std::move(data)});
+        events_.push_back(StoredEvent{.id = id, .stream = std::move(stream), .data = std::move(data)});
         while (events_.size() > capacity_ ||
                (events_.size() > 1 && stored_bytes_ > mcp::constants::event_store::g_MAX_BYTES)) {
             stored_bytes_ -= events_.front().data.size();

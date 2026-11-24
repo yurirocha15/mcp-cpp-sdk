@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mcp/auth/challenge.hpp>
 
 #include <mcp/auth/metadata_policy.hpp>
@@ -274,12 +275,16 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
                                                                 const AuthorizationResponse& response) {
     if (!request.state.empty()) {
         if (!response.state) {
-            return {AuthorizationResponseStatus::eStateMissing,
-                    "authorization response omitted the state parameter"};
+            return {
+                .status = AuthorizationResponseStatus::eStateMissing,
+                .message = "authorization response omitted the state parameter",
+            };
         }
         if (*response.state != request.state) {
-            return {AuthorizationResponseStatus::eStateMismatch,
-                    "authorization response state did not match the recorded value"};
+            return {
+                .status = AuthorizationResponseStatus::eStateMismatch,
+                .message = "authorization response state did not match the recorded value",
+            };
         }
     }
 
@@ -287,12 +292,16 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
     // default-port elision, no trailing-slash or percent-encoding normalization.
     if (response.iss) {
         if (*response.iss != request.issuer) {
-            return {AuthorizationResponseStatus::eIssuerMismatch,
-                    "authorization response iss did not match the recorded issuer"};
+            return {
+                .status = AuthorizationResponseStatus::eIssuerMismatch,
+                .message = "authorization response iss did not match the recorded issuer",
+            };
         }
     } else if (request.issuer_parameter_supported) {
-        return {AuthorizationResponseStatus::eIssuerMissing,
-                "authorization server advertises iss support but omitted the parameter"};
+        return {
+            .status = AuthorizationResponseStatus::eIssuerMissing,
+            .message = "authorization server advertises iss support but omitted the parameter",
+        };
     }
 
     // Only an issuer-authentic response may have its error values acted on or displayed.
@@ -302,14 +311,18 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
         // us through a redirect the authorization server controls, and being issuer-authentic makes
         // it trustworthy as to origin, not as to content.
         return {
-            AuthorizationResponseStatus::eServerError,
-            "authorization server returned error " + detail::sanitize_for_diagnostics(*response.error)};
+            .status = AuthorizationResponseStatus::eServerError,
+            .message = "authorization server returned error " +
+                       detail::sanitize_for_diagnostics(*response.error),
+        };
     }
     if (!response.code || response.code->empty()) {
-        return {AuthorizationResponseStatus::eCodeMissing,
-                "authorization response carried no authorization code"};
+        return {
+            .status = AuthorizationResponseStatus::eCodeMissing,
+            .message = "authorization response carried no authorization code",
+        };
     }
-    return {AuthorizationResponseStatus::eAccepted, {}};
+    return {.status = AuthorizationResponseStatus::eAccepted, .message = {}};
 }
 
 }  // namespace mcp::auth

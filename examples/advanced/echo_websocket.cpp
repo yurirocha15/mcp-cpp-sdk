@@ -34,9 +34,11 @@ int main() {
 
         Server server(server_info, caps);
 
-        nlohmann::json schema = {{"type", "object"},
-                                 {"properties", {{"text", {{"type", "string"}}}}},
-                                 {"required", nlohmann::json::array({"text"})}};
+        nlohmann::json schema = {
+            {"type", "object"},
+            {"properties", {{"text", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"text"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "echo", "Echo the input over WebSocket", schema, [](nlohmann::json in) -> nlohmann::json {

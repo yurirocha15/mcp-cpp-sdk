@@ -38,9 +38,13 @@ inline std::optional<SchemaDialect> find_schema_dialect(std::string_view uri) {
     if (!uri.empty() && uri.back() == '#') {
         uri.remove_suffix(1);
     }
-    for (const auto dialect :
-         {SchemaDialect::eDraft202012, SchemaDialect::eDraft201909, SchemaDialect::eDraft7,
-          SchemaDialect::eDraft6, SchemaDialect::eDraft4}) {
+    for (const auto dialect : {
+             SchemaDialect::eDraft202012,
+             SchemaDialect::eDraft201909,
+             SchemaDialect::eDraft7,
+             SchemaDialect::eDraft6,
+             SchemaDialect::eDraft4,
+         }) {
         if (uri == dialect_uri(dialect)) {
             return dialect;
         }

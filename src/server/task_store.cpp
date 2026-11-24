@@ -136,7 +136,7 @@ struct InMemoryTaskStore::Impl {
     // when there is no such task or it has finished.
     template <typename Change>
     std::optional<TaskRecord> change_open(std::string_view id, Change&& change) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         auto* record = find(id);
         if (record == nullptr || record->terminal()) {
             return std::nullopt;
@@ -162,7 +162,7 @@ std::optional<TaskRecord> InMemoryTaskStore::create(
     const std::string owner_text(owner);
     std::string id = mcp::detail::generate_secure_session_id();
 
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     const auto at = impl_->now();
     impl_->purge_expired(at);
     const auto owned = static_cast<std::size_t>(
@@ -187,7 +187,7 @@ std::optional<TaskRecord> InMemoryTaskStore::create(
 }
 
 std::optional<TaskRecord> InMemoryTaskStore::get(std::string_view owner, std::string_view id) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     const auto* record = impl_->find(id);
     if (record == nullptr || record->owner != owner) {
         return std::nullopt;
@@ -238,7 +238,7 @@ std::optional<TaskRecord> InMemoryTaskStore::submit_input_responses(std::string_
 
 std::optional<nlohmann::json> InMemoryTaskStore::take_input_response(std::string_view id,
                                                                      std::string_view key) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     auto* record = impl_->find(id);
     if (record == nullptr) {
         return std::nullopt;
@@ -282,7 +282,7 @@ std::optional<TaskRecord> InMemoryTaskStore::cancel(std::string_view id, std::st
 }
 
 std::size_t InMemoryTaskStore::size() {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     impl_->purge_expired(impl_->now());
     return impl_->tasks.size();
 }

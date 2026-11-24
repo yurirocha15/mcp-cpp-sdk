@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mcp/auth/metadata_policy.hpp>
 #include <mcp/core/async.hpp>
 
@@ -181,7 +182,10 @@ std::optional<CanonicalOrigin> canonicalize_origin_parts(const std::string& orig
         port.reset();
     }
 
-    return CanonicalOrigin{std::move(canonical_scheme), std::move(canonical_host), port, bracketed};
+    return CanonicalOrigin{.scheme = std::move(canonical_scheme),
+                           .host = std::move(canonical_host),
+                           .port = port,
+                           .bracketed = bracketed};
 }
 
 /// Format a `CanonicalOrigin` back into `scheme://authority` text, for list comparison and for the

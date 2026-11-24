@@ -350,7 +350,7 @@ inline constexpr std::chrono::milliseconds g_KILL_WAIT{1000};
 
 /// Whether the process can be asked to exit before it is killed: SIGTERM on POSIX, nothing on Windows.
 inline constexpr bool g_HAS_TERMINATE_STEP =
-#if defined(_WIN32)
+#ifdef _WIN32
     false;
 #else
     true;
@@ -472,18 +472,20 @@ inline constexpr std::size_t g_STACK_NUMBER_BYTES = 64;
 namespace regex {
 
 /// ECMAScript WhiteSpace and LineTerminator, as code point ranges in ascending order.
-inline constexpr std::array<std::pair<char32_t, char32_t>, 10> g_SPACE_RANGES{{
-    {0x09, 0x0D},
-    {0x20, 0x20},
-    {0xA0, 0xA0},
-    {0x1680, 0x1680},
-    {0x2000, 0x200A},
-    {0x2028, 0x2029},
-    {0x202F, 0x202F},
-    {0x205F, 0x205F},
-    {0x3000, 0x3000},
-    {0xFEFF, 0xFEFF},
-}};
+inline constexpr std::array<std::pair<char32_t, char32_t>, 10> g_SPACE_RANGES{
+    {
+        {0x09, 0x0D},
+        {0x20, 0x20},
+        {0xA0, 0xA0},
+        {0x1680, 0x1680},
+        {0x2000, 0x200A},
+        {0x2028, 0x2029},
+        {0x202F, 0x202F},
+        {0x205F, 0x205F},
+        {0x3000, 0x3000},
+        {0xFEFF, 0xFEFF},
+    },
+};
 
 /// An ECMAScript `\cX` escape stands for the control character whose code is the letter's code
 /// modulo this.
@@ -520,7 +522,8 @@ inline constexpr std::array<std::string_view, 10> g_NAMES = {
     mcp::constants::methods::g_PROMPTS_GET,
     mcp::constants::methods::g_COMPLETION_COMPLETE,
     mcp::constants::methods::g_RESOURCES_TEMPLATES_LIST,
-    mcp::constants::methods::g_SUBSCRIPTIONS_LISTEN};
+    mcp::constants::methods::g_SUBSCRIPTIONS_LISTEN,
+};
 
 }  // namespace modern_methods
 
@@ -528,26 +531,30 @@ inline constexpr std::array<std::string_view, 10> g_NAMES = {
 namespace param_headers {
 
 /// Keywords whose value is one subschema.
-inline constexpr std::array<std::string_view, 12> g_SCHEMA_KEYWORDS = {"additionalProperties",
-                                                                       "unevaluatedProperties",
-                                                                       "propertyNames",
-                                                                       "items",
-                                                                       "additionalItems",
-                                                                       "unevaluatedItems",
-                                                                       "contains",
-                                                                       "not",
-                                                                       "if",
-                                                                       "then",
-                                                                       "else",
-                                                                       "contentSchema"};
+inline constexpr std::array<std::string_view, 12> g_SCHEMA_KEYWORDS = {
+    "additionalProperties",
+    "unevaluatedProperties",
+    "propertyNames",
+    "items",
+    "additionalItems",
+    "unevaluatedItems",
+    "contains",
+    "not",
+    "if",
+    "then",
+    "else",
+    "contentSchema",
+};
 
 /// Keywords whose value is an array of subschemas.
-inline constexpr std::array<std::string_view, 5> g_SCHEMA_ARRAY_KEYWORDS = {"allOf", "anyOf", "oneOf",
-                                                                            "prefixItems", "items"};
+inline constexpr std::array<std::string_view, 5> g_SCHEMA_ARRAY_KEYWORDS = {
+    "allOf", "anyOf", "oneOf", "prefixItems", "items",
+};
 
 /// Keywords whose value maps names to subschemas, other than `properties`.
 inline constexpr std::array<std::string_view, 5> g_SCHEMA_MAP_KEYWORDS = {
-    "patternProperties", "dependentSchemas", "$defs", "definitions", "dependencies"};
+    "patternProperties", "dependentSchemas", "$defs", "definitions", "dependencies",
+};
 
 /// The largest integer an `x-mcp-header` argument may hold: 2^53 - 1.
 inline constexpr std::int64_t g_MAX_SAFE_HEADER_INTEGER = (std::int64_t{1} << 53) - 1;

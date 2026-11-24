@@ -111,7 +111,7 @@ int compare_numbers(const nlohmann::json& left, const nlohmann::json& right) {
                 return 1;
             }
             const auto a = left.get<std::uint64_t>();
-            return a < static_cast<std::uint64_t>(b) ? -1 : (a > static_cast<std::uint64_t>(b) ? 1 : 0);
+            return std::cmp_less(a, b) ? -1 : (std::cmp_greater(a, b) ? 1 : 0);
         }
         return -compare_numbers(right, left);
     }
@@ -181,7 +181,7 @@ namespace {
 /// double, NaN and Infinity as null, and object members without regard to order.
 std::size_t equality_hash(const nlohmann::json& value) {
     const auto mix = [](std::size_t seed, std::size_t part) {
-        constexpr std::size_t g_golden = static_cast<std::size_t>(0x9e3779b97f4a7c15ULL);
+        constexpr auto g_golden = static_cast<std::size_t>(0x9e3779b97f4a7c15ULL);
         constexpr unsigned g_left = 6;
         constexpr unsigned g_right = 2;
         return seed ^ (part + g_golden + (seed << g_left) + (seed >> g_right));
@@ -191,7 +191,7 @@ std::size_t equality_hash(const nlohmann::json& value) {
         eString,
         eArray,
         eObject,
-        eOther
+        eOther,
     };
     if (value.is_number() && !is_non_finite(value)) {
         const double number = value.get<double>();

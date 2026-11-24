@@ -41,14 +41,14 @@ struct Runtime::Impl {
 
     /// Lets run() and the threads of start() return once the loop has no work.
     void release() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         keep_running.reset();
     }
 
     /// Begins a call of run(). Returns false, for a call that returns without running the loop,
     /// when a stop() came while nothing ran it.
     bool enter_run() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         if (stop_pending) {
             stop_pending = false;
             return false;
@@ -59,7 +59,7 @@ struct Runtime::Impl {
     }
 
     void leave_run() {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         --runs;
     }
 
@@ -129,7 +129,7 @@ void Runtime::run(std::size_t threads) {
             io_ctx.run();
         } catch (...) {
             {
-                std::lock_guard lock(failure_mutex);
+                std::scoped_lock lock(failure_mutex);
                 if (!failure) {
                     failure = std::current_exception();
                 }
@@ -155,7 +155,7 @@ void Runtime::start(std::size_t threads) {
     if (threads == 0) {
         throw std::invalid_argument("mcp::Runtime::start: threads must be at least 1");
     }
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     if (!impl_->threads.empty()) {
         throw std::logic_error("mcp::Runtime::start: the runtime has been started already");
     }
@@ -172,7 +172,7 @@ void Runtime::start(std::size_t threads) {
 }
 
 void Runtime::stop() {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     impl_->keep_running.reset();
     if (impl_->runs == 0 && impl_->threads.empty()) {
         impl_->stop_pending = true;

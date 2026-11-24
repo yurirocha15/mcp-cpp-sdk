@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mcp/client/subscription.hpp>
 
 #include "client_impl.hpp"
@@ -52,7 +53,7 @@ SubscriptionFilter Subscription::acknowledged() const {
     if (!state_) {
         return {};
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->acknowledged;
 }
 
@@ -97,7 +98,7 @@ std::optional<SubscriptionEnd> Subscription::end_reason() const {
     if (!state_) {
         return SubscriptionEnd::eCancelled;
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->ended;
 }
 
@@ -105,7 +106,7 @@ std::optional<Error> Subscription::end_error() const {
     if (!state_) {
         return std::nullopt;
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->failure;
 }
 
@@ -113,7 +114,7 @@ std::uint64_t Subscription::dropped_events() const {
     if (!state_) {
         return 0;
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->dropped;
 }
 

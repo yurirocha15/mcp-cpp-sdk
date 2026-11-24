@@ -102,7 +102,7 @@ ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
         std::size_t depth;
         std::size_t path_bytes;
     };
-    std::vector<Pending> pending{{&value, 0, 0}};
+    std::vector<Pending> pending{{.node = &value, .depth = 0, .path_bytes = 0}};
     while (!pending.empty()) {
         const auto [node, depth, path_bytes] = pending.back();
         pending.pop_back();
@@ -126,11 +126,12 @@ ValueShape measure(const nlohmann::json& value, std::size_t depth_limit) {
                 shape.text_bytes += key.size();
                 const auto kept =
                     std::min(key.size(), mcp::detail::constants::schema::g_MAX_COUNTED_NAME_BYTES);
-                pending.push_back({&child, depth + 1, path_bytes + kept});
+                pending.push_back(
+                    {.node = &child, .depth = depth + 1, .path_bytes = path_bytes + kept});
             }
         } else {
             for (const auto& child : *node) {
-                pending.push_back({&child, depth + 1, path_bytes});
+                pending.push_back({.node = &child, .depth = depth + 1, .path_bytes = path_bytes});
             }
         }
     }
@@ -146,11 +147,11 @@ std::string describe(std::string_view prefix, std::string_view detail) {
 /// reported as unsupported.
 SchemaError pattern_error(const detail::RegexError& error) {
     if (error.kind() == detail::RegexError::Kind::eInvalid) {
-        return SchemaError(SchemaError::Category::eInvalidSchema,
-                           describe("JSON Schema pattern is not a regular expression: ", error.what()));
+        return {SchemaError::Category::eInvalidSchema,
+                describe("JSON Schema pattern is not a regular expression: ", error.what())};
     }
-    return SchemaError(SchemaError::Category::eUnsupportedPattern,
-                       describe("JSON Schema pattern cannot be used: ", error.what()));
+    return {SchemaError::Category::eUnsupportedPattern,
+            describe("JSON Schema pattern cannot be used: ", error.what())};
 }
 
 }  // namespace
@@ -286,9 +287,14 @@ bool mix_document(std::size_t& hash, const nlohmann::json& node, std::size_t dep
 /// the schema nests deeper than measure() allows.
 std::optional<std::size_t> document_hash(const nlohmann::json& schema, const SchemaOptions& options) {
     std::size_t hash = 0;
-    for (const auto option : {options.max_instance_depth, options.max_reported_violations,
-                              options.base_pattern_steps, options.pattern_steps_per_text_byte,
-                              options.max_evaluation_work, options.max_pattern_instructions}) {
+    for (const auto option : {
+             options.max_instance_depth,
+             options.max_reported_violations,
+             options.base_pattern_steps,
+             options.pattern_steps_per_text_byte,
+             options.max_evaluation_work,
+             options.max_pattern_instructions,
+         }) {
         mix(hash, option);
     }
     if (!mix_document(hash, schema, 0)) {
@@ -310,12 +316,12 @@ class CompiledSchemaCache {
    public:
     std::shared_ptr<const CompiledSchemaImpl> find(std::size_t hash, const nlohmann::json& schema,
                                                    const SchemaOptions& options) {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         return find_locked(hash, schema, options);
     }
 
     void insert(std::size_t hash, const std::shared_ptr<const CompiledSchemaImpl>& compiled) {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (find_locked(hash, compiled->source, compiled->options)) {
             return;
         }
@@ -329,12 +335,12 @@ class CompiledSchemaCache {
         while (order_.size() >= g_max_entries) {
             erase(order_.begin());
         }
-        order_.push_back(Entry{hash, compiled});
+        order_.push_back(Entry{.hash = hash, .compiled = compiled});
         index_.emplace(hash, std::prev(order_.end()));
     }
 
     std::size_t live_entries() {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         std::size_t live = 0;
         for (const auto& entry : order_) {
             if (!entry.compiled.expired()) {
@@ -408,7 +414,8 @@ CheckedDocument check_document(const nlohmann::json& schema, const SchemaOptions
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           where + "JSON Schema must be an object or a boolean");
     }
-    CheckedDocument checked{measure(schema, mcp::detail::constants::schema::g_MAX_DEPTH), dialect};
+    CheckedDocument checked{.shape = measure(schema, mcp::detail::constants::schema::g_MAX_DEPTH),
+                            .dialect = dialect};
     if (checked.shape.too_deep) {
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           where + "JSON Schema nests deeper than " +
@@ -525,8 +532,14 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         ValueShape trivial;
         trivial.nodes = 1;
         trivial.levels = 1;
-        for (const auto& probe : {nlohmann::json(), nlohmann::json::object(), nlohmann::json::array(),
-                                  nlohmann::json(""), nlohmann::json(0), nlohmann::json(true)}) {
+        for (const auto& probe : {
+                 nlohmann::json(),
+                 nlohmann::json::object(),
+                 nlohmann::json::array(),
+                 nlohmann::json(""),
+                 nlohmann::json(0),
+                 nlohmann::json(true),
+             }) {
             if (const auto reason = native.stop_reason(
                     probe, trivial.pattern_steps(options),
                     trivial.evaluation_work(schema_shape.nodes, options.max_evaluation_work))) {
@@ -540,7 +553,10 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
         throw pattern_error(*patterns.problem());
     }
     auto result = std::make_shared<const CompiledSchemaImpl>(
-        CompiledSchemaImpl{schema, options, schema_shape.nodes, std::move(native)});
+        CompiledSchemaImpl{.source = schema,
+                           .options = options,
+                           .schema_nodes = schema_shape.nodes,
+                           .native = std::move(native)});
     if (use_cache && hash) {
         compiled_schema_cache().insert(*hash, result);
     }
@@ -554,7 +570,9 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
     if (shape.too_deep) {
         result.valid = false;
         result.violations.push_back(
-            {"", "value nests deeper than " + std::to_string(options.max_instance_depth) + " levels"});
+            {.instance_path = "",
+             .message =
+                 "value nests deeper than " + std::to_string(options.max_instance_depth) + " levels"});
         return result;
     }
 

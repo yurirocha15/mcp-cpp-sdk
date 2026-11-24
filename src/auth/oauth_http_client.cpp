@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mcp/auth/oauth_http_client.hpp>
 #include <mcp/core/async.hpp>
 
@@ -253,8 +254,13 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         // The port is named unless it is the scheme's default (RFC 9110 section 7.2).
         host_header = mcp::detail::authority_of(host, port, scheme == "https");
 
-        return {std::move(scheme), std::move(host), std::move(host_header), std::move(port),
-                std::move(path)};
+        return {
+            .scheme = std::move(scheme),
+            .host = std::move(host),
+            .host_header = std::move(host_header),
+            .port = std::move(port),
+            .path = std::move(path),
+        };
     }
 
     /// Validate a target before any lookup. Refusal happens here, so the host of a refused target
@@ -289,8 +295,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             if (!not_an_address) {
                 enforce_address_policy(
                     exchange->policy,
-                    {net::ip::tcp::endpoint(
-                        literal, static_cast<unsigned short>(std::stoul(exchange->parsed.port)))});
+                    {
+                        net::ip::tcp::endpoint(
+                            literal, static_cast<unsigned short>(std::stoul(exchange->parsed.port))),
+                    });
             }
             const auto results = co_await exchange->resolver.async_resolve(
                 plan->proxy->host, plan->proxy->port, net::use_awaitable);
@@ -417,7 +425,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             if (!owner || exchange == nullptr) {
                 return;
             }
-            std::lock_guard lock(owner->active_mutex);
+            std::scoped_lock lock(owner->active_mutex);
             auto& list = owner->active_exchanges;
             list.erase(std::remove_if(list.begin(), list.end(),
                                       [this](const std::weak_ptr<Exchange>& weak) {
@@ -437,7 +445,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// already swept `active_exchanges` would never be reached by it and would run to completion
     /// (see the sticky `aborted` flag on abort_pending() below).
     static ActiveExchangeGuard track_exchange(const std::shared_ptr<Exchange>& exchange) {
-        std::lock_guard lock(exchange->owner->active_mutex);
+        std::scoped_lock lock(exchange->owner->active_mutex);
         if (exchange->owner->is_aborted(exchange->scope)) {
             // The same error an exchange already in flight sees when the abort closes its socket
             // underneath it, so a caller cannot tell whether this exchange started before or after
@@ -445,7 +453,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             throw boost::system::system_error(net::error::operation_aborted);
         }
         exchange->owner->active_exchanges.push_back(exchange);
-        return ActiveExchangeGuard(exchange->owner, exchange.get());
+        return {exchange->owner, exchange.get()};
     }
 
     /// Whether `scope` may still issue requests. The client-wide latch ends everything; a scoped
@@ -467,7 +475,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// finished socket, so without this check the coroutine would follow the redirect and run a new
     /// request for a torn-down client.
     static void throw_if_aborted(const std::shared_ptr<Exchange>& exchange) {
-        std::lock_guard lock(exchange->owner->active_mutex);
+        std::scoped_lock lock(exchange->owner->active_mutex);
         if (exchange->owner->is_aborted(exchange->scope)) {
             throw boost::system::system_error(net::error::operation_aborted);
         }
@@ -488,7 +496,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     void abort_matching(const std::shared_ptr<detail::OAuthScopeState>& scope) {
         std::vector<std::shared_ptr<Exchange>> exchanges;
         {
-            std::lock_guard lock(active_mutex);
+            std::scoped_lock lock(active_mutex);
             if (!scope) {
                 aborted = true;
             } else {
@@ -527,7 +535,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     /// scope is the client's own unscoped work.
     std::shared_ptr<Exchange> make_exchange(std::string url,
                                             std::shared_ptr<detail::OAuthScopeState> scope) {
-        std::lock_guard lock(active_mutex);
+        std::scoped_lock lock(active_mutex);
         return std::make_shared<Exchange>(shared_from_this(), strand, std::move(url), std::move(scope),
                                           policy, host_resolver, tls, proxy);
     }
@@ -751,12 +759,12 @@ OAuthHttpClient::OAuthHttpClient(const Executor& executor)
 /// Safe to call at any time, including mid-flight: exchanges already running keep what they started
 /// with, and the next one picks up the new value. See configure() below for changing both together.
 void OAuthHttpClient::set_metadata_policy(MetadataFetchPolicy policy) {
-    std::lock_guard lock(impl_->active_mutex);
+    std::scoped_lock lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
 }
 
 void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
-    std::lock_guard lock(impl_->active_mutex);
+    std::scoped_lock lock(impl_->active_mutex);
     impl_->host_resolver = std::move(resolver);
 }
 
@@ -765,7 +773,7 @@ void OAuthHttpClient::set_host_resolver(HostResolver resolver) {
 /// make_exchange() pins whatever it finds. Resolver-first is the natural order to write and the
 /// dangerous one. See the @warning on set_metadata_policy() in include/mcp/auth/oauth.hpp for why.
 void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver) {
-    std::lock_guard lock(impl_->active_mutex);
+    std::scoped_lock lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
     impl_->host_resolver = std::move(resolver);
 }
@@ -773,7 +781,7 @@ void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolve
 void OAuthHttpClient::configure(MetadataFetchPolicy policy, HostResolver resolver,
                                 std::shared_ptr<const TlsClientContext> tls, ProxyOptions proxy) {
     mcp::detail::validate_proxy_options(proxy);
-    std::lock_guard lock(impl_->active_mutex);
+    std::scoped_lock lock(impl_->active_mutex);
     impl_->policy = std::move(policy);
     impl_->host_resolver = std::move(resolver);
     impl_->tls = std::move(tls);
@@ -826,7 +834,7 @@ TokenRequest build_authorization_code_request(const OAuthConfig& config, const s
     if (config.resource) {
         params.emplace_back("resource", *config.resource);
     }
-    return {std::move(params), std::move(authorization)};
+    return {.params = std::move(params), .authorization = std::move(authorization)};
 }
 
 TokenRequest build_refresh_request(const OAuthConfig& config, const std::string& refresh_token) {
@@ -839,7 +847,7 @@ TokenRequest build_refresh_request(const OAuthConfig& config, const std::string&
     if (config.resource) {
         params.emplace_back("resource", *config.resource);
     }
-    return {std::move(params), std::move(authorization)};
+    return {.params = std::move(params), .authorization = std::move(authorization)};
 }
 
 }  // namespace
@@ -875,9 +883,7 @@ std::size_t live_scope_latch_count() { return detail::OAuthScopeState::live_coun
 
 }  // namespace internal
 
-OAuthHttpClientScope OAuthHttpClient::make_scope() {
-    return OAuthHttpClientScope(impl_, impl_->new_scope());
-}
+OAuthHttpClientScope OAuthHttpClient::make_scope() { return {impl_, impl_->new_scope()}; }
 
 OAuthHttpClientScope::OAuthHttpClientScope(std::shared_ptr<OAuthHttpClient::Impl> impl,
                                            std::shared_ptr<detail::OAuthScopeState> state)

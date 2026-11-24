@@ -12,8 +12,9 @@
 namespace mcp {
 
 nlohmann::json tool_params(std::initializer_list<ParamSpec> params) {
-    static constexpr std::array<std::string_view, 6> s_types{"string",  "number", "integer",
-                                                             "boolean", "array",  "object"};
+    static constexpr std::array<std::string_view, 6> s_types{
+        "string", "number", "integer", "boolean", "array", "object",
+    };
     auto properties = nlohmann::json::object();
     auto required = nlohmann::json::array();
     std::set<std::string, std::less<>> names;

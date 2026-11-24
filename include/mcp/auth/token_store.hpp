@@ -21,7 +21,8 @@ struct TokenResponse {
     std::optional<int> expires_in;             ///< Lifetime in seconds reported by the server.
     std::optional<std::string> scope;          ///< Granted OAuth scope string.
     std::chrono::steady_clock::time_point received_at{
-        std::chrono::steady_clock::now()};  ///< Local receipt time.
+        std::chrono::steady_clock::now(),
+    };  ///< Local receipt time.
 
     /**
      * @brief Determine whether the token should be treated as expired.
@@ -104,7 +105,7 @@ class MCP_API InMemoryTokenStore : public TokenStore {
      * @param server_url MCP server URL used as the storage key.
      * @return The stored token, if present.
      */
-    std::optional<TokenResponse> load(const std::string& server_url) const override;
+    [[nodiscard]] std::optional<TokenResponse> load(const std::string& server_url) const override;
 
     /**
      * @brief Remove a token from the in-memory cache.

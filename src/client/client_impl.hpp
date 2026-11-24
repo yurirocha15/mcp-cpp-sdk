@@ -240,7 +240,7 @@ struct BlockingLoop {
     /// Ends the waits of the blocking calls, including those whose coroutine the loop never ran.
     void mark_ended() const {
         {
-            std::lock_guard lock(end->mutex);
+            std::scoped_lock lock(end->mutex);
             end->ended = true;
         }
         end->changed.notify_all();
@@ -275,7 +275,7 @@ T run_blocking(const std::shared_ptr<const BlockingLoop>& loop, std::function<Ta
     // then ends the wait below. The coroutine is made on the loop as well, so that no part of the
     // call runs on this thread.
     {
-        std::lock_guard lock(end->mutex);
+        std::scoped_lock lock(end->mutex);
         if (end->ended) {
             throw closed();
         }
@@ -286,7 +286,7 @@ T run_blocking(const std::shared_ptr<const BlockingLoop>& loop, std::function<Ta
             boost::asio::co_spawn(loop->executor, std::move(body),
                                   [call, end](std::exception_ptr error) {
                                       {
-                                          std::lock_guard done_lock(end->mutex);
+                                          std::scoped_lock done_lock(end->mutex);
                                           call->error = std::move(error);
                                           call->done = true;
                                       }
@@ -296,7 +296,7 @@ T run_blocking(const std::shared_ptr<const BlockingLoop>& loop, std::function<Ta
             boost::asio::co_spawn(loop->executor, std::move(body),
                                   [call, end](std::exception_ptr error, T value) {
                                       {
-                                          std::lock_guard done_lock(end->mutex);
+                                          std::scoped_lock done_lock(end->mutex);
                                           call->error = std::move(error);
                                           if (!call->error) {
                                               call->value.emplace(std::move(value));
@@ -352,7 +352,7 @@ struct SubscriptionState {
 
     void acknowledge(SubscriptionFilter honored) {
         {
-            std::lock_guard lock(mutex);
+            std::scoped_lock lock(mutex);
             if (acknowledged_seen) {
                 return;
             }
@@ -364,7 +364,7 @@ struct SubscriptionState {
 
     void push(SubscriptionEvent event) {
         {
-            std::lock_guard lock(mutex);
+            std::scoped_lock lock(mutex);
             if (ended) {
                 return;
             }
@@ -379,7 +379,7 @@ struct SubscriptionState {
 
     void finish(SubscriptionEnd how, std::optional<Error> error) {
         {
-            std::lock_guard lock(mutex);
+            std::scoped_lock lock(mutex);
             if (ended) {
                 return;
             }
@@ -394,11 +394,11 @@ struct SubscriptionState {
     enum class AckWait : std::uint8_t {
         ePending,
         eAcknowledged,
-        eEnded
+        eEnded,
     };
 
     AckWait ack_wait() const {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         if (acknowledged_seen) {
             return AckWait::eAcknowledged;
         }
@@ -409,7 +409,7 @@ struct SubscriptionState {
     static Task<std::optional<SubscriptionEvent>> wait_next(std::shared_ptr<SubscriptionState> state) {
         for (;;) {
             {
-                std::lock_guard lock(state->mutex);
+                std::scoped_lock lock(state->mutex);
                 if (!state->queue.empty()) {
                     std::optional<SubscriptionEvent> event(std::move(state->queue.front()));
                     state->queue.pop_front();
@@ -435,7 +435,7 @@ struct SubscriptionState {
     /// Runs on the strand: ends the stream locally, then tells the server.
     static Task<void> cancel(std::shared_ptr<SubscriptionState> state) {
         {
-            std::lock_guard lock(state->mutex);
+            std::scoped_lock lock(state->mutex);
             if (state->ended) {
                 co_return;
             }
@@ -502,7 +502,7 @@ struct CancellationState {
     /// Adds @p callback, which runs once when the token is cancelled. Returns nothing, and keeps
     /// nothing, when the token already is.
     std::optional<std::uint64_t> add(Callback callback) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         if (cancelled.load(std::memory_order_relaxed)) {
             return std::nullopt;
         }
@@ -512,7 +512,7 @@ struct CancellationState {
     }
 
     void remove(std::uint64_t registration) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         callbacks.erase(registration);
     }
 };
@@ -648,10 +648,10 @@ struct Client::Impl {
                 return;
             }
             {
-                std::lock_guard lock(state->handlers_mutex);
+                std::scoped_lock lock(state->handlers_mutex);
                 state->progress_routes.erase(*key);
             }
-            std::lock_guard lock(route->mutex);
+            std::scoped_lock lock(route->mutex);
             route->open = false;
         }
     };

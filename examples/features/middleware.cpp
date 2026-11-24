@@ -100,9 +100,11 @@ int main() {
 
         // ========== TOOL REGISTRATION ==========
         // Register a simple tool that will be wrapped by the middleware chain
-        nlohmann::json echo_schema = {{"type", "object"},
-                                      {"properties", {{"message", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"message"})}};
+        nlohmann::json echo_schema = {
+            {"type", "object"},
+            {"properties", {{"message", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"message"})},
+        };
 
         server.add_tool("echo", "Echo a message", echo_schema,
                         [](const nlohmann::json& args) -> nlohmann::json {

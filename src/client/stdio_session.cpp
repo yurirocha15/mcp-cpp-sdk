@@ -79,7 +79,7 @@ struct StdioClientSession::Impl : std::enable_shared_from_this<Impl> {
             std::shared_ptr<Client> previous;
             std::shared_ptr<StdioClientTransport> previous_transport;
             {
-                std::lock_guard lock(self->mutex);
+                std::scoped_lock lock(self->mutex);
                 previous = std::move(self->current_client);
                 previous_transport = std::move(self->transport);
                 self->transport = transport;
@@ -102,7 +102,7 @@ struct StdioClientSession::Impl : std::enable_shared_from_this<Impl> {
             client->close();
             co_await transport->shutdown();
             {
-                std::lock_guard lock(self->mutex);
+                std::scoped_lock lock(self->mutex);
                 if (self->transport == transport) {
                     self->transport.reset();
                     self->current_client.reset();
@@ -173,7 +173,7 @@ struct StdioClientSession::Impl : std::enable_shared_from_this<Impl> {
     [[nodiscard]] std::optional<ProcessExit> current_exit() const {
         std::shared_ptr<StdioClientTransport> current;
         {
-            std::lock_guard lock(mutex);
+            std::scoped_lock lock(mutex);
             current = transport;
         }
         if (!current) {
@@ -191,7 +191,7 @@ struct StdioClientSession::Impl : std::enable_shared_from_this<Impl> {
         std::shared_ptr<Client> client;
         std::shared_ptr<StdioClientTransport> transport;
         {
-            std::lock_guard lock(self->mutex);
+            std::scoped_lock lock(self->mutex);
             client = std::move(self->current_client);
             transport = std::move(self->transport);
         }
@@ -230,7 +230,7 @@ StdioClientSession::~StdioClientSession() {
     std::shared_ptr<Client> client;
     std::shared_ptr<StdioClientTransport> transport;
     {
-        std::lock_guard lock(impl_->mutex);
+        std::scoped_lock lock(impl_->mutex);
         client = std::move(impl_->current_client);
         transport = std::move(impl_->transport);
     }
@@ -249,7 +249,7 @@ Task<ConnectResult> StdioClientSession::start() {
 }
 
 std::shared_ptr<Client> StdioClientSession::client() const {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     return impl_->current_client;
 }
 

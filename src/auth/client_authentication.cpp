@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mcp/auth/client_authentication.hpp>
 
 #include <openssl/bio.h>
@@ -55,7 +56,7 @@ bool is_p256(EVP_PKEY* key) {
 
 /// The algorithms @p key can sign with, most widely accepted first.
 std::vector<std::string> algorithms_for(EVP_PKEY* key) {
-    if (EVP_PKEY_is_a(key, "RSA")) {
+    if (EVP_PKEY_is_a(key, "RSA") != 0) {
         if (EVP_PKEY_bits(key) < mcp::detail::constants::client_authentication::g_MIN_RSA_BITS) {
             throw std::invalid_argument(
                 "The RSA private key must be at least " +
@@ -64,7 +65,7 @@ std::vector<std::string> algorithms_for(EVP_PKEY* key) {
         }
         return {"RS256", "PS256"};
     }
-    if (EVP_PKEY_is_a(key, "EC") && is_p256(key)) {
+    if ((EVP_PKEY_is_a(key, "EC") != 0) && is_p256(key)) {
         return {"ES256"};
     }
     throw std::invalid_argument("The private key must be an RSA key or an EC key on P-256");
@@ -102,14 +103,15 @@ std::string sign(EVP_PKEY* key, const std::string& algorithm, const std::string&
     if (!context || EVP_DigestSignInit(context.get(), &key_context, EVP_sha256(), nullptr, key) != 1) {
         throw std::runtime_error("Could not start signing the client assertion");
     }
-    if (algorithm == "PS256") {
-        // RFC 7518 section 3.5: SHA-256 for the digest and the mask, salt as long as the digest.
-        if (EVP_PKEY_CTX_set_rsa_padding(key_context, RSA_PKCS1_PSS_PADDING) <= 0 ||
-            EVP_PKEY_CTX_set_rsa_pss_saltlen(key_context, RSA_PSS_SALTLEN_DIGEST) <= 0 ||
-            EVP_PKEY_CTX_set_rsa_mgf1_md(key_context, EVP_sha256()) <= 0) {
-            throw std::runtime_error("Could not select PSS padding");
-        }
+    if ((algorithm == "PS256") &&
+        (EVP_PKEY_CTX_set_rsa_padding(key_context, RSA_PKCS1_PSS_PADDING) <= 0 ||
+         EVP_PKEY_CTX_set_rsa_pss_saltlen(key_context, RSA_PSS_SALTLEN_DIGEST) <= 0 ||
+         EVP_PKEY_CTX_set_rsa_mgf1_md(key_context, EVP_sha256()) <= 0))
+    // RFC 7518 section 3.5: SHA-256 for the digest and the mask, salt as long as the digest.
+    {
+        throw std::runtime_error("Could not select PSS padding");
     }
+
     std::size_t length = 0;
     if (EVP_DigestSign(context.get(), nullptr, &length,
                        reinterpret_cast<const unsigned char*>(input.data()), input.size()) != 1) {
@@ -173,8 +175,12 @@ std::string sign_client_assertion(const PrivateKeyJwtConfig& config, const std::
         {"aud", config.audience ? *config.audience : audience},
         {"iat", issued_at},
         {"exp", issued_at + config.lifetime.count()},
-        {"jti", mcp::detail::generate_random_string(
-                    mcp::detail::constants::client_authentication::g_JTI_LENGTH)}};
+        {
+            "jti",
+            mcp::detail::generate_random_string(
+                mcp::detail::constants::client_authentication::g_JTI_LENGTH),
+        },
+    };
     const auto signing_input = mcp::detail::base64url_encode(header.dump()) + "." +
                                mcp::detail::base64url_encode(claims.dump());
     return signing_input + "." +

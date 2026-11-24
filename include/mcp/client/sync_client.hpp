@@ -43,16 +43,16 @@ class MCP_API SyncTaskHandle {
     explicit SyncTaskHandle(TaskHandle handle);
 
     /// As TaskHandle::get().
-    DetailedTask get(const RequestOptions& request_options = {}) const;
+    [[nodiscard]] DetailedTask get(const RequestOptions& request_options = {}) const;
     /// As TaskHandle::update().
     void update(const nlohmann::json& input_responses,
                 const RequestOptions& request_options = {}) const;
     /// As TaskHandle::cancel().
     void cancel(const RequestOptions& request_options = {}) const;
     /// As TaskHandle::wait().
-    DetailedTask wait(const RequestOptions& request_options = {}) const;
+    [[nodiscard]] DetailedTask wait(const RequestOptions& request_options = {}) const;
     /// As TaskHandle::result().
-    CallToolResult result(const RequestOptions& request_options = {}) const;
+    [[nodiscard]] CallToolResult result(const RequestOptions& request_options = {}) const;
 
    private:
     TaskHandle handle_;

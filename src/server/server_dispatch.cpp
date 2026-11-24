@@ -123,8 +123,8 @@ MessageSender Server::Impl::notification_route(
     // A 2026-07-28 request an HttpServerTransport queued before the server was bound has no stream
     // of its own: written to the session, its notifications would join the legacy session's stream.
     const bool notifications_have_a_route =
-        !(request_meta && session && session->http_transport != nullptr);
-    if (!session || !session->transport || !(session_request || !request_meta) ||
+        !request_meta || !session || session->http_transport == nullptr;
+    if (!session || !session->transport || (!session_request && request_meta) ||
         !notifications_have_a_route) {
         return {};
     }
@@ -252,13 +252,15 @@ Task<std::string> Server::Impl::dispatch_request_wire(
         // initialize, and leaves the lifecycle and log level of a session untouched.
         if (checked_modern ? *checked_modern : detail::is_modern_request(json_msg, method)) {
             // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
-            RequestScope scope{nullptr,
-                               std::move(cancelled),
-                               enforce_lifecycle,
-                               std::move(param_headers),
-                               std::move(notifications),
-                               std::move(watch_cancel),
-                               std::move(principal)};
+            RequestScope scope{
+                .meta = nullptr,
+                .cancelled = std::move(cancelled),
+                .session_request = enforce_lifecycle,
+                .param_headers = std::move(param_headers),
+                .notifications = std::move(notifications),
+                .watch_cancel = std::move(watch_cancel),
+                .principal = std::move(principal),
+            };
             scope.in_flight = std::move(in_flight);
             scope.count_again = std::move(count_again);
             scope.message = message;
@@ -277,8 +279,15 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                 "Missing " + std::string(mcp::constants::meta::g_META_PROTOCOL_VERSION) + " in _meta");
         }
 
-        RequestScope legacy_scope{nullptr, std::move(cancelled), enforce_lifecycle, nullptr, {},
-                                  {},      std::move(principal)};
+        RequestScope legacy_scope{
+            .meta = nullptr,
+            .cancelled = std::move(cancelled),
+            .session_request = enforce_lifecycle,
+            .param_headers = nullptr,
+            .notifications = {},
+            .watch_cancel = {},
+            .principal = std::move(principal),
+        };
         if (enforce_lifecycle) {
             legacy_scope.related_request =
                 std::make_shared<const std::string>(mcp::detail::dump_json(json_msg.at("id")));
@@ -482,7 +491,7 @@ Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& jso
         {
             const auto& params = json_msg.at("params");
             const auto declared = params.find("capabilities");
-            std::lock_guard lock(client_capabilities_mutex);
+            std::scoped_lock lock(client_capabilities_mutex);
             client_capabilities = declared != params.end() && declared->is_object()
                                       ? *declared
                                       : nlohmann::json::object();
@@ -516,7 +525,7 @@ Task<std::string> Server::Impl::handle_ping_wire(const nlohmann::json& json_msg)
 // It needs no prior state and is idempotent: it reads nothing else from the request and never
 // changes a session's lifecycle.
 Task<std::string> Server::Impl::handle_discover_wire(const nlohmann::json& json_msg,
-                                                     const RequestScope& scope) {
+                                                     const RequestScope& scope) const {
     DiscoverResult discover_result;
     discover_result.supportedVersions = supported_versions();
     discover_result.capabilities = capabilities;
@@ -812,7 +821,7 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
             }
             {
                 // A client at its limit is told before it answers the preparation's questions.
-                std::lock_guard runs_lock(task_runs_mutex);
+                std::scoped_lock runs_lock(task_runs_mutex);
                 if (task_limit_reached_locked(scope.principal ? *scope.principal : std::string())) {
                     co_return make_error_wire(json_msg.at("id").get<RequestId>(),
                                               mcp::constants::jsonrpc::g_INTERNAL_ERROR,
@@ -823,8 +832,10 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
             auto prepared_cancelled =
                 scope.cancelled ? scope.cancelled : std::make_shared<std::atomic<bool>>(false);
             CallToolParams prepared_params{
-                *call.name, *call.arguments,
-                call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
+                .name = *call.name,
+                .arguments = *call.arguments,
+                .meta = call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt,
+            };
             std::optional<TaskPreparation> prepared;
             nlohmann::json prepared_answer =
                 co_await prepare_task_call(tool->second, std::move(prepared_params), prepared_cancelled,
@@ -859,8 +870,10 @@ Task<std::string> Server::Impl::handle_tools_call_wire(const nlohmann::json& jso
     } else {
         // Middleware sees, and may rewrite, the whole parameters object.
         CallToolParams params{
-            *call.name, *call.arguments,
-            call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
+            .name = *call.name,
+            .arguments = *call.arguments,
+            .meta = call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt,
+        };
         handler_result = co_await invoke_tool_impl(
             std::move(params), std::move(cancelled), std::move(progress_token), scope.meta,
             scope.session_request, scope.notifications, scope.principal, scope.mrtr,
@@ -1206,16 +1219,16 @@ std::string Server::Impl::make_result_wire(const RequestId& id,
         std::array<detail::JsonMemberText, 4> extra{};
         std::size_t count = 0;
         if (report_server_info) {
-            extra[count++] = {"_meta", server_info_meta()};
+            extra[count++] = {.key = "_meta", .value_text = server_info_meta()};
         }
         if (hint != nullptr) {
             scope_text = detail::dump_json(nlohmann::json(hint->scope));
-            extra[count++] = {"cacheScope", scope_text};
+            extra[count++] = {.key = "cacheScope", .value_text = scope_text};
         }
-        extra[count++] = {"resultType", R"("complete")"};
+        extra[count++] = {.key = "resultType", .value_text = R"("complete")"};
         if (hint != nullptr) {
             ttl_text = std::to_string(hint->ttlMs);
-            extra[count++] = {"ttlMs", ttl_text};
+            extra[count++] = {.key = "ttlMs", .value_text = ttl_text};
         }
         std::string wire = R"({"id":)";
         detail::append_json(wire, nlohmann::json(id));
@@ -1333,9 +1346,9 @@ TypeErasedHandler Server::Impl::build_middleware_chain(TypeErasedHandler final_h
 }
 
 std::optional<Server::PaginationSlice> Server::Impl::paginate(std::size_t total,
-                                                              const nlohmann::json& json_msg) {
+                                                              const nlohmann::json& json_msg) const {
     if (page_size == 0 || total == 0) {
-        return PaginationSlice{0, total, std::nullopt};
+        return PaginationSlice{.begin = 0, .end = total, .next_cursor = std::nullopt};
     }
 
     // A cursor is the decimal offset of the page's first entry, as next_cursor below writes it.
@@ -1360,7 +1373,7 @@ std::optional<Server::PaginationSlice> Server::Impl::paginate(std::size_t total,
         next_cursor = std::to_string(end);
     }
 
-    return PaginationSlice{offset, end, std::move(next_cursor)};
+    return PaginationSlice{.begin = offset, .end = end, .next_cursor = std::move(next_cursor)};
 }
 
 }  // namespace mcp

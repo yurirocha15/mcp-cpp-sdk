@@ -304,9 +304,11 @@ void from_json(const nlohmann::json& json_obj, InitializeRequest& value) {
 }
 
 void to_json(nlohmann::json& json_obj, const InitializeResult& res) {
-    json_obj = nlohmann::json{{"protocolVersion", res.protocolVersion},
-                              {"capabilities", res.capabilities},
-                              {"serverInfo", res.serverInfo}};
+    json_obj = nlohmann::json{
+        {"protocolVersion", res.protocolVersion},
+        {"capabilities", res.capabilities},
+        {"serverInfo", res.serverInfo},
+    };
     if (res.instructions) {
         json_obj["instructions"] = *res.instructions;
     }

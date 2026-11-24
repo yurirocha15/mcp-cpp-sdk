@@ -27,7 +27,7 @@ template <typename T>
 class [[nodiscard]] Task : public boost::asio::awaitable<T> {
    public:
     /// The coroutine promise of boost::asio::awaitable<T>, so a Task coroutine runs as one.
-    using promise_type = typename std::coroutine_traits<boost::asio::awaitable<T>>::promise_type;
+    using promise_type = std::coroutine_traits<boost::asio::awaitable<T>>::promise_type;
 
     /// An empty task that holds no coroutine.
     Task() noexcept = default;

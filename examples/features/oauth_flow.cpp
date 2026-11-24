@@ -230,13 +230,15 @@ class MockOAuthServer {
              request.target() == "/.well-known/openid-configuration")) {
             return make_json_response(
                 http::status::ok, request.version(),
-                json{{"issuer", issuer_},
-                     {"authorization_endpoint", issuer_ + "/authorize"},
-                     {"token_endpoint", issuer_ + "/token"},
-                     {"grant_types_supported", json::array({"authorization_code", "refresh_token"})},
-                     {"response_types_supported", json::array({"code"})},
-                     {"code_challenge_methods_supported", json::array({"S256"})},
-                     {"scopes_supported", json::array({"mcp:demo"})}});
+                json{
+                    {"issuer", issuer_},
+                    {"authorization_endpoint", issuer_ + "/authorize"},
+                    {"token_endpoint", issuer_ + "/token"},
+                    {"grant_types_supported", json::array({"authorization_code", "refresh_token"})},
+                    {"response_types_supported", json::array({"code"})},
+                    {"code_challenge_methods_supported", json::array({"S256"})},
+                    {"scopes_supported", json::array({"mcp:demo"})},
+                });
         }
 
         if (request.method() == http::verb::post && request.target() == "/token") {
@@ -253,46 +255,55 @@ class MockOAuthServer {
                 const auto verifier_it = params.find("code_verifier");
                 if (code_it == params.end() || verifier_it == params.end()) {
                     return make_json_response(http::status::bad_request, request.version(),
-                                              json{{"error", "invalid_request"},
-                                                   {"error_description", "missing code or verifier"}});
+                                              json{
+                                                  {"error", "invalid_request"},
+                                                  {"error_description", "missing code or verifier"},
+                                              });
                 }
 
                 const auto auth_code_it = authorization_codes_.find(code_it->second);
                 if (auth_code_it == authorization_codes_.end() ||
                     auth_code_it->second != verifier_it->second) {
-                    return make_json_response(
-                        http::status::bad_request, request.version(),
-                        json{{"error", "invalid_grant"},
-                             {"error_description", "authorization code rejected"}});
+                    return make_json_response(http::status::bad_request, request.version(),
+                                              json{
+                                                  {"error", "invalid_grant"},
+                                                  {"error_description", "authorization code rejected"},
+                                              });
                 }
 
                 authorization_codes_.erase(auth_code_it);
                 std::cout
                     << "[OAuth HTTP] Exchanged auth code for an intentionally stale access token\n";
                 return make_json_response(http::status::ok, request.version(),
-                                          json{{"access_token", expired_access_token_},
-                                               {"token_type", "Bearer"},
-                                               {"refresh_token", refresh_token_},
-                                               {"expires_in", 3600},
-                                               {"scope", "mcp:demo"}});
+                                          json{
+                                              {"access_token", expired_access_token_},
+                                              {"token_type", "Bearer"},
+                                              {"refresh_token", refresh_token_},
+                                              {"expires_in", 3600},
+                                              {"scope", "mcp:demo"},
+                                          });
             }
 
             if (grant_type_it->second == "refresh_token") {
                 const auto refresh_it = params.find("refresh_token");
                 if (refresh_it == params.end() || refresh_it->second != refresh_token_) {
                     return make_json_response(http::status::bad_request, request.version(),
-                                              json{{"error", "invalid_grant"},
-                                                   {"error_description", "refresh token rejected"}});
+                                              json{
+                                                  {"error", "invalid_grant"},
+                                                  {"error_description", "refresh token rejected"},
+                                              });
                 }
 
                 ++refresh_count_;
                 std::cout << "[OAuth HTTP] Refreshed token after auth failure\n";
                 return make_json_response(http::status::ok, request.version(),
-                                          json{{"access_token", refreshed_access_token_},
-                                               {"token_type", "Bearer"},
-                                               {"refresh_token", refresh_token_},
-                                               {"expires_in", 3600},
-                                               {"scope", "mcp:demo"}});
+                                          json{
+                                              {"access_token", refreshed_access_token_},
+                                              {"token_type", "Bearer"},
+                                              {"refresh_token", refresh_token_},
+                                              {"expires_in", 3600},
+                                              {"scope", "mcp:demo"},
+                                          });
             }
         }
 
@@ -388,13 +399,19 @@ struct ClientFlowState {
 };
 
 std::string make_initialize_request_wire() {
-    return json{{"jsonrpc", "2.0"},
-                {"id", "1"},
-                {"method", "initialize"},
-                {"params",
-                 {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
-                  {"clientInfo", {{"name", "oauth-flow-example-client"}, {"version", "1.0.0"}}},
-                  {"capabilities", json::object()}}}}
+    return json{
+        {"jsonrpc", "2.0"},
+        {"id", "1"},
+        {"method", "initialize"},
+        {
+            "params",
+            {
+                {"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
+                {"clientInfo", {{"name", "oauth-flow-example-client"}, {"version", "1.0.0"}}},
+                {"capabilities", json::object()},
+            },
+        },
+    }
         .dump();
 }
 
@@ -403,10 +420,12 @@ std::string make_initialized_notification_wire() {
 }
 
 std::string make_secure_echo_request_wire() {
-    return json{{"jsonrpc", "2.0"},
-                {"id", "2"},
-                {"method", "tools/call"},
-                {"params", {{"name", "secure_echo"}, {"arguments", {{"message", "hello oauth"}}}}}}
+    return json{
+        {"jsonrpc", "2.0"},
+        {"id", "2"},
+        {"method", "tools/call"},
+        {"params", {{"name", "secure_echo"}, {"arguments", {{"message", "hello oauth"}}}}},
+    }
         .dump();
 }
 
@@ -618,9 +637,11 @@ int main() {
 
         server.add_tool<json, CallToolResult>(
             "secure_echo", "Echo a message only when the bearer token is valid",
-            json{{"type", "object"},
-                 {"properties", {{"message", {{"type", "string"}}}}},
-                 {"required", json::array({"message"})}},
+            json{
+                {"type", "object"},
+                {"properties", {{"message", {{"type", "string"}}}}},
+                {"required", json::array({"message"})},
+            },
             [](const json& args) -> CallToolResult {
                 return make_text_result("Server handled '" + args.at("message").get<std::string>() +
                                             "' with an authenticated request",
@@ -664,11 +685,16 @@ int main() {
             },
             asio::detached);
 
-        asio::co_spawn(
-            io_ctx,
-            run_client_demo(ClientFlowRuntime{&io_ctx, &mock_oauth, server_transport,
-                                              client_base_transport, exit_timer, &exit_code}),
-            asio::detached);
+        asio::co_spawn(io_ctx,
+                       run_client_demo(ClientFlowRuntime{
+                           .io_ctx = &io_ctx,
+                           .mock_oauth = &mock_oauth,
+                           .server_transport = server_transport,
+                           .client_base_transport = client_base_transport,
+                           .exit_timer = exit_timer,
+                           .exit_code = &exit_code,
+                       }),
+                       asio::detached);
 
         io_ctx.run();
         return exit_code;

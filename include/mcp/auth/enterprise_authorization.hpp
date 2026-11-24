@@ -36,7 +36,8 @@ namespace mcp::auth {
 struct IdentityAssertion {
     std::string token;  ///< The ID token, refresh token or assertion.
     std::string token_type{
-        std::string(mcp::constants::oauth::g_ID_TOKEN_TYPE)};  ///< Its token type URN.
+        std::string(mcp::constants::oauth::g_ID_TOKEN_TYPE),
+    };  ///< Its token type URN.
 };
 
 /// Supplies the user's current identity assertion. Called for every token exchange, so an
