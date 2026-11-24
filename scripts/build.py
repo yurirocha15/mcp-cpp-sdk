@@ -476,11 +476,13 @@ def main():
                   "--output-on-failure", *ctest_args, quiet=args.quiet, extra_env=extra_env)
 
         if args.coverage:
-            # The HTML report is for reading; the Cobertura XML is what CI uploads to Codecov.
+            # The HTML report is for reading; the Cobertura XML is what CI uploads to Codecov; the
+            # JSON report counts each branch of a line apart, which shows the outcome never reached.
             run("gcovr", "-r", ".", "-f", "include/", "-f", "src/", f"-j{args.jobs}",
                 "--exclude-unreachable-branches", "--exclude-throw-branches",
                 "--html-details", f"{build_dir}/coverage.html",
                 "--cobertura", f"{build_dir}/coverage.xml",
+                "--json", f"{build_dir}/coverage.json",
                 "--txt-summary")
 
     if args.docs:

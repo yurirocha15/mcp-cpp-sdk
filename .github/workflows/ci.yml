@@ -276,6 +276,18 @@ jobs:
         MCP_REQUIRE_TWIN_LOOPBACK: '1'
       run: python scripts/build.py --sanitize ${{ matrix.build_args }} --linkage shared --test --quiet
 
+    # Codecov shows each line's state only; the JSON report counts each branch of a line.
+    - name: Keep the coverage reports
+      if: matrix.compiler == 'gcc'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: coverage-report
+        path: |
+          build/sanitize/coverage.xml
+          build/sanitize/coverage.json
+        if-no-files-found: error
+        retention-days: 14
+
     - name: Upload coverage to Codecov
       if: matrix.compiler == 'gcc'
       uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
