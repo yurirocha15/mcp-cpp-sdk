@@ -2354,7 +2354,8 @@ TEST_F(ServerHandlersTest, CompletionReturnsResults) {
 }
 
 // A completion for a resource template's argument reaches the provider with the template's URI and
-// the context. A reference of a type the specification does not define is invalid params.
+// the context. A reference of a type the specification does not define is invalid params, even when
+// it carries the uri of a resource reference.
 TEST_F(ServerHandlersTest, CompletionReferencesAResourceTemplateOrIsRefused) {
     mcp::ServerCapabilities caps;
     caps.completions = nlohmann::json::object();
@@ -2385,7 +2386,7 @@ TEST_F(ServerHandlersTest, CompletionReferencesAResourceTemplateOrIsRefused) {
                   "argument":{"name":"path","value":"src/m"},
                   "context":{"arguments":{"root":"/repo"}}}})");
     setup.raw_transport->enqueue_message(R"({"jsonrpc":"2.0","id":"3","method":"completion/complete",
-        "params":{"ref":{"type":"ref/tool","name":"search"},
+        "params":{"ref":{"type":"ref/tool","name":"search","uri":"file:///{path}"},
                   "argument":{"name":"query","value":"a"}}})");
 
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
