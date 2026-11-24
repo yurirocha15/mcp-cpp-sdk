@@ -2446,69 +2446,78 @@ TEST(HttpClientModern, LineWithoutAnEndIsCutOffAtTheMessageLimit) {
 }
 
 // The stream of a response is read as the SSE standard reads one: comment and unknown fields are
-// skipped, CRLF ends a line as LF does, a line may arrive in pieces, and the data lines of one
-// event are joined with a newline. A last event the stream ends without its blank line is still
-// read.
-TEST(HttpClientModern, StreamWithCrlfLinesSplitLinesAndAnUnendedLastEventIsRead) {
-    asio::io_context io;
-    RawServer raw(io, [](const Recorded& request) {
-        if (request.rpc_method() != "tools/call") {
-            return modern_reply(request, json::array());
-        }
-        const auto message = request.parsed();
-        const auto progress = json{{"jsonrpc", "2.0"},
-                                   {"method", "notifications/progress"},
-                                   {"params", {{"progressToken", "t1"}, {"progress", 1}, {"total", 2}}}}
-                                  .dump();
-        const auto result =
-            rpc_result(message, {{"resultType", "complete"},
-                                 {"content", json::array({{{"type", "text"}, {"text", "done"}}})}})
-                .dump();
-        const auto half = progress.size() / 2;
-        const auto comma = result.find(',');
-        Reply reply;
-        reply.content_type = "text/event-stream";
-        reply.stream.push_back({": keep-alive\r\n\r\n", nullptr});
-        reply.stream.push_back(
-            {"event: message\r\nretry: 1000\r\ndata: " + progress.substr(0, half), nullptr});
-        reply.stream.push_back({progress.substr(half) + "\r\n\r\n", nullptr});
-        reply.stream.push_back(
-            {"data: " + result.substr(0, comma + 1) + "\r\ndata: " + result.substr(comma + 1),
-             nullptr});
-        return reply;
-    });
-    auto transport = make_transport(io, raw.url());
-    mcp::Client client(transport, io.get_executor(), modern_options());
-    int progress_seen = 0;
-    client.on_progress([&progress_seen](const mcp::ProgressNotificationParams& params) {
-        if (params.progress == 1 && params.total == 2) {
-            ++progress_seen;
-        }
-    });
+// skipped, CRLF, LF and CR each end a line, a line or a CRLF may arrive in pieces, and the data
+// lines of one event are joined with a newline. A last event the stream ends without its blank line
+// is dropped, so the call then fails for want of a response.
+TEST(HttpClientModern, StreamLinesEndAsTheSseStandardHasIt) {
+    for (const bool ended : {true, false}) {
+        SCOPED_TRACE(ended ? "ended" : "unended");
+        asio::io_context io;
+        RawServer raw(io, [ended](const Recorded& request) {
+            if (request.rpc_method() != "tools/call") {
+                return modern_reply(request, json::array());
+            }
+            const auto message = request.parsed();
+            const auto progress =
+                json{{"jsonrpc", "2.0"},
+                     {"method", "notifications/progress"},
+                     {"params", {{"progressToken", "t1"}, {"progress", 1}, {"total", 2}}}}
+                    .dump();
+            const auto result =
+                rpc_result(message, {{"resultType", "complete"},
+                                     {"content", json::array({{{"type", "text"}, {"text", "done"}}})}})
+                    .dump();
+            const auto half = progress.size() / 2;
+            const auto comma = result.find(',');
+            Reply reply;
+            reply.content_type = "text/event-stream";
+            reply.stream.push_back({": keep-alive\r\n\r\n", nullptr});
+            reply.stream.push_back(
+                {"event: message\rretry: 1000\r\ndata: " + progress.substr(0, half), nullptr});
+            reply.stream.push_back({progress.substr(half) + "\r", nullptr});
+            reply.stream.push_back({"\n\r\n", nullptr});
+            const auto split_result =
+                "data: " + result.substr(0, comma + 1) + "\rdata: " + result.substr(comma + 1);
+            reply.stream.push_back({ended ? split_result + "\r\r" : split_result, nullptr});
+            return reply;
+        });
+        auto transport = make_transport(io, raw.url());
+        mcp::Client client(transport, io.get_executor(), modern_options());
+        int progress_seen = 0;
+        client.on_progress([&progress_seen](const mcp::ProgressNotificationParams& params) {
+            if (params.progress == 1 && params.total == 2) {
+                ++progress_seen;
+            }
+        });
 
-    json result;
-    std::string failure;
-    run_guarded(io, raw, [&]() -> mcp::Task<void> {
-        co_await client.connect("stream", "1.0");
-        json params = {
-            {"name", "slow"}, {"arguments", json::object()}, {"_meta", {{"progressToken", "t1"}}}};
-        try {
-            result = co_await client.send_request("tools/call", params);
-        } catch (const std::exception& error) {
-            failure = error.what();
-        }
-        client.close();
-    });
+        json result;
+        std::string failure;
+        run_guarded(io, raw, [&]() -> mcp::Task<void> {
+            co_await client.connect("stream", "1.0");
+            json params = {
+                {"name", "slow"}, {"arguments", json::object()}, {"_meta", {{"progressToken", "t1"}}}};
+            try {
+                result = co_await client.send_request("tools/call", params);
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            client.close();
+        });
 
-    EXPECT_EQ(progress_seen, 1);
-    ASSERT_TRUE(result.is_object()) << failure;
-    EXPECT_EQ(result["content"][0]["text"], "done");
+        EXPECT_EQ(progress_seen, 1);
+        if (ended) {
+            ASSERT_TRUE(result.is_object()) << failure;
+            EXPECT_EQ(result["content"][0]["text"], "done");
+        } else {
+            EXPECT_TRUE(result.is_null()) << result;
+            EXPECT_NE(failure.find("ended without a response"), std::string::npos) << failure;
+        }
+    }
 }
 
 // A legacy server may answer a POST with its whole event stream as the body. That body is read
-// the same way: CRLF line ends, an event whose data spans several lines, and a last event without
-// the blank line that ends it.
-TEST(HttpClientLegacy, EventStreamBodyWithCrlfMultiLineDataAndNoFinalBlankLineIsRead) {
+// the same way: CRLF and lone CR line ends, and an event whose data spans several lines.
+TEST(HttpClientLegacy, EventStreamBodyWithCrlfCrAndMultiLineDataIsRead) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
         const auto message = request.parsed();
@@ -2529,8 +2538,8 @@ TEST(HttpClientLegacy, EventStreamBodyWithCrlfMultiLineDataAndNoFinalBlankLineIs
         const auto comma = result.find(',');
         Reply reply;
         reply.content_type = "text/event-stream";
-        reply.body = ": comment\r\nevent: message\r\nid: 7\r\ndata: " + result.substr(0, comma + 1) +
-                     "\r\ndata: " + result.substr(comma + 1);
+        reply.body = ": comment\r\nevent: message\r\nid: 7\rdata: " + result.substr(0, comma + 1) +
+                     "\r\ndata: " + result.substr(comma + 1) + "\r\n\r\n";
         return reply;
     });
     mcp::ClientOptions options;
@@ -2598,6 +2607,68 @@ void run_ending_streams(EndingStreams& streams, std::size_t wanted) {
 }
 
 }  // namespace
+
+// A request's stream that breaks inside an event is resumed after the last event that arrived
+// whole: the id of the broken one counts only once its blank line arrives.
+TEST(HttpClientLegacyStream, AStreamBrokenInsideAnEventResumesAfterTheLastWholeEvent) {
+    asio::io_context io;
+    json call;
+    std::optional<std::string> resumed_after;
+    RawServer raw(io, [&call, &resumed_after](const Recorded& request) {
+        Reply reply;
+        reply.headers = {{"Mcp-Session-Id", "s1"}};
+        if (request.method == "GET") {
+            // The session's own GET stream names no event; the resume of the call's stream does.
+            const auto last_event_id = request.header("Last-Event-ID");
+            if (!last_event_id) {
+                reply.status = 405;
+                return reply;
+            }
+            resumed_after = last_event_id;
+            reply.content_type = "text/event-stream";
+            const auto result = rpc_result(call, {{"content", json::array()}}).dump();
+            reply.stream = {Step{"id: 2\ndata: " + result + "\n\n", {}}};
+            return reply;
+        }
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        if (method == "initialize") {
+            reply.body = rpc_result(message, legacy_initialize_result()).dump();
+            return reply;
+        }
+        if (method != "tools/call") {
+            reply.status = 202;
+            return reply;
+        }
+        call = message;
+        const json note = {{"jsonrpc", "2.0"},
+                           {"method", "notifications/message"},
+                           {"params", {{"level", "info"}, {"data", "tick"}}}};
+        reply.content_type = "text/event-stream";
+        reply.stream = {Step{"id: 1\n" + sse_event(note) + "id: 2\ndata: {\"jsonrpc\"", {}}};
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(transport, io.get_executor(), options);
+
+    json result;
+    std::string failure;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("resume", "1.0");
+        json params = {{"name", "slow"}, {"arguments", json::object()}};
+        try {
+            result = co_await client.send_request("tools/call", params);
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(resumed_after, "1");
+    EXPECT_TRUE(result.contains("content")) << failure;
+}
 
 // A legacy request whose event stream stays quiet past set_response_timeout() ends with
 // g_CONNECTION_CLOSED, and the message says it timed out rather than that the transport is closed.

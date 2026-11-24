@@ -94,10 +94,12 @@ class MCP_API HttpClientTransport final : public ITransport {
     [[nodiscard]] std::string session_id() const;
 
     /**
-     * @brief Get the most recent SSE event identifier seen from the server.
+     * @brief Get the id of the last whole event in an event stream of a session of protocol
+     *        revision 2025-11-25 or earlier, which a resume sends as Last-Event-ID.
      *
-     * @return The last event ID used for resumable HTTP replay, or an empty string if none was
-     * received.
+     * @details The event streams of 2026-07-28 requests are not resumed, so their event ids are
+     * not kept.
+     * @return The event id, or an empty string if no event named one.
      */
     [[nodiscard]] std::string last_event_id() const;
 

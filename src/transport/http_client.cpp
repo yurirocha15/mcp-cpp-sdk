@@ -60,14 +60,15 @@ namespace {
 /// Reads a text/event-stream body in the pieces the network delivers it and returns the data of each
 /// event as soon as its terminating blank line arrives. It keeps the last event id and the
 /// reconnection time the server asked for, which a resume needs; comment lines and other fields are
-/// skipped.
+/// skipped. As the SSE standard has it, CRLF, LF and CR each end a line, an `id` counts once its
+/// event has arrived whole, and an event the stream ends inside of is dropped.
 class SseDecoder {
    public:
     SseDecoder() = default;
     /// A decoder for a stream resumed after the event @p last_id.
-    explicit SseDecoder(std::string last_id) : last_id_(std::move(last_id)) {}
+    explicit SseDecoder(std::string last_id) : last_id_(last_id), id_buffer_(std::move(last_id)) {}
 
-    /// The id of the last event that named one, which a resume sends as Last-Event-ID.
+    /// The id of the last whole event that named one, which a resume sends as Last-Event-ID.
     [[nodiscard]] const std::string& last_id() const { return last_id_; }
 
     /// The reconnection time a `retry` field asked for, if one did.
@@ -79,7 +80,13 @@ class SseDecoder {
     std::vector<std::string> feed(std::string_view chunk) {
         std::vector<std::string> events;
         for (const char symbol : chunk) {
-            if (symbol != '\n') {
+            // The LF of a CRLF, which may come in the next chunk, ends no line of its own.
+            const bool second_of_crlf = symbol == '\n' && after_carriage_return_;
+            after_carriage_return_ = symbol == '\r';
+            if (second_of_crlf) {
+                continue;
+            }
+            if (symbol != '\n' && symbol != '\r') {
                 line_.push_back(symbol);
                 if (line_.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
                     throw TransportError(TransportError::Kind::eProtocol,
@@ -92,26 +99,15 @@ class SseDecoder {
         return events;
     }
 
-    /// The event a stream that ends without a final blank line still carries.
-    std::vector<std::string> finish() {
-        std::vector<std::string> events;
-        if (!line_.empty()) {
-            consume_line(events);
-        }
-        if (!payload_.empty()) {
-            events.push_back(std::move(payload_));
-            payload_.clear();
-            carried_anything_ = true;
-        }
-        return events;
-    }
-
    private:
     void consume_line(std::vector<std::string>& events) {
-        if (!line_.empty() && line_.back() == '\r') {
-            line_.pop_back();
-        }
         if (line_.empty()) {
+            // The blank line ends the event: its id, or the one before, becomes the stream's.
+            if (id_named_) {
+                last_id_ = id_buffer_;
+                id_named_ = false;
+                carried_anything_ = true;
+            }
             if (!payload_.empty()) {
                 events.push_back(std::move(payload_));
                 payload_.clear();
@@ -124,8 +120,8 @@ class SseDecoder {
             }
             // An id holding NUL is ignored, as the SSE standard has it.
             if (value.find('\0') == std::string_view::npos) {
-                last_id_.assign(value.data(), value.size());
-                carried_anything_ = true;
+                id_buffer_.assign(value.data(), value.size());
+                id_named_ = true;
             }
         } else if (line_.compare(0, 6, "retry:") == 0) {
             std::string_view value = std::string_view(line_).substr(6);
@@ -160,6 +156,10 @@ class SseDecoder {
     std::string line_;
     std::string payload_;
     std::string last_id_;
+    /// The id named since the last blank line, which counts once that event ends.
+    std::string id_buffer_;
+    bool id_named_ = false;
+    bool after_carriage_return_ = false;
     bool carried_anything_ = false;
     std::optional<std::chrono::milliseconds> retry_;
 };
@@ -358,11 +358,6 @@ struct HttpClientTransport::Impl {
         }
     };
 
-    struct ParsedSseEvent {
-        std::string data;
-        std::string id;
-    };
-
     struct CloseTarget {
         std::string path;
         std::string authority;
@@ -533,65 +528,6 @@ struct HttpClientTransport::Impl {
         return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
     }
 
-    static std::string strip_carriage_return(std::string_view line) {
-        if (!line.empty() && line.back() == '\r') {
-            return std::string(line.substr(0, line.size() - 1));
-        }
-        return std::string(line);
-    }
-
-    static std::queue<ParsedSseEvent> parse_sse_messages(std::string_view sse_body) {
-        std::queue<ParsedSseEvent> parsed_messages;
-        std::string current_event_payload;
-        std::string current_event_id;
-
-        std::size_t offset = 0;
-        while (offset <= sse_body.size()) {
-            const std::size_t line_end = sse_body.find('\n', offset);
-            const std::size_t extracted_length =
-                line_end == std::string_view::npos ? sse_body.size() - offset : line_end - offset;
-            const std::string normalized_line =
-                strip_carriage_return(sse_body.substr(offset, extracted_length));
-
-            if (normalized_line.empty()) {
-                if (!current_event_payload.empty()) {
-                    parsed_messages.push(
-                        ParsedSseEvent{std::move(current_event_payload), current_event_id});
-                    current_event_payload.clear();
-                    current_event_id.clear();
-                }
-            } else if (starts_with(normalized_line, "data:")) {
-                std::string_view data_value =
-                    std::string_view(normalized_line).substr(std::string_view("data:").size());
-                if (!data_value.empty() && data_value.front() == ' ') {
-                    data_value.remove_prefix(1);
-                }
-                if (!current_event_payload.empty()) {
-                    current_event_payload.push_back('\n');
-                }
-                current_event_payload.append(data_value.data(), data_value.size());
-            } else if (starts_with(normalized_line, "id:")) {
-                std::string_view id_value =
-                    std::string_view(normalized_line).substr(std::string_view("id:").size());
-                if (!id_value.empty() && id_value.front() == ' ') {
-                    id_value.remove_prefix(1);
-                }
-                current_event_id = std::string(id_value);
-            }
-
-            if (line_end == std::string_view::npos) {
-                break;
-            }
-            offset = line_end + 1;
-        }
-
-        if (!current_event_payload.empty()) {
-            parsed_messages.push(ParsedSseEvent{std::move(current_event_payload), current_event_id});
-        }
-
-        return parsed_messages;
-    }
-
     void enqueue_message(std::string message_text) const {
         state->queue.push(std::move(message_text));
         state->timer.cancel();
@@ -693,9 +629,9 @@ struct HttpClientTransport::Impl {
             return std::nullopt;
         }
         if (starts_with(std::string(content_type->value()), "text/event-stream")) {
-            auto events = parse_sse_messages(response.body());
-            for (; !events.empty(); events.pop()) {
-                if (auto terms = answers(events.front().data)) {
+            SseDecoder decoder;
+            for (const auto& event : decoder.feed(response.body())) {
+                if (auto terms = answers(event)) {
                     return terms;
                 }
             }
@@ -788,16 +724,12 @@ struct HttpClientTransport::Impl {
         }
 
         if (starts_with(content_type_header, "text/event-stream")) {
-            auto parsed_messages = parse_sse_messages(response.body());
-            while (!parsed_messages.empty()) {
-                auto& event = parsed_messages.front();
-                if (!event.id.empty()) {
-                    std::lock_guard lock(state->metadata_mutex);
-                    state->last_event_id = event.id;
-                }
-                capture_negotiated_protocol_version(event.data);
-                enqueue_message(std::move(event.data));
-                parsed_messages.pop();
+            SseDecoder decoder;
+            auto events = decoder.feed(response.body());
+            remember_last_event_id(decoder);
+            for (auto& event : events) {
+                capture_negotiated_protocol_version(event);
+                enqueue_message(std::move(event));
             }
         }
     }
@@ -1788,11 +1720,6 @@ struct HttpClientTransport::Impl {
         }
 
         if (event_stream) {
-            if (!call->final_message) {
-                for (auto& text : decoder.finish()) {
-                    impl->accept_stream_message(*call, std::move(text));
-                }
-            }
             if (call->expects_response && !call->final_message) {
                 throw TransportError(TransportError::Kind::eProtocol,
                                      "The server's event stream ended without a response");
