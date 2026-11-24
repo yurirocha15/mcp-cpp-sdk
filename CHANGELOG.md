@@ -129,6 +129,8 @@ These changes in behavior need no change to compile:
   reference.
 - `StreamableHttpSessionManager::listen()` called after `close()` no longer
   starts a timer that keeps the event loop running for 30 seconds.
+- A schema `pattern` may write a `\u{...}` escape with leading zeros, such as
+  `\u{0000041}`, as ECMAScript allows, instead of being refused.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

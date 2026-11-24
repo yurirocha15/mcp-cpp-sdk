@@ -471,9 +471,12 @@ class Parser {
         if (accept('{')) {
             std::uint32_t value = 0;
             std::size_t digits = 0;
+            // Leading zeros are allowed, and checking the value after each digit keeps it far below
+            // the uint32_t limit.
             while (!at_end() && peek() != '}') {
                 value = value * 16 + parse_hex(1);
-                if (++digits > 6 || value > mcp::detail::constants::regex::g_MAX_CODE_POINT) {
+                ++digits;
+                if (value > mcp::detail::constants::regex::g_MAX_CODE_POINT) {
                     fail(RegexError::Kind::eUnsupported, "code point out of range");
                 }
             }

@@ -99,12 +99,18 @@ TEST(Regex, DotMatchesOneCodePointExceptLineTerminators) {
     EXPECT_FALSE(matches("^.$", "\n"));
     EXPECT_FALSE(matches("^.$", "\r"));
     EXPECT_FALSE(matches("^.$", "\xe2\x80\xa8"));  // LINE SEPARATOR
+    EXPECT_FALSE(matches("^.$", "\xe2\x80\xa9"));  // PARAGRAPH SEPARATOR
     EXPECT_TRUE(matches("^.$", "\xf0\x9f\x98\x80"));
     EXPECT_FALSE(matches("^..$", "\xf0\x9f\x98\x80"));
 }
 
 TEST(Regex, Escapes) {
     EXPECT_TRUE(matches("^\\x41$", "A"));
+    EXPECT_TRUE(matches("^\\x4a\\x4A$", "JJ"));
+    EXPECT_TRUE(matches("^\\u00e9$", "\xc3\xa9"));
+    // Leading zeros in \u{} are allowed; the value, not the digit count, is limited.
+    EXPECT_TRUE(matches("^\\u{0000041}$", "A"));
+    EXPECT_TRUE(matches("^\\u{00010FFFF}$", "\xf4\x8f\xbf\xbf"));
     EXPECT_TRUE(matches("^[\\u0041-\\u005A]+$", "ABC"));
     EXPECT_TRUE(matches("^\\u{1F600}$", "\xf0\x9f\x98\x80"));
     EXPECT_TRUE(matches("^\\uD83D\\uDE00$", "\xf0\x9f\x98\x80"));
@@ -171,8 +177,8 @@ TEST(Regex, RejectsMalformedPatterns) {
          {"*a", "a**", "+", "?", "^*", "\\b+", "{1}", "(a", "a)", "[a", "[z-a]", "a{3,2}", "\\"}) {
         EXPECT_EQ(refusal(pattern), RegexError::Kind::eInvalid) << pattern;
     }
-    for (const char* pattern :
-         {"\\q", "(?x)", "(?<>a)", "\\xZ1", "\\u12", "\\u{}", "\\u{110000}", "\\c1"}) {
+    for (const char* pattern : {"\\q", "(?x)", "(?<>a)", "\\xZ1", "\\u12", "\\u{}", "\\u{110000}",
+                                "\\u{41", "\\u{4G}", "\\u{0000110000}", "\\c1", "(?<a"}) {
         EXPECT_EQ(refusal(pattern), RegexError::Kind::eUnsupported) << pattern;
     }
 }
