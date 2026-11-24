@@ -213,22 +213,34 @@ TEST(ClientCredentialsTest, ARefusedChallengeAlwaysRequestsAFreshToken) {
     EXPECT_EQ(fixture.server.targets().size(), 4U);
 }
 
+// A resource document that names another server, or no authorization server, is refused.
 TEST(ClientCredentialsTest, ARefusedProtectedResourceIsNeverFollowed) {
-    Fixture fixture;
-    fixture.prm_override = {{"resource", "https://other.example/mcp"}};
-    fixture.serve(3);
-    bool refused = false;
-    fixture.run(fixture.config(), [&](auto& authenticator, auto& store) -> mcp::Task<void> {
-        try {
-            (void)co_await authenticator.try_handle_challenge(fixture.challenge());
-        } catch (const std::runtime_error& error) {
-            refused = std::string(error.what()).find("does not identify") != std::string::npos;
-        }
-        EXPECT_FALSE(store.load(fixture.base + "/mcp").has_value());
-    });
-    EXPECT_TRUE(refused);
-    // Only the resource document was fetched: no authorization server request, no credentials sent.
-    EXPECT_EQ(fixture.server.targets().size(), 1U);
+    struct Case {
+        json prm_override;
+        const char* reason;
+    };
+    const std::vector<Case> cases = {
+        {{{"resource", "https://other.example/mcp"}}, "does not identify"},
+        {{{"authorization_servers", json::array()}}, "listed no authorization servers"}};
+    for (const auto& refusal : cases) {
+        SCOPED_TRACE(refusal.reason);
+        Fixture fixture;
+        fixture.prm_override = refusal.prm_override;
+        fixture.serve(3);
+        bool refused = false;
+        fixture.run(fixture.config(), [&](auto& authenticator, auto& store) -> mcp::Task<void> {
+            try {
+                (void)co_await authenticator.try_handle_challenge(fixture.challenge());
+            } catch (const std::runtime_error& error) {
+                refused = std::string(error.what()).find(refusal.reason) != std::string::npos;
+            }
+            EXPECT_FALSE(store.load(fixture.base + "/mcp").has_value());
+        });
+        EXPECT_TRUE(refused);
+        // Only the resource document was fetched: no authorization server request, no credentials
+        // sent.
+        EXPECT_EQ(fixture.server.targets().size(), 1U);
+    }
 }
 
 // RFC 9728 section 3.3: the resource a document names identifies the configured server when it is
@@ -619,6 +631,52 @@ TEST(ClientAuthenticationTest, AnRsaKeyUnder2048BitsIsRefused) {
     EXPECT_THROW((void)mcp::auth::choose_signing_algorithm(jwt, std::nullopt), std::invalid_argument);
     EXPECT_THROW((void)mcp::auth::sign_client_assertion(jwt, "c", "https://as/token", "RS256"),
                  std::invalid_argument);
+}
+
+// Only RSA keys and EC keys on P-256 sign client assertions, each with its own algorithms.
+TEST(ClientAuthenticationTest, AKeyOfAnotherTypeOrCurveOrAlgorithmIsRefused) {
+    for (const auto& [type, curve] :
+         std::vector<std::pair<std::string, std::string>>{{"ED25519", ""}, {"EC", "P-384"}}) {
+        const std::unique_ptr<EVP_PKEY, mcp_test::EvpKeyDeleter> key(
+            curve.empty() ? EVP_PKEY_Q_keygen(nullptr, nullptr, type.c_str())
+                          : EVP_PKEY_Q_keygen(nullptr, nullptr, type.c_str(), curve.c_str()));
+        ASSERT_NE(key, nullptr) << type << curve;
+        mcp::auth::PrivateKeyJwtConfig jwt;
+        jwt.private_key_pem = mcp_test::private_key_pem(key.get());
+        EXPECT_THROW((void)mcp::auth::choose_signing_algorithm(jwt, std::nullopt),
+                     std::invalid_argument)
+            << type << curve;
+    }
+
+    mcp::auth::PrivateKeyJwtConfig ec;
+    ec.private_key_pem = mcp_test::private_key_pem(mcp_test::shared_ec_key());
+    EXPECT_THROW((void)mcp::auth::sign_client_assertion(ec, "c", "https://as/token", "RS256"),
+                 std::invalid_argument);
+}
+
+// A method the application names must fit its credentials, and must be one the SDK implements.
+TEST(ClientAuthenticationTest, ANamedMethodTheCredentialsCannotSatisfyIsRefused) {
+    mcp::auth::AuthServerMetadata server;
+    server.token_endpoint = "https://as.example/token";
+    server.raw = json::object();
+    mcp::auth::ClientAuthentication credentials;
+    credentials.client_id = "c";
+
+    for (const char* method :
+         {"private_key_jwt", "client_secret_basic", "client_secret_post", "tls_client_auth"}) {
+        credentials.method = method;
+        mcp::KeyValuePairList params;
+        EXPECT_THROW((void)mcp::auth::authenticate_token_request(credentials, server, params),
+                     std::invalid_argument)
+            << method;
+        EXPECT_TRUE(params.empty()) << method;
+    }
+
+    credentials.method = "none";
+    mcp::KeyValuePairList params;
+    EXPECT_TRUE(mcp::auth::authenticate_token_request(credentials, server, params).empty());
+    ASSERT_EQ(params.size(), 1U);
+    EXPECT_EQ(params[0], (std::pair<std::string, std::string>{"client_id", "c"}));
 }
 
 TEST(ClientAuthenticationTest, AJwtIsPreferredOverASecretWhenTheServerAllowsBoth) {

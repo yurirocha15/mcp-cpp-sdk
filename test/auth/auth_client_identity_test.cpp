@@ -271,6 +271,28 @@ TEST(AuthClientRegistrationRequestTest, CarriesApplicationTypeAndTheRefreshToken
     EXPECT_EQ(body.at("redirect_uris"), json::array({"http://127.0.0.1:9999/callback"}));
     EXPECT_EQ(body.at("client_name"), "conformance-client");
     EXPECT_FALSE(body.contains("scope"));
+    for (const char* absent :
+         {"client_uri", "software_id", "software_version", "token_endpoint_auth_method"}) {
+        EXPECT_FALSE(body.contains(absent)) << absent;
+    }
+}
+
+// RFC 7591 section 2: the optional client metadata the application sets goes into the request.
+TEST(AuthClientRegistrationRequestTest, CarriesTheOptionalMetadataThatIsSet) {
+    mcp::auth::OAuthClientMetadata metadata;
+    metadata.redirect_uris = {"http://127.0.0.1:9999/callback"};
+    metadata.client_uri = "https://client.example";
+    metadata.software_id = "4NRB1-0XZABZI9E6-5SM3R";
+    metadata.software_version = "2.1";
+    metadata.token_endpoint_auth_method = "none";
+
+    const auto body = mcp::auth::build_registration_request(
+        metadata, facts_with("https://issuer.example", false, "https://issuer.example/register"));
+
+    EXPECT_EQ(body.at("client_uri"), "https://client.example");
+    EXPECT_EQ(body.at("software_id"), "4NRB1-0XZABZI9E6-5SM3R");
+    EXPECT_EQ(body.at("software_version"), "2.1");
+    EXPECT_EQ(body.at("token_endpoint_auth_method"), "none");
 }
 
 TEST(AuthClientRegistrationRequestTest, RequestsOfflineAccessOnlyWhenTheServerAdvertisesIt) {
@@ -316,11 +338,13 @@ TEST(AuthClientInformationTest, ReportsSecretExpiryOnlyForANonZeroExpiryInThePas
 TEST(AuthClientInformationTest, SerializesTheIssuerBindingAlongsideTheCredentials) {
     auto information = credentials("client", "https://issuer.example");
     information.client_secret = "secret";
+    information.client_id_issued_at = 1000;
     information.client_secret_expires_at = 1234;
 
     const nlohmann::json serialized = information;
     EXPECT_EQ(serialized.at("client_id"), "client");
     EXPECT_EQ(serialized.at("client_secret"), "secret");
+    EXPECT_EQ(serialized.at("client_id_issued_at"), 1000);
     EXPECT_EQ(serialized.at("client_secret_expires_at"), 1234);
     EXPECT_EQ(serialized.at("issuer"), "https://issuer.example");
 
@@ -329,6 +353,7 @@ TEST(AuthClientInformationTest, SerializesTheIssuerBindingAlongsideTheCredential
     const auto parsed = serialized.get<mcp::auth::OAuthClientInformation>();
     EXPECT_EQ(parsed.client_id, "client");
     EXPECT_EQ(parsed.client_secret, "secret");
+    EXPECT_EQ(parsed.client_id_issued_at, 1000);
     EXPECT_EQ(parsed.client_secret_expires_at, 1234);
     EXPECT_TRUE(parsed.issuer.empty());
 }

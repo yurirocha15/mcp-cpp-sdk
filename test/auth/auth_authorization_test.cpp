@@ -5396,6 +5396,51 @@ TEST(AuthProtectedResourceValidationTest,
     EXPECT_EQ(credentials->stores, 0);
 }
 
+// A resource document that lists no authorization server is refused for that reason, even when its
+// `resource` also fails to identify the server, and nothing else is fetched.
+TEST(AuthProtectedResourceValidationTest, ReportsMissingAuthorizationServersFirst) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        if (std::string(request.target()) == "/prm.json") {
+            return json_response(
+                {{"resource", "https://attacker.test/mcp"}, {"authorization_servers", json::array()}});
+        }
+        return status_response(http::status::not_found);
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    std::promise<std::string> failure;
+    auto observed = failure.get_future();
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        std::string message;
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer realm="mcp", resource_metadata=")" +
+                                                        base + R"(/prm.json")");
+            message = "<no exception>";
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        failure.set_value(message);
+        server.close();
+    });
+
+    io_ctx.run();
+
+    const auto message = observed.get();
+    EXPECT_NE(message.find("listed no authorization servers"), std::string::npos) << message;
+    EXPECT_EQ(server.targets(), std::vector<std::string>{"/prm.json"});
+}
+
 // The shorthand fields and client_identity.pre_registered both describe injected credentials, so a
 // config that sets both is refused instead of silently using one of them.
 TEST(AuthAuthorizationConfigTest, RefusesShorthandCredentialsAlongsidePreRegisteredOnes) {
