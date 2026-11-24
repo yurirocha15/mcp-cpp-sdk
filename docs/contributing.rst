@@ -192,7 +192,11 @@ CI collects the report in its GCC sanitizer build
 (``python scripts/build.py --sanitize --coverage --test``, which writes
 ``build/sanitize/coverage.xml``) and uploads it to
 `Codecov <https://app.codecov.io/gh/yurirocha15/mcp-cpp-sdk>`_, which comments
-on pull requests with the coverage of the changed lines.
+on pull requests with the coverage of the changed lines. That report leaves out
+the branches of lines without an ``if``, loop, ``switch``, ``?:``, ``&&`` or
+``||``: they come from code the compiler generates or inlines there, such as
+exception and cleanup paths. ``build/sanitize/coverage.json``, kept as the
+``coverage-report`` artifact of the CI run, has every branch.
 
 Sanitizers
 ^^^^^^^^^^
