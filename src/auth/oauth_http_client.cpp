@@ -206,25 +206,17 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
     explicit Impl(const net::any_io_executor& executor) : strand(net::make_strand(executor)) {}
 
     static ParsedUrl parse_url(const std::string& url) {
-        std::string scheme;
-        std::string default_port;
-        std::size_t prefix_length = 0;
-        if (url.starts_with(mcp::detail::constants::url::g_HTTP_PREFIX)) {
-            scheme = "http";
-            default_port = "80";
-            prefix_length = mcp::detail::constants::url::g_HTTP_PREFIX.size();
-        } else if (url.starts_with(mcp::detail::constants::url::g_HTTPS_PREFIX)) {
-            scheme = "https";
-            default_port = "443";
-            prefix_length = mcp::detail::constants::url::g_HTTPS_PREFIX.size();
-        } else {
+        const auto url_scheme = mcp::detail::http_url_scheme(url);
+        if (!url_scheme) {
             throw std::invalid_argument(
                 "OAuth HTTP client URL must use the http:// or https:// scheme");
         }
+        std::string scheme = url_scheme->https ? "https" : "http";
+        std::string default_port = url_scheme->https ? "443" : "80";
 
         // The authority ends where the path, query or fragment begins, as in the fetch policy's
         // own split of the URL. The fragment is never sent, and a query needs the root path.
-        const auto rest = url.substr(prefix_length);
+        const auto rest = url.substr(url_scheme->prefix_length);
         const auto authority_end = rest.find_first_of("/?#");
         auto authority = rest.substr(0, authority_end);
         std::string path = authority_end == std::string::npos ? "" : rest.substr(authority_end);

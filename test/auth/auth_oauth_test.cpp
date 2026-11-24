@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <future>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
@@ -567,6 +568,48 @@ TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
 
     EXPECT_EQ(result["issuer"], "https://auth.example.com");
     EXPECT_EQ(result["token_endpoint"], "https://auth.example.com/token");
+}
+
+// URL schemes compare without regard to case, as the fetch policy reads them too.
+TEST_F(MockTokenServer, GetJsonTakesAnUppercaseScheme) {
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+    std::string target;
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+        beast::tcp_stream stream(std::move(socket));
+        beast::flat_buffer buffer;
+        http::request<http::string_body> req;
+        co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+        target = std::string(req.target());
+
+        http::response<http::string_body> res{http::status::ok, req.version()};
+        res.set(http::field::content_type, "application/json");
+        res.body() = R"({"issuer":"https://auth.example.com"})";
+        res.prepare_payload();
+        co_await http::async_write(stream, res, asio::use_awaitable);
+    });
+
+    json result;
+    std::string failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+        client.set_metadata_policy(loopback_policy(port));
+        try {
+            result =
+                co_await client.get_json("HTTP://127.0.0.1:" + std::to_string(port) + "/well-known");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        acceptor.close();
+    });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(failure, "");
+    EXPECT_EQ(target, "/well-known");
+    EXPECT_EQ(result["issuer"], "https://auth.example.com");
 }
 
 TEST_F(MockTokenServer, GetJsonErrorThrows) {

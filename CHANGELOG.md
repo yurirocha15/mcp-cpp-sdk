@@ -137,6 +137,8 @@ These changes in behavior need no change to compile:
 - A stream of a 2025-11-25 or earlier session that breaks inside an event
   resumes after the last whole event, so the broken event is sent again instead
   of lost.
+- `HttpClientTransport` and `OAuthHttpClient` take a URL whose scheme is in
+  uppercase, such as `HTTPS://`, which the metadata fetch policy already took.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

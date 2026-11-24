@@ -586,6 +586,11 @@ TEST(TlsClientTest, SettingsThatCannotBeUsed) {
     // A query or a fragment may follow the host without a path.
     EXPECT_NO_THROW(mcp::HttpClientTransport(io.get_executor(), "http://example.test?x=1"));
     EXPECT_NO_THROW(mcp::HttpClientTransport(io.get_executor(), "https://[::1]#top"));
+    // The scheme is read in any case of letters, so TLS settings apply to an HTTPS URL alone.
+    mcp::HttpClientTransport upper_secure(io.get_executor(), "HTTPS://example.test/mcp");
+    EXPECT_NO_THROW(upper_secure.set_tls(mcp::TlsClientOptions{}));
+    mcp::HttpClientTransport mixed_plain(io.get_executor(), "Http://example.test/mcp");
+    EXPECT_THROW(mixed_plain.set_tls(mcp::TlsClientOptions{}), std::invalid_argument);
 
     mcp::HttpClientTransport secure(io.get_executor(), "https://example.test/mcp");
     EXPECT_THROW(secure.set_server_name(""), std::invalid_argument);

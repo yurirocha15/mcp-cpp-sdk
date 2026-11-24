@@ -380,19 +380,15 @@ struct HttpClientTransport::Impl {
 
     static ParsedUrl parse_url(const std::string& url) {
         ParsedUrl parsed;
-        std::size_t prefix_length = 0;
-        if (url.starts_with(mcp::detail::constants::url::g_HTTP_PREFIX)) {
-            prefix_length = mcp::detail::constants::url::g_HTTP_PREFIX.size();
-        } else if (url.starts_with(mcp::detail::constants::url::g_HTTPS_PREFIX)) {
-            prefix_length = mcp::detail::constants::url::g_HTTPS_PREFIX.size();
-            parsed.https = true;
-        } else {
+        const auto scheme = detail::http_url_scheme(url);
+        if (!scheme) {
             throw std::invalid_argument("HttpClientTransport URL must start with http:// or https://");
         }
+        parsed.https = scheme->https;
 
         // The authority ends where the path, query or fragment begins. The fragment is never
         // sent, and a query needs the root path.
-        const auto rest = url.substr(prefix_length);
+        const auto rest = url.substr(scheme->prefix_length);
         const auto authority_end = rest.find_first_of("/?#");
         auto authority = rest.substr(0, authority_end);
         parsed.path = authority_end == std::string::npos ? "" : rest.substr(authority_end);
