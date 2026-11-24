@@ -512,6 +512,26 @@ TEST(TaskStore, RefusesTasksPastTheLimitOfAnOwner) {
     EXPECT_TRUE(store.create("bob", std::nullopt, std::nullopt).has_value());
 }
 
+// Expired tasks stop counting against their owner's limit even when nobody asked for them since.
+TEST(TaskStore, ExpiredTasksMakeRoomUnderTheLimitOfAnOwner) {
+    FakeClock clock;
+    auto options = clock.options();
+    options.max_tasks_per_owner = 2;
+    mcp::InMemoryTaskStore store(options);
+    ASSERT_TRUE(store.create("alice", 1000ms, std::nullopt));
+    ASSERT_TRUE(store.create("alice", 2000ms, std::nullopt));
+    EXPECT_FALSE(store.create("alice", std::nullopt, std::nullopt).has_value());
+
+    clock.advance(1000ms);
+    const auto replacement = store.create("alice", std::nullopt, std::nullopt);
+    ASSERT_TRUE(replacement.has_value());
+    EXPECT_FALSE(store.create("alice", std::nullopt, std::nullopt).has_value());
+    EXPECT_EQ(store.size(), 2u);
+    clock.advance(1000ms);
+    EXPECT_EQ(store.size(), 1u);
+    EXPECT_TRUE(store.get("alice", replacement->id).has_value());
+}
+
 TEST(TaskStore, AFinishedTaskMakesRoomForTheOldestFirst) {
     FakeClock clock;
     auto options = clock.options();

@@ -91,8 +91,9 @@ TEST(ClientSyncTest, RunRethrowsTheCoroutinesException) {
                  std::runtime_error);
 }
 
-TEST(ClientSyncTest, RunRefusesAnEmptyTask) {
+TEST(ClientSyncTest, RunRefusesAnEmptyFunctionOrTask) {
     mcp::Client client(test_server());
+    EXPECT_THROW(client.run(std::function<mcp::Task<void>()>()), std::invalid_argument);
     EXPECT_THROW(client.run([]() { return mcp::Task<void>(); }), std::invalid_argument);
 }
 
