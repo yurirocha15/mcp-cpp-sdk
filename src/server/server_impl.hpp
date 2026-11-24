@@ -985,13 +985,16 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Impl& operator=(Impl&&) = delete;
 
     /// What this server shares with the servers built for the other sessions it serves; see
+    /// One caching hint per CacheTarget.
+    using CacheHints = std::array<CacheHint, static_cast<std::size_t>(CacheTarget::eResourcesRead) + 1>;
+
     /// Registry. Declared before the references into it below, which bind to it.
     std::shared_ptr<Registry> registry = std::make_shared<Registry>();
 
     Implementation& server_info = registry->server_info;
     ServerCapabilities& capabilities = registry->capabilities;
     std::optional<std::string>& instructions = registry->instructions;
-    std::array<CacheHint, 6>& cache_hints = registry->cache_hints;
+    CacheHints& cache_hints = registry->cache_hints;
     bool& report_server_info = registry->report_server_info;
     std::string& server_info_meta_text = registry->server_info_meta_text;
     std::once_flag& server_info_meta_once = registry->server_info_meta_once;
@@ -1164,7 +1167,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         Implementation server_info;
         ServerCapabilities capabilities;
         std::optional<std::string> instructions;
-        std::array<CacheHint, 6> cache_hints{};
+        CacheHints cache_hints{};
         bool report_server_info{true};
         /// The `_meta` a 2026-07-28 result carries when it has none: the server's identity under
         /// mcp::constants::meta::g_META_SERVER_INFO, as JSON text. Written by the first such
@@ -1173,11 +1176,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::string server_info_meta_text;  // written once, under server_info_meta_once
         std::once_flag server_info_meta_once;
         std::size_t page_size{0};
-        std::atomic_size_t max_in_flight_requests{1024};
+        std::atomic_size_t max_in_flight_requests{
+            mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_REQUESTS};
         std::atomic_size_t max_in_flight_bytes{
             mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_BYTES};
         std::atomic<std::chrono::milliseconds::rep> reverse_request_timeout_ms{
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::minutes(10)).count()};
+            mcp::detail::constants::server::g_DEFAULT_REVERSE_REQUEST_TIMEOUT.count()};
         CompletionHandler completion_handler;
         std::vector<ListedTool> tools;
         /// The tools as JSON text, comma-separated, in registration order: what a tools/list that

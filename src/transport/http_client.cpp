@@ -113,30 +113,21 @@ class SseDecoder {
                 payload_.clear();
                 carried_anything_ = true;
             }
-        } else if (line_.compare(0, 3, "id:") == 0) {
-            std::string_view value = std::string_view(line_).substr(3);
-            if (!value.empty() && value.front() == ' ') {
-                value.remove_prefix(1);
-            }
+        } else if (const auto id = field_value("id:")) {
+            const std::string_view value = *id;
             // An id holding NUL is ignored, as the SSE standard has it.
             if (value.find('\0') == std::string_view::npos) {
                 id_buffer_.assign(value.data(), value.size());
                 id_named_ = true;
             }
-        } else if (line_.compare(0, 6, "retry:") == 0) {
-            std::string_view value = std::string_view(line_).substr(6);
-            if (!value.empty() && value.front() == ' ') {
-                value.remove_prefix(1);
-            }
+        } else if (const auto retry = field_value("retry:")) {
+            const std::string_view value = *retry;
             if (!value.empty() && value.size() <= g_max_retry_digits &&
                 value.find_first_not_of("0123456789") == std::string_view::npos) {
                 retry_ = std::chrono::milliseconds(std::stoll(std::string(value)));
             }
-        } else if (line_.compare(0, 5, "data:") == 0) {
-            std::string_view value = std::string_view(line_).substr(5);
-            if (!value.empty() && value.front() == ' ') {
-                value.remove_prefix(1);
-            }
+        } else if (const auto data = field_value("data:")) {
+            const std::string_view value = *data;
             if (payload_.size() + value.size() + 1 >
                 mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
                 throw TransportError(TransportError::Kind::eProtocol,
@@ -148,6 +139,20 @@ class SseDecoder {
             payload_.append(value.data(), value.size());
         }
         line_.clear();
+    }
+
+    /// The value of the line when it is the field @p name, which ends with its colon: the rest of
+    /// the line, less one leading space.
+    [[nodiscard]] std::optional<std::string_view> field_value(std::string_view name) const {
+        std::string_view line = line_;
+        if (!line.starts_with(name)) {
+            return std::nullopt;
+        }
+        line.remove_prefix(name.size());
+        if (!line.empty() && line.front() == ' ') {
+            line.remove_prefix(1);
+        }
+        return line;
     }
 
     /// Longest `retry` value read, in digits: past this the field is ignored.
@@ -1685,7 +1690,7 @@ struct HttpClientTransport::Impl {
         auto& body = call->response_body;
         const bool event_stream = call->event_stream;
         const unsigned int status = call->status;
-        std::array<char, 8192> chunk{};
+        std::array<char, mcp::detail::constants::http_client::g_READ_CHUNK_BYTES> chunk{};
         while (!parser.is_done() && !(event_stream && call->final_message)) {
             parser.get().body().data = chunk.data();
             parser.get().body().size = chunk.size();
@@ -1964,7 +1969,7 @@ struct HttpClientTransport::Impl {
     std::shared_ptr<SharedState> state;
     /// Zero means no limit.
     std::atomic<std::chrono::milliseconds::rep> response_timeout_ms{
-        std::chrono::milliseconds(std::chrono::minutes(10)).count()};
+        mcp::detail::constants::http_client::g_DEFAULT_RESPONSE_TIMEOUT.count()};
     std::string host;
     std::string port;
     std::string path;

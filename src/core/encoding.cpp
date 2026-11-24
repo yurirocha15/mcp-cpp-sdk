@@ -2,7 +2,9 @@
 
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <array>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,45 +24,23 @@ std::uint32_t byte_at(std::string_view bytes, std::size_t index) {
 std::string encode_base64(std::string_view bytes, std::string_view alphabet, bool pad) {
     std::string out;
     out.reserve((bytes.size() + 2) / 3 * 4);
-    std::size_t index = 0;
-    for (; index + 3 <= bytes.size(); index += 3) {
-        const auto word =
-            byte_at(bytes, index) << 16U | byte_at(bytes, index + 1) << 8U | byte_at(bytes, index + 2);
-        out += alphabet[(word >> 18U) & 0x3FU];
-        out += alphabet[(word >> 12U) & 0x3FU];
-        out += alphabet[(word >> 6U) & 0x3FU];
-        out += alphabet[word & 0x3FU];
-    }
-    const std::size_t rest = bytes.size() - index;
-    if (rest == 0) {
-        return out;
-    }
-    auto word = byte_at(bytes, index) << 16U;
-    if (rest == 2) {
-        word |= byte_at(bytes, index + 1) << 8U;
-    }
-    out += alphabet[(word >> 18U) & 0x3FU];
-    out += alphabet[(word >> 12U) & 0x3FU];
-    if (rest == 2) {
-        out += alphabet[(word >> 6U) & 0x3FU];
-    }
-    if (pad) {
-        out.append(3 - rest, '=');
+    for (std::size_t index = 0; index < bytes.size(); index += 3) {
+        // Three bytes, or the one or two that are left, as the high bits of a 24-bit group.
+        const std::size_t count = std::min<std::size_t>(3, bytes.size() - index);
+        std::uint32_t group = 0;
+        for (std::size_t i = 0; i < 3; ++i) {
+            group = (group << CHAR_BIT) | (i < count ? byte_at(bytes, index + i) : 0U);
+        }
+        // n bytes take n + 1 digits.
+        for (std::size_t digit = 0; digit <= count; ++digit) {
+            const auto shift = static_cast<unsigned>(3 - digit) * encoding::g_BASE64_DIGIT_BITS;
+            out += alphabet[(group >> shift) & encoding::g_BASE64_DIGIT_MASK];
+        }
+        if (pad) {
+            out.append(3 - count, '=');
+        }
     }
     return out;
-}
-
-int hex_value(char character) {
-    if (character >= '0' && character <= '9') {
-        return character - '0';
-    }
-    if (character >= 'a' && character <= 'f') {
-        return character - 'a' + 10;
-    }
-    if (character >= 'A' && character <= 'F') {
-        return character - 'A' + 10;
-    }
-    return -1;
 }
 
 }  // namespace
@@ -83,8 +63,8 @@ std::string hex_encode(std::string_view bytes) {
     out.reserve(bytes.size() * 2);
     for (const char character : bytes) {
         const auto byte = static_cast<unsigned char>(character);
-        out += encoding::g_HEX_DIGITS[byte >> 4U];
-        out += encoding::g_HEX_DIGITS[byte & 0x0FU];
+        out += encoding::g_HEX_DIGITS[byte >> encoding::g_HEX_DIGIT_BITS];
+        out += encoding::g_HEX_DIGITS[byte & encoding::g_HEX_DIGIT_MASK];
     }
     return out;
 }
@@ -112,19 +92,20 @@ std::optional<std::string> base64_decode(std::string_view text) {
                 ++padding;
                 continue;
             }
-            const auto position = encoding::g_BASE64_ALPHABET.find(character);
-            if (padding != 0 || position == std::string_view::npos) {
+            const int value = encoding::g_BASE64_VALUES[static_cast<unsigned char>(character)];
+            if (padding != 0 || value < 0) {
                 return std::nullopt;
             }
-            quad[offset] = static_cast<std::uint32_t>(position);
+            quad[offset] = static_cast<std::uint32_t>(value);
         }
-        const auto word = quad[0] << 18U | quad[1] << 12U | quad[2] << 6U | quad[3];
-        bytes += static_cast<char>((word >> 16U) & 0xFFU);
-        if (padding < 2) {
-            bytes += static_cast<char>((word >> 8U) & 0xFFU);
+        std::uint32_t group = 0;
+        for (const std::uint32_t value : quad) {
+            group = (group << encoding::g_BASE64_DIGIT_BITS) | value;
         }
-        if (padding < 1) {
-            bytes += static_cast<char>(word & 0xFFU);
+        // Four digits hold three bytes; each `=` stands for one byte fewer.
+        for (std::size_t byte = 0; byte < 3 - padding; ++byte) {
+            const auto shift = static_cast<unsigned>(2 - byte) * CHAR_BIT;
+            bytes += static_cast<char>((group >> shift) & encoding::g_BYTE_MASK);
         }
     }
     return bytes;
@@ -143,15 +124,15 @@ std::optional<std::string> base64url_decode(std::string_view text) {
     unsigned accumulator = 0;
     unsigned bits = 0;
     for (const char character : text) {
-        const std::size_t position = encoding::g_BASE64URL_ALPHABET.find(character);
-        if (position == std::string_view::npos) {
+        const int value = encoding::g_BASE64URL_VALUES[static_cast<unsigned char>(character)];
+        if (value < 0) {
             return std::nullopt;
         }
-        accumulator = (accumulator << 6U) | static_cast<unsigned>(position);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out += static_cast<char>((accumulator >> bits) & 0xFFU);
+        accumulator = (accumulator << encoding::g_BASE64_DIGIT_BITS) | static_cast<unsigned>(value);
+        bits += encoding::g_BASE64_DIGIT_BITS;
+        if (bits >= CHAR_BIT) {
+            bits -= CHAR_BIT;
+            out += static_cast<char>((accumulator >> bits) & encoding::g_BYTE_MASK);
             accumulator &= (1U << bits) - 1U;
         }
     }
@@ -171,8 +152,8 @@ std::string percent_encode(std::string_view text) {
         }
         const auto byte = static_cast<unsigned char>(character);
         out += '%';
-        out += encoding::g_HEX_DIGITS_UPPER[byte >> 4U];
-        out += encoding::g_HEX_DIGITS_UPPER[byte & 0x0FU];
+        out += encoding::g_HEX_DIGITS_UPPER[byte >> encoding::g_HEX_DIGIT_BITS];
+        out += encoding::g_HEX_DIGITS_UPPER[byte & encoding::g_HEX_DIGIT_MASK];
     }
     return out;
 }
@@ -188,12 +169,12 @@ std::optional<std::string> percent_decode(std::string_view text) {
         if (index + 2 >= text.size()) {
             return std::nullopt;
         }
-        const int high = hex_value(text[index + 1]);
-        const int low = hex_value(text[index + 2]);
+        const int high = encoding::g_HEX_VALUES[static_cast<unsigned char>(text[index + 1])];
+        const int low = encoding::g_HEX_VALUES[static_cast<unsigned char>(text[index + 2])];
         if (high < 0 || low < 0) {
             return std::nullopt;
         }
-        decoded += static_cast<char>(high * 16 + low);
+        decoded += static_cast<char>((high << encoding::g_HEX_DIGIT_BITS) | low);
         index += 2;
     }
     return decoded;

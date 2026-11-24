@@ -8,6 +8,7 @@
 #include <string_view>
 #include <utility>
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/header_value.hpp"
 
 namespace url = mcp::detail::constants::url;
 
@@ -72,17 +73,6 @@ void validate_metadata_path(std::string_view path) {
     }
 }
 
-/// @brief True when every byte may appear in an RFC 7235 quoted-string, escaped or not.
-bool is_quotable(std::string_view value) {
-    for (const auto character : value) {
-        const auto byte = static_cast<unsigned char>(character);
-        if (byte != '\t' && (byte < 0x20 || byte > 0x7E)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 /// @brief Append `key="value"` with `\` and `"` escaped, separating it from any earlier parameter.
 void append_challenge_parameter(std::string& header, bool& first, std::string_view key,
                                 std::string_view value) {
@@ -143,7 +133,8 @@ std::string format_www_authenticate(const BearerChallengeConfig& config) {
     };
 
     for (const auto& [key, value] : parameters) {
-        if (!is_quotable(value)) {
+        // Every byte a header value may carry may appear in an RFC 7235 quoted-string, escaped or not.
+        if (!mcp::detail::is_valid_header_value(value)) {
             throw std::invalid_argument("WWW-Authenticate " + std::string(key) +
                                         " contains a character that cannot be quoted");
         }

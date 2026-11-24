@@ -56,10 +56,12 @@ struct ValueShape {
     std::size_t text_bytes = 0;  ///< Bytes of the strings and property names in the value.
 
     /// The size of the value as evaluation work grows with it. A step at a node costs what copying
-    /// its location costs, one per level and one per 32 bytes of the names on its path, and every
-    /// 16 bytes of text cost one, as reading the text does.
+    /// its location costs, one per level and one per g_PATH_BYTES_PER_UNIT bytes of the names on its
+    /// path, and every g_TEXT_BYTES_PER_UNIT bytes of text cost one, as reading the text does.
     [[nodiscard]] std::size_t units() const {
-        return saturating_add(saturating_add(levels, path_bytes / 32), text_bytes / 16);
+        namespace limits = mcp::detail::constants::schema;
+        return saturating_add(saturating_add(levels, path_bytes / limits::g_PATH_BYTES_PER_UNIT),
+                              text_bytes / limits::g_TEXT_BYTES_PER_UNIT);
     }
 
     /// The evaluation work a validation of the value may do against a schema of @p schema_nodes
@@ -221,8 +223,12 @@ bool same_document(const nlohmann::json& left, const nlohmann::json& right) {
     }
 }
 
+/// The classic boost::hash_combine step, with 2^64 divided by the golden ratio as its constant.
 void mix(std::size_t& hash, std::size_t value) {
-    hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+    constexpr std::size_t golden_ratio = 0x9e3779b97f4a7c15ULL;
+    constexpr unsigned left_shift = 6;
+    constexpr unsigned right_shift = 2;
+    hash ^= value + golden_ratio + (hash << left_shift) + (hash >> right_shift);
 }
 
 /// Mixes @p node, found @p depth levels below the root, into @p hash. Returns false, leaving the

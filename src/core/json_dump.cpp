@@ -3,6 +3,7 @@
 
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/json/json_text_scan.hpp"
+#include "mcp/detail/text/unicode.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@
 #include <string_view>
 
 namespace encoding = mcp::detail::constants::encoding;
+namespace unicode_limits = mcp::detail::constants::unicode;
 
 namespace mcp::detail {
 
@@ -20,7 +22,8 @@ namespace {
 
 /// Whether @p byte is written as it is and needs no UTF-8 check.
 constexpr bool is_plain(unsigned char byte) {
-    return byte >= 0x20U && byte < 0x80U && byte != '"' && byte != '\\';
+    return byte >= unicode_limits::g_C0_CONTROLS_END && byte < unicode_limits::g_ASCII_END &&
+           byte != '"' && byte != '\\';
 }
 
 /// Writes JSON text at the end of a string through an index into it. The string is grown ahead of
@@ -43,7 +46,7 @@ class Writer {
             case nlohmann::json::value_t::object: {
                 const auto& object = value.get_ref<const nlohmann::json::object_t&>();
                 if (object.empty()) {
-                    write("{}", 2);
+                    write("{}");
                     return;
                 }
                 char separator = '{';
@@ -60,7 +63,7 @@ class Writer {
             case nlohmann::json::value_t::array: {
                 const auto& array = value.get_ref<const nlohmann::json::array_t&>();
                 if (array.empty()) {
-                    write("[]", 2);
+                    write("[]");
                     return;
                 }
                 char separator = '[';
@@ -77,9 +80,9 @@ class Writer {
                 return;
             case nlohmann::json::value_t::boolean:
                 if (value.get<bool>()) {
-                    write("true", 4);
+                    write("true");
                 } else {
-                    write("false", 5);
+                    write("false");
                 }
                 return;
             case nlohmann::json::value_t::number_integer:
@@ -89,7 +92,7 @@ class Writer {
                 integer(value.get<nlohmann::json::number_unsigned_t>());
                 return;
             case nlohmann::json::value_t::null:
-                write("null", 4);
+                write("null");
                 return;
             case nlohmann::json::value_t::number_float:
             case nlohmann::json::value_t::binary:
@@ -105,7 +108,7 @@ class Writer {
 
     void object_with(const nlohmann::json::object_t& object, std::span<const JsonMemberText> extra) {
         if (object.empty() && extra.empty()) {
-            write("{}", 2);
+            write("{}");
             return;
         }
         char separator = '{';
@@ -154,6 +157,8 @@ class Writer {
         make_room(1);
         out_[length_++] = symbol;
     }
+
+    void write(std::string_view text) { write(text.data(), text.size()); }
 
     void write(const void* bytes, std::size_t count) {
         make_room(count);
@@ -212,8 +217,8 @@ class Writer {
             data = out_.data();
             while (at < block_end) {
                 const unsigned char byte = *at;
-                if (byte >= 0x80U) {
-                    const std::size_t sequence = json_text::utf8_sequence_length(at, end);
+                if (byte >= unicode_limits::g_ASCII_END) {
+                    const std::size_t sequence = unicode::utf8_sequence_length(at, end);
                     if (sequence == 0) {
                         return false;
                     }
@@ -236,8 +241,8 @@ class Writer {
                     data[length_++] = 'u';
                     data[length_++] = '0';
                     data[length_++] = '0';
-                    data[length_++] = hex[byte >> 4U];
-                    data[length_++] = hex[byte & 0x0FU];
+                    data[length_++] = hex[byte >> encoding::g_HEX_DIGIT_BITS];
+                    data[length_++] = hex[byte & encoding::g_HEX_DIGIT_MASK];
                 }
                 ++at;
             }

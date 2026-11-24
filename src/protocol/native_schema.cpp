@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -948,7 +949,9 @@ class Compiler {
     std::unordered_map<const Node*, Place> places_;
     std::unordered_map<std::string, const Node*> anchors_;
     std::vector<PendingReference> pending_;
-    std::array<Node*, 5> metaschemas_{};  ///< By SchemaDialect.
+    static constexpr std::size_t dialect_count =
+        static_cast<std::size_t>(SchemaDialect::eDraft202012) + 1;
+    std::array<Node*, dialect_count> metaschemas_{};  ///< By SchemaDialect.
     std::optional<SchemaError> problem_;
 };
 
@@ -983,34 +986,20 @@ constexpr std::size_t g_CONTENT_BYTES_PER_UNIT = 4;
 /// @p text decoded as base64: the characters before the first '=' must all be base64 characters,
 /// and what follows it is ignored. Nothing when one is not.
 std::optional<std::string> lenient_base64_decode(std::string_view text) {
-    const auto value = [](char character) -> int {
-        if (character >= 'A' && character <= 'Z') {
-            return character - 'A';
-        }
-        if (character >= 'a' && character <= 'z') {
-            return character - 'a' + 26;
-        }
-        if (character >= '0' && character <= '9') {
-            return character - '0' + 52;
-        }
-        if (character == '+') {
-            return 62;
-        }
-        return character == '/' ? 63 : -1;
-    };
+    namespace encoding = mcp::detail::constants::encoding;
     std::string decoded;
     unsigned buffer = 0;
-    int bits = 0;
+    unsigned bits = 0;
     for (const char character : text.substr(0, text.find('='))) {
-        const int digit = value(character);
+        const int digit = encoding::g_BASE64_VALUES[static_cast<unsigned char>(character)];
         if (digit < 0) {
             return std::nullopt;
         }
-        buffer = (buffer << 6U) | static_cast<unsigned>(digit);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            decoded.push_back(static_cast<char>((buffer >> static_cast<unsigned>(bits)) & 0xFFU));
+        buffer = (buffer << encoding::g_BASE64_DIGIT_BITS) | static_cast<unsigned>(digit);
+        bits += encoding::g_BASE64_DIGIT_BITS;
+        if (bits >= CHAR_BIT) {
+            bits -= CHAR_BIT;
+            decoded.push_back(static_cast<char>((buffer >> bits) & encoding::g_BYTE_MASK));
         }
     }
     return decoded;
@@ -1834,7 +1823,8 @@ class Evaluation {
     /// The JSON Pointer of the current location, escaped as RFC 6901 requires.
     [[nodiscard]] std::string path() const {
         std::string path;
-        path.reserve(locations_.size() * 8);
+        constexpr std::size_t typical_step_bytes = 8;
+        path.reserve(locations_.size() * typical_step_bytes);
         for (std::size_t step = 0; step < locations_.size(); ++step) {
             const auto& location = locations_[step];
             path += '/';

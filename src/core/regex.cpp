@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/unicode.hpp"
 
 namespace mcp::detail {
 
@@ -44,56 +45,23 @@ struct Instruction {
 /// Decodes the UTF-8 code point at `text[pos]` and advances `pos`. A malformed or truncated
 /// sequence yields U+FFFD and advances one byte.
 char32_t decode_utf8(std::string_view text, std::size_t& pos) {
-    const auto lead = static_cast<unsigned char>(text[pos]);
-    if (lead < 0x80) {
+    const auto sequence = unicode::decode_utf8(text, pos);
+    if (sequence.length == 0) {
         ++pos;
-        return lead;
+        return constants::unicode::g_REPLACEMENT_CHARACTER;
     }
-    std::size_t length = 0;
-    char32_t value = 0;
-    char32_t minimum = 0;
-    if ((lead & 0xE0) == 0xC0) {
-        length = 2;
-        value = lead & 0x1F;
-        minimum = 0x80;
-    } else if ((lead & 0xF0) == 0xE0) {
-        length = 3;
-        value = lead & 0x0F;
-        minimum = 0x800;
-    } else if ((lead & 0xF8) == 0xF0) {
-        length = 4;
-        value = lead & 0x07;
-        minimum = 0x10000;
-    } else {
-        ++pos;
-        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-    }
-    if (pos + length > text.size()) {
-        ++pos;
-        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-    }
-    for (std::size_t i = 1; i < length; ++i) {
-        const auto byte = static_cast<unsigned char>(text[pos + i]);
-        if ((byte & 0xC0) != 0x80) {
-            ++pos;
-            return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-        }
-        value = (value << 6) | (byte & 0x3F);
-    }
-    if (value < minimum || value > mcp::detail::constants::regex::g_MAX_CODE_POINT ||
-        (value >= 0xD800 && value <= 0xDFFF)) {
-        ++pos;
-        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-    }
-    pos += length;
-    return value;
+    pos += sequence.length;
+    return sequence.code_point;
 }
 
 bool is_word_character(char32_t c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
-bool is_line_terminator(char32_t c) { return c == '\n' || c == '\r' || c == 0x2028 || c == 0x2029; }
+bool is_line_terminator(char32_t c) {
+    return c == '\n' || c == '\r' || c == constants::unicode::g_LINE_SEPARATOR ||
+           c == constants::unicode::g_PARAGRAPH_SEPARATOR;
+}
 
 std::vector<Range> normalize(std::vector<Range> ranges) {
     std::sort(ranges.begin(), ranges.end(),
@@ -118,8 +86,8 @@ std::vector<Range> complement(const std::vector<Range>& ranges) {
         }
         next = range.last + 1;
     }
-    if (next <= mcp::detail::constants::regex::g_MAX_CODE_POINT) {
-        result.push_back({next, mcp::detail::constants::regex::g_MAX_CODE_POINT});
+    if (next <= constants::unicode::g_MAX_CODE_POINT) {
+        result.push_back({next, constants::unicode::g_MAX_CODE_POINT});
     }
     return result;
 }
@@ -130,8 +98,12 @@ std::vector<Range> word_ranges() { return {{'0', '9'}, {'A', 'Z'}, {'_', '_'}, {
 
 /// ECMAScript WhiteSpace and LineTerminator.
 std::vector<Range> space_ranges() {
-    return {{0x09, 0x0D},     {0x20, 0x20},     {0xA0, 0xA0},     {0x1680, 0x1680}, {0x2000, 0x200A},
-            {0x2028, 0x2029}, {0x202F, 0x202F}, {0x205F, 0x205F}, {0x3000, 0x3000}, {0xFEFF, 0xFEFF}};
+    std::vector<Range> ranges;
+    ranges.reserve(constants::regex::g_SPACE_RANGES.size());
+    for (const auto& [first, last] : constants::regex::g_SPACE_RANGES) {
+        ranges.push_back({first, last});
+    }
+    return ranges;
 }
 
 bool contains(const std::vector<Range>& ranges, char32_t c) {
@@ -269,7 +241,8 @@ class Parser {
             std::size_t digits = 0;
             std::uint64_t value = 0;
             while (!at_end() && peek() >= '0' && peek() <= '9') {
-                value = std::min<std::uint64_t>(value * 10 + (peek() - '0'), s_past_limit);
+                value = std::min<std::uint64_t>(
+                    (value * constants::encoding::g_DECIMAL_BASE) + (peek() - '0'), s_past_limit);
                 ++pos_;
                 ++digits;
             }
@@ -450,17 +423,13 @@ class Parser {
         std::uint32_t value = 0;
         for (std::size_t i = 0; i < digits; ++i) {
             const char32_t h = peek();
-            std::uint32_t nibble = 0;
-            if (h >= '0' && h <= '9') {
-                nibble = h - '0';
-            } else if (h >= 'a' && h <= 'f') {
-                nibble = h - 'a' + 10;
-            } else if (h >= 'A' && h <= 'F') {
-                nibble = h - 'A' + 10;
-            } else {
+            const int nibble =
+                h < constants::unicode::g_ASCII_END ? constants::encoding::g_HEX_VALUES[h] : -1;
+            if (nibble < 0) {
                 fail(RegexError::Kind::eUnsupported, "invalid hexadecimal escape");
             }
-            value = value * 16 + nibble;
+            value =
+                (value << constants::encoding::g_HEX_DIGIT_BITS) | static_cast<std::uint32_t>(nibble);
             ++pos_;
         }
         return value;
@@ -474,9 +443,9 @@ class Parser {
             // Leading zeros are allowed, and checking the value after each digit keeps it far below
             // the uint32_t limit.
             while (!at_end() && peek() != '}') {
-                value = value * 16 + parse_hex(1);
+                value = (value << constants::encoding::g_HEX_DIGIT_BITS) | parse_hex(1);
                 ++digits;
-                if (value > mcp::detail::constants::regex::g_MAX_CODE_POINT) {
+                if (value > constants::unicode::g_MAX_CODE_POINT) {
                     fail(RegexError::Kind::eUnsupported, "code point out of range");
                 }
             }
@@ -486,12 +455,12 @@ class Parser {
             return value;
         }
         std::uint32_t value = parse_hex(4);
-        if (value >= 0xD800 && value <= 0xDBFF && peek() == '\\' && peek(1) == 'u') {
+        if (unicode::is_high_surrogate(value) && peek() == '\\' && peek(1) == 'u') {
             const std::size_t save = pos_;
             pos_ += 2;
             const std::uint32_t low = parse_hex(4);
-            if (low >= 0xDC00 && low <= 0xDFFF) {
-                return 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00);
+            if (unicode::is_low_surrogate(low)) {
+                return unicode::combine_surrogates(value, low);
             }
             pos_ = save;
         }
@@ -540,7 +509,7 @@ class Parser {
                     fail(RegexError::Kind::eUnsupported, "invalid \\c escape");
                 }
                 ++pos_;
-                return {static_cast<char32_t>(letter % 32), {}};
+                return {static_cast<char32_t>(letter % constants::regex::g_CONTROL_LETTER_MODULUS), {}};
             }
             case 'x':
                 return {static_cast<char32_t>(parse_hex(2)), {}};

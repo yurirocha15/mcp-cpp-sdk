@@ -5,14 +5,17 @@
 #include <array>
 #include <boost/asio/ip/address.hpp>
 #include <boost/system/error_code.hpp>
+#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/unicode.hpp"
 
 namespace ipv4 = mcp::detail::constants::ipv4;
+namespace ipv6 = mcp::detail::constants::ipv6;
 
 namespace mcp::auth {
 
@@ -79,20 +82,13 @@ std::string lowercase_ascii(std::string value) {
 /// an empty string, a sign, embedded whitespace, or a value that overflows a 16-bit port — returns
 /// `nullopt` rather than silently truncating or wrapping.
 std::optional<std::uint32_t> parse_strict_port(const std::string& port_text) {
-    if (port_text.empty()) {
+    std::uint16_t value = 0;
+    const char* const end = port_text.data() + port_text.size();
+    const auto [stop, error] = std::from_chars(port_text.data(), end, value);
+    if (port_text.empty() || error != std::errc{} || stop != end) {
         return std::nullopt;
     }
-    std::uint64_t value = 0;
-    for (const char character : port_text) {
-        if (character < '0' || character > '9') {
-            return std::nullopt;
-        }
-        value = (value * 10) + static_cast<std::uint64_t>(character - '0');
-        if (value > 65535U) {
-            return std::nullopt;
-        }
-    }
-    return static_cast<std::uint32_t>(value);
+    return value;
 }
 
 /// Canonical form of an origin's components. Kept split (rather than only the formatted string) so
@@ -179,8 +175,9 @@ std::optional<CanonicalOrigin> canonicalize_origin_parts(const std::string& orig
         }
     }
 
-    if (port && ((*port == 443U && canonical_scheme == "https") ||
-                 (*port == 80U && canonical_scheme == "http"))) {
+    namespace url = mcp::detail::constants::url;
+    if (port && ((*port == url::g_HTTPS_DEFAULT_PORT && canonical_scheme == "https") ||
+                 (*port == url::g_HTTP_DEFAULT_PORT && canonical_scheme == "http"))) {
         port.reset();
     }
 
@@ -245,43 +242,25 @@ bool denies_origin(const std::vector<std::string>& origins, const std::string& c
 /// Classify an IPv4 address against the ranges that must never be reached by a metadata fetch.
 MetadataUrlDecision classify_v4(const MetadataFetchPolicy& policy, const net::ip::address_v4& address) {
     const auto value = address.to_uint();
-    const auto octet1 = static_cast<std::uint32_t>(value >> ipv4::g_OCTET1_SHIFT) & ipv4::g_OCTET_MASK;
-    const auto octet2 = static_cast<std::uint32_t>(value >> ipv4::g_OCTET2_SHIFT) & ipv4::g_OCTET_MASK;
-    const auto octet3 = static_cast<std::uint32_t>(value >> ipv4::g_OCTET3_SHIFT) & ipv4::g_OCTET_MASK;
+    const auto in = [value](const ipv4::Block& block) { return block.contains(value); };
+    const auto in_any = [&in](const auto& blocks) {
+        return std::any_of(blocks.begin(), blocks.end(), in);
+    };
 
-    if (octet1 == 127) {
+    if (in(ipv4::g_LOOPBACK)) {
         return policy.allow_plain_http_loopback ? MetadataUrlDecision::eAllowed
                                                 : MetadataUrlDecision::eAddressLoopback;
     }
-    if (octet1 == 169 && octet2 == 254) {
+    if (in(ipv4::g_LINK_LOCAL)) {
         return MetadataUrlDecision::eAddressLinkLocal;
     }
-    if (octet1 == 10 || (octet1 == 172 && octet2 >= 16 && octet2 <= 31) ||
-        (octet1 == 192 && octet2 == 168)) {
+    if (in_any(ipv4::g_PRIVATE_USE)) {
         return MetadataUrlDecision::eAddressPrivate;
     }
-    if (value == 0xFFFFFFFFU) {
+    if (value == ipv4::g_LIMITED_BROADCAST || in(ipv4::g_MULTICAST)) {
         return MetadataUrlDecision::eAddressMulticast;
     }
-    if (octet1 >= 224 && octet1 <= 239) {
-        return MetadataUrlDecision::eAddressMulticast;
-    }
-    if (octet1 == 0 || octet1 >= 240) {
-        return MetadataUrlDecision::eAddressReserved;
-    }
-    if (octet1 == 100 && octet2 >= 64 && octet2 <= 127) {
-        return MetadataUrlDecision::eAddressReserved;
-    }
-    if (octet1 == 192 && octet2 == 0 && (octet3 == 0 || octet3 == 2)) {
-        return MetadataUrlDecision::eAddressReserved;
-    }
-    if (octet1 == 198 && (octet2 == 18 || octet2 == 19)) {
-        return MetadataUrlDecision::eAddressReserved;
-    }
-    if (octet1 == 198 && octet2 == 51 && octet3 == 100) {
-        return MetadataUrlDecision::eAddressReserved;
-    }
-    if (octet1 == 203 && octet2 == 0 && octet3 == 113) {
+    if (in_any(ipv4::g_RESERVED)) {
         return MetadataUrlDecision::eAddressReserved;
     }
     return MetadataUrlDecision::eAllowed;
@@ -289,17 +268,10 @@ MetadataUrlDecision classify_v4(const MetadataFetchPolicy& policy, const net::ip
 
 /// Recognize the ::ffff:a.b.c.d form so an IPv4 target cannot be smuggled through an IPv6 literal.
 bool mapped_v4(const net::ip::address_v6& address, net::ip::address_v4& mapped) {
-    const auto bytes = address.to_bytes();
-    for (std::size_t index = 0; index < 10; ++index) {
-        if (bytes[index] != 0) {
-            return false;
-        }
-    }
-    if (bytes[10] != 0xFF || bytes[11] != 0xFF) {
+    if (!address.is_v4_mapped()) {
         return false;
     }
-    const net::ip::address_v4::bytes_type v4_bytes{bytes[12], bytes[13], bytes[14], bytes[15]};
-    mapped = net::ip::address_v4(v4_bytes);
+    mapped = net::ip::make_address_v4(net::ip::v4_mapped, address);
     return true;
 }
 
@@ -307,16 +279,19 @@ bool mapped_v4(const net::ip::address_v6& address, net::ip::address_v4& mapped) 
 /// address that a translator or relay delivers to, so a private IPv4 target cannot hide in either.
 bool embedded_v4(const net::ip::address_v6& address, net::ip::address_v4& embedded) {
     const auto bytes = address.to_bytes();
-    constexpr std::array<unsigned char, 12> nat64_prefix{0x00, 0x64, 0xFF, 0x9B, 0, 0,
-                                                         0,    0,    0,    0,    0, 0};
-    if (std::equal(nat64_prefix.begin(), nat64_prefix.end(), bytes.begin())) {
-        embedded = net::ip::address_v4(
-            net::ip::address_v4::bytes_type{bytes[12], bytes[13], bytes[14], bytes[15]});
+    const auto v4_at = [&bytes](std::size_t offset) {
+        net::ip::address_v4::bytes_type v4_bytes{};
+        std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset), v4_bytes.size(),
+                    v4_bytes.begin());
+        return net::ip::address_v4(v4_bytes);
+    };
+    if (std::equal(ipv6::g_NAT64_PREFIX.begin(), ipv6::g_NAT64_PREFIX.end(), bytes.begin())) {
+        embedded = v4_at(ipv6::g_NAT64_PREFIX.size());
         return true;
     }
-    if (bytes[0] == 0x20 && bytes[1] == 0x02) {
-        embedded = net::ip::address_v4(
-            net::ip::address_v4::bytes_type{bytes[2], bytes[3], bytes[4], bytes[5]});
+    if (std::equal(ipv6::g_SIX_TO_FOUR_PREFIX.begin(), ipv6::g_SIX_TO_FOUR_PREFIX.end(),
+                   bytes.begin())) {
+        embedded = v4_at(ipv6::g_SIX_TO_FOUR_PREFIX.size());
         return true;
     }
     return false;
@@ -347,7 +322,7 @@ MetadataUrlDecision classify_v6(const MetadataFetchPolicy& policy, const net::ip
         return MetadataUrlDecision::eAddressMulticast;
     }
     const auto bytes = address.to_bytes();
-    if ((bytes[0] & 0xFEU) == 0xFCU) {
+    if ((bytes[0] & ipv6::g_UNIQUE_LOCAL_MASK) == ipv6::g_UNIQUE_LOCAL_PREFIX) {
         return MetadataUrlDecision::eAddressPrivate;
     }
     if (address.is_site_local()) {
@@ -478,64 +453,14 @@ namespace detail {
 
 namespace {
 
-/// One decoded UTF-8 sequence. `length` is 0 when the bytes at the offset are not a well-formed
-/// sequence, in which case `codepoint` is meaningless.
-struct Utf8Sequence {
-    std::size_t length{0};
-    std::uint32_t codepoint{0};
-};
-
-/// Decode the UTF-8 sequence starting at `index`, rejecting every ill-formed encoding rather than
-/// accepting the bytes and hoping: a truncated tail, a bad continuation byte, an overlong form, a
-/// surrogate, or a value past U+10FFFF. Ill-formed input is what a peer sends when it wants the
-/// consumer of the log, not the log line itself, to misbehave.
-Utf8Sequence decode_utf8(std::string_view value, std::size_t index) {
-    const auto lead = static_cast<unsigned char>(value[index]);
-    if (lead < 0x80) {
-        return {1, lead};
-    }
-
-    std::size_t length = 0;
-    std::uint32_t codepoint = 0;
-    if ((lead & 0xE0) == 0xC0) {
-        length = 2;
-        codepoint = lead & 0x1FU;
-    } else if ((lead & 0xF0) == 0xE0) {
-        length = 3;
-        codepoint = lead & 0x0FU;
-    } else if ((lead & 0xF8) == 0xF0) {
-        length = 4;
-        codepoint = lead & 0x07U;
-    } else {
-        return {};  // A continuation byte with no lead, or an invalid lead.
-    }
-
-    if (index + length > value.size()) {
-        return {};
-    }
-    for (std::size_t offset = 1; offset < length; ++offset) {
-        const auto continuation = static_cast<unsigned char>(value[index + offset]);
-        if ((continuation & 0xC0) != 0x80) {
-            return {};
-        }
-        codepoint = (codepoint << 6U) | (continuation & 0x3FU);
-    }
-
-    const bool overlong = (length == 2 && codepoint < 0x80) || (length == 3 && codepoint < 0x800) ||
-                          (length == 4 && codepoint < 0x10000);
-    const bool surrogate = codepoint >= 0xD800 && codepoint <= 0xDFFF;
-    if (overlong || surrogate || codepoint > 0x10FFFF) {
-        return {};
-    }
-    return {length, codepoint};
-}
-
 /// Codepoints that can end a line somewhere downstream. C0 and DEL are the obvious ones; C1 and
 /// U+2028/U+2029 are here because a JSON encoder emits them literally and JavaScript-based log
 /// viewers treat the last two as line terminators, which is the same forgery by another route.
 bool breaks_a_line(std::uint32_t codepoint) {
-    return codepoint < 0x20 || codepoint == 0x7f || (codepoint >= 0x80 && codepoint <= 0x9f) ||
-           codepoint == 0x2028 || codepoint == 0x2029;
+    namespace unicode = mcp::detail::constants::unicode;
+    return codepoint < unicode::g_C0_CONTROLS_END || codepoint == unicode::g_DELETE ||
+           (codepoint >= unicode::g_C1_CONTROLS_FIRST && codepoint <= unicode::g_C1_CONTROLS_LAST) ||
+           codepoint == unicode::g_LINE_SEPARATOR || codepoint == unicode::g_PARAGRAPH_SEPARATOR;
 }
 
 /// Codepoints that re-order the text after them without ending the line: the explicit embeddings and
@@ -544,9 +469,13 @@ bool breaks_a_line(std::uint32_t codepoint) {
 /// refusal can be made to read as its opposite. ALM sits in the Arabic block but is the same class as
 /// RLM.
 bool reorders_the_line(std::uint32_t codepoint) {
-    return (codepoint >= 0x202a && codepoint <= 0x202e) ||
-           (codepoint >= 0x2066 && codepoint <= 0x2069) || codepoint == 0x200e || codepoint == 0x200f ||
-           codepoint == 0x061c;
+    namespace unicode = mcp::detail::constants::unicode;
+    return (codepoint >= unicode::g_BIDI_EMBEDDINGS_FIRST &&
+            codepoint <= unicode::g_BIDI_EMBEDDINGS_LAST) ||
+           (codepoint >= unicode::g_BIDI_ISOLATES_FIRST &&
+            codepoint <= unicode::g_BIDI_ISOLATES_LAST) ||
+           codepoint == unicode::g_LEFT_TO_RIGHT_MARK || codepoint == unicode::g_RIGHT_TO_LEFT_MARK ||
+           codepoint == unicode::g_ARABIC_LETTER_MARK;
 }
 
 }  // namespace
@@ -559,7 +488,7 @@ std::string sanitize_for_diagnostics(std::string_view value) {
     std::size_t index = 0;
     bool truncated = false;
     while (index < value.size()) {
-        const auto decoded = decode_utf8(value, index);
+        const auto decoded = mcp::detail::unicode::decode_utf8(value, index);
 
         // Ill-formed bytes are replaced one for one rather than copied, so the result is always
         // well-formed UTF-8 even when the input was not. Text that reaches here through a header
@@ -571,7 +500,7 @@ std::string sanitize_for_diagnostics(std::string_view value) {
         }
         if (decoded.length == 0) {
             cleaned.push_back('?');
-        } else if (breaks_a_line(decoded.codepoint) || reorders_the_line(decoded.codepoint)) {
+        } else if (breaks_a_line(decoded.code_point) || reorders_the_line(decoded.code_point)) {
             cleaned.push_back(' ');
         } else {
             cleaned.append(value.substr(index, decoded.length));
