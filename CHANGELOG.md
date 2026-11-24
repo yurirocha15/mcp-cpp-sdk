@@ -141,6 +141,8 @@ These changes in behavior need no change to compile:
   uppercase, such as `HTTPS://`, which the metadata fetch policy already took.
 - The metadata fetch policy refuses a URL with text other than a port after an
   IPv6 host, such as `https://[2001:db8::1]x/`, which the fetch itself refused.
+- `OAuthClientTransport` sends a request with positional (array) params as
+  written, instead of replacing the params with an object that holds the token.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

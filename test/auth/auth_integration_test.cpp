@@ -386,6 +386,43 @@ TEST(AuthClientTransportTest, LegacyRetryReplaysTheRequestMatchingTheErrorId) {
     EXPECT_EQ(json::parse(response)["id"], "A");
 }
 
+// The token joins the `_meta` object of named params. Positional params, or a `_meta` that is not
+// an object, have no place for it, and such a request goes out as written.
+TEST(AuthClientTransportTest, TheTokenJoinsNamedParamsAndLeavesOtherParamsAlone) {
+    asio::io_context io;
+    auto inner = std::make_shared<ScriptedTransport>(io.get_executor());
+    auto authenticator = std::make_shared<RotatingAuthenticator>();
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
+
+    const std::vector<json> requests = {
+        json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}},
+        json{{"jsonrpc", "2.0"},
+             {"id", 2},
+             {"method", "tools/call"},
+             {"params", {{"name", "echo"}, {"_meta", {{"trace", "t1"}}}}}},
+        json{{"jsonrpc", "2.0"}, {"id", 3}, {"method", "custom"}, {"params", json::array({1, "two"})}},
+        json{{"jsonrpc", "2.0"}, {"id", 4}, {"method", "custom"}, {"params", {{"_meta", "note"}}}},
+    };
+    std::vector<std::string> texts;
+    for (const auto& request : requests) {
+        texts.push_back(request.dump());
+    }
+    mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
+        for (const auto& text : texts) {
+            co_await transport.write_message(text);
+        }
+    });
+    io.run();
+
+    ASSERT_EQ(inner->written().size(), 4);
+    EXPECT_EQ(json::parse(inner->written()[0])["params"],
+              (json{{"_meta", {{"auth_token", "initial-token"}}}}));
+    EXPECT_EQ(json::parse(inner->written()[1])["params"],
+              (json{{"name", "echo"}, {"_meta", {{"trace", "t1"}, {"auth_token", "initial-token"}}}}));
+    EXPECT_EQ(json::parse(inner->written()[2]), requests[2]);
+    EXPECT_EQ(json::parse(inner->written()[3]), requests[3]);
+}
+
 TEST(AuthClientTransportTest, NoResponseRequestsAreEvictedAtConfiguredBound) {
     asio::io_context io;
     auto inner = std::make_shared<ScriptedTransport>(io.get_executor());

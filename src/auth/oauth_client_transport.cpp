@@ -224,14 +224,20 @@ struct OAuthClientTransport::Impl {
         if (!request.params) {
             request.params = nlohmann::json::object();
         }
+        // Positional params, or a `_meta` that is not an object, have no place for the token, so
+        // such a request goes out as written.
         auto& params = *request.params;
         if (!params.is_object()) {
-            params = nlohmann::json::object();
+            return mcp::detail::dump_json(nlohmann::json(request));
         }
-        if (!params.contains("_meta")) {
-            params["_meta"] = nlohmann::json::object();
+        auto& meta = params["_meta"];
+        if (meta.is_null()) {
+            meta = nlohmann::json::object();
         }
-        params["_meta"]["auth_token"] = token;
+        if (!meta.is_object()) {
+            return mcp::detail::dump_json(nlohmann::json(request));
+        }
+        meta["auth_token"] = token;
         return mcp::detail::dump_json(nlohmann::json(request));
     }
 
