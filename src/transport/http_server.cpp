@@ -625,12 +625,8 @@ struct HttpServerTransport::Impl {
             is_legacy_protocol_version(header_value(protocol_header_it))) {
             return std::nullopt;
         }
-
-        if (!is_initialize) {
-            return make_error_response(request, http::status::bad_request,
-                                       "Invalid MCP-Protocol-Version header");
-        }
-        return std::nullopt;
+        return make_error_response(request, http::status::bad_request,
+                                   "Invalid MCP-Protocol-Version header");
     }
 
     /// The 403 for a request whose Host the policy refuses, checked on every request.

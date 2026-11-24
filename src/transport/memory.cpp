@@ -215,15 +215,6 @@ Task<nlohmann::json> read_json(std::shared_ptr<detail::MemoryTransportState> sta
         co_await detail::MemoryTransportState::next_message(std::move(state)));
 }
 
-Task<std::optional<std::string>> read_message_until_closed(
-    std::shared_ptr<detail::MemoryTransportState> state) {
-    auto message = co_await detail::MemoryTransportState::next_message_or_closed(std::move(state));
-    if (!message) {
-        co_return std::nullopt;
-    }
-    co_return detail::MemoryTransportState::as_string(std::move(*message));
-}
-
 Task<std::optional<nlohmann::json>> read_json_until_closed(
     std::shared_ptr<detail::MemoryTransportState> state) {
     auto message = co_await detail::MemoryTransportState::next_message_or_closed(std::move(state));
@@ -247,16 +238,6 @@ Task<std::optional<detail::MemoryTransportAccess::RelatedMessage>> read_related_
 // A read touches the queue and the waiters, which belong to the endpoint's strand. A reader whose
 // own executor is that strand runs on it already, so it reads in place; any other is spawned onto
 // the strand, where it also stays after each suspension.
-Task<std::optional<std::string>> read_message_until_closed_on_strand(
-    std::shared_ptr<detail::MemoryTransportState> state) {
-    const auto caller = co_await boost::asio::this_coro::executor;
-    if (caller == state->strand) {
-        co_return co_await mcp::read_message_until_closed(std::move(state));
-    }
-    co_return co_await mcp::detail::spawn_awaitable(state->strand,
-                                                    mcp::read_message_until_closed(state));
-}
-
 Task<std::optional<nlohmann::json>> read_json_until_closed_on_strand(
     std::shared_ptr<detail::MemoryTransportState> state) {
     const auto caller = co_await boost::asio::this_coro::executor;
@@ -272,11 +253,6 @@ Task<std::optional<detail::MemoryTransportAccess::RelatedMessage>>
 detail::MemoryTransportAccess::read_related_until_closed(MemoryTransport& transport) {
     auto state = transport.state_;
     return mcp::detail::spawn_awaitable(state->strand, mcp::read_related_until_closed(state));
-}
-
-Task<std::optional<std::string>> detail::MemoryTransportAccess::read_message_until_closed(
-    MemoryTransport& transport) {
-    return mcp::read_message_until_closed_on_strand(transport.state_);
 }
 
 Task<std::optional<nlohmann::json>> detail::MemoryTransportAccess::read_json_until_closed(

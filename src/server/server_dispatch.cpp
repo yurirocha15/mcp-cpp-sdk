@@ -1268,10 +1268,6 @@ std::vector<std::string> Server::Impl::supported_versions() const {
     return served_protocol_versions(protocol_policy);
 }
 
-bool Server::Impl::serves_legacy_version(std::string_view version) const {
-    return policy_allows_legacy_version(protocol_policy, version);
-}
-
 std::string Server::Impl::initialize_not_served_wire(const RequestId& id) const {
     auto supported = supported_versions();
     auto message = detail::initialize_not_served_message(supported);
@@ -1365,15 +1361,6 @@ std::optional<Server::PaginationSlice> Server::Impl::paginate(std::size_t total,
     }
 
     return PaginationSlice{offset, end, std::move(next_cursor)};
-}
-
-bool Server::Impl::has_tool_output_schema(const std::string& name) const {
-    for (const auto& listed : tools) {
-        if (listed.tool.name == name) {
-            return listed.output.has_value();
-        }
-    }
-    return false;
 }
 
 }  // namespace mcp

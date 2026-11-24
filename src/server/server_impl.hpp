@@ -1477,14 +1477,12 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// The versions this server serves, oldest first: the legacy versions initialize may
     /// negotiate, then the versions served per request.
     [[nodiscard]] std::vector<std::string> supported_versions() const;
-    [[nodiscard]] bool serves_legacy_version(std::string_view version) const;
     /// -32601 for an initialize sent to a server that serves no legacy version, naming the
     /// versions it serves in the message and in `data.supported`.
     [[nodiscard]] std::string initialize_not_served_wire(const RequestId& id) const;
     [[nodiscard]] std::string unsupported_version_wire(const RequestId& id,
                                                        std::string requested) const;
     std::optional<PaginationSlice> paginate(std::size_t total, const nlohmann::json& json_msg);
-    [[nodiscard]] bool has_tool_output_schema(const std::string& name) const;
 
     /// Serves a 2026-07-28 tools/call, prompts/get or resources/read, whose handler may ask the
     /// client for input: the request is then answered input_required, and a retry carrying its
