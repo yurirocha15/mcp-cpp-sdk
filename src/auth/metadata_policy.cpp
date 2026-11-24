@@ -44,8 +44,10 @@ bool split_url(const std::string& url, std::string& scheme, std::string& authori
 /// Extract the host from an authority. Userinfo is rejected by the caller, not stripped here.
 bool authority_host(const std::string& authority, std::string& host) {
     if (authority.front() == '[') {
+        // Only a port may follow the closing bracket.
         const auto closing = authority.find(']');
-        if (closing == std::string::npos || closing == 1) {
+        if (closing == std::string::npos || closing == 1 ||
+            (closing + 1 < authority.size() && authority[closing + 1] != ':')) {
             return false;
         }
         host = authority.substr(1, closing - 1);

@@ -514,6 +514,15 @@ TEST(AuthMetadataPolicyTest, RejectsAHostThatIsNothingButDots) {
               mcp::auth::MetadataUrlDecision::eMalformedUrl);
 }
 
+// Only a port may follow the brackets of an IPv6 host, as the fetch reads the URL too.
+TEST(AuthMetadataPolicyTest, RejectsTextAfterTheBracketsOfAnIpv6Host) {
+    const auto policy = allow_origin("https://[2606:2800:220:1::1]");
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://[2606:2800:220:1::1]x/prm"),
+              mcp::auth::MetadataUrlDecision::eMalformedUrl);
+    EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "https://[2606:2800:220:1::1]:443/prm"),
+              mcp::auth::MetadataUrlDecision::eAllowed);
+}
+
 TEST(AuthMetadataPolicyTest, RejectsPlainHttpForNonLoopbackHosts) {
     const auto policy = allow_origin("http://as.test");
     EXPECT_EQ(mcp::auth::validate_metadata_url(policy, "http://as.test/prm"),
