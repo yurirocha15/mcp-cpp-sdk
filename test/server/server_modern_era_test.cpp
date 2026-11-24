@@ -369,6 +369,32 @@ TEST_F(ServerModernEraTest, LegacyHandlersSeeNoPerRequestFields) {
     EXPECT_FALSE(written[1]["result"]["structuredContent"]["modern"].get<bool>());
 }
 
+// A server sends no request of its own to a 2026-07-28 client. Outside the requests that can ask the
+// client for input, a handler that asks fails at once, and the request it serves goes on.
+TEST_F(ServerModernEraTest, AskingTheClientFromACompletionFailsAtOnce) {
+    auto server = make_server();
+    bool refused = false;
+    server->use([&refused](mcp::Context& ctx, const json& params,
+                           mcp::TypeErasedHandler next) -> mcp::Task<json> {
+        try {
+            co_await ctx.request_roots();
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        co_return co_await next(ctx, params);
+    });
+    auto meta = make_modern_meta();
+    meta["io.modelcontextprotocol/clientCapabilities"] = {{"roots", json::object()}};
+    const json params = {{"ref", {{"type", "ref/prompt"}, {"name", "greet"}}},
+                         {"argument", {{"name", "a"}, {"value", "b"}}}};
+
+    const auto response = dispatch(*server, modern_with_meta(1, "completion/complete", meta, params));
+
+    EXPECT_TRUE(refused);
+    ASSERT_TRUE(response.contains("result")) << response;
+    EXPECT_EQ(response["result"]["completion"]["values"], json::array({"done"})) << response;
+}
+
 TEST_F(ServerModernEraTest, MissingClientCapabilitiesIsInvalidParams) {
     auto server = make_server();
     auto meta = make_modern_meta();
