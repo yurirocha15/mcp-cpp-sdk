@@ -682,7 +682,7 @@ TEST(ClientEra, PinnedModernRefusalReadsOnlyTheVersionStringsItLists) {
         Harness harness(pinned_options("2026-07-28"));
         harness.peer.reply = [data](const json& request) -> std::optional<json> {
             return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
-                            "Unsupported protocol version", data);
+                            "Unsupported protocol version", std::make_optional(data));
         };
         std::optional<mcp::McpError> failure;
         harness.run([&]() -> mcp::Task<void> {
