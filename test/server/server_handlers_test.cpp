@@ -2353,6 +2353,64 @@ TEST_F(ServerHandlersTest, CompletionReturnsResults) {
     EXPECT_FALSE(completion["hasMore"].get<bool>());
 }
 
+// A completion for a resource template's argument reaches the provider with the template's URI and
+// the context. A reference of a type the specification does not define is invalid params.
+TEST_F(ServerHandlersTest, CompletionReferencesAResourceTemplateOrIsRefused) {
+    mcp::ServerCapabilities caps;
+    caps.completions = nlohmann::json::object();
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    std::vector<mcp::CompleteParams> seen;
+    setup.server.set_completion_provider(
+        [&seen](const mcp::CompleteParams& params) -> mcp::Task<mcp::CompleteResult> {
+            seen.push_back(params);
+            mcp::CompleteResult result;
+            result.completion.values = {"src/main.cpp"};
+            co_return result;
+        });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 3) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(R"({"jsonrpc":"2.0","id":"2","method":"completion/complete",
+        "params":{"ref":{"type":"ref/resource","uri":"file:///{path}"},
+                  "argument":{"name":"path","value":"src/m"},
+                  "context":{"arguments":{"root":"/repo"}}}})");
+    setup.raw_transport->enqueue_message(R"({"jsonrpc":"2.0","id":"3","method":"completion/complete",
+        "params":{"ref":{"type":"ref/tool","name":"search"},
+                  "argument":{"name":"query","value":"a"}}})");
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 3);
+    std::map<std::string, nlohmann::json> by_id;
+    for (const auto& response : responses) {
+        by_id[response.at("id").get<std::string>()] = response;
+    }
+    EXPECT_EQ(by_id["2"]["result"]["completion"]["values"],
+              nlohmann::json::parse(R"(["src/main.cpp"])"));
+    EXPECT_EQ(by_id["3"]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
+    ASSERT_EQ(seen.size(), 1U);
+    const auto* reference = std::get_if<mcp::ResourceTemplateReference>(&seen[0].ref);
+    ASSERT_NE(reference, nullptr);
+    EXPECT_EQ(reference->uri, "file:///{path}");
+    EXPECT_EQ(seen[0].argument.value, "src/m");
+    ASSERT_TRUE(seen[0].context.has_value());
+    EXPECT_EQ(seen[0].context->arguments, (std::map<std::string, std::string>{{"root", "/repo"}}));
+}
+
 TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
     mcp::ServerCapabilities caps;
 

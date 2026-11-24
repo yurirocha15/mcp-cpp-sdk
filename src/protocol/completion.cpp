@@ -1,6 +1,7 @@
 #include <mcp/protocol/completion.hpp>
 
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <variant>
 
@@ -51,10 +52,13 @@ void to_json(nlohmann::json& json_obj, const CompleteReference& ref) {
 }
 
 void from_json(const nlohmann::json& json_obj, CompleteReference& ref) {
-    if (json_obj.at("type") == "ref/prompt") {
+    const auto& type = json_obj.at("type");
+    if (type == "ref/prompt") {
         ref = json_obj.get<PromptReference>();
-    } else {
+    } else if (type == "ref/resource") {
         ref = json_obj.get<ResourceTemplateReference>();
+    } else {
+        throw std::invalid_argument("Unknown completion reference type");
     }
 }
 

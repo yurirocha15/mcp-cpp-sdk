@@ -522,6 +522,16 @@ TEST(ProtocolTest, CompletionSerialization) {
     EXPECT_EQ(std::get<mcp::PromptReference>(deserialized_ref).type, "ref/prompt");
     EXPECT_EQ(std::get<mcp::PromptReference>(deserialized_ref).name, "my_prompt");
 
+    const auto resource_ref =
+        json::parse(R"({"type":"ref/resource","uri":"file:///{path}"})").get<mcp::CompleteReference>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ResourceTemplateReference>(resource_ref));
+    EXPECT_EQ(std::get<mcp::ResourceTemplateReference>(resource_ref).uri, "file:///{path}");
+    // The reference is one of the two the specification defines.
+    EXPECT_THROW(
+        static_cast<void>(
+            json::parse(R"({"type":"ref/tool","uri":"file:///{path}"})").get<mcp::CompleteReference>()),
+        std::invalid_argument);
+
     // Test CompleteParams
     mcp::CompleteParams params;
     params.ref = ref;

@@ -124,6 +124,9 @@ These changes in behavior need no change to compile:
 - A client trusts no authority when `SSL_CERT_FILE` or `SSL_CERT_DIR` is set but
   names none, instead of OpenSSL's defaults; with OpenSSL 3.0, a missing
   `SSL_CERT_DIR` failed handshakes.
+- A `completion/complete` request whose reference type is neither `ref/prompt`
+  nor `ref/resource` is answered with -32602 instead of being read as a resource
+  reference.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key
