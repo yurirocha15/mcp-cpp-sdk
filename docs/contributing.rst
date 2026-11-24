@@ -69,10 +69,13 @@ Follow these naming conventions, which ``.clang-tidy`` enforces with
 * **Macros**: ``UPPER_CASE`` (e.g., ``MCP_DEPRECATED``)
 * **Namespaces**: ``lower_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
 
-``make lint`` runs the check locally. The CI ``Identifier naming`` job runs only
-``readability-identifier-naming`` over ``src/``, ``include/`` and ``examples/``,
-the directories ``make lint`` checks, and fails on any violation. It runs when a
-change touches those directories, ``.clang-tidy`` or the CMake files.
+``make lint`` runs clang-tidy locally with the checks ``.clang-tidy`` enables;
+``examples/.clang-tidy`` turns off ``readability-magic-numbers`` and
+``bugprone-exception-escape`` for the examples, which show sample values where they
+are used and let an exception end the program. The CI ``clang-tidy`` job runs the
+same checks over ``src/``, ``include/`` and ``examples/``, the directories
+``make lint`` checks, and fails on any warning. It runs when a change touches those
+directories, ``.clang-tidy`` or the CMake files.
 
 Code Formatting
 ^^^^^^^^^^^^^^^

@@ -5,7 +5,10 @@ Checks: 'bugprone-*,performance-*,readability-*,modernize-*,
         -modernize-use-trailing-return-type,
         -readability-identifier-length,
         -performance-noexcept-destructor,
-        -performance-noexcept-move-constructor'
+        -performance-noexcept-move-constructor,
+        -readability-function-cognitive-complexity,
+        -bugprone-unchecked-optional-access,
+        -bugprone-empty-catch'
 WarningsAsErrors: ''
 CheckOptions:
   - key:             llvm-namespace-comment.ShortNamespaceLines

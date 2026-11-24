@@ -24,7 +24,7 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-slim
     outputs:
-      naming: ${{ steps.classify.outputs.naming }}
+      lint: ${{ steps.classify.outputs.lint }}
       code: ${{ steps.classify.outputs.code }}
       conan: ${{ steps.classify.outputs.conan }}
       release: ${{ steps.classify.outputs.release }}
@@ -48,15 +48,15 @@ jobs:
         BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
       run: python3 scripts/ci_changes.py --event "$EVENT" --base "$BASE" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
-  naming:
+  lint:
     # Checks that only the TLS context factory sets certificate verification, then
-    # clang-tidy runs only readability-identifier-naming, over the .cpp files in src/ and examples/
-    # and the headers of include/, src/ and examples/ they include (`make lint` also checks each
-    # header on its own). It needs the compile database, so CMake configures against distribution
-    # packages and nothing is built.
-    name: Identifier naming
+    # clang-tidy runs the checks .clang-tidy and examples/.clang-tidy enable over the .cpp files in
+    # src/ and examples/ and the headers of include/, src/ and examples/ they include (`make lint`
+    # also checks each header on its own), and fails on any warning. It needs the compile database,
+    # so CMake configures against distribution packages and nothing is built.
+    name: clang-tidy
     needs: changes
-    if: needs.changes.outputs.naming == 'true'
+    if: needs.changes.outputs.lint == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -84,15 +84,14 @@ jobs:
 
     - name: Configure
       run: >-
-        cmake -S . -B build/naming -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        cmake -S . -B build/lint -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
         -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=ON
 
-    - name: Check identifier naming
+    - name: Run clang-tidy
       run: >-
-        find src examples -name '*.cpp' | sort | xargs -P 4 -n 1
-        clang-tidy -p build/naming --quiet
-        --checks='-*,readability-identifier-naming'
-        --warnings-as-errors='readability-identifier-naming'
+        find src examples -name '*.cpp' | sort | xargs -P "$(nproc)" -n 1
+        clang-tidy -p build/lint --quiet
+        --warnings-as-errors='*'
         --header-filter="^$PWD/(include|src|examples)/.*"
 
   build:
@@ -761,7 +760,7 @@ jobs:
     if: always()
     needs:
       - changes
-      - naming
+      - lint
       - build
       - sanitize
       - tsan

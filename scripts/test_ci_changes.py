@@ -23,7 +23,7 @@ PACKAGES = {"package_core", "native_package", "homebrew_package", "windows_packa
 # The package builds run on pushes and manual runs, never on pull requests.
 PACKAGE_BUILDS = PACKAGES - {"package_core"}
 PULL_REQUEST_JOBS = ALL_JOBS - PACKAGE_BUILDS
-LIBRARY_JOBS = {"code", "conan", "naming"}
+LIBRARY_JOBS = {"code", "conan", "lint"}
 # Release modules each job starts, directly or through a script in scripts/release/.
 ENTRY_MODULES = {
     "package_core": ("release/construct_core.py",),
@@ -158,15 +158,15 @@ class ClassifierTests(unittest.TestCase):
             "test/include/support/pipe_stream.hpp": {"code"},
             "test/perf/schema_workload.cpp": {"code"},
             "scripts/schema_ir_gate.py": {"release"},
-            "examples/features/pagination.cpp": {"code", "naming"},
+            "examples/features/pagination.cpp": {"code", "lint"},
             "scripts/run_examples.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
             "LICENSE": {"conan"},
             "benchmark/run.sh": {"benchmark"},
             "test/release/test_signing.py": {"release"},
             "release/github_anchor.py": {"release"},
-            "scripts/ci_changes.py": {"release", "naming"},
-            ".clang-tidy": {"naming"},
+            "scripts/ci_changes.py": {"release", "lint"},
+            ".clang-tidy": {"lint"},
             ".github/workflows/release.yml": {"release"},
             ".github/workflows/release-candidate.yml": {"release"},
             ".github/workflows/conformance.yml": {"release"},
@@ -183,7 +183,7 @@ class ClassifierTests(unittest.TestCase):
             "scripts/package_build.py": {"release"} | PACKAGES,
             "CMakeLists.txt": LIBRARY_JOBS | {"release", "package_core"},
             "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core"},
-            "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release", "package_core"},
+            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release", "package_core"},
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
             ".github/workflows/ci.yml": PULL_REQUEST_JOBS,
         }
@@ -210,7 +210,7 @@ class ClassifierTests(unittest.TestCase):
             "scripts/package_build.py": {"release"} | PACKAGES,
             "CMakeLists.txt": LIBRARY_JOBS | {"release"} | PACKAGES,
             "cmake/config.cmake.in": LIBRARY_JOBS | PACKAGES,
-            "conanfile.py": (LIBRARY_JOBS - {"naming"}) | {"release"} | PACKAGES,
+            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release"} | PACKAGES,
             "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
         }
@@ -220,7 +220,7 @@ class ClassifierTests(unittest.TestCase):
 
     def test_other_events_also_package_source(self) -> None:
         for path, jobs in (("src/main.cpp", LIBRARY_JOBS), ("test/core/protocol_test.cpp", {"code"}),
-                           ("examples/features/pagination.cpp", {"code", "naming"}),
+                           ("examples/features/pagination.cpp", {"code", "lint"}),
                            ("LICENSE", {"conan"})):
             with self.subTest(path=path):
                 self.assertEqual(self.jobs_for_change(path, "push"), jobs | PACKAGES)

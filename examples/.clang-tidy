@@ -1,0 +1,6 @@
+---
+# Examples show sample values, ports and timeouts where they are used, as the documentation quotes
+# them, and let an exception end the program rather than wrap main() in handlers.
+InheritParentConfig: true
+Checks: '-readability-magic-numbers,-bugprone-exception-escape'
+...
