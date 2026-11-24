@@ -127,6 +127,8 @@ These changes in behavior need no change to compile:
 - A `completion/complete` request whose reference type is neither `ref/prompt`
   nor `ref/resource` is answered with -32602 instead of being read as a resource
   reference.
+- `StreamableHttpSessionManager::listen()` called after `close()` no longer
+  starts a timer that keeps the event loop running for 30 seconds.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

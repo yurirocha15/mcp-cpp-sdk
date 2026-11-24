@@ -2173,9 +2173,11 @@ void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl)
 
 Task<void> StreamableHttpSessionManager::listen() {
     auto impl = impl_;
-    (void)impl->begin_listening();
-    boost::asio::co_spawn(impl->listener_strand, Impl::expire_idle_sessions(impl),
-                          boost::asio::detached);
+    // A closed manager starts no sweep: close() has already cancelled the timer it would wait on.
+    if (impl->begin_listening()) {
+        boost::asio::co_spawn(impl->listener_strand, Impl::expire_idle_sessions(impl),
+                              boost::asio::detached);
+    }
     auto listening =
         boost::asio::co_spawn(impl->listener_strand, listen_impl(impl), boost::asio::use_awaitable);
     if (!impl->served_run_control_) {

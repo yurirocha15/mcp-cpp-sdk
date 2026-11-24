@@ -1909,6 +1909,20 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
     EXPECT_EQ(manager.session_count(), 0);
 }
 
+// A closed manager starts nothing: its listen() ends at once and leaves the event loop nothing to
+// wait for.
+TEST_F(SessionManagerTest, ListenAfterCloseEndsAtOnce) {
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", 0,
+                                              make_echo_server_factory());
+    manager.close();
+    bool ended = false;
+    mcp_test::spawn_then(io_ctx_, manager.listen(),
+                         [&ended](const std::exception_ptr& error) { ended = error == nullptr; });
+    io_ctx_.poll();
+    EXPECT_TRUE(ended);
+    EXPECT_TRUE(io_ctx_.stopped());
+}
+
 TEST_F(SessionManagerTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     const unsigned short port = 19116;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
