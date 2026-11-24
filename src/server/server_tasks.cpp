@@ -145,9 +145,8 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
 }
 
 bool Server::Impl::task_limit_reached_locked(const std::string& owner) const {
-    const auto owned = static_cast<std::size_t>(
-        std::count_if(task_runs.begin(), task_runs.end(),
-                      [&owner](const auto& entry) { return entry.second->owner == owner; }));
+    const auto owned = static_cast<std::size_t>(std::ranges::count_if(
+        task_runs, [&owner](const auto& entry) { return entry.second->owner == owner; }));
     return owned >= task_options.max_tasks_per_principal || task_runs.size() >= task_options.max_tasks;
 }
 

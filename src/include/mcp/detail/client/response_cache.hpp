@@ -78,10 +78,9 @@ class ResponseCache {
         std::erase_if(entries_,
                       [received](const auto& entry) { return received >= entry.second.expires; });
         if (entries_.size() >= options_.max_entries && !entries_.contains(key)) {
-            entries_.erase(std::min_element(entries_.begin(), entries_.end(),
-                                            [](const auto& left, const auto& right) {
-                                                return left.second.expires < right.second.expires;
-                                            }));
+            entries_.erase(std::ranges::min_element(entries_, [](const auto& left, const auto& right) {
+                return left.second.expires < right.second.expires;
+            }));
         }
         const auto room =
             std::chrono::duration_cast<std::chrono::milliseconds>(Clock::time_point::max() - received);

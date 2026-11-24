@@ -171,8 +171,8 @@ bool has_keyword(std::string_view keyword, SchemaDialect dialect) {
 /// Whether @p value has a `$ref` or `$dynamicRef` member at any depth.
 bool mentions_reference(const nlohmann::json& value) {
     if (value.is_array()) {
-        return std::any_of(value.begin(), value.end(),
-                           [](const nlohmann::json& item) { return mentions_reference(item); });
+        return std::ranges::any_of(value,
+                                   [](const nlohmann::json& item) { return mentions_reference(item); });
     }
     if (!value.is_object()) {
         return false;
@@ -937,8 +937,7 @@ class Compiler {
         constexpr std::size_t g_most_digits = 18;
         if (token.empty() || token.size() > g_most_digits ||
             (token.size() > 1 && token.front() == '0') ||
-            !std::all_of(token.begin(), token.end(),
-                         [](char digit) { return digit >= '0' && digit <= '9'; })) {
+            !std::ranges::all_of(token, [](char digit) { return digit >= '0' && digit <= '9'; })) {
             return std::nullopt;
         }
         return static_cast<std::size_t>(std::stoull(token));
@@ -1161,8 +1160,8 @@ class Evaluation {
             return report("No value is allowed here");
         }
         if ((!node.types.empty() &&
-             std::none_of(node.types.begin(), node.types.end(),
-                          [&](const std::string& type) { return has_type(value, type); })) &&
+             std::ranges::none_of(node.types,
+                                  [&](const std::string& type) { return has_type(value, type); })) &&
             (!report_type(node.types, value))) {
             return false;
         }
@@ -1630,8 +1629,7 @@ class Evaluation {
 
     /// The `properties` schema of the member @p name, or null.
     MCP_SCHEMA_NOINLINE static const Node* find_property(const Node& node, const std::string& name) {
-        const auto found =
-            std::lower_bound(node.property_names.begin(), node.property_names.end(), name);
+        const auto found = std::ranges::lower_bound(node.property_names, name);
         if (found == node.property_names.end() || *found != name) {
             return nullptr;
         }

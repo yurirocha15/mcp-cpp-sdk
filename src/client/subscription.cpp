@@ -65,13 +65,13 @@ SubscriptionFilter Subscription::unhonored() const {
     missing.promptsListChanged = asked.promptsListChanged && !honored.promptsListChanged;
     missing.resourcesListChanged = asked.resourcesListChanged && !honored.resourcesListChanged;
     for (const auto& uri : asked.resourceSubscriptions) {
-        if (std::find(honored.resourceSubscriptions.begin(), honored.resourceSubscriptions.end(),
-                      uri) == honored.resourceSubscriptions.end()) {
+        if (std::ranges::find(honored.resourceSubscriptions, uri) ==
+            honored.resourceSubscriptions.end()) {
             missing.resourceSubscriptions.push_back(uri);
         }
     }
     for (const auto& id : asked.taskIds) {
-        if (std::find(honored.taskIds.begin(), honored.taskIds.end(), id) == honored.taskIds.end()) {
+        if (std::ranges::find(honored.taskIds, id) == honored.taskIds.end()) {
             missing.taskIds.push_back(id);
         }
     }

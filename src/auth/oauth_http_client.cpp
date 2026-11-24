@@ -427,12 +427,10 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
             }
             std::scoped_lock lock(owner->active_mutex);
             auto& list = owner->active_exchanges;
-            list.erase(std::remove_if(list.begin(), list.end(),
-                                      [this](const std::weak_ptr<Exchange>& weak) {
-                                          const auto locked = weak.lock();
-                                          return !locked || locked.get() == exchange;
-                                      }),
-                       list.end());
+            std::erase_if(list, [this](const std::weak_ptr<Exchange>& weak) {
+                const auto locked = weak.lock();
+                return !locked || locked.get() == exchange;
+            });
         }
 
         std::shared_ptr<Impl> owner;

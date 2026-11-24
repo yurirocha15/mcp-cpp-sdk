@@ -52,7 +52,7 @@ inline ScopeCheck check_request_scopes(const ScopeRequirementProvider& required,
     } catch (...) {
         return {.outcome = ScopeCheck::Outcome::eFailed, .challenge = {}};
     }
-    const bool satisfied = std::all_of(needed.begin(), needed.end(), [&held](const auto& scope) {
+    const bool satisfied = std::ranges::all_of(needed, [&held](const auto& scope) {
         return held && std::find(held->begin(), held->end(), scope) != held->end();
     });
     if (satisfied) {

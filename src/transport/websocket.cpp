@@ -80,7 +80,7 @@ void wake_all(WaiterContainer& waiters) noexcept {
 
 template <typename WaiterContainer>
 void remove_waiter(WaiterContainer& waiters, const std::shared_ptr<OperationWaiter>& waiter) noexcept {
-    auto position = std::find(waiters.begin(), waiters.end(), waiter);
+    auto position = std::ranges::find(waiters, waiter);
     if (position != waiters.end()) {
         waiters.erase(position);
     }

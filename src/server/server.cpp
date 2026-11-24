@@ -23,9 +23,7 @@ Server::Impl::~Impl() {
     // registry_members() call, one per ended session of run_http().
     std::scoped_lock lock(registry->members_mutex);
     auto& members = registry->members;
-    members.erase(std::remove_if(members.begin(), members.end(),
-                                 [](const std::weak_ptr<Impl>& member) { return member.expired(); }),
-                  members.end());
+    std::erase_if(members, [](const std::weak_ptr<Impl>& member) { return member.expired(); });
 }
 
 std::unique_ptr<Server> Server::session_server() const {
@@ -105,13 +103,12 @@ void Server::Impl::append_listed_tool(std::string& text, const ListedTool& liste
     if (listed.output) {
         splices.push_back({.at = once(output_mark), .mark = output_mark, .schema = &*listed.output});
     }
-    if (std::any_of(splices.begin(), splices.end(),
-                    [](const Splice& splice) { return splice.at == std::string::npos; })) {
+    if (std::ranges::any_of(splices,
+                            [](const Splice& splice) { return splice.at == std::string::npos; })) {
         text += mcp::detail::dump_json(listed.listed_json());
         return;
     }
-    std::sort(splices.begin(), splices.end(),
-              [](const Splice& a, const Splice& b) { return a.at < b.at; });
+    std::ranges::sort(splices, [](const Splice& a, const Splice& b) { return a.at < b.at; });
     std::size_t copied = 0;
     for (const auto& splice : splices) {
         text.append(shell_text, copied, splice.at - copied);

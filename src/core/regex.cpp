@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -64,8 +65,7 @@ bool is_line_terminator(char32_t c) {
 }
 
 std::vector<Range> normalize(std::vector<Range> ranges) {
-    std::sort(ranges.begin(), ranges.end(),
-              [](const Range& lhs, const Range& rhs) { return lhs.first < rhs.first; });
+    std::ranges::sort(ranges, [](const Range& lhs, const Range& rhs) { return lhs.first < rhs.first; });
     std::vector<Range> merged;
     for (const auto& range : ranges) {
         if (!merged.empty() && range.first <= merged.back().last + 1) {
@@ -112,9 +112,7 @@ std::vector<Range> space_ranges() {
 }
 
 bool contains(const std::vector<Range>& ranges, char32_t c) {
-    auto iter =
-        std::upper_bound(ranges.begin(), ranges.end(), c,
-                         [](char32_t value, const Range& range) { return value < range.first; });
+    auto iter = std::ranges::upper_bound(ranges, c, std::ranges::less{}, &Range::first);
     return iter != ranges.begin() && c <= std::prev(iter)->last;
 }
 

@@ -40,7 +40,7 @@ inline bool equals_ignoring_case(std::string_view lhs, std::string_view rhs) {
 /// RFC 9110 `token`: one or more `tchar`.
 inline bool is_http_token(std::string_view text) {
     constexpr std::string_view symbols = "!#$%&'*+-.^_`|~";
-    return !text.empty() && std::all_of(text.begin(), text.end(), [&](char raw) {
+    return !text.empty() && std::ranges::all_of(text, [&](char raw) {
         const bool alphanumeric =
             (raw >= 'a' && raw <= 'z') || (raw >= 'A' && raw <= 'Z') || (raw >= '0' && raw <= '9');
         return alphanumeric || symbols.find(raw) != std::string_view::npos;
@@ -125,7 +125,7 @@ class Collector {
    private:
     template <std::size_t N>
     static bool contains(const std::array<std::string_view, N>& keywords, std::string_view keyword) {
-        return std::find(keywords.begin(), keywords.end(), keyword) != keywords.end();
+        return std::ranges::find(keywords, keyword) != keywords.end();
     }
 
     void walk_map(const nlohmann::json& map, std::string& location, std::vector<std::string>& path,

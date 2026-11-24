@@ -162,8 +162,8 @@ SkillsExtension::SkillsExtension(Server& server, SkillsOptions options)
                 throw std::invalid_argument("skills/get needs a string uri");
             }
             const auto& wanted = uri->get_ref<const std::string&>();
-            const auto found = std::find_if(state->entries.begin(), state->entries.end(),
-                                            [&](const Skill& skill) { return skill.uri == wanted; });
+            const auto found = std::ranges::find_if(
+                state->entries, [&](const Skill& skill) { return skill.uri == wanted; });
             if (found == state->entries.end()) {
                 throw std::invalid_argument("No skill is served at " + wanted);
             }
@@ -303,8 +303,8 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
         state_->file_uris.insert(uri);
     }
     for (auto& [directory, children] : new_directories) {
-        std::sort(children.begin(), children.end(),
-                  [](const Resource& left, const Resource& right) { return left.uri < right.uri; });
+        std::ranges::sort(
+            children, [](const Resource& left, const Resource& right) { return left.uri < right.uri; });
         state_->directories[directory] = std::move(children);
     }
     state_->entries.push_back(std::move(entry));

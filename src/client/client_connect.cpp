@@ -90,8 +90,8 @@ std::vector<std::string> Client::Impl::advertised_versions(const Error& error) {
 
 bool Client::Impl::lists_modern_version(const Error& error) {
     const auto versions = advertised_versions(error);
-    return std::any_of(versions.begin(), versions.end(),
-                       [](const std::string& version) { return is_modern_protocol_version(version); });
+    return std::ranges::any_of(
+        versions, [](const std::string& version) { return is_modern_protocol_version(version); });
 }
 
 void Client::Impl::report_era(ProtocolEra era, EraReason reason,
@@ -227,8 +227,7 @@ Task<ConnectResult> Client::Impl::adopt_discover(std::shared_ptr<Impl> state, Pr
         // A server can refuse a request whose version it lists, for instance when the
         // request is otherwise unacceptable; naming the version as unsupported would then
         // contradict the list.
-        const bool listed_by_server =
-            std::find(advertised.begin(), advertised.end(), version) != advertised.end();
+        const bool listed_by_server = std::ranges::find(advertised, version) != advertised.end();
         if (listed_by_server) {
             throw McpError(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                            "The server refused protocol version " + version +
@@ -265,7 +264,7 @@ bool Client::Impl::refuses_listed_version(const ProbeOutcome& outcome, const std
         return false;
     }
     const auto advertised = advertised_versions(*outcome.error);
-    return std::find(advertised.begin(), advertised.end(), version) != advertised.end();
+    return std::ranges::find(advertised, version) != advertised.end();
 }
 
 Task<ConnectResult> Client::Impl::connect_pinned_modern(std::shared_ptr<Impl> state,

@@ -23,9 +23,8 @@ bool covers(const std::optional<std::string>& held, const std::optional<std::str
     }
     const auto have = split_scopes(*held);
     const auto need = split_scopes(*wanted);
-    return std::all_of(need.begin(), need.end(), [&](const std::string& scope) {
-        return std::find(have.begin(), have.end(), scope) != have.end();
-    });
+    return std::ranges::all_of(
+        need, [&](const std::string& scope) { return std::ranges::find(have, scope) != have.end(); });
 }
 
 }  // namespace

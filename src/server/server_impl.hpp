@@ -802,7 +802,7 @@ inline bool policy_allows_legacy_version(const ServerProtocolPolicy& policy, std
         return true;
     }
     const auto& allowed = *policy.legacy_versions;
-    return std::find(allowed.begin(), allowed.end(), version) != allowed.end();
+    return std::ranges::find(allowed, version) != allowed.end();
 }
 
 struct Server::PendingRequest {
@@ -1306,16 +1306,14 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::vector<std::shared_ptr<Impl>> alive;
         std::scoped_lock lock(registry->members_mutex);
         auto& members = registry->members;
-        members.erase(std::remove_if(members.begin(), members.end(),
-                                     [&alive](const std::weak_ptr<Impl>& member) {
-                                         auto locked = member.lock();
-                                         if (!locked) {
-                                             return true;
-                                         }
-                                         alive.push_back(std::move(locked));
-                                         return false;
-                                     }),
-                      members.end());
+        std::erase_if(members, [&alive](const std::weak_ptr<Impl>& member) {
+            auto locked = member.lock();
+            if (!locked) {
+                return true;
+            }
+            alive.push_back(std::move(locked));
+            return false;
+        });
         return alive;
     }
 

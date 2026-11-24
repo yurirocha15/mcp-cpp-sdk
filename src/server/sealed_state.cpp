@@ -155,7 +155,7 @@ OpenResult Codec::open(std::string_view token) const {
     if (raw[0] != sealed_token::g_VERSION) {
         return {.payload = {}, .error = OpenError::eBadVersion};
     }
-    const auto found = std::find_if(keys_.begin(), keys_.end(), [&](const SealKey& key) {
+    const auto found = std::ranges::find_if(keys_, [&](const SealKey& key) {
         return std::memcmp(key.kid().data(), raw + 1, sealed_token::g_KID_SIZE) == 0;
     });
     if (found == keys_.end()) {

@@ -24,8 +24,9 @@ bool is_token_char(unsigned char character) {
 }
 
 std::string to_lower_ascii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    std::ranges::transform(value, value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
     return value;
 }
 
@@ -232,9 +233,8 @@ std::vector<BearerChallenge> parse_www_authenticate(const std::vector<std::strin
 }
 
 std::optional<BearerChallenge> select_bearer_challenge(const std::vector<BearerChallenge>& challenges) {
-    const auto match =
-        std::find_if(challenges.begin(), challenges.end(),
-                     [](const BearerChallenge& challenge) { return challenge.is_bearer(); });
+    const auto match = std::ranges::find_if(
+        challenges, [](const BearerChallenge& challenge) { return challenge.is_bearer(); });
     if (match == challenges.end()) {
         return std::nullopt;
     }

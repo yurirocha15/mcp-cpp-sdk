@@ -71,7 +71,7 @@ bool authority_host(const std::string& authority, std::string& host) {
 
 /// Lowercase only ASCII letters; every other byte (digits, punctuation, non-ASCII) is left as-is.
 std::string lowercase_ascii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) -> char {
+    std::ranges::transform(value, value.begin(), [](unsigned char ch) -> char {
         return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : static_cast<char>(ch);
     });
     return value;
@@ -215,7 +215,7 @@ std::optional<std::string> canonicalize_origin(const std::string& origin) {
 /// fail-closed; the deny list, where the same silence would be fail-open, is handled by
 /// `denies_origin` instead.
 bool contains_origin(const std::vector<std::string>& origins, const std::string& canonical_origin) {
-    return std::any_of(origins.begin(), origins.end(), [&](const std::string& candidate) {
+    return std::ranges::any_of(origins, [&](const std::string& candidate) {
         const auto canonical_candidate = canonicalize_origin(candidate);
         return canonical_candidate && *canonical_candidate == canonical_origin;
     });
@@ -247,9 +247,7 @@ bool denies_origin(const std::vector<std::string>& origins, const std::string& c
 MetadataUrlDecision classify_v4(const MetadataFetchPolicy& policy, const net::ip::address_v4& address) {
     const auto value = address.to_uint();
     const auto in = [value](const ipv4::Block& block) { return block.contains(value); };
-    const auto in_any = [&in](const auto& blocks) {
-        return std::any_of(blocks.begin(), blocks.end(), in);
-    };
+    const auto in_any = [&in](const auto& blocks) { return std::ranges::any_of(blocks, in); };
 
     if (in(ipv4::g_LOOPBACK)) {
         return policy.allow_plain_http_loopback ? MetadataUrlDecision::eAllowed

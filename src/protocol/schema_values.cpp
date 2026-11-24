@@ -155,10 +155,10 @@ bool json_equal(const nlohmann::json& left, const nlohmann::json& right, std::si
         return false;
     }
     if (left.is_array()) {
-        return std::equal(left.begin(), left.end(), right.begin(), right.end(),
-                          [&work](const nlohmann::json& one, const nlohmann::json& other) {
-                              return json_equal(one, other, work);
-                          });
+        return std::ranges::equal(left, right,
+                                  [&work](const nlohmann::json& one, const nlohmann::json& other) {
+                                      return json_equal(one, other, work);
+                                  });
     }
     if (left.is_object()) {
         if (left.size() != right.size()) {
@@ -240,7 +240,7 @@ bool all_unique(const nlohmann::json& array, std::size_t& work) {
         charge(work, 1);
         hashed.emplace_back(equality_hash(array[index]), index);
     }
-    std::sort(hashed.begin(), hashed.end());
+    std::ranges::sort(hashed);
     for (std::size_t i = 0; i < hashed.size(); ++i) {
         // Hashes a peer chose can all collide; each comparison is charged.
         for (std::size_t j = i + 1; j < hashed.size() && hashed[j].first == hashed[i].first; ++j) {

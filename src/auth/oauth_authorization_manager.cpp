@@ -68,7 +68,7 @@ void require_browser_safe_authorization_endpoint(const MetadataFetchPolicy& poli
                std::string_view("-._~:/?[]@!$&'()*+,;=%").find(static_cast<char>(character)) !=
                    std::string_view::npos;
     };
-    bool acceptable = !endpoint.empty() && std::all_of(endpoint.begin(), endpoint.end(), uri_character);
+    bool acceptable = !endpoint.empty() && std::ranges::all_of(endpoint, uri_character);
     if (acceptable) {
         auto any_origin = policy;
         any_origin.origin_allowance = [](const std::string& /*origin*/) { return true; };
@@ -313,8 +313,8 @@ struct OAuthAuthorizationManager::Impl {
         }
         const auto held = split_scopes(*granted);
         const auto wanted = split_scopes(*challenge.scope);
-        return !wanted.empty() && std::all_of(wanted.begin(), wanted.end(), [&held](const auto& scope) {
-            return std::find(held.begin(), held.end(), scope) != held.end();
+        return !wanted.empty() && std::ranges::all_of(wanted, [&held](const auto& scope) {
+            return std::ranges::find(held, scope) != held.end();
         });
     }
 

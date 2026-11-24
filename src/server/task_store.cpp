@@ -165,9 +165,8 @@ std::optional<TaskRecord> InMemoryTaskStore::create(
     std::scoped_lock lock(impl_->mutex);
     const auto at = impl_->now();
     impl_->purge_expired(at);
-    const auto owned = static_cast<std::size_t>(
-        std::count_if(impl_->tasks.begin(), impl_->tasks.end(),
-                      [&owner_text](const auto& entry) { return entry.second.owner == owner_text; }));
+    const auto owned = static_cast<std::size_t>(std::ranges::count_if(
+        impl_->tasks, [&owner_text](const auto& entry) { return entry.second.owner == owner_text; }));
     if (owned >= impl_->options.max_tasks_per_owner && !impl_->evict_finished(&owner_text)) {
         return std::nullopt;
     }

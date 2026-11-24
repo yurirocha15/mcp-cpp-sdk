@@ -42,7 +42,7 @@ std::string join_scope(const std::vector<std::string>& values) {
 }
 
 bool contains(const std::vector<std::string>& values, std::string_view needle) {
-    return std::find(values.begin(), values.end(), needle) != values.end();
+    return std::ranges::find(values, needle) != values.end();
 }
 
 }  // namespace

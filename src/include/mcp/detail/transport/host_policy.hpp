@@ -27,11 +27,11 @@ inline std::string normalized_host(std::string_view value) {
             return {};
         }
         host = host.substr(1, close - 1);
-    } else if (std::count(host.begin(), host.end(), ':') == 1) {
+    } else if (std::ranges::count(host, ':') == 1) {
         host = host.substr(0, host.find(':'));
     }
     std::string result(host);
-    std::transform(result.begin(), result.end(), result.begin(), [](char character) {
+    std::ranges::transform(result, result.begin(), [](char character) {
         return character >= 'A' && character <= 'Z' ? static_cast<char>(character - 'A' + 'a')
                                                     : character;
     });

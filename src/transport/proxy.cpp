@@ -25,8 +25,9 @@ namespace net = boost::asio;
 namespace {
 
 std::string lower(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(),
-                   [](unsigned char symbol) { return static_cast<char>(std::tolower(symbol)); });
+    std::ranges::transform(text, text.begin(), [](unsigned char symbol) {
+        return static_cast<char>(std::tolower(symbol));
+    });
     return text;
 }
 

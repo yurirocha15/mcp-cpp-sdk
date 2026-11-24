@@ -140,7 +140,7 @@ std::string choose_signing_algorithm(const PrivateKeyJwtConfig& config,
     const auto key = load_private_key(config.private_key_pem);
     const auto usable = algorithms_for(key.get());
     if (config.algorithm) {
-        if (std::find(usable.begin(), usable.end(), *config.algorithm) == usable.end()) {
+        if (std::ranges::find(usable, *config.algorithm) == usable.end()) {
             throw std::invalid_argument("The private key cannot sign with " + *config.algorithm);
         }
         return *config.algorithm;
@@ -161,7 +161,7 @@ std::string sign_client_assertion(const PrivateKeyJwtConfig& config, const std::
                                   const std::string& audience, const std::string& algorithm) {
     const auto key = load_private_key(config.private_key_pem);
     const auto usable = algorithms_for(key.get());
-    if (std::find(usable.begin(), usable.end(), algorithm) == usable.end()) {
+    if (std::ranges::find(usable, algorithm) == usable.end()) {
         throw std::invalid_argument("The private key cannot sign with " + algorithm);
     }
 

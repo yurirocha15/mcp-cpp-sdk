@@ -333,9 +333,9 @@ struct HttpServerTransport::Impl {
     /// Whether a request of the session waits for its answer. Requests sent without a session, such
     /// as a 2026-07-28 client's, belong to no session and do not keep it in use.
     [[nodiscard]] bool session_request_waiting() const {
-        return std::any_of(
-            pending_responses.begin(), pending_responses.end(),
-            [this](const auto& entry) { return !sessionless_request_ids.contains(entry.first); });
+        return std::ranges::any_of(pending_responses, [this](const auto& entry) {
+            return !sessionless_request_ids.contains(entry.first);
+        });
     }
 
     Task<SessionCheckResult> validate_post_session(const detail::IncomingRequest& request) {
@@ -582,9 +582,9 @@ struct HttpServerTransport::Impl {
     /// Whether any version the Server serves is one that initialize negotiates.
     bool serves_legacy() const {
         std::lock_guard lock(configuration_mutex);
-        return std::any_of(
-            served_versions.begin(), served_versions.end(),
-            [](const std::string& version) { return is_legacy_protocol_version(version); });
+        return std::ranges::any_of(served_versions, [](const std::string& version) {
+            return is_legacy_protocol_version(version);
+        });
     }
 
     std::optional<StringResponse> check_protocol_version(const detail::IncomingRequest& request,

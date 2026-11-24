@@ -65,7 +65,7 @@ std::optional<std::string> union_scopes(const std::optional<std::string>& primar
                                         const std::optional<std::string>& secondary) {
     auto merged = split_scopes(primary.value_or(""));
     for (auto& scope : split_scopes(secondary.value_or(""))) {
-        if (std::find(merged.begin(), merged.end(), scope) == merged.end()) {
+        if (std::ranges::find(merged, scope) == merged.end()) {
             merged.push_back(std::move(scope));
         }
     }

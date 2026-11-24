@@ -229,7 +229,7 @@ void Client::Impl::reject_removed_method(const std::string& version, std::string
     static constexpr std::array<std::string_view, 5> s_removed = {
         methods::g_INITIALIZE, methods::g_PING, methods::g_LOGGING_SET_LEVEL,
         methods::g_RESOURCES_SUBSCRIBE, methods::g_RESOURCES_UNSUBSCRIBE};
-    if (std::find(s_removed.begin(), s_removed.end(), method) != s_removed.end()) {
+    if (std::ranges::find(s_removed, method) != s_removed.end()) {
         throw McpError(
             mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
             "Method " + std::string(method) + " does not exist in protocol version " + version);

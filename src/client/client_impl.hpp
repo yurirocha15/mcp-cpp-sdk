@@ -916,7 +916,7 @@ struct Client::Impl {
     static VersionPtr newest_mutual(const std::array<std::string_view, N>& ours,
                                     const std::vector<std::string>& theirs) {
         for (auto version = ours.rbegin(); version != ours.rend(); ++version) {
-            if (std::find(theirs.begin(), theirs.end(), *version) != theirs.end()) {
+            if (std::ranges::find(theirs, *version) != theirs.end()) {
                 return std::make_shared<const std::string>(*version);
             }
         }

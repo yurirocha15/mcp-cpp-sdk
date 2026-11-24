@@ -109,7 +109,7 @@ namespace mcp::skills {
 namespace {
 
 bool is_lowercase_hex(std::string_view text) {
-    return std::all_of(text.begin(), text.end(), [](char character) {
+    return std::ranges::all_of(text, [](char character) {
         return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
     });
 }
@@ -168,7 +168,7 @@ bool is_valid_skill_name(std::string_view name) {
         name.front() == '-' || name.back() == '-' || name.find("--") != std::string_view::npos) {
         return false;
     }
-    return std::all_of(name.begin(), name.end(), [](char character) {
+    return std::ranges::all_of(name, [](char character) {
         return (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
                character == '-';
     });
