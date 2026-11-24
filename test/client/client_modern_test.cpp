@@ -675,6 +675,42 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
 
+// The versions a refusal lists are its `supported` strings; other entries are skipped. A refusal
+// without such a list reaches the caller as the server wrote it.
+TEST(ClientEra, PinnedModernRefusalReadsOnlyTheVersionStringsItLists) {
+    const auto refusal_with = [](const json& data) {
+        Harness harness(pinned_options("2026-07-28"));
+        harness.peer.reply = [data](const json& request) -> std::optional<json> {
+            return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                            "Unsupported protocol version", data);
+        };
+        std::optional<mcp::McpError> failure;
+        harness.run([&]() -> mcp::Task<void> {
+            try {
+                co_await harness.client->connect("test-client", "1.0");
+            } catch (const mcp::McpError& error) {
+                failure = error;
+            }
+        });
+        EXPECT_EQ(harness.peer.count("initialize"), 0u);
+        return failure;
+    };
+
+    const auto mixed = refusal_with(json::parse(R"({"supported":["2025-11-25",5,null]})"));
+    ASSERT_TRUE(mixed.has_value());
+    EXPECT_EQ(mixed->code(), mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
+    const std::string message = mixed->what();
+    EXPECT_NE(message.find("it supports 2025-11-25. Use"), std::string::npos) << message;
+
+    for (const auto& data : {json("2025-11-25"), json::parse(R"({"supported":"2025-11-25"})"),
+                             json::parse(R"({"supported":[5]})")}) {
+        const auto unlisted = refusal_with(data);
+        ASSERT_TRUE(unlisted.has_value()) << data;
+        EXPECT_EQ(unlisted->code(), mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
+        EXPECT_EQ(unlisted->message(), "Unsupported protocol version") << data;
+    }
+}
+
 // A refusal that lists the pinned version itself must not call that version unsupported. The
 // client asks once more before it gives up.
 TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {

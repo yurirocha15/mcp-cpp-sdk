@@ -537,6 +537,44 @@ TEST(HttpClientModern, IntegerOutsideTheSafeRangeGetsNoParamHeader) {
     }
 }
 
+// An integer argument written as a float with no fraction is sent as that integer, within the safe
+// range; one with a fraction gets no header. A false boolean is sent as false.
+TEST(HttpClientModern, IntegralFloatsAndFalseGetParamHeaders) {
+    asio::io_context io;
+    RawServer raw(
+        io, [](const Recorded& request) { return modern_reply(request, json::array({route_tool()})); });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+
+    const std::vector<json> calls = {json{{"count", 42.0}}, json{{"count", -9007199254740991.0}},
+                                     json{{"count", 1.5}}, json{{"count", 9007199254740992.0}},
+                                     json{{"flag", false}}};
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("floats", "1.0");
+        co_await client.list_tools();
+        for (const auto& arguments : calls) {
+            co_await client.call_tool("route", arguments);
+        }
+        client.close();
+    });
+
+    const std::vector<Expected> expected = {{{"mcp-param-count", "42"}},
+                                            {{"mcp-param-count", "-9007199254740991"}},
+                                            {},
+                                            {},
+                                            {{"mcp-param-flag", "false"}}};
+    ASSERT_EQ(raw.requests.size(), 2 + expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        const auto& request = raw.requests[2 + index];
+        SCOPED_TRACE(request.body);
+        auto params = mcp_headers(request);
+        for (auto iter = params.begin(); iter != params.end();) {
+            iter = iter->first.rfind("mcp-param-", 0) == 0 ? std::next(iter) : params.erase(iter);
+        }
+        EXPECT_EQ(params, expected[index]);
+    }
+}
+
 TEST(HttpClientModern, Base64NameAndParam) {
     asio::io_context io;
     json tool = route_tool();
@@ -655,6 +693,40 @@ TEST(HttpClientModern, InvalidXMcpHeaderToolsExcluded) {
     }
     ASSERT_EQ(raw.requests.size(), 3u);
     EXPECT_EQ(raw.requests[2].header("Mcp-Param-Region"), "eu");
+}
+
+// A tools/list the server answers with an error reaches the caller as that error, and the header
+// annotations of the last listing that succeeded stay in use.
+TEST(HttpClientModern, AFailedToolsListingKeepsTheKnownHeaders) {
+    int listings = 0;
+    asio::io_context io;
+    RawServer raw(io, [&](const Recorded& request) {
+        if (request.rpc_method() == "tools/list" && ++listings == 2) {
+            return json_reply(rpc_error(request.parsed(), mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                                        "listing failed"));
+        }
+        return modern_reply(request, json::array({route_tool()}));
+    });
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), modern_options());
+
+    std::optional<int> code;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("failed-listing", "1.0");
+        co_await client.list_tools();
+        try {
+            co_await client.list_tools();
+        } catch (const mcp::McpError& failure) {
+            code = failure.code();
+        }
+        const json arguments = {{"region", "eu"}};
+        co_await client.call_tool("route", arguments);
+        client.close();
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    ASSERT_EQ(raw.requests.size(), 4U);
+    EXPECT_EQ(raw.requests[3].rpc_method(), "tools/call");
+    EXPECT_EQ(raw.requests[3].header("Mcp-Param-Region"), "eu");
 }
 
 // The header annotations of a tools/list read in pages add up across the pages, and a listing that
@@ -944,8 +1016,9 @@ TEST(HttpClientModern, NoSessionIdSentInModern) {
     EXPECT_EQ(transport->last_event_id(), "");
 }
 
-// A 2025-11-25 server may answer a POST with a whole SSE body. Its lines may end in CRLF, one
-// message may span several data lines, and the last event id is kept for a resume.
+// A 2025-11-25 server may answer a POST with a whole SSE body. Its lines may end in CRLF, a field
+// name may be followed by no space, one message may span several data lines, and the last event id
+// is kept for a resume.
 TEST(HttpClientModern, ALegacySseAnswerWithCrlfLinesAndSplitDataIsRead) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
@@ -957,7 +1030,7 @@ TEST(HttpClientModern, ALegacySseAnswerWithCrlfLinesAndSplitDataIsRead) {
         Reply reply;
         reply.content_type = "text/event-stream";
         if (method == "initialize") {
-            reply.body = "event: message\r\nid: 1\r\ndata: " +
+            reply.body = "event: message\r\nid:1\r\ndata:" +
                          rpc_result(message, legacy_initialize_result()).dump() + "\r\n\r\n";
         } else if (method == "tools/list") {
             const auto text = rpc_result(message, json{{"tools", json::array({route_tool()})}}).dump();
@@ -1034,6 +1107,50 @@ TEST(HttpClientModern, StreamedNotificationsArriveBeforeTheResult) {
 
     EXPECT_TRUE(progress_seen);
     EXPECT_EQ(result["content"][0]["text"], "done");
+}
+
+// In the event stream of a 2025-11-25 session a field name may be followed by no space, an id that
+// holds NUL is ignored, and so is a retry that is not a short decimal number, as the SSE standard
+// has it.
+TEST(HttpClientModern, StreamFieldsAreReadAsTheSseStandardHasIt) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.method != "POST") {
+            return status_reply(405);
+        }
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        if (method == "initialize") {
+            return json_reply(rpc_result(message, legacy_initialize_result()));
+        }
+        if (method != "tools/call") {
+            return status_reply(202);
+        }
+        const json result =
+            rpc_result(message, {{"content", json::array({{{"type", "text"}, {"text", "done"}}})}});
+        std::string events = "retry: soon\nretry:1234567890\nid:7\n: comment\n\nid: a";
+        events.push_back('\0');
+        events += "b\ndata:" + result.dump() + "\n\n";
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        reply.body = std::move(events);
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::pinned("2025-11-25");
+    mcp::Client client(transport, io.get_executor(), options);
+
+    json result;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("fields", "1.0");
+        json params = {{"name", "slow"}, {"arguments", json::object()}};
+        result = co_await client.send_request("tools/call", params);
+        client.close();
+    });
+
+    EXPECT_EQ(result["content"][0]["text"], "done");
+    EXPECT_EQ(transport->last_event_id(), "7");
 }
 
 TEST(HttpClientModern, CancelClosesTheResponseStream) {

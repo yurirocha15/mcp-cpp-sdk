@@ -177,6 +177,13 @@ TEST(SkillsValidationTest, ReportsEachRuleTheExtensionPutsOnAnEntry) {
         unsafe.resources.push_back({"skill://acme/refunds/" + tail, digest, 1});
         EXPECT_FALSE(skills::validate_skill(unsafe).empty()) << tail;
     }
+    // Segments that only resemble dot segments are ordinary file names.
+    for (const std::string tail :
+         std::vector<std::string>{".hidden", "..x", "x..", "%2ex", "a/%2", "%2f", "v1.2/notes.md"}) {
+        auto ordinary = entry();
+        ordinary.resources.push_back({"skill://acme/refunds/" + tail, digest, 1});
+        EXPECT_TRUE(skills::validate_skill(ordinary).empty()) << tail;
+    }
 
     auto duplicated = entry();
     duplicated.resources.push_back(duplicated.resources.front());
