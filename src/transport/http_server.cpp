@@ -8,6 +8,7 @@
 #include "mcp/detail/protocol/modern_methods.hpp"
 #include "mcp/detail/protocol/request_meta.hpp"
 #include "mcp/detail/transport/host_policy.hpp"
+#include "mcp/detail/transport/http_acceptor.hpp"
 #include "mcp/detail/transport/http_limits.hpp"
 #include "mcp/detail/transport/http_request_metadata.hpp"
 #include "mcp/detail/transport/principal.hpp"
@@ -156,37 +157,7 @@ struct HttpServerTransport::Impl {
           state(std::make_shared<SharedState>(strand)),
           event_store(event_store_capacity) {
         state->timer.expires_at(std::chrono::steady_clock::time_point::max());
-
-        boost::system::error_code ec;
-        const auto bind_address = boost::asio::ip::make_address(this->host, ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect, "Invalid bind address: " + this->host);
-        }
-
-        const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, this->port);
-        (void)acceptor.open(endpoint.protocol(), ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to open HTTP acceptor: " + ec.message(), ec);
-        }
-
-        (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to set reuse_address: " + ec.message(), ec);
-        }
-
-        (void)acceptor.bind(endpoint, ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to bind HTTP acceptor: " + ec.message(), ec);
-        }
-
-        (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to listen on HTTP acceptor: " + ec.message(), ec);
-        }
+        detail::open_http_acceptor(acceptor, this->host, this->port);
     }
 
     static bool is_initialize_result_response(const nlohmann::json& response_json) {
