@@ -422,11 +422,35 @@ TEST_F(TasksTest, TaskMethodsDoNotExistUntilTasksAreEnabled) {
     EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) << answer;
 }
 
-TEST_F(TasksTest, ModeNeedsAKnownTool) {
+TEST_F(TasksTest, ModeAndPreparationNeedAKnownTool) {
     server_->enable_tasks();
     EXPECT_THROW(server_->set_tool_task_mode("missing", mcp::ToolTaskMode::eAuto),
                  std::invalid_argument);
     EXPECT_NO_THROW(server_->set_tool_task_mode("echo", mcp::ToolTaskMode::eNever));
+    const mcp::ToolTaskPreparation preparation = [](mcp::Context&,
+                                                    const json&) -> mcp::Task<mcp::TaskPreparation> {
+        co_return mcp::TaskPreparation{};
+    };
+    EXPECT_THROW(server_->set_tool_task_preparation("missing", preparation), std::invalid_argument);
+}
+
+// A task lives for a positive time, or for as long as the store keeps it, and is polled no sooner
+// than at once.
+TEST_F(TasksTest, ANonPositiveLifetimeOrANegativePollIntervalIsRefused) {
+    for (const auto& [ttl, poll] :
+         std::vector<std::pair<std::optional<std::chrono::milliseconds>, std::chrono::milliseconds>>{
+             {std::chrono::milliseconds(0), std::chrono::seconds(1)},
+             {std::chrono::milliseconds(-1), std::chrono::seconds(1)},
+             {std::chrono::hours(1), std::chrono::milliseconds(-1)}}) {
+        mcp::TaskOptions options;
+        options.ttl = ttl;
+        options.poll_interval = poll;
+        EXPECT_THROW(server_->enable_tasks(options), std::invalid_argument);
+    }
+    mcp::TaskOptions unlimited;
+    unlimited.ttl.reset();
+    unlimited.poll_interval = std::chrono::milliseconds(0);
+    EXPECT_NO_THROW(server_->enable_tasks(unlimited));
 }
 
 TEST_F(TasksTest, AModeSetBeforeTasksAreEnabledTakesEffect) {
