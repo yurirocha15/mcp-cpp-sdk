@@ -30,6 +30,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <queue>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -326,19 +327,26 @@ TEST(AuthClientTransportTest, ReadWritePassThrough) {
 
     std::string received;
     std::string written;
+    // Before the authenticator holds a token, a request goes out as it was written.
+    const std::string request = R"({"jsonrpc":"2.0","id":1,"method":"ping"})";
 
     mcp_test::spawn_detached(io, [&]() -> mcp::Task<void> {
         received = co_await transport.read_message();
         co_await transport.write_message("hello from client");
+        co_await transport.write_message(request);
     });
 
     io.run();
 
     EXPECT_EQ(received, "hello from server");
-    ASSERT_EQ(inner_ptr->written().size(), 1);
+    ASSERT_EQ(inner_ptr->written().size(), 2);
     EXPECT_EQ(inner_ptr->written()[0], "hello from client");
+    EXPECT_EQ(json::parse(inner_ptr->written()[1]), json::parse(request));
 
     transport.close();
+
+    EXPECT_THROW(mcp::auth::OAuthClientTransport(nullptr, authenticator), std::invalid_argument);
+    EXPECT_THROW(mcp::auth::OAuthClientTransport(inner, nullptr), std::invalid_argument);
 }
 
 TEST(AuthClientTransportTest, LegacyRetryReplaysTheRequestMatchingTheErrorId) {

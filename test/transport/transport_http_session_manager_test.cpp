@@ -1909,6 +1909,23 @@ TEST_F(SessionManagerTest, CloseCancelsIdleKeepAliveAndCannotCreatePostCloseSess
     EXPECT_EQ(manager.session_count(), 0);
 }
 
+TEST_F(SessionManagerTest, AnAddressItCannotBindIsAConnectFailure) {
+    for (const auto& [host, message] : std::vector<std::pair<std::string, std::string>>{
+             {"not-an-address", "Invalid bind address: not-an-address"},
+             // Reserved for documentation (RFC 5737), so no interface of the host has it.
+             {"192.0.2.1", "Failed to bind HTTP acceptor: "}}) {
+        std::optional<mcp::TransportError::Kind> kind;
+        try {
+            mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), host, 0,
+                                                      make_echo_server_factory());
+        } catch (const mcp::TransportError& error) {
+            kind = error.kind();
+            EXPECT_EQ(std::string_view(error.what()).rfind(message, 0), 0U) << error.what();
+        }
+        EXPECT_EQ(kind, mcp::TransportError::Kind::eConnect) << host;
+    }
+}
+
 // A closed manager starts nothing: its listen() ends at once and leaves the event loop nothing to
 // wait for.
 TEST_F(SessionManagerTest, ListenAfterCloseEndsAtOnce) {
@@ -1923,11 +1940,22 @@ TEST_F(SessionManagerTest, ListenAfterCloseEndsAtOnce) {
     EXPECT_TRUE(io_ctx_.stopped());
 }
 
+TEST_F(SessionManagerTest, ProtectedResourceMetadataRequiresAnAbsoluteResourceUrl) {
+    mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", 0,
+                                              make_echo_server_factory());
+    EXPECT_THROW(manager.set_protected_resource_metadata({}), std::invalid_argument);
+    mcp::ProtectedResourceMetadataConfig relative;
+    relative.resource = "/mcp";
+    EXPECT_THROW(manager.set_protected_resource_metadata(relative), std::invalid_argument);
+    manager.close();
+}
+
 TEST_F(SessionManagerTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     const unsigned short port = 19116;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
                                               make_echo_server_factory());
     auto listener = manager.listen();
+    EXPECT_THROW(static_cast<void>(manager.listen()), std::logic_error);
 
     EXPECT_NO_THROW(manager.set_json_only(true));
     EXPECT_THROW(mcp::set_custom_request_handler(manager, {}), std::logic_error);
@@ -2085,6 +2113,79 @@ TEST_F(SessionManagerTest, SessionWithToolExecutorRunsHandlersOffTheHttpThread) 
     EXPECT_EQ(events[0].second.at("method"), "notifications/message");
     EXPECT_EQ(events[1].second.at("method"), "notifications/progress");
     EXPECT_EQ(events[2].second.at("result").at("content").at(0).at("text"), "coroutine done");
+}
+
+// A client of a 2025-11-25 session that stops reading its request's stream cannot make the server
+// hold more than max_queued_notifications for it: once the connection takes no more, later
+// notifications are dropped and counted.
+TEST_F(SessionManagerTest, ALegacyStreamDropsNotificationsBeyondTheQueueLimit) {
+    const unsigned short port = 19167;
+    auto handler_done = std::make_shared<std::atomic<bool>>(false);
+    // More than the socket buffers of a loopback connection hold, over 40 messages.
+    const auto large = std::make_shared<const std::string>(512 * 1024, 'x');
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx_.get_executor(), "127.0.0.1", port,
+        [handler_done, large](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
+            mcp::ServerCapabilities capabilities;
+            capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+            capabilities.logging = json::object();
+            auto server = std::make_unique<mcp::Server>(mcp::Implementation{"flood-server", "1.0.0"},
+                                                        std::move(capabilities));
+            server->add_tool<json, mcp::CallToolResult>(
+                "flood", "Logs large messages", json{{"type", "object"}},
+                [handler_done, large](mcp::Context& ctx, json) -> mcp::Task<mcp::CallToolResult> {
+                    for (int index = 0; index < 40; ++index) {
+                        co_await ctx.log_info(*large);
+                    }
+                    handler_done->store(true);
+                    co_return mcp::make_tool_text_result("flooded");
+                });
+            return server;
+        });
+    mcp::StreamOptions options;
+    options.max_queued_notifications = 1;
+    manager.set_stream_options(options);
+    mcp_test::spawn_detached(io_ctx_, manager.listen());
+
+    bool finished = false;
+    std::uint64_t dropped = 0;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        auto init = co_await do_initialize(io_ctx_.get_executor(), port);
+        co_await send_initialized(io_ctx_.get_executor(), port, init.session_id);
+
+        const json call = {{"jsonrpc", "2.0"},
+                           {"method", "tools/call"},
+                           {"params", {{"name", "flood"}, {"arguments", json::object()}}},
+                           {"id", 2}};
+        http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+        request.set(http::field::host, "127.0.0.1");
+        request.set(http::field::content_type, "application/json");
+        request.set(http::field::accept, "application/json, text/event-stream");
+        request.set("Mcp-Session-Id", init.session_id);
+        request.set("MCP-Protocol-Version",
+                    std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
+        request.body() = call.dump();
+        request.prepare_payload();
+        asio::ip::tcp::socket socket(io_ctx_);
+        co_await socket.async_connect({asio::ip::make_address("127.0.0.1"), port}, asio::use_awaitable);
+        co_await http::async_write(socket, request, asio::use_awaitable);
+
+        asio::steady_timer tick(io_ctx_);
+        const auto give_up = std::chrono::steady_clock::now() + g_hang_guard;
+        while (!handler_done->load() && std::chrono::steady_clock::now() < give_up) {
+            tick.expires_after(std::chrono::milliseconds(1));
+            co_await tick.async_wait(asio::use_awaitable);
+        }
+        finished = handler_done->load();
+        dropped = manager.stream_stats().dropped_notifications;
+        boost::system::error_code ignored;
+        static_cast<void>(socket.close(ignored));
+        manager.close();
+    });
+    io_ctx_.run();
+
+    ASSERT_TRUE(finished);
+    EXPECT_GT(dropped, 0U);
 }
 
 // A 2026-07-28 client that declares no capabilities is served without parking the handler, and
@@ -2714,6 +2815,14 @@ TEST_F(SessionManagerTest, OnlyOneBearerValidatorMayBeInstalled) {
                      [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; }),
                  std::logic_error);
     manager.close();
+
+    mcp::StreamableHttpSessionManager async_first(io_ctx_.get_executor(), "127.0.0.1", 0,
+                                                  make_echo_server_factory());
+    async_first.set_async_bearer_token_validator(
+        [](std::string) -> mcp::Task<mcp::TokenValidation> { co_return true; });
+    EXPECT_THROW(async_first.set_bearer_token_validator([](std::string_view) { return true; }),
+                 std::logic_error);
+    async_first.close();
 }
 
 TEST_F(SessionManagerTest, RequestBodyLimitIsConfigurable) {

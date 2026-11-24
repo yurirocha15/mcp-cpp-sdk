@@ -105,12 +105,15 @@ TEST(SkillsWireTest, EntriesParseAndRoundTrip) {
              "digest": "sha256:ae7bc7e45f44a6381977ef1f772cbad6e38d8ec78903ea7b87abb373815a8f89", "size": 175},
             {"uri": "skill://acme/billing/refunds/examples/email.md",
              "digest": "sha256:a724fa5ed3b9e39c0e731fe1f0e866eb46d23969af25ecf0d5f41982e3e36bea", "size": 58}
-        ]
+        ],
+        "_meta": {"io.modelcontextprotocol.skills/owner": "billing"}
     })");
     const auto skill = wire.get<mcp::Skill>();
     EXPECT_FALSE(skill.dynamic);
     EXPECT_EQ(skill.resources.size(), 2U);
     EXPECT_EQ(skill.frontmatter["license"], "Apache-2.0");
+    ASSERT_TRUE(skill.meta.has_value());
+    EXPECT_EQ(*skill.meta, json::parse(R"({"io.modelcontextprotocol.skills/owner":"billing"})"));
     EXPECT_EQ(json(skill), wire);
     EXPECT_TRUE(skills::validate_skill(skill).empty());
 }
@@ -258,6 +261,7 @@ TEST(SkillsCapabilityTest, SettingsAndDetection) {
 
     mcp::ServerCapabilities capabilities;
     EXPECT_FALSE(skills::supports_skills(capabilities));
+    EXPECT_FALSE(skills::supports_directory_read(capabilities));
     capabilities.extensions =
         std::map<std::string, json>{{"io.modelcontextprotocol/skills", json::object()}};
     EXPECT_TRUE(skills::supports_skills(capabilities));

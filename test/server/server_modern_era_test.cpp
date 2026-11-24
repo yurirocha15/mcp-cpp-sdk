@@ -398,6 +398,21 @@ TEST_F(ServerModernEraTest, MalformedOptionalFieldsAreInvalidParams) {
     auto no_info = make_modern_meta();
     no_info.erase("io.modelcontextprotocol/clientInfo");
     EXPECT_TRUE(dispatch(*server, modern_with_meta(3, "tools/list", no_info)).contains("result"));
+
+    auto info_not_an_object = make_modern_meta();
+    info_not_an_object["io.modelcontextprotocol/clientInfo"] = "probe-client";
+    expect_error(dispatch(*server, modern_with_meta(4, "tools/list", info_not_an_object)),
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
+
+    auto level_not_a_string = make_modern_meta();
+    level_not_a_string["io.modelcontextprotocol/logLevel"] = 7;
+    expect_error(dispatch(*server, modern_with_meta(5, "tools/list", level_not_a_string)),
+                 mcp::constants::jsonrpc::g_INVALID_PARAMS);
+
+    auto null_fields = make_modern_meta();
+    null_fields["io.modelcontextprotocol/clientInfo"] = nullptr;
+    null_fields["io.modelcontextprotocol/logLevel"] = nullptr;
+    EXPECT_TRUE(dispatch(*server, modern_with_meta(6, "tools/list", null_fields)).contains("result"));
 }
 
 TEST_F(ServerModernEraTest, NonStringProtocolVersionIsInvalidParams) {

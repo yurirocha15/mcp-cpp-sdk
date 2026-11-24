@@ -32,6 +32,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -941,6 +942,51 @@ TEST(HttpClientModern, NoSessionIdSentInModern) {
     }
     EXPECT_EQ(transport->session_id(), "");
     EXPECT_EQ(transport->last_event_id(), "");
+}
+
+// A 2025-11-25 server may answer a POST with a whole SSE body. Its lines may end in CRLF, one
+// message may span several data lines, and the last event id is kept for a resume.
+TEST(HttpClientModern, ALegacySseAnswerWithCrlfLinesAndSplitDataIsRead) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.method != "POST") {
+            return status_reply(405);
+        }
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        if (method == "initialize") {
+            reply.body = "event: message\r\nid: 1\r\ndata: " +
+                         rpc_result(message, legacy_initialize_result()).dump() + "\r\n\r\n";
+        } else if (method == "tools/list") {
+            const auto text = rpc_result(message, json{{"tools", json::array({route_tool()})}}).dump();
+            const auto comma = text.find(',');
+            reply.body = "id: 2\r\ndata: " + text.substr(0, comma + 1) +
+                         "\r\ndata: " + text.substr(comma + 1) + "\r\n\r\n";
+        } else {
+            reply = status_reply(202);
+        }
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::pinned("2025-11-25");
+    mcp::Client client(transport, io.get_executor(), options);
+
+    mcp::ConnectResult connected;
+    std::vector<std::string> tool_names;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        connected = co_await client.connect("legacy-sse", "1.0");
+        for (const auto& tool : (co_await client.list_tools()).tools) {
+            tool_names.push_back(tool.name);
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(connected.protocolVersion, "2025-11-25");
+    EXPECT_EQ(tool_names, std::vector<std::string>{"route"});
+    EXPECT_EQ(transport->last_event_id(), "2");
 }
 
 // ---------------------------------------------------------------------------
@@ -1944,6 +1990,57 @@ TEST(HttpClientLegacy, ErrorStatusInsideASessionKeepsItsHttpStatus) {
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED) << other;
     EXPECT_EQ(status, 404u);
     EXPECT_EQ(data_status, 404u);
+}
+
+// A 2026-07-28 request answered 400, 404 or 405 with a JSON-RPC error fails with that error, even
+// when the body leaves out the request's id or the "jsonrpc" member. A body whose error is not a
+// JSON-RPC error object leaves the HTTP status as the failure.
+TEST(HttpClientModern, AnErrorStatusCarriesTheServersJsonRpcError) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.rpc_method() != "tools/call") {
+            return modern_reply(request, json::array({route_tool()}));
+        }
+        const auto region = request.parsed()["params"]["arguments"].value("region", "");
+        if (region == "bare") {
+            return status_reply(404, R"({"error":{"code":-32602,"message":"Unknown region"}})");
+        }
+        if (region == "text") {
+            return status_reply(400, R"({"error":"Unknown region"})");
+        }
+        return status_reply(400, R"({"jsonrpc":"2.0","id":null,"error":{"code":"bad","message":"x"}})");
+    });
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), modern_options());
+
+    std::vector<int> codes;
+    std::vector<std::optional<unsigned int>> statuses;
+    std::string message;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("errors", "1.0");
+        const std::array<std::string_view, 3> regions{"bare", "text", "code"};
+        for (const auto region : regions) {
+            try {
+                const json arguments = {{"region", std::string(region)}};
+                co_await client.call_tool("route", arguments);
+                codes.push_back(0);
+            } catch (const mcp::McpError& failure) {
+                codes.push_back(failure.code());
+                statuses.push_back(nested_http_status(failure));
+                if (region == "bare") {
+                    message = failure.what();
+                }
+            }
+        }
+        client.close();
+    });
+
+    ASSERT_EQ(codes.size(), 3U);
+    EXPECT_EQ(codes[0], mcp::constants::jsonrpc::g_INVALID_PARAMS);
+    EXPECT_NE(message.find("Unknown region"), std::string::npos) << message;
+    ASSERT_EQ(statuses.size(), 3U);
+    EXPECT_EQ(statuses[0], std::nullopt);
+    EXPECT_EQ(statuses[1], 400U);
+    EXPECT_EQ(statuses[2], 400U);
 }
 
 // A new session started in place of a forgotten one that answers with another version and other

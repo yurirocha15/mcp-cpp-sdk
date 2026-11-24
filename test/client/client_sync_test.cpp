@@ -1,14 +1,22 @@
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/core/constants.hpp"
+#include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
+#include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -468,6 +476,194 @@ TEST(ClientSyncTest, AStdioServerRefusesABlockingNotifyFromItsHandlerAndStopsFro
     }
     EXPECT_TRUE(failed);
     EXPECT_FALSE(timed_out);
+}
+
+/// What the peer of a client read, and whether the transport between them ended.
+struct PeerLog {
+    std::mutex mutex;
+    std::vector<json> received;
+    bool ended = false;
+
+    std::vector<json> snapshot() {
+        std::lock_guard lock(mutex);
+        return received;
+    }
+
+    bool transport_ended() {
+        std::lock_guard lock(mutex);
+        return ended;
+    }
+
+    /// The first message read with @p method, or null.
+    json first(const std::string& method) {
+        for (const auto& message : snapshot()) {
+            if (message.value("method", "") == method) {
+                return message;
+            }
+        }
+        return nullptr;
+    }
+};
+
+json legacy_initialize_result() {
+    return {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
+            {"capabilities", json::object()},
+            {"serverInfo", {{"name", "peer"}, {"version", "1.0"}}}};
+}
+
+/// Keeps what @p end reads in @p log and answers each request with an empty result, initialize
+/// with a 2025-11-25 one, until the transport ends.
+mcp::Task<void> record_and_answer(std::shared_ptr<mcp::ITransport> end, std::shared_ptr<PeerLog> log) {
+    try {
+        for (;;) {
+            const json message = json::parse(co_await end->read_message());
+            {
+                std::lock_guard lock(log->mutex);
+                log->received.push_back(message);
+            }
+            if (!message.contains("id") || !message.contains("method")) {
+                continue;
+            }
+            json reply = json::object();
+            reply["jsonrpc"] = "2.0";
+            reply["id"] = message.at("id");
+            reply["result"] =
+                message.at("method") == "initialize" ? legacy_initialize_result() : json::object();
+            const auto text = std::make_shared<const std::string>(reply.dump());
+            co_await end->write_message(*text);
+        }
+    } catch (const std::exception&) {
+        // The client closed the transport.
+    }
+    std::lock_guard lock(log->mutex);
+    log->ended = true;
+}
+
+// The blocking twins of connect(), ping(), send_notification() and cancel() send what their
+// coroutine members send, and close() ends the transport.
+TEST(ClientSyncTest, BlockingSessionCallsSendTheirMessages) {
+    auto log = std::make_shared<PeerLog>();
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(mcp::Endpoint::custom([log](const mcp::Executor& executor) {
+                           auto [client_end, server_end] = mcp::make_memory_transport_pair(executor);
+                           mcp_test::spawn_detached(executor.get(), record_and_answer(server_end, log));
+                           return client_end;
+                       }),
+                       options);
+    auto sync = client.sync();
+    mcp::Implementation info;
+    info.name = "sync-twins";
+    info.version = "2.0";
+    mcp::ClientCapabilities capabilities;
+    capabilities.experimental = json{{"twin", json::object()}};
+    sync.connect(info, capabilities);
+    sync.ping();
+    sync.send_notification("notifications/roots/list_changed", std::nullopt);
+    sync.cancel(mcp::RequestId{"held-1"}, std::string("no longer needed"));
+    EXPECT_TRUE(eventually([&] { return !log->first("notifications/cancelled").is_null(); }));
+    sync.close();
+    EXPECT_TRUE(eventually([&] { return log->transport_ended(); }));
+
+    const auto initialize = log->first("initialize");
+    ASSERT_FALSE(initialize.is_null());
+    EXPECT_EQ(initialize.at("params").at("clientInfo").at("name"), "sync-twins");
+    EXPECT_EQ(initialize.at("params").at("capabilities").at("experimental"),
+              json::parse(R"({"twin":{}})"));
+    EXPECT_FALSE(log->first("ping").is_null());
+    EXPECT_FALSE(log->first("notifications/roots/list_changed").is_null());
+    const auto cancel = log->first("notifications/cancelled");
+    ASSERT_FALSE(cancel.is_null());
+    EXPECT_EQ(cancel.at("params").at("requestId"), "held-1");
+    EXPECT_EQ(cancel.at("params").at("reason"), "no longer needed");
+}
+
+/// Waits on the coroutine's executor until @p condition holds.
+mcp::Task<void> wait_until(std::function<bool()> condition) {
+    auto executor = co_await boost::asio::this_coro::executor;
+    while (!condition()) {
+        boost::asio::steady_timer timer(executor, std::chrono::milliseconds(1));
+        co_await timer.async_wait(boost::asio::use_awaitable);
+    }
+}
+
+mcp::ElicitRequestParams name_question() {
+    mcp::ElicitRequestFormParams params;
+    params.message = "Your name?";
+    params.requestedSchema =
+        json::parse(R"({"type":"object","properties":{"name":{"type":"string"}}})");
+    return params;
+}
+
+// A task started with the blocking API is driven through its blocking handle as through the
+// coroutine one: get() and wait() follow its status, update() answers its question, result()
+// returns what its tool returned, and cancel() ends it.
+TEST(ClientSyncTest, ATaskIsDrivenThroughItsBlockingHandle) {
+    mcp::ServerCapabilities server_capabilities;
+    server_capabilities.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"sync-tasks", "1.0"}, server_capabilities);
+    server.add_tool<json, json>(
+        "ask", "Asks for a name", json{{"type", "object"}},
+        [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+            const auto question = std::make_shared<const mcp::ElicitRequestParams>(name_question());
+            const auto answer = co_await ctx.elicit(*question);
+            co_return json{{"name", answer.content.value_or(json::object()).value("name", "")}};
+        });
+    server.add_tool<json, json>("cancellable", "Runs until cancelled", json{{"type", "object"}},
+                                [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+                                    std::function<bool()> cancelled = [&ctx] {
+                                        return ctx.is_cancelled();
+                                    };
+                                    co_await wait_until(std::move(cancelled));
+                                    co_return json{{"cancelled", true}};
+                                });
+    mcp::TaskOptions tasks;
+    tasks.store = std::make_shared<mcp::InMemoryTaskStore>();
+    tasks.poll_interval = std::chrono::milliseconds(5);
+    tasks.warning_handler = [](const std::string&) {};
+    server.enable_tasks(tasks);
+    server.set_tool_task_mode("ask", mcp::ToolTaskMode::eAuto);
+    server.set_tool_task_mode("cancellable", mcp::ToolTaskMode::eAuto);
+
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::pinned("2026-07-28");
+    mcp::Client client(mcp::Endpoint::custom([&server](const mcp::Executor& executor) {
+                           auto [client_end, server_end] = mcp::make_memory_transport_pair(executor);
+                           mcp_test::spawn_detached(executor.get(), server.run(server_end, executor));
+                           return client_end;
+                       }),
+                       options);
+    auto sync = client.sync();
+    mcp::ClientCapabilities capabilities;
+    capabilities.elicitation =
+        mcp::ClientCapabilities::ElicitationCapability{json::object(), std::nullopt};
+    sync.connect(mcp::Implementation{"sync-tasks-client", "1.0"}, capabilities);
+
+    const auto asked = sync.start_tool("ask", json::object());
+    ASSERT_TRUE(std::holds_alternative<mcp::TaskHandle>(asked));
+    const auto asking = std::get<mcp::TaskHandle>(asked).sync();
+    mcp::DetailedTask waiting;
+    ASSERT_TRUE(eventually([&] {
+        waiting = asking.get();
+        return waiting.task.status == mcp::TaskStatus::eInputRequired;
+    }));
+    ASSERT_TRUE(waiting.inputRequests.has_value() && !waiting.inputRequests->empty());
+    const auto key = waiting.inputRequests->begin().key();
+    json responses = json::object();
+    responses[key] = json::parse(R"({"action":"accept","content":{"name":"Ada"}})");
+    asking.update(responses);
+    EXPECT_EQ(asking.wait().task.status, mcp::TaskStatus::eCompleted);
+    const auto result = asking.result();
+    ASSERT_TRUE(result.structuredContent.has_value());
+    EXPECT_EQ(result.structuredContent->at("name"), "Ada");
+
+    const auto started = sync.start_tool("cancellable", json::object());
+    ASSERT_TRUE(std::holds_alternative<mcp::TaskHandle>(started));
+    const auto running = std::get<mcp::TaskHandle>(started).sync();
+    running.cancel();
+    EXPECT_EQ(running.wait().task.status, mcp::TaskStatus::eCancelled);
+    EXPECT_THROW(static_cast<void>(running.result()), mcp::McpError);
+    sync.close();
 }
 
 }  // namespace client_sync_test

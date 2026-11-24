@@ -85,6 +85,30 @@ TEST_F(HttpTransportTest, AnAddressItCannotBindIsAConnectFailure) {
         EXPECT_STREQ(error.what(), "Invalid bind address: not-an-address");
     }
     EXPECT_EQ(kind, mcp::TransportError::Kind::eConnect);
+
+    // 192.0.2.1 is reserved for documentation (RFC 5737), so no interface of the host has it.
+    kind.reset();
+    try {
+        mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "192.0.2.1", 0);
+    } catch (const mcp::TransportError& error) {
+        kind = error.kind();
+        EXPECT_EQ(std::string_view(error.what()).rfind("Failed to bind HTTP acceptor: ", 0), 0U)
+            << error.what();
+    }
+    EXPECT_EQ(kind, mcp::TransportError::Kind::eConnect);
+}
+
+// A closed transport starts nothing: its listen() ends at once and leaves the event loop nothing
+// to wait for.
+TEST_F(HttpTransportTest, ListenAfterCloseEndsAtOnce) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server_transport.close();
+    bool ended = false;
+    mcp_test::spawn_then(io_ctx_, server_transport.listen(),
+                         [&ended](const std::exception_ptr& error) { ended = error == nullptr; });
+    io_ctx_.poll();
+    EXPECT_TRUE(ended);
+    EXPECT_TRUE(io_ctx_.stopped());
 }
 
 TEST_F(HttpTransportTest, AClientWhoseServerRefusesTheConnectionGetsAConnectFailure) {
@@ -1891,6 +1915,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
 TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     mcp::HttpServerTransport server(io_ctx_.get_executor(), "127.0.0.1", 0);
     auto listener = server.listen();
+    EXPECT_THROW(static_cast<void>(server.listen()), std::logic_error);
 
     EXPECT_NO_THROW(server.set_json_only(true));
     EXPECT_THROW(server.set_allowed_origins({"https://trusted.example"}), std::logic_error);
@@ -2657,43 +2682,56 @@ TEST_F(HttpTransportTest, OnlyOneBearerValidatorMayBeInstalled) {
     async_first.close();
 }
 
+// A body longer than the limit, the default one or one the application sets, is refused.
 TEST_F(HttpTransportTest, RequestBodyBeyondTheLimitIsRejected) {
-    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
-    const auto port = server->port();
+    mcp::HttpServerTransport zero_limit(io_ctx_.get_executor(), "127.0.0.1", 0);
+    EXPECT_THROW(zero_limit.set_max_request_body_bytes(0), std::invalid_argument);
+    zero_limit.close();
 
-    mcp_test::spawn_detached(io_ctx_, server->listen());
+    for (const std::size_t limit :
+         {std::size_t{0}, mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES / 2}) {
+        asio::io_context io;
+        auto server = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
+        if (limit != 0) {
+            server->set_max_request_body_bytes(limit);
+        }
+        const auto port = server->port();
+        const auto beyond =
+            (limit != 0 ? limit : mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES) + 1;
 
-    unsigned int status = 0;
-    mcp_test::spawn_then(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // Announcing the length is enough: the parser rejects the request before the body is
-            // sent, which is the point of the limit.
-            const std::string header =
-                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
-                "Content-Length: " +
-                std::to_string(mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES + 1) +
-                "\r\n\r\n";
+        mcp_test::spawn_detached(io, server->listen());
 
-            beast::tcp_stream stream(io_ctx_.get_executor());
-            asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
-            auto endpoints =
-                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
-            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
-            co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
+        unsigned int status = 0;
+        mcp_test::spawn_then(
+            io,
+            [&]() -> mcp::Task<void> {
+                // Announcing the length is enough: the parser rejects the request before the body
+                // is sent, which is the point of the limit.
+                const std::string header =
+                    "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                    "Content-Length: " +
+                    std::to_string(beyond) + "\r\n\r\n";
 
-            beast::flat_buffer response_buffer;
-            http::response<http::string_body> response;
-            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
-            status = response.result_int();
+                beast::tcp_stream stream(io.get_executor());
+                asio::ip::tcp::resolver resolver(io.get_executor());
+                auto endpoints = co_await resolver.async_resolve("127.0.0.1", std::to_string(port),
+                                                                 asio::use_awaitable);
+                co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+                co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
 
-            beast::error_code shutdown_error;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
-        },
-        [server](const std::exception_ptr&) { server->close(); });
-    io_ctx_.run();
+                beast::flat_buffer response_buffer;
+                http::response<http::string_body> response;
+                co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+                status = response.result_int();
 
-    EXPECT_EQ(status, 413);
+                beast::error_code shutdown_error;
+                stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+            },
+            [server](const std::exception_ptr&) { server->close(); });
+        io.run();
+
+        EXPECT_EQ(status, 413) << "limit " << limit;
+    }
 }
 
 TEST_F(HttpTransportTest, ProtectedResourceMetadataRequiresAnAbsoluteResourceUrl) {

@@ -3172,4 +3172,81 @@ TEST(ProtocolReuse, ReadingIntoAUsedValueMatchesAFreshRead) {
         {{"completion", {{"values", json::array({"a"})}}}});
 }
 
+namespace {
+
+/// Checks that @p value is written as @p expected and that reading @p expected back writes it again.
+template <typename T>
+void expect_written_as(const T& value, const char* expected_text) {
+    const auto expected = json::parse(expected_text);
+    EXPECT_EQ(json(value), expected);
+    EXPECT_EQ(json(expected.get<T>()), expected);
+}
+
+}  // namespace
+
+// Each optional member is written under its name in the specification's schema, and read back.
+TEST(ProtocolTest, OptionalMembersAreWrittenUnderTheirSchemaNames) {
+    mcp::ListResourcesRequest list_resources;
+    list_resources.params = mcp::ListResourcesRequestParams{.cursor = "page-2"};
+    expect_written_as(list_resources, R"({"method":"resources/list","params":{"cursor":"page-2"}})");
+    list_resources.params = mcp::ListResourcesRequestParams{};
+    expect_written_as(list_resources, R"({"method":"resources/list","params":{}})");
+
+    mcp::ListResourceTemplatesRequest list_templates;
+    list_templates.params = mcp::ListResourceTemplatesRequestParams{.cursor = "page-3"};
+    expect_written_as(list_templates,
+                      R"({"method":"resources/templates/list","params":{"cursor":"page-3"}})");
+
+    expect_written_as(mcp::PaginatedRequestParams{.cursor = "c", .meta = json{{"trace", "t1"}}},
+                      R"({"cursor":"c","_meta":{"trace":"t1"}})");
+
+    mcp::SamplingMessage message;
+    message.role = mcp::Role::eUser;
+    message.content = mcp::SamplingMessageContentBlock{mcp::TextContent{.text = "Hi"}};
+    message.meta = json{{"turn", 1}};
+    mcp::CreateMessageRequestParams sampling;
+    sampling.messages = {message};
+    sampling.maxTokens = 64;
+    sampling.modelPreferences = mcp::ModelPreferences{
+        .hints = std::vector<mcp::ModelHint>{{.name = "small"}}, .speedPriority = 1.0};
+    sampling.toolChoice = mcp::ToolChoice{.mode = "required"};
+    sampling.metadata = json{{"provider", "x"}};
+    sampling.meta = json{{"trace", "t2"}};
+    expect_written_as(sampling, R"({"messages":[{"role":"user","content":{"type":"text","text":"Hi"},
+        "_meta":{"turn":1}}],"maxTokens":64,"modelPreferences":{"hints":[{"name":"small"}],
+        "speedPriority":1.0},"toolChoice":{"mode":"required"},"metadata":{"provider":"x"},
+        "_meta":{"trace":"t2"}})");
+
+    mcp::ElicitRequestFormParams form;
+    form.message = "Name?";
+    form.requestedSchema = json::parse(R"({"type":"object","properties":{}})");
+    form.meta = json{{"trace", "t3"}};
+    expect_written_as(form, R"({"mode":"form","message":"Name?",
+        "requestedSchema":{"type":"object","properties":{}},"_meta":{"trace":"t3"}})");
+
+    expect_written_as(mcp::BlobResourceContents{"file:///a.bin", "AAE=", "application/octet-stream",
+                                                json{{"origin", "disk"}}},
+                      R"({"uri":"file:///a.bin","blob":"AAE=","mimeType":"application/octet-stream",
+                          "_meta":{"origin":"disk"}})");
+
+    mcp::ToolResultContent tool_result;
+    tool_result.toolUseId = "call-1";
+    tool_result.content = json::array();
+    tool_result.structuredContent = json{{"temperature", 21}};
+    tool_result.meta = json{{"trace", "t4"}};
+    expect_written_as(tool_result, R"({"type":"tool_result","toolUseId":"call-1","content":[],
+        "structuredContent":{"temperature":21},"_meta":{"trace":"t4"}})");
+
+    expect_written_as(mcp::ToolAnnotations{.destructiveHint = false,
+                                           .idempotentHint = true,
+                                           .openWorldHint = false,
+                                           .readOnlyHint = true,
+                                           .title = "T"},
+                      R"({"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,
+                          "readOnlyHint":true,"title":"T"})");
+
+    expect_written_as(mcp::Root{.uri = "file:///repo", .name = "repo", .meta = json{{"vcs", "git"}}},
+                      R"({"uri":"file:///repo","name":"repo","_meta":{"vcs":"git"}})");
+}
+
 }  // namespace protocol_test

@@ -152,6 +152,20 @@ TEST(AppsWireTest, ResourceMetaRoundTripsEveryMember) {
     EXPECT_EQ(json(meta), wire);
 }
 
+// Each decoder reads metadata that is not an object as empty rather than failing, and a visibility
+// read on its own must be one the extension defines.
+TEST(AppsWireTest, MetadataThatIsNotAnObjectReadsAsEmpty) {
+    const auto resource = json("ui").get<apps::ResourceMeta>();
+    EXPECT_FALSE(resource.csp || resource.permissions || resource.domain || resource.prefersBorder);
+    EXPECT_FALSE(json::array().get<apps::ResourceCsp>().connectDomains.has_value());
+    EXPECT_FALSE(json(5).get<apps::ResourcePermissions>().camera);
+    const auto tool = json(nullptr).get<apps::ToolMeta>();
+    EXPECT_FALSE(tool.resourceUri || tool.visibility);
+
+    EXPECT_EQ(json("app").get<apps::Visibility>(), apps::Visibility::eApp);
+    EXPECT_THROW(static_cast<void>(json("host").get<apps::Visibility>()), std::invalid_argument);
+}
+
 TEST(AppsWireTest, OnlyGrantedPermissionsAreWritten) {
     apps::ResourcePermissions permissions;
     permissions.geolocation = true;

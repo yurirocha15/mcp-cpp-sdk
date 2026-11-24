@@ -241,6 +241,29 @@ TEST_F(MemoryTransportTest, JsonMessagesRoundTripWithoutSerializationAtTheWriter
     EXPECT_EQ(received, expected);
 }
 
+// A message written as JSON is read as its text, and one written as text is read as JSON.
+TEST_F(MemoryTransportTest, AMessageIsReadInTheOtherFormThanItWasWritten) {
+    const auto pair = mcp::make_memory_transport_pair(io_ctx_.get_executor());
+    const auto transport_a = std::dynamic_pointer_cast<mcp::MemoryTransport>(pair.first);
+    const auto transport_b = pair.second;
+    ASSERT_NE(transport_a, nullptr);
+    const nlohmann::json written = {{"jsonrpc", "2.0"}, {"id", 7}, {"result", {{"ok", true}}}};
+    std::string text;
+    nlohmann::json parsed;
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await transport_a->write_json(written);
+        text = co_await transport_b->read_message();
+        co_await transport_b->write_message(R"({"jsonrpc":"2.0","method":"ping"})");
+        parsed = co_await transport_a->read_json();
+    });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(nlohmann::json::parse(text), written);
+    EXPECT_EQ(parsed, nlohmann::json::parse(R"({"jsonrpc":"2.0","method":"ping"})"));
+}
+
 TEST_F(MemoryTransportTest, ConcurrentCloseWakesPendingReadExactlyOnce) {
     auto [transport_a, transport_b] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
 

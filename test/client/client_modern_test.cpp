@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -1227,16 +1228,20 @@ TEST(ClientEra, CancellationTokenEndsItsCallsInBothEras) {
     }
 }
 
-// A request given a token that is already cancelled fails without being sent.
+// A request given a token that is already cancelled fails without being sent. Every copy of the
+// token reports the cancel.
 TEST(ClientEra, CancelledTokenSendsNothing) {
     Harness harness(pinned_options("2026-07-28"));
     harness.peer.reply = modern_peer;
     int code = 0;
+    const mcp::CancellationToken token;
+    const auto copy = token;
+    EXPECT_FALSE(copy.is_cancelled());
     harness.run([&]() -> mcp::Task<void> {
         co_await harness.client->connect("test-client", "1.0");
         mcp::RequestOptions request_options;
-        request_options.cancellation = mcp::CancellationToken();
-        request_options.cancellation->cancel();
+        request_options.cancellation = token;
+        token.cancel();
         try {
             const json arguments = json::object();
             co_await harness.client->call_tool("slow", arguments, request_options);
@@ -1244,6 +1249,7 @@ TEST(ClientEra, CancelledTokenSendsNothing) {
             code = error.code();
         }
     });
+    EXPECT_TRUE(copy.is_cancelled());
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
     EXPECT_EQ(harness.peer.count("tools/call"), 0u);
     EXPECT_TRUE(harness.peer.with_method("notifications/cancelled").empty());
@@ -1315,6 +1321,37 @@ TEST(ClientEra, CallerMetaTraceparentPreserved) {
     EXPECT_EQ(meta.at(std::string(g_version_key)), "2026-07-28");
     EXPECT_TRUE(meta.contains(std::string(g_capabilities_key)));
     EXPECT_EQ(calls[0].at("params").at("name"), "echo");
+}
+
+// The client adds its own keys to a request's `_meta`, so the params must be an object, or null for
+// none, and a `_meta` the caller gives must be an object. Anything else is refused unsent.
+TEST(ClientEra, RequestParamsThatCannotCarryMetaAreRefusedUnsent) {
+    Harness harness(auto_options());
+    harness.peer.reply = modern_peer;
+
+    std::vector<int> codes;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("test-client", "1.0");
+        const std::optional<json> null_params = json(nullptr);
+        auto listed = harness.client->send_request("tools/list", null_params);
+        co_await std::move(listed);
+        const std::array<std::optional<json>, 2> refused{json::array({1}), json{{"_meta", 5}}};
+        for (const auto& params : refused) {
+            try {
+                auto pending = harness.client->send_request("tools/list", params);
+                co_await std::move(pending);
+                codes.push_back(0);
+            } catch (const mcp::McpError& error) {
+                codes.push_back(error.code());
+            }
+        }
+    });
+
+    EXPECT_EQ(codes, (std::vector<int>{mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                                       mcp::constants::jsonrpc::g_INVALID_PARAMS}));
+    const auto listings = harness.peer.with_method("tools/list");
+    ASSERT_EQ(listings.size(), 1u);
+    EXPECT_EQ(Harness::meta_of(listings[0]).at(std::string(g_version_key)), "2026-07-28");
 }
 
 TEST(ClientEra, CapabilitiesDerivedFromHandlers) {
