@@ -745,6 +745,10 @@ if(BUILD_TESTING)
       # debug information it has to read: with full -g it outlasted the tests'
       # own time bounds on CI.
       set(TSAN_FLAGS -fsanitize=thread -fno-omit-frame-pointer -g1 -O1)
+      # GCC warns at every std::atomic_thread_fence, which Boost.Asio uses, that
+      # ThreadSanitizer does not model fences. test/tsan.supp covers the report
+      # that follows from it.
+      list(APPEND TSAN_FLAGS $<$<CXX_COMPILER_ID:GNU>:-Wno-tsan>)
       foreach(sdk_target IN LISTS MCP_CPP_SDK_INSTALL_TARGETS)
         target_compile_options(${sdk_target} PUBLIC ${TSAN_FLAGS})
         target_link_options(${sdk_target} PUBLIC -fsanitize=thread)
