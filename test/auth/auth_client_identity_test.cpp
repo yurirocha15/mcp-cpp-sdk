@@ -1015,6 +1015,57 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
     EXPECT_EQ(server.count("/register"), 1U);
 }
 
+// A stored registration whose secret the server has retired, or that names another issuer than the
+// one it is stored under, is not presented: the client registers again and stores the new one.
+TEST(AuthClientIdentityLoopbackTest, AnExpiredOrMisboundStoredRegistrationIsReplaced) {
+    for (const bool expired : {true, false}) {
+        SCOPED_TRACE(expired ? "expired secret" : "other issuer");
+        asio::io_context io_ctx;
+        LoopbackServer server(io_ctx);
+        const auto base = server.base_url();
+        server.set_handler([&base](const http::request<http::string_body>& request) {
+            const std::string target(request.target());
+            if (target == "/prm") {
+                return json_response(
+                    {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+            }
+            if (target == "/.well-known/oauth-authorization-server") {
+                return json_response(server_metadata(base, "", false, true));
+            }
+            if (target == "/register") {
+                return json_response({{"client_id", "registered-client"}}, http::status::created);
+            }
+            if (target == "/token") {
+                return json_response(token_document());
+            }
+            return not_found();
+        });
+
+        IdentityFixture fixture;
+        fixture.config.server_url = base + "/mcp";
+        fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+        fixture.config.credential_store = fixture.credentials;
+        fixture.config.policy = loopback_policy(server.origin());
+        auto stale = credentials("stale-client", expired ? base : "https://other.example");
+        stale.client_secret = "stale-secret";
+        if (expired) {
+            stale.client_secret_expires_at = 1;
+        }
+        fixture.credentials->store(base, stale);
+
+        run_single_challenge(server, fixture, io_ctx,
+                             R"(Bearer resource_metadata=")" + base + R"(/prm")", 4);
+
+        ASSERT_EQ(fixture.failure, nullptr);
+        ASSERT_TRUE(fixture.identity.has_value());
+        EXPECT_EQ(fixture.identity->client_id, "registered-client");
+        EXPECT_EQ(server.count("/register"), 1U);
+        const auto stored = fixture.credentials->load(base);
+        ASSERT_TRUE(stored.has_value());
+        EXPECT_EQ(stored->client_id, "registered-client");
+    }
+}
+
 namespace {
 
 void construct_with_metadata_url(const std::string& url) {
