@@ -135,6 +135,7 @@ set(MCP_CPP_SDK_SOURCES
     src/auth/oauth_http_client.cpp
     src/auth/pkce.cpp
     src/auth/token_store.cpp
+    src/auth/authorization_common.cpp
     src/auth/grant_flow.cpp
     src/auth/client_authentication.cpp
     src/auth/client_credentials.cpp

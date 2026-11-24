@@ -1,5 +1,6 @@
 #include "grant_flow.hpp"
 
+#include "authorization_common.hpp"
 #include "mcp/detail/text/diagnostic_text.hpp"
 
 #include <algorithm>
@@ -11,64 +12,6 @@
 namespace mcp::auth::detail {
 
 namespace {
-
-/// Whether a protected-resource `resource` value identifies the server the client was configured
-/// for (RFC 9728 section 3.3): byte-exact, or a prefix of the server URL on the same origin whose
-/// path is empty, `/` or ends on a segment boundary of the server URL's path. The value may not
-/// carry a query or fragment.
-bool resource_identifies_server(const std::string& resource, const std::string& server_url) {
-    if (resource == server_url) {
-        return true;
-    }
-    if (resource.find('?') != std::string::npos || resource.find('#') != std::string::npos) {
-        return false;
-    }
-    const auto resource_origin = metadata_url_origin(resource);
-    const auto server_origin = metadata_url_origin(server_url);
-    if (resource_origin.empty() || resource_origin != server_origin) {
-        return false;
-    }
-    auto resource_path = resource.substr(resource_origin.size());
-    if (resource_path.empty() || resource_path == "/") {
-        return true;
-    }
-    if (resource_path.back() == '/') {
-        resource_path.pop_back();
-    }
-    const auto server_path = server_url.substr(server_origin.size());
-    return server_path == resource_path ||
-           (server_path.size() > resource_path.size() &&
-            server_path.compare(0, resource_path.size(), resource_path) == 0 &&
-            server_path[resource_path.size()] == '/');
-}
-
-std::vector<std::string> split_scopes(const std::string& scopes) {
-    std::vector<std::string> split;
-    std::size_t cursor = 0;
-    while (cursor < scopes.size()) {
-        const auto next = scopes.find(' ', cursor);
-        const auto token = scopes.substr(cursor, next == std::string::npos ? next : next - cursor);
-        if (!token.empty()) {
-            split.push_back(token);
-        }
-        if (next == std::string::npos) {
-            break;
-        }
-        cursor = next + 1;
-    }
-    return split;
-}
-
-std::string join_scopes(const std::vector<std::string>& scopes) {
-    std::string joined;
-    for (const auto& scope : scopes) {
-        if (!joined.empty()) {
-            joined += ' ';
-        }
-        joined += scope;
-    }
-    return joined;
-}
 
 /// Whether every scope of @p wanted is in @p held.
 bool covers(const std::optional<std::string>& held, const std::optional<std::string>& wanted) {
@@ -83,17 +26,6 @@ bool covers(const std::optional<std::string>& held, const std::optional<std::str
     return std::all_of(need.begin(), need.end(), [&](const std::string& scope) {
         return std::find(have.begin(), have.end(), scope) != have.end();
     });
-}
-
-std::optional<std::string> union_scopes(const std::optional<std::string>& primary,
-                                        const std::optional<std::string>& secondary) {
-    auto merged = split_scopes(primary.value_or(""));
-    for (auto& scope : split_scopes(secondary.value_or(""))) {
-        if (std::find(merged.begin(), merged.end(), scope) == merged.end()) {
-            merged.push_back(std::move(scope));
-        }
-    }
-    return merged.empty() ? std::nullopt : std::optional<std::string>(join_scopes(merged));
 }
 
 }  // namespace
