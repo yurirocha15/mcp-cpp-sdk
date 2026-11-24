@@ -1,4 +1,4 @@
-FROM ubuntu@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+FROM ubuntu@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG SDK_NAME

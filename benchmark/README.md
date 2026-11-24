@@ -113,6 +113,14 @@ transitive dependencies resolved by the alternatives' CMake builds are not all
 content-addressed; their resolved image identities are therefore captured with
 each run.
 
+Every C++ target, this SDK's included, is built on Ubuntu 26.04. On Ubuntu
+24.04, whose glibc is 2.39, cxxmcp and the TCP_NODELAY build of
+Neumann-Labs/mcp-cpp crashed under the capacity load model: both detach a thread
+they start for a request, and that glibc's `pthread_detach()` can read the
+thread's state after the thread has freed it ([glibc bug
+19951](https://sourceware.org/bugzilla/show_bug.cgi?id=19951)). The
+`pthread_detach()` of Ubuntu 26.04's glibc 2.43 does not.
+
 Gopher MCP remains recorded in the source manifest but excluded from this
 group. Its public server transport uses legacy HTTP+SSE rather than the single
 Streamable HTTP endpoint exercised here, so including it would test a different
