@@ -2642,7 +2642,8 @@ TEST_F(SessionManagerTest, RequestBodyBeyondTheLimitIsRejected) {
 // neither call can strand the other's contribution. Both orders are exercised against real
 // listeners and the resulting headers compared to each other.
 TEST_F(SessionManagerTest, TheTwoChallengeSettersAreOrderIndependent) {
-    const auto run = [this](unsigned short port, bool metadata_first) -> std::string {
+    const auto run = [this](unsigned short port, bool metadata_first,
+                            const std::string& named_metadata = {}) -> std::string {
         asio::io_context io_ctx;
         mcp::StreamableHttpSessionManager manager(io_ctx.get_executor(), "127.0.0.1", port,
                                                   make_echo_server_factory());
@@ -2653,6 +2654,7 @@ TEST_F(SessionManagerTest, TheTwoChallengeSettersAreOrderIndependent) {
         mcp::BearerChallengeConfig challenge;
         challenge.realm = "mcp";
         challenge.scope = "mcp:read";
+        challenge.resource_metadata = named_metadata;
 
         if (metadata_first) {
             manager.set_protected_resource_metadata(metadata);
@@ -2680,6 +2682,14 @@ TEST_F(SessionManagerTest, TheTwoChallengeSettersAreOrderIndependent) {
         metadata_first,
         R"(Bearer realm="mcp", scope="mcp:read", )"
         R"(resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource/mcp")");
+
+    // A metadata URL the challenge names itself is kept, whichever setter comes first.
+    const std::string named = "https://auth.example.com/prm";
+    const auto named_metadata_first = run(19168, true, named);
+    EXPECT_EQ(named_metadata_first, run(19169, false, named));
+    EXPECT_EQ(
+        named_metadata_first,
+        R"(Bearer realm="mcp", scope="mcp:read", resource_metadata="https://auth.example.com/prm")");
 }
 
 // Exempting the path MCP is served on must not hand out unauthenticated MCP. The session count is

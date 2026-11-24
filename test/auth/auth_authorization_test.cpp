@@ -28,6 +28,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <initializer_list>
 #include <map>
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
@@ -5839,6 +5840,37 @@ TEST(AuthDiagnosticsSanitizingTest, BidirectionalOverridesAreFlattenedToo) {
     EXPECT_EQ(mcp::auth::detail::sanitize_for_diagnostics(arabic_neighbour), arabic_neighbour)
         << "U+061B is the Arabic semicolon, a printable character next to ALM, and must not be "
            "caught by a range written around U+061C";
+}
+
+// A four-byte character is kept. An overlong form of each length, a value past U+10FFFF and a
+// four-byte sequence cut short are each replaced, and so is a C1 control such as NEXT LINE, which
+// some log viewers take as a line break.
+TEST(AuthDiagnosticsSanitizingTest, EveryIllFormedSequenceLengthIsReplaced) {
+    const auto emoji = utf8_codepoint(0x1F600);
+    EXPECT_EQ(mcp::auth::detail::sanitize_for_diagnostics("a" + emoji + "b"), "a" + emoji + "b");
+
+    const auto bytes = [](std::initializer_list<unsigned char> values) {
+        std::string text;
+        for (const auto value : values) {
+            text.push_back(static_cast<char>(value));
+        }
+        return text;
+    };
+    const std::vector<std::string> ill_formed = {
+        bytes({0xC1, 0x81}),              // 'A' in two bytes
+        bytes({0xE0, 0x80, 0x81}),        // U+0001 in three bytes
+        bytes({0xF0, 0x80, 0x80, 0x81}),  // U+0001 in four bytes
+        bytes({0xF4, 0x90, 0x80, 0x80}),  // U+110000
+        bytes({0xF0, 0x9F, 0x98}),        // U+1F600 without its last byte
+        utf8_codepoint(0x85),             // NEXT LINE
+    };
+    for (const auto& sequence : ill_formed) {
+        const auto cleaned = mcp::auth::detail::sanitize_for_diagnostics("before" + sequence + "after");
+        EXPECT_TRUE(is_well_formed_utf8(cleaned)) << cleaned;
+        EXPECT_EQ(cleaned.find(sequence), std::string::npos) << cleaned;
+        EXPECT_NE(cleaned.find("before"), std::string::npos) << cleaned;
+        EXPECT_NE(cleaned.find("after"), std::string::npos) << cleaned;
+    }
 }
 
 // ---------------------------------------------------------------------------

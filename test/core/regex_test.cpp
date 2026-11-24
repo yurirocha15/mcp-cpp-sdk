@@ -123,6 +123,10 @@ TEST(Regex, Escapes) {
     EXPECT_TRUE(matches("^a\\-b$", "a-b"));
     EXPECT_TRUE(matches("^[\\-x]+$", "-x-"));
     EXPECT_FALSE(matches("^[\\-x]+$", "w"));
+    // A '-' at either end of a class is a literal.
+    EXPECT_TRUE(matches("^[a-]+$", "a-a"));
+    EXPECT_TRUE(matches("^[-a]+$", "-a-"));
+    EXPECT_FALSE(matches("^[a-]$", "b"));
     // A high surrogate joins only a low surrogate that follows it; any other \u escape after it
     // stands alone, so the class below holds the surrogate and 'A' as two members.
     EXPECT_TRUE(matches("^[\\uD83D\\u0041]$", "A"));
@@ -134,6 +138,7 @@ TEST(Regex, Escapes) {
 TEST(Regex, Groups) {
     EXPECT_TRUE(matches("^(?:a|b)c$", "bc"));
     EXPECT_TRUE(matches("^(?<name>a)b$", "ab"));
+    EXPECT_TRUE(matches("^(?<$a_1$>x)$", "x"));
     EXPECT_TRUE(matches("^((a))$", "a"));
 }
 

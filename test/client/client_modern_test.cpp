@@ -1502,6 +1502,37 @@ TEST(ClientPinned, ProbeTimeoutMustBePositive) {
     EXPECT_THROW(mcp::Client(transport, io.get_executor(), options), std::invalid_argument);
 }
 
+// Every limit of ClientOptions must be positive, and the client refuses one that is not. A response
+// cache that is off has its limits left unchecked.
+TEST(ClientPinned, EveryLimitMustBePositive) {
+    boost::asio::io_context io;
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
+    const std::vector<std::function<void(mcp::ClientOptions&)>> invalid = {
+        [](mcp::ClientOptions& options) { options.subscription_queue_limit = 0; },
+        [](mcp::ClientOptions& options) { options.task_poll_interval = std::chrono::milliseconds(0); },
+        [](mcp::ClientOptions& options) { options.task_timeout = std::chrono::milliseconds(-1); },
+        [](mcp::ClientOptions& options) { options.max_incoming_request_bytes = 0; },
+        [](mcp::ClientOptions& options) {
+            options.response_cache.enabled = true;
+            options.response_cache.max_entries = 0;
+        },
+        [](mcp::ClientOptions& options) {
+            options.response_cache.enabled = true;
+            options.response_cache.max_ttl = std::chrono::milliseconds(0);
+        },
+    };
+    for (std::size_t index = 0; index < invalid.size(); ++index) {
+        SCOPED_TRACE(index);
+        mcp::ClientOptions options;
+        invalid[index](options);
+        EXPECT_THROW(mcp::Client(transport, io.get_executor(), options), std::invalid_argument);
+    }
+
+    mcp::ClientOptions cache_off;
+    cache_off.response_cache.max_entries = 0;
+    EXPECT_NO_THROW(mcp::Client(transport, io.get_executor(), cache_off));
+}
+
 // ---------------------------------------------------------------------------
 // The SDK client against the SDK server
 // ---------------------------------------------------------------------------

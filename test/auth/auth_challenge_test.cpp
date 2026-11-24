@@ -605,6 +605,19 @@ TEST(AuthMetadataPolicyTest, RefusesSpecialPurposeRangesUpToTheirEdges) {
         {"100.128.0.1", Decision::eAllowed},
         {"172.32.0.1", Decision::eAllowed},
         {"223.255.255.255", Decision::eAllowed},
+        {"100.64.0.0", Decision::eAddressReserved},
+        {"100.63.255.255", Decision::eAllowed},
+        {"172.16.0.0", Decision::eAddressPrivate},
+        {"172.15.255.255", Decision::eAllowed},
+        {"192.168.0.1", Decision::eAddressPrivate},
+        {"192.169.0.1", Decision::eAllowed},
+        {"169.254.0.1", Decision::eAddressLinkLocal},
+        {"169.253.255.255", Decision::eAllowed},
+        {"192.1.0.1", Decision::eAllowed},
+        {"198.51.99.1", Decision::eAllowed},
+        {"203.1.113.1", Decision::eAllowed},
+        {"0.0.0.0", Decision::eAddressReserved},
+        {"1.0.0.1", Decision::eAllowed},
     };
     const mcp::auth::MetadataFetchPolicy policy;
     for (const auto& [address, expected] : cases) {

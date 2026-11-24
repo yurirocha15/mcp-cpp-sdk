@@ -847,6 +847,96 @@ TEST(AuthTokenEndpointAuthLoopbackTest, SendsNoSecretAtAllWhenTheServerAdvertise
     EXPECT_EQ(server.body_for("/token").find("registered-secret"), std::string::npos);
 }
 
+namespace {
+
+/// What the token request of one authorization carried.
+struct TokenRequestSeen {
+    std::exception_ptr failure;
+    std::string authorization_url;
+    std::string authorization;
+    std::string body;
+};
+
+/// Authorizes once against a server that advertises @p methods as its token endpoint
+/// authentication methods (nothing when unset) and names @p authorize_path as its authorization
+/// endpoint, as a client whose secret is @p secret.
+TokenRequestSeen token_request_for(const std::optional<json>& methods,
+                                   const std::optional<std::string>& secret,
+                                   const std::string& authorize_path) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = server_metadata(base, "", false, false);
+            metadata["authorization_endpoint"] = base + authorize_path;
+            if (methods) {
+                metadata["token_endpoint_auth_methods_supported"] = *methods;
+            }
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return not_found();
+    });
+
+    IdentityFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.client_id = "negotiating-client";
+    fixture.config.client_secret = secret;
+    fixture.config.client_issuer = base;
+    fixture.config.policy = loopback_policy(server.origin());
+    run_single_challenge(server, fixture, io_ctx, R"(Bearer resource_metadata=")" + base + R"(/prm")",
+                         3);
+    return {fixture.failure, fixture.authorization_url, server.authorization_for("/token"),
+            server.body_for("/token")};
+}
+
+}  // namespace
+
+// The client prefers client_secret_basic to client_secret_post, uses `none` when it has no secret,
+// and sends the secret in the request body to a server that advertises no method. An authorization
+// endpoint whose URL has a query keeps it.
+TEST(AuthTokenEndpointAuthLoopbackTest, TheMethodFollowsWhatTheServerAdvertises) {
+    const std::string secret = "negotiated-secret";
+
+    const auto both = token_request_for(json::array({"client_secret_post", "client_secret_basic"}),
+                                        secret, "/authorize");
+    ASSERT_EQ(both.failure, nullptr);
+    // "negotiating-client:negotiated-secret" base64-encoded.
+    EXPECT_EQ(both.authorization, "Basic bmVnb3RpYXRpbmctY2xpZW50Om5lZ290aWF0ZWQtc2VjcmV0");
+    EXPECT_EQ(both.body.find("client_secret"), std::string::npos) << both.body;
+
+    const auto post_only =
+        token_request_for(json::array({"private_key_jwt", "client_secret_post"}), secret, "/authorize");
+    ASSERT_EQ(post_only.failure, nullptr);
+    EXPECT_TRUE(post_only.authorization.empty());
+    EXPECT_NE(post_only.body.find("client_secret=negotiated-secret"), std::string::npos)
+        << post_only.body;
+
+    const auto public_client =
+        token_request_for(json::array({"client_secret_basic", "none"}), std::nullopt, "/authorize");
+    ASSERT_EQ(public_client.failure, nullptr);
+    EXPECT_TRUE(public_client.authorization.empty());
+    EXPECT_NE(public_client.body.find("client_id=negotiating-client"), std::string::npos)
+        << public_client.body;
+
+    const auto unadvertised = token_request_for(std::nullopt, secret, "/authorize?tenant=7");
+    ASSERT_EQ(unadvertised.failure, nullptr);
+    EXPECT_TRUE(unadvertised.authorization.empty());
+    EXPECT_NE(unadvertised.body.find("client_secret=negotiated-secret"), std::string::npos)
+        << unadvertised.body;
+    EXPECT_NE(unadvertised.authorization_url.find("/authorize?tenant=7&"), std::string::npos)
+        << unadvertised.authorization_url;
+}
+
 TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssuer) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
