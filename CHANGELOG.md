@@ -6,7 +6,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-11-25
+## [0.4.0] - 2026-11-26
 
 ### Highlights
 
