@@ -26,6 +26,7 @@ jobs:
     outputs:
       lint: ${{ steps.classify.outputs.lint }}
       code: ${{ steps.classify.outputs.code }}
+      readme: ${{ steps.classify.outputs.readme }}
       conan: ${{ steps.classify.outputs.conan }}
       release: ${{ steps.classify.outputs.release }}
       benchmark: ${{ steps.classify.outputs.benchmark }}
@@ -101,6 +102,34 @@ jobs:
         --checks='-*,readability-identifier-naming'
         --warnings-as-errors='readability-identifier-naming'
         --header-filter="^$PWD/examples/.*"
+
+  readme:
+    # Compiles the README's C++ when only the README changes, with the compiler and flags of the
+    # examples, and checks that it holds the minimal examples verbatim. A change to the library runs
+    # the same check on each compiler of the build job. CMake configures against distribution
+    # packages and nothing is built.
+    name: README snippets
+    needs: changes
+    if: needs.changes.outputs.readme == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libboost-dev nlohmann-json3-dev libssl-dev
+
+    - name: Configure
+      run: >-
+        cmake -S . -B build/readme -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=ON
+
+    - name: Compile README snippets
+      run: python3 scripts/check_readme_snippets.py --build-dir build/readme
 
   build:
     name: Build (${{ matrix.os }}, C++${{ matrix.cppstd }}, ${{ matrix.linkage }})
@@ -769,6 +798,7 @@ jobs:
     needs:
       - changes
       - lint
+      - readme
       - build
       - sanitize
       - tsan

@@ -560,7 +560,8 @@ const reference still crashes. Avoiding the construct at the call site is the on
 
 **Detection**: ``scripts/check_readme_snippets.py`` compiles the README's complete
 examples with the toolchain that built the SDK, and CI runs it on every matrix entry
-except Windows: GCC on Linux and Clang on macOS.
+except Windows: GCC on Linux and Clang on macOS. A change to the README's C++ alone
+runs it once, in the README snippets job, with GCC on Ubuntu.
 
 GCC 12 co_await in a Condition
 ------------------------------
