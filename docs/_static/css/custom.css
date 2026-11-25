@@ -8,8 +8,47 @@
 
 .wy-nav-content {
     max-width: none !important; /* Truly fluid */
+    width: 100%; /* Never wider than the page: wide code blocks and tables scroll in their own box */
     padding: 1.6em 3.2em !important;
     flex: 1 0 auto !important; /* Grow to fill space */
+}
+
+/* Parameter and return value lists: the description takes the room the name leaves. The theme's
+   minmax(80%, 95%) overflows once a name is wider than a fifth of the list. */
+html.writer-html5 .rst-content dl.field-list {
+    grid-template-columns: auto minmax(0, 1fr);
+}
+
+/* Below the theme's wide layout, a word, identifier, path or signature too long for its line breaks
+   instead of widening the page. The span.pre rule covers inline code, code-styled links included,
+   which otherwise keeps each token on one line. */
+@media screen and (max-width: 1099px) {
+    .rst-content {
+        overflow-wrap: anywhere;
+    }
+
+    .rst-content span.pre {
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    /* A table scrolls in its own box, so its cells keep inline code whole */
+    .rst-content table span.pre {
+        white-space: nowrap;
+        overflow-wrap: normal;
+    }
+}
+
+/* Phones, where the navigation is a menu: the theme's own padding instead of the wide desktop
+   margins, and each parameter name above its description. */
+@media screen and (max-width: 768px) {
+    .wy-nav-content {
+        padding: 1.618em !important;
+    }
+
+    html.writer-html5 .rst-content dl.field-list {
+        display: block;
+    }
 }
 
 /* Ensure footer sticks to the bottom */

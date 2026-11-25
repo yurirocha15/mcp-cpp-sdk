@@ -110,6 +110,8 @@ These changes in behavior need no change to compile:
 
 ### Fixed
 
+- The documentation site fits phone and tablet screens: pages no longer grow wider
+  than the screen, and long identifiers, signatures and parameter lists wrap.
 - A list request whose cursor is not wholly a decimal offset within the list,
   such as `2abc`, `-1` or one past the end, is answered with -32602 instead of a
   page.
