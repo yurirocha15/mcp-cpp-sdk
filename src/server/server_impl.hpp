@@ -1547,7 +1547,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<nlohmann::json> call_through_middleware(const TypeErasedHandler& final_handler, Context& ctx,
                                                  const nlohmann::json& params);
     // [gcc11-sso: wire-builders] DO NOT convert to Task<T>.
-    static std::string make_result_wire(const RequestId& id, nlohmann::json result);
+    static std::string make_result_wire(const RequestId& id, const nlohmann::json& result);
     /// The response to @p id whose result is @p result_text, JSON text already serialized.
     static std::string make_result_text_wire(const RequestId& id, std::string_view result_text);
     /// The response to a request: for a 2026-07-28 request, @p result with the members that

@@ -855,7 +855,7 @@ struct StreamableHttpSessionManager::Impl {
     /// one.
     Task<std::optional<StringResponse>> refuse_before_body(
         const detail::RequestHead& request, std::optional<std::string>& principal_id,
-        std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) {
+        std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) const {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (closed.load(std::memory_order_acquire)) {
             co_return std::nullopt;
@@ -1007,7 +1007,7 @@ struct StreamableHttpSessionManager::Impl {
                                                       mcp::detail::dump_json(error_body));
     }
 
-    bool has_valid_protocol_header(const detail::IncomingRequest& request) const {
+    static bool has_valid_protocol_header(const detail::IncomingRequest& request) {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         return protocol_header_it == request.end() ||
                is_legacy_protocol_version(
@@ -1163,7 +1163,7 @@ struct StreamableHttpSessionManager::Impl {
     ///
     /// @return Whether the connection may carry another request.
     Task<bool> serve_legacy_stream(Connection& stream, const detail::IncomingRequest& request,
-                                   std::shared_ptr<detail_session_mgr::LegacyStream> legacy) {
+                                   std::shared_ptr<detail_session_mgr::LegacyStream> legacy) const {
         auto& session = *legacy->session;
         const bool get_stream = legacy->request_key.empty();
         SseEventList events = std::move(legacy->replay);
@@ -1300,7 +1300,7 @@ struct StreamableHttpSessionManager::Impl {
 
     std::variant<std::shared_ptr<detail_session_mgr::SessionRuntime>, StringResponse>
     resolve_session_for_post(const detail::IncomingRequest& request, const nlohmann::json& request_json,
-                             boost::asio::any_io_executor conn_strand, std::string principal) {
+                             const boost::asio::any_io_executor& conn_strand, std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
                                                            "Transport closed");
