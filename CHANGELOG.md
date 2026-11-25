@@ -6,6 +6,37 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Highlights
+
+- **Sync mode.** `Server` and `Client` run their own event loop, take
+  synchronous handlers and make blocking calls, such as
+  `client.sync().call_tool()`, with no Boost in the program. Async mode uses
+  the same objects with coroutines.
+- **Headers without Boost.** `<mcp/mcp.hpp>` and the server, client, auth and
+  transport headers include no Boost header, except the WebSocket and Beast
+  transport headers. Code that defines or awaits a coroutine includes
+  `<mcp/core/async.hpp>`, which does.
+- **Endpoints.** `mcp::Endpoint` connects a `Client` to a command it launches,
+  to a Streamable HTTP URL or through the application's own transport, and a
+  `StdioRestartPolicy` starts a launched server again when its process ends.
+- **TLS and proxies.** Clients connect to `https://` servers, checked against
+  the system's certificate authorities, and through HTTP proxies. Servers
+  serve TLS and can require client certificates, and the WebSocket transports
+  speak wss.
+- **One HTTP server, many clients.** `Server::run_http()` serves any number of
+  clients of 2025-11-25 and earlier, each in its own session.
+- **JSON Schema without jsoncons.** The SDK's own engine validates every
+  dialect it supports, and jsoncons is no longer compiled into the library.
+- **Specification recommendations.** An opt-in client response cache,
+  opt-in notification rate limits, tool name checks and `Host` checks on
+  loopback connections; the documentation lists which parts of the
+  specification the SDK implements.
+- **HTTP performance.** `HttpClientTransport` sends requests on connections
+  that earlier answers left open, instead of a new connection and TLS
+  handshake per call, and HTTP servers allocate less for each request.
+- **Typed transport errors.** The built-in transports throw `TransportError`,
+  whose `kind()` tells closed, connect, I/O and protocol failures apart.
+
 ### Migrating from 0.3.0
 
 Code written for 0.3.0 needs these changes to compile with 0.4.0:
@@ -62,7 +93,7 @@ These changes in behavior need no change to compile:
 
 ### Changed
 
-- `<mcp/mcp.hpp>` and the server, client and transport headers include no Boost header; code that defines or awaits a coroutine includes `<mcp/core/async.hpp>`.
+- `<mcp/mcp.hpp>` and the server, client and transport headers, but for the WebSocket and Beast ones, include no Boost header; coroutine code includes `<mcp/core/async.hpp>`.
 - `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>`, declared without Boost in `<mcp/core/async_fwd.hpp>`; `co_spawn` takes a callable that returns one.
 - Public APIs take `mcp::Executor`, which needs no Boost, instead of `boost::asio::any_io_executor`; an Asio executor converts to it.
 - `Server::run_http()` serves any number of clients of 2025-11-25 and earlier, each in its own session, where it served one at a time.
