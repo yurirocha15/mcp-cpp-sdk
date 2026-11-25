@@ -49,11 +49,11 @@ jobs:
       run: python3 scripts/ci_changes.py --event "$EVENT" --base "$BASE" --head "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   lint:
-    # Checks that only the TLS context factory sets certificate verification, then
-    # clang-tidy runs the checks .clang-tidy and examples/.clang-tidy enable over the .cpp files in
-    # src/ and examples/ and the headers of include/, src/ and examples/ they include (`make lint`
-    # also checks each header on its own), and fails on any warning. It needs the compile database,
-    # so CMake configures against distribution packages and nothing is built.
+    # Checks that only the TLS context factory sets certificate verification, then clang-tidy runs
+    # the checks .clang-tidy enables over the .cpp files in src/ and the headers of include/ and src/
+    # they include (`make lint` also checks each header on its own), and fails on any warning. The
+    # examples are checked for identifier naming only. It needs the compile database, so CMake
+    # configures against distribution packages and nothing is built.
     name: clang-tidy
     needs: changes
     if: needs.changes.outputs.lint == 'true'
@@ -89,10 +89,18 @@ jobs:
 
     - name: Run clang-tidy
       run: >-
-        find src examples -name '*.cpp' | sort | xargs -P "$(nproc)" -n 1
+        find src -name '*.cpp' | sort | xargs -P "$(nproc)" -n 1
         clang-tidy -p build/lint --quiet
         --warnings-as-errors='*'
-        --header-filter="^$PWD/(include|src|examples)/.*"
+        --header-filter="^$PWD/(include|src)/.*"
+
+    - name: Check identifier naming in the examples
+      run: >-
+        find examples -name '*.cpp' | sort | xargs -P "$(nproc)" -n 1
+        clang-tidy -p build/lint --quiet
+        --checks='-*,readability-identifier-naming'
+        --warnings-as-errors='readability-identifier-naming'
+        --header-filter="^$PWD/examples/.*"
 
   build:
     name: Build (${{ matrix.os }}, C++${{ matrix.cppstd }}, ${{ matrix.linkage }})
