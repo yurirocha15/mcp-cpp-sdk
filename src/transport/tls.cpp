@@ -467,6 +467,12 @@ TlsError describe_handshake_failure(const boost::system::error_code& error, SSL*
         return {TlsError::Reason::eHandshakeTimeout, prefix + "the handshake did not finish in time"};
     }
     if (is_ssl_error(error)) {
+        // A failed certificate check ends the handshake, but the error code carries the first error
+        // OpenSSL queued, which can be another one: a certificate store the check could not open
+        // queues its own error before the check's.
+        if (ssl != nullptr && SSL_get_verify_result(ssl) != X509_V_OK) {
+            return verification_failure(ssl, sides);
+        }
         switch (ssl_reason(error)) {
             case SSL_R_CERTIFICATE_VERIFY_FAILED:
                 return verification_failure(ssl, sides);
