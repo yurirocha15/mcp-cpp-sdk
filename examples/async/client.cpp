@@ -143,8 +143,7 @@ int main(int argc, char** argv) {
     // Roots: this handler lists the client's roots.
     client.on_roots_list([](const nlohmann::json&) -> mcp::Task<mcp::ListRootsResult> {
         mcp::ListRootsResult roots;
-        roots.roots.push_back(
-            {.uri = "file:///home/user/projects", .name = "projects", .meta = std::nullopt});
+        roots.roots.push_back({"file:///home/user/projects", "projects", std::nullopt});
         co_return roots;
     });
 

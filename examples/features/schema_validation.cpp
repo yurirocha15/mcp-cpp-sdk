@@ -109,7 +109,7 @@ void add_tools(mcp::Server& server) {
 std::unique_ptr<mcp::Server> make_server(const std::string& name) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-    return std::make_unique<mcp::Server>(mcp::Implementation{.name = name, .version = "1.0.0"}, caps);
+    return std::make_unique<mcp::Server>(mcp::Implementation{name, "1.0.0"}, caps);
 }
 
 mcp::Task<void> serve(mcp::Server* server, std::shared_ptr<mcp::ITransport> transport,

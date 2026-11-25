@@ -53,12 +53,7 @@ const mcp::ElicitationSchema& contact_form() {
             .add("priority",
                  TitledEnumSchema{
                      .title = "Priority Level",
-                     .options =
-                         {
-                             {.value = "low", .title = "Low"},
-                             {.value = "medium", .title = "Medium"},
-                             {.value = "high", .title = "High"},
-                         },
+                     .options = {{"low", "Low"}, {"medium", "Medium"}, {"high", "High"}},
                      .defaultValue = "medium",
                  })
             .add("topics",

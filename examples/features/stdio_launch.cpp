@@ -95,8 +95,7 @@ int main(int argc, char** argv) {
                     {
                         StdioSessionOptions options;
                         options.process = process;
-                        options.client_info =
-                            Implementation{.name = "stdio-launch-example", .version = "1.0"};
+                        options.client_info = Implementation{"stdio-launch-example", "1.0"};
                         options.restart.max_restarts = 2;
                         options.on_connected = [](Client&,
                                                   const ConnectResult& connected) -> Task<void> {

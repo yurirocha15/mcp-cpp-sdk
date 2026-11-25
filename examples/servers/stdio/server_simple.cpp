@@ -7,7 +7,7 @@ int main() {
         mcp::ServerCapabilities caps;
         caps.tools = mcp::ServerCapabilities::ToolsCapability{};
 
-        mcp::Implementation info{.name = "hello-server", .version = "1.0.0"};
+        mcp::Implementation info{"hello-server", "1.0.0"};
         mcp::Server server(info, caps);
 
         nlohmann::json schema = {

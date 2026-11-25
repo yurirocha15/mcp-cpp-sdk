@@ -163,7 +163,7 @@ int main() {
                     lang_arg.value = "C";
 
                     CompleteParams lang_params;
-                    lang_params.ref = PromptReference{.type = "ref/prompt", .name = "code_analyzer"};
+                    lang_params.ref = PromptReference{"ref/prompt", "code_analyzer"};
                     lang_params.argument = lang_arg;
 
                     auto lang_result = co_await client.complete(lang_params);
@@ -180,7 +180,7 @@ int main() {
                     fw_arg.value = "R";
 
                     CompleteParams fw_params;
-                    fw_params.ref = PromptReference{.type = "ref/prompt", .name = "code_analyzer"};
+                    fw_params.ref = PromptReference{"ref/prompt", "code_analyzer"};
                     fw_params.argument = fw_arg;
 
                     auto fw_result = co_await client.complete(fw_params);
@@ -197,8 +197,7 @@ int main() {
                     all_lang_arg.value = "";
 
                     CompleteParams all_lang_params;
-                    all_lang_params.ref =
-                        PromptReference{.type = "ref/prompt", .name = "code_analyzer"};
+                    all_lang_params.ref = PromptReference{"ref/prompt", "code_analyzer"};
                     all_lang_params.argument = all_lang_arg;
 
                     auto all_lang_result = co_await client.complete(all_lang_params);

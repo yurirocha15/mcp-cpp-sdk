@@ -28,8 +28,7 @@ int main() {
 
     // The tool: adds a note and tells the resource's subscribers.
     server.add_tool(
-        "add_note", "Adds a note",
-        mcp::tool_params({{.name = "text", .type = "string", .description = "The note"}}),
+        "add_note", "Adds a note", mcp::tool_params({{"text", "string", "The note"}}),
         [&server, &notes, &notes_uri](const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
             notes.push_back(args.at("text").get<std::string>());
             co_await server.notify_resource_updated(notes_uri);

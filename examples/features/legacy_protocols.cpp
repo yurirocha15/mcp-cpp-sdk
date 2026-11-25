@@ -49,9 +49,7 @@ const char* era_name(mcp::ProtocolEra era) {
 
 constexpr const char* g_RESOURCE_URI = "mcp://example/counter";
 
-mcp::Implementation client_info() {
-    return {.name = "legacy-protocols-example-client", .version = "1.0.0"};
-}
+mcp::Implementation client_info() { return {"legacy-protocols-example-client", "1.0.0"}; }
 
 std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy) {
     mcp::ServerCapabilities caps;
@@ -61,7 +59,7 @@ std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy
     caps.resources = resources;
 
     auto server = std::make_shared<mcp::Server>(
-        mcp::Implementation{.name = "legacy-protocols-example-server", .version = "1.0.0"}, caps);
+        mcp::Implementation{"legacy-protocols-example-server", "1.0.0"}, caps);
 
     mcp::Resource resource;
     resource.uri = g_RESOURCE_URI;

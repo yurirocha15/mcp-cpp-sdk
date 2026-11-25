@@ -28,8 +28,7 @@ int main() {
 
     // The tool: adds a note and tells the resource's subscribers.
     server.add_tool(
-        "add_note", "Adds a note",
-        mcp::tool_params({{.name = "text", .type = "string", .description = "The note"}}),
+        "add_note", "Adds a note", mcp::tool_params({{"text", "string", "The note"}}),
         [&server, &mutex, &notes, &notes_uri](const nlohmann::json& args) -> nlohmann::json {
             {
                 const std::scoped_lock lock(mutex);

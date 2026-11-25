@@ -23,12 +23,11 @@ int main(int argc, char** argv) {
     }
 
     mcp::Server server("tls-server", "1.0.0");
-    server.add_tool(
-        "greet", "Greets someone by name",
-        mcp::tool_params({{.name = "name", .type = "string", .description = "Who to greet"}}),
-        [](const nlohmann::json& args) -> nlohmann::json {
-            return "Hello, " + args.at("name").get<std::string>() + "!";
-        });
+    server.add_tool("greet", "Greets someone by name",
+                    mcp::tool_params({{"name", "string", "Who to greet"}}),
+                    [](const nlohmann::json& args) -> nlohmann::json {
+                        return "Hello, " + args.at("name").get<std::string>() + "!";
+                    });
 
     // ========== TLS SETTINGS ==========
     mcp::TlsServerOptions tls;
