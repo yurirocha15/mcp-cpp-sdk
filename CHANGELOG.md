@@ -126,9 +126,6 @@ These changes in behavior need no change to compile:
   comment.
 - A client's request no longer fails when the server cancels a request of its
   own that has the same id, as it does for an elicitation it stops waiting for.
-- A client trusts no authority when `SSL_CERT_FILE` or `SSL_CERT_DIR` is set but
-  names none, instead of OpenSSL's defaults; with OpenSSL 3.0, a missing
-  `SSL_CERT_DIR` failed handshakes.
 - A `completion/complete` request whose reference type is neither `ref/prompt`
   nor `ref/resource` is answered with -32602 instead of being read as a resource
   reference.
@@ -161,8 +158,6 @@ These changes in behavior need no change to compile:
   the source location that Boost adds to it.
 - The LLDB example returns a command that LLDB fails as a tool error instead of
   as its output.
-- `run_stdio()` and `run_http()` no longer risk a crash in `pthread_detach()`
-  when they return at the shutdown deadline while handlers still run.
 
 ## [0.3.0] - 2026-11-17
 
