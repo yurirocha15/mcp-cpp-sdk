@@ -106,6 +106,68 @@ covers the coroutine API.
 
 ## Usage Highlights
 
+### Async Mode
+
+In async mode the program runs the event loop, an `mcp::Runtime`, and handlers and client calls
+are coroutines that return `mcp::Task` (see
+[Async Servers and Clients](https://www.yurirocha.com/mcp-cpp-sdk/guides/async-mode.html)). The
+greeter in async mode:
+
+```cpp
+#include <mcp/core/async.hpp>
+#include <mcp/mcp.hpp>
+#include <mcp/transport/stdio.hpp>
+
+#include <memory>
+#include <string>
+
+int main() {
+    mcp::Server server("greeter", "1.0.0");
+
+    server.add_tool("greet", "Greets someone by name",
+                    mcp::tool_params({{"name", "string", "Who to greet"}}),
+                    [](const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
+                        co_return "Hello, " + args.at("name").get<std::string>() + "!";
+                    });
+
+    // Server::run() serves stdio on the event loop until standard input closes.
+    mcp::Runtime runtime;
+    runtime.spawn(
+        server.run(std::make_shared<mcp::StdioTransport>(runtime.executor()), runtime.executor()));
+    runtime.run();
+}
+```
+
+Its client awaits each call in a coroutine on the same kind of loop:
+
+```cpp
+#include <mcp/core/async.hpp>
+#include <mcp/mcp.hpp>
+#include <mcp/transport/stdio_client.hpp>
+
+#include <iostream>
+#include <memory>
+#include <string>
+
+int main(int argc, char** argv) {
+    mcp::Runtime runtime;
+    mcp::StdioProcessOptions process;
+    process.command = argc > 1 ? argv[1] : "./greeter";
+    mcp::Client client(std::make_shared<mcp::StdioClientTransport>(runtime.executor(), process),
+                       runtime.executor());
+
+    const auto session = [&client]() -> mcp::Task<void> {
+        co_await client.connect("greeter-client", "1.0.0");
+        const nlohmann::json args{{"name", "Ada"}};
+        const auto result = co_await client.call_tool("greet", args);
+        std::cout << mcp::result_text(result) << "\n";
+        client.close();
+    };
+    runtime.spawn(session());
+    runtime.run();
+}
+```
+
 ### Tools, Resources, and Prompts
 
 Resources and prompts use the same typed-handler model as tools: provide the
@@ -125,6 +187,72 @@ server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progre
         co_await ctx.report_progress(50, 100);
         co_return nlohmann::json{{"status", "done"}};
     });
+```
+
+### Streamable HTTP
+
+`run_http()` serves any number of clients over Streamable HTTP until SIGINT or SIGTERM. A
+callback it takes configures the endpoint before it listens, such as its allowed origins and
+bearer token validation (see [Transports](https://www.yurirocha.com/mcp-cpp-sdk/concepts/transports.html)):
+
+```cpp
+server.run_http("127.0.0.1", 8080);
+```
+
+A client connects to the server's URL:
+
+```cpp
+mcp::Client client(mcp::Endpoint::http("http://127.0.0.1:8080/mcp"));
+client.sync().connect("my-client", "1.0.0");
+```
+
+### Elicitation
+
+A handler can ask the user, through the client, to fill in a form. The client answers with the
+handler it registers with `on_elicitation()` (see
+[Elicitation](https://www.yurirocha.com/mcp-cpp-sdk/concepts/elicitation.html)):
+
+```cpp
+mcp::ElicitRequestFormParams form;
+form.message = "How should they be addressed?";
+form.requestedSchema = mcp::tool_params({{"title", "string", "Such as Dr. or Ms."}});
+const mcp::ElicitRequestParams question = form;
+const auto answer = co_await ctx.elicit(question);
+if (answer.action == mcp::ElicitAction::eAccept && answer.content) {
+    title = answer.content->value("title", std::string());
+}
+```
+
+### Tasks
+
+Under protocol revision 2026-07-28, a tool call can become a task: the server answers at once
+with a handle, runs the tool apart from the request, and keeps its result for the client to
+fetch (see [Tasks](https://www.yurirocha.com/mcp-cpp-sdk/concepts/tasks.html)):
+
+```cpp
+// Server
+server.enable_tasks();
+server.set_tool_task_mode("render", mcp::ToolTaskMode::eAuto);
+
+// Client
+auto started = client.sync().start_tool("render", {{"scene", "demo"}});
+if (auto* task = std::get_if<mcp::TaskHandle>(&started)) {
+    started = task->sync().result();  // waits for the task to finish
+}
+```
+
+### Middleware
+
+Middleware wraps each request that an application handler answers, such as `tools/call` and
+`resources/read`, in the order it is registered (see
+[Middleware](https://www.yurirocha.com/mcp-cpp-sdk/concepts/middleware.html)):
+
+```cpp
+server.use([](mcp::Context& ctx, const nlohmann::json& params,
+              mcp::TypeErasedHandler next) -> mcp::Task<nlohmann::json> {
+    std::cerr << "request\n";
+    co_return co_await next(ctx, params);
+});
 ```
 
 ## Documentation
