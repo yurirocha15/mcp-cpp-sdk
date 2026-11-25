@@ -31,7 +31,7 @@ Task<nlohmann::json> Client::Impl::answer_input_requests(std::shared_ptr<Impl> s
         const auto method = std::make_shared<const std::string>(request["method"].get<std::string>());
         RequestHandler handler;
         {
-            std::lock_guard lock(state->handlers_mutex);
+            std::scoped_lock lock(state->handlers_mutex);
             const auto found = state->request_handlers.find(*method);
             if (found != state->request_handlers.end()) {
                 handler = found->second;

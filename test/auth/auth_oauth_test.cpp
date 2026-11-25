@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
@@ -20,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <future>
 #include <mcp/auth/oauth.hpp>
 #include <mcp/core/async.hpp>
@@ -34,6 +36,7 @@
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/text/encoding.hpp"
 #include "support/hang_guard.hpp"
+#include "support/loopback_server.hpp"
 #include "support/spawn.hpp"
 
 namespace auth_oauth_test {
@@ -565,6 +568,48 @@ TEST_F(MockTokenServer, GetJsonReturnsValidJson) {
 
     EXPECT_EQ(result["issuer"], "https://auth.example.com");
     EXPECT_EQ(result["token_endpoint"], "https://auth.example.com/token");
+}
+
+// URL schemes compare without regard to case, as the fetch policy reads them too.
+TEST_F(MockTokenServer, GetJsonTakesAnUppercaseScheme) {
+    asio::ip::tcp::acceptor acceptor(io_ctx_, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+    std::string target;
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+        beast::tcp_stream stream(std::move(socket));
+        beast::flat_buffer buffer;
+        http::request<http::string_body> req;
+        co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+        target = std::string(req.target());
+
+        http::response<http::string_body> res{http::status::ok, req.version()};
+        res.set(http::field::content_type, "application/json");
+        res.body() = R"({"issuer":"https://auth.example.com"})";
+        res.prepare_payload();
+        co_await http::async_write(stream, res, asio::use_awaitable);
+    });
+
+    json result;
+    std::string failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx_.get_executor());
+        client.set_metadata_policy(loopback_policy(port));
+        try {
+            result =
+                co_await client.get_json("HTTP://127.0.0.1:" + std::to_string(port) + "/well-known");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        acceptor.close();
+    });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(failure, "");
+    EXPECT_EQ(target, "/well-known");
+    EXPECT_EQ(result["issuer"], "https://auth.example.com");
 }
 
 TEST_F(MockTokenServer, GetJsonErrorThrows) {
@@ -1198,6 +1243,113 @@ TEST(AuthOAuthHttpClientUrlTest, AnIpv6LiteralHostIsResolvedWithoutItsBrackets) 
     EXPECT_EQ(resolved_port, port);
     EXPECT_EQ(recorded.target, "/prm");
     EXPECT_EQ(recorded.host, "[::1]:" + port);
+}
+
+// Text after an IPv6 literal's closing bracket can only be a port. Anything else makes the URL
+// malformed, so it is refused before its host is resolved.
+TEST(AuthOAuthHttpClientUrlTest, TextAfterAnIpv6LiteralOtherThanAPortIsRefused) {
+    asio::io_context io_ctx;
+    bool resolved = false;
+    std::string failure;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        mcp::auth::MetadataFetchPolicy policy;
+        policy.allowed_origins.push_back("http://[::1]");
+        policy.allow_plain_http_loopback = true;
+        client.set_metadata_policy(policy);
+        client.set_host_resolver([&](const std::string&, const std::string&) {
+            resolved = true;
+            return std::vector<std::string>{"127.0.0.1"};
+        });
+        try {
+            (void)co_await client.get_json("http://[::1]x/prm");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+    });
+
+    io_ctx.run();
+
+    EXPECT_NE(failure, "");
+    EXPECT_FALSE(resolved);
+}
+
+// A scope issues every kind of request the client does. Aborting it fails its later requests,
+// through any copy of it, while the client's own requests and those of another scope go on.
+TEST(AuthOAuthHttpClientScopeTest, AnAbortedScopeStopsOnlyItsOwnRequests) {
+    asio::io_context io_ctx;
+    mcp_test::LoopbackServer server(io_ctx);
+    server.set_handler([](const http::request<http::string_body>& request) {
+        if (request.target() == "/token") {
+            return mcp_test::json_response(
+                {{"access_token", "scoped-token"}, {"token_type", "Bearer"}});
+        }
+        return mcp_test::json_response(
+            {{"method", std::string(request.method_string())}, {"body", request.body()}});
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(6));
+    const auto base = server.base_url();
+
+    mcp::auth::MetadataFetchPolicy policy;
+    policy.allowed_origins.push_back(base);
+    policy.allow_plain_http_loopback = true;
+    mcp::auth::OAuthConfig config;
+    config.client_id = "scoped-client";
+    config.token_endpoint = base + "/token";
+    config.redirect_uri = "http://localhost/callback";
+
+    std::string failure;
+    std::string token;
+    std::vector<json> replies;
+    std::vector<bool> refused;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        client.set_metadata_policy(policy);
+        auto scope = client.make_scope();
+        auto other = client.make_scope();
+        try {
+            token = (co_await scope.exchange_code(config, "the-code", "the-verifier")).access_token;
+            replies.push_back(co_await scope.get_json(base + "/metadata"));
+            const json registration = {{"client_name", "scoped"}};
+            replies.push_back(co_await scope.post_json(base + "/register", registration));
+            const mcp::KeyValuePairList form = {{"grant_type", "client_credentials"}};
+            replies.push_back(co_await scope.post_form(base + "/grant", form, "Basic c2NvcGVk"));
+
+            auto copy = scope;
+            copy.abort();
+            const std::array<mcp::auth::OAuthHttpClientScope*, 2> aborted_scopes{&scope, &copy};
+            for (auto* aborted : aborted_scopes) {
+                try {
+                    (void)co_await aborted->get_json(base + "/after-abort");
+                    refused.push_back(false);
+                } catch (const boost::system::system_error& error) {
+                    refused.push_back(error.code() == asio::error::operation_aborted);
+                }
+            }
+            replies.push_back(co_await client.get_json(base + "/client"));
+            replies.push_back(co_await other.get_json(base + "/other"));
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        server.close();
+    });
+
+    io_ctx.run();
+
+    EXPECT_EQ(failure, "");
+    EXPECT_EQ(token, "scoped-token");
+    EXPECT_EQ(refused, (std::vector<bool>{true, true}));
+    ASSERT_EQ(replies.size(), 5U);
+    EXPECT_EQ(replies[0].at("method"), "GET");
+    EXPECT_EQ(replies[1].at("method"), "POST");
+    EXPECT_EQ(json::parse(replies[1].at("body").get<std::string>()),
+              json::parse(R"({"client_name":"scoped"})"));
+    EXPECT_EQ(replies[2].at("body"), "grant_type=client_credentials");
+    EXPECT_EQ(server.targets(), (std::vector<std::string>{"/token", "/metadata", "/register", "/grant",
+                                                          "/client", "/other"}));
+    ASSERT_EQ(server.bodies().size(), 6U);
+    EXPECT_NE(server.bodies()[0].find("code_verifier=the-verifier"), std::string::npos);
+    EXPECT_EQ(server.authorizations()[3], "Basic c2NvcGVk");
 }
 
 // -------------------------------------------------------------------------------------------

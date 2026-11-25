@@ -145,7 +145,7 @@ class MCP_API StdioTransport final : public ITransport {
 
    private:
     struct OwnStdoutTag {};
-    StdioTransport(const Executor& executor, std::istream& input, OwnStdoutTag);
+    StdioTransport(const Executor& executor, std::istream& input, OwnStdoutTag /*tag*/);
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

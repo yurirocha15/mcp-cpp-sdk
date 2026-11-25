@@ -7,10 +7,13 @@
 
 namespace mcp::detail {
 
-/// Thrown when an evaluation needs more work than its budget holds.
+/// Thrown when an evaluation needs more work than its budget holds. It does not derive from
+/// std::exception, so a `catch (const std::exception&)` on the way does not stop it before the
+/// evaluation's own handler.
 struct WorkBudgetExceeded {};
 
-/// Thrown when an evaluation nests deeper than its bound.
+/// Thrown when an evaluation nests deeper than its bound. Not a std::exception, for the reason
+/// WorkBudgetExceeded is not.
 struct EvaluationTooDeep {};
 
 /// The JSON Schema type name of @p value: "integer" for an integer, "number" for a float.

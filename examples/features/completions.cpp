@@ -46,10 +46,15 @@ int main() {
         // Define a tool with arguments that support completion
         nlohmann::json tool_schema = {
             {"type", "object"},
-            {"properties",
-             {{"language", {{"type", "string"}, {"description", "Programming language"}}},
-              {"framework", {{"type", "string"}, {"description", "Framework name"}}}}},
-            {"required", nlohmann::json::array({"language"})}};
+            {
+                "properties",
+                {
+                    {"language", {{"type", "string"}, {"description", "Programming language"}}},
+                    {"framework", {{"type", "string"}, {"description", "Framework name"}}},
+                },
+            },
+            {"required", nlohmann::json::array({"language"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "code_analyzer", "Analyzes code in a specific language and framework", tool_schema,
@@ -64,7 +69,10 @@ int main() {
                 std::cout << "\n";
 
                 co_return nlohmann::json{
-                    {"status", "analyzed"}, {"language", language}, {"framework", framework}};
+                    {"status", "analyzed"},
+                    {"language", language},
+                    {"framework", framework},
+                };
             });
 
         // ========== COMPLETION PROVIDER ==========
@@ -77,27 +85,29 @@ int main() {
             // Provide completions based on argument name
             if (params.argument.name == "language") {
                 // Language completions
-                std::vector<std::string> languages = {"C++",        "C",    "Python", "JavaScript",
-                                                      "TypeScript", "Java", "Go",     "Rust",
-                                                      "Ruby",       "PHP"};
+                std::vector<std::string> languages = {
+                    "C++",  "C",  "Python", "JavaScript", "TypeScript",
+                    "Java", "Go", "Rust",   "Ruby",       "PHP",
+                };
 
                 // Filter by partial match
                 std::string partial = params.argument.value;
                 for (const auto& lang : languages) {
-                    if (lang.find(partial) == 0) {  // Starts with partial
+                    if (lang.starts_with(partial)) {  // Starts with partial
                         result.completion.values.push_back(lang);
                     }
                 }
             } else if (params.argument.name == "framework") {
                 // Framework completions
-                std::vector<std::string> frameworks = {"React", "Vue",    "Angular", "Django",
-                                                       "Flask", "Spring", "Express", "FastAPI",
-                                                       "Rails", "Laravel"};
+                std::vector<std::string> frameworks = {
+                    "React",  "Vue",     "Angular", "Django", "Flask",
+                    "Spring", "Express", "FastAPI", "Rails",  "Laravel",
+                };
 
                 // Filter by partial match
                 std::string partial = params.argument.value;
                 for (const auto& fw : frameworks) {
-                    if (fw.find(partial) == 0) {  // Starts with partial
+                    if (fw.starts_with(partial)) {  // Starts with partial
                         result.completion.values.push_back(fw);
                     }
                 }

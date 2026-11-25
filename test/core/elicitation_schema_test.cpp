@@ -103,6 +103,11 @@ TEST(ElicitationSchema, MultiSelectEnumsWriteArrays) {
     EXPECT_EQ(json(titled),
               json::parse(R"({"type":"array","items":{"anyOf":[{"const":"#f00","title":"Red"}]}})"));
     EXPECT_EQ(round_trip(titled).options.size(), 1u);
+    titled.minItems = 0;
+    titled.maxItems = 1;
+    EXPECT_EQ(json(titled), json::parse(R"({"type":"array","minItems":0,"maxItems":1,
+        "items":{"anyOf":[{"const":"#f00","title":"Red"}]}})"));
+    EXPECT_EQ(round_trip(titled).maxItems, 1u);
     EXPECT_EQ(round_trip(plain).defaultValue, (std::vector<std::string>{"Red"}));
 }
 
@@ -172,6 +177,7 @@ TEST(ElicitationSchema, BuilderWritesTheDialectWhenSet) {
     form.dialect = "https://json-schema.org/draft/2020-12/schema";
     EXPECT_EQ(json(form), json::parse(R"({"$schema":"https://json-schema.org/draft/2020-12/schema",
         "type":"object","properties":{}})"));
+    EXPECT_EQ(json(form).get<mcp::ElicitationSchema>().dialect, form.dialect);
 }
 
 TEST(ElicitationSchema, SchemaParsesBackIntoFields) {
@@ -310,6 +316,14 @@ TEST(ElicitationSchema, CountKeywordsMustBeNonNegativeIntegers) {
         json::parse(R"({"type":"string","minLength":0,"maxLength":4})").get<mcp::StringSchema>();
     EXPECT_EQ(zero.minLength, 0u);
     EXPECT_EQ(zero.maxLength, 4u);
+
+    // A schema built in C++ holds its counts as signed integers, and a negative one is refused too.
+    const json built = {{"type", "string"}, {"minLength", 2}, {"maxLength", 8}};
+    const auto read = built.get<mcp::StringSchema>();
+    EXPECT_EQ(read.minLength, 2u);
+    EXPECT_EQ(read.maxLength, 8u);
+    const json negative = {{"type", "string"}, {"minLength", -3}};
+    EXPECT_THROW(static_cast<void>(negative.get<mcp::StringSchema>()), std::invalid_argument);
 }
 
 TEST(ElicitationSchema, JsonFormDoesNotKeepTheOrderFieldsWereAddedIn) {

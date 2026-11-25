@@ -17,7 +17,7 @@ int main() {
 
     // The resource: the notes, read again on each request. Clients may subscribe to it.
     server.add_text_resource(notes_uri, "All notes", [&mutex, &notes] {
-        const std::lock_guard lock(mutex);
+        const std::scoped_lock lock(mutex);
         std::string text;
         for (const auto& note : notes) {
             text += "- " + note + "\n";
@@ -31,7 +31,7 @@ int main() {
         "add_note", "Adds a note", mcp::tool_params({{"text", "string", "The note"}}),
         [&server, &mutex, &notes, &notes_uri](const nlohmann::json& args) -> nlohmann::json {
             {
-                const std::lock_guard lock(mutex);
+                const std::scoped_lock lock(mutex);
                 notes.push_back(args.at("text").get<std::string>());
             }
             server.sync().notify_resource_updated(notes_uri);
@@ -41,7 +41,7 @@ int main() {
     // The prompt: asks the model to summarize the notes.
     server.add_text_prompt("summarize", "Asks for a summary of the notes", {},
                            [&mutex, &notes](const mcp::Server::PromptArguments&) {
-                               const std::lock_guard lock(mutex);
+                               const std::scoped_lock lock(mutex);
                                return "Summarize these " + std::to_string(notes.size()) + " notes.";
                            });
 

@@ -231,7 +231,7 @@ void to_json(nlohmann::json& j, const ListToolsRequest& r) {
 void from_json(const nlohmann::json& j, ListToolsRequest& r) {
     r = ListToolsRequest{};
     j.at("method").get_to(r.method);
-    if (j.contains("params")) {
+    if (detail::has_json_value(j, "params")) {
         r.params = j.at("params").get<ListToolsRequestParams>();
     }
 }
@@ -253,7 +253,7 @@ void from_json(const nlohmann::json& j, ListToolsResult& r) {
     if (detail::has_json_value(j, "nextCursor")) {
         r.nextCursor = j.at("nextCursor").get<std::string>();
     }
-    if (j.contains("_meta")) {
+    if (detail::has_json_value(j, "_meta")) {
         r.meta = j.at("_meta");
     }
     detail::read_cache_hints(j, r.ttlMs, r.cacheScope);

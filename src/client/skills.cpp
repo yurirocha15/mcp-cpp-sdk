@@ -67,8 +67,8 @@ Task<ReadResourceDirectoryResult> read_directory(Client& client, std::string uri
 Task<std::string> read_skill_file(Client& client, Skill entry, std::string uri) {
     const SkillResource* listed = nullptr;
     if (!entry.dynamic) {
-        const auto found = std::find_if(entry.resources.begin(), entry.resources.end(),
-                                        [&](const SkillResource& item) { return item.uri == uri; });
+        const auto found = std::ranges::find_if(
+            entry.resources, [&](const SkillResource& item) { return item.uri == uri; });
         if (found == entry.resources.end()) {
             throw std::runtime_error("Verification failed: " + uri + " is not listed in the entry of " +
                                      entry.uri);

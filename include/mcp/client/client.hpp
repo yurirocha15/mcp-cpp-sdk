@@ -263,7 +263,7 @@ class MCP_API Client {
         CallToolParams call_params;
         call_params.name = name;
         call_params.arguments = nlohmann::json(arguments);
-        return static_cast<Self*>(this)->call_tool_with(std::move(call_params), request_options);
+        return static_cast<Self*>(this)->call_tool_with(call_params, request_options);
     }
 
     /**
@@ -297,7 +297,7 @@ class MCP_API Client {
         CallToolParams call_params;
         call_params.name = name;
         call_params.arguments = nlohmann::json(arguments);
-        return static_cast<Self*>(this)->start_tool_with(std::move(call_params), request_options);
+        return static_cast<Self*>(this)->start_tool_with(call_params, request_options);
     }
 
     /**
@@ -517,10 +517,10 @@ class MCP_API Client {
     friend class SyncClient;
     friend class TaskHandle;
 
-    Task<CallToolResult> call_tool_with(CallToolParams params,
+    Task<CallToolResult> call_tool_with(const CallToolParams& params,
                                         const RequestOptions& request_options = {});
     Task<std::variant<CallToolResult, TaskHandle>> start_tool_with(
-        CallToolParams params, const RequestOptions& request_options = {});
+        const CallToolParams& params, const RequestOptions& request_options = {});
 
     void start(std::shared_ptr<ITransport> transport, const Executor& executor, ClientOptions options);
 

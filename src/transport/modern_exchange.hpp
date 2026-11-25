@@ -34,10 +34,12 @@ struct StreamCounters {
     std::atomic<std::uint64_t> dropped_notifications{0};
 
     [[nodiscard]] StreamStats snapshot() const {
-        return {streams_opened.load(std::memory_order_relaxed),
-                disconnect_cancels.load(std::memory_order_relaxed),
-                half_close_probes.load(std::memory_order_relaxed),
-                dropped_notifications.load(std::memory_order_relaxed)};
+        return {
+            .streams_opened = streams_opened.load(std::memory_order_relaxed),
+            .disconnect_cancels = disconnect_cancels.load(std::memory_order_relaxed),
+            .half_close_probes = half_close_probes.load(std::memory_order_relaxed),
+            .dropped_notifications = dropped_notifications.load(std::memory_order_relaxed),
+        };
     }
 };
 

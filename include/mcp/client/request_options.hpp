@@ -2,6 +2,7 @@
 
 #include <mcp/client/cancellation_token.hpp>
 #include <mcp/client/client_options.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/protocol/notification.hpp>
 
 #include <chrono>
@@ -39,14 +40,14 @@ struct RequestOptions {
      * request again with the answers. Each retry counts against this limit; a server that still asks
      * after the last one fails the call with an McpError. Legacy sessions ignore it.
      */
-    int max_input_rounds = 8;
+    int max_input_rounds = mcp::constants::client::g_DEFAULT_MAX_INPUT_ROUNDS;
     /**
      * @brief Most questions one `input_required` result may ask.
      *
      * @details Each question runs a registered handler, which may mean asking a person. A server
      * that asks more fails the call with an McpError.
      */
-    int max_input_requests = 32;
+    int max_input_requests = mcp::constants::client::g_DEFAULT_MAX_INPUT_REQUESTS;
     /// @brief Cancels the request when cancelled; see CancellationToken.
     std::optional<CancellationToken> cancellation;
     /**

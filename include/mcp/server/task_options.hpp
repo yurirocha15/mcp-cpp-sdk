@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/core/async_fwd.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/protocol/tools.hpp>
 #include <mcp/server/task_store.hpp>
@@ -54,18 +55,18 @@ struct TaskOptions {
     /// `max_tasks_per_principal` as its per-principal limit.
     std::shared_ptr<TaskStore> store;
     /// How long a new task is kept after its creation. Unset keeps it without limit.
-    std::optional<std::chrono::milliseconds> ttl{std::chrono::hours(1)};
+    std::optional<std::chrono::milliseconds> ttl{mcp::constants::tasks::g_DEFAULT_TTL};
     /// The polling interval suggested to clients in the state of a task.
-    std::chrono::milliseconds poll_interval{std::chrono::seconds(2)};
+    std::chrono::milliseconds poll_interval{mcp::constants::tasks::g_DEFAULT_POLL_INTERVAL};
     /// Handlers one principal may have running at once. A task counts until its handler returns,
     /// whatever its status: a cancelled or expired task whose handler has not returned still
     /// counts, and a new task is refused while the principal is at the limit. The default store
     /// also holds at most this many tasks of one principal, finished ones included until they
     /// expire.
-    std::size_t max_tasks_per_principal{100};
+    std::size_t max_tasks_per_principal{mcp::constants::tasks::g_DEFAULT_MAX_TASKS_PER_OWNER};
     /// Handlers that may run at once for all principals, counted like `max_tasks_per_principal`.
     /// The default store also holds at most this many tasks.
-    std::size_t max_tasks{10000};
+    std::size_t max_tasks{mcp::constants::tasks::g_DEFAULT_MAX_TASKS};
     /// Receives a warning about a configuration that works but is likely not what was meant.
     /// When unset, warnings are written to standard error.
     std::function<void(const std::string&)> warning_handler;

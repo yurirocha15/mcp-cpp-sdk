@@ -34,17 +34,26 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"text", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"text"})}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"text", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"text"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "echo", "Echo the input over HTTP", tool_schema,
             [](nlohmann::json input_args) -> nlohmann::json {
                 return nlohmann::json{
-                    {"content",
-                     nlohmann::json::array({nlohmann::json{
-                         {"type", "text"}, {"text", input_args.at("text").get<std::string>()}}})}};
+                    {
+                        "content",
+                        nlohmann::json::array({
+                            nlohmann::json{
+                                {"type", "text"},
+                                {"text", input_args.at("text").get<std::string>()},
+                            },
+                        }),
+                    },
+                };
             });
 
         // Port 0 lets the system pick a free port. The transport binds it when it is constructed,

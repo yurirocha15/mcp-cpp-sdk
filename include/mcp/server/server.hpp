@@ -520,6 +520,10 @@ class MCP_API Server {
     /**
      * @brief Set the page size for paginated list responses.
      *
+     * @details A list request whose cursor is not one a `nextCursor` of this server could have
+     * held, including one past the end of a list that has since become shorter, is answered with
+     * -32602 (Invalid params).
+     *
      * @param size The maximum number of items per page. 0 means no pagination.
      */
     void set_page_size(std::size_t size);
@@ -793,7 +797,7 @@ class MCP_API Server {
      * @param transport The transport to use for message exchange. Ownership is shared.
      * @param executor  The executor to use for async operations.
      */
-    Task<void> run(std::shared_ptr<ITransport> transport, Executor executor);
+    Task<void> run(std::shared_ptr<ITransport> transport, const Executor& executor);
 
     /**
      * @brief Run the server on stdio (stdin/stdout), blocking until shutdown.

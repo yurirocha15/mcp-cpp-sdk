@@ -34,7 +34,7 @@ class BlockingInputBuffer : public std::streambuf {
    public:
     void close() {
         {
-            std::lock_guard lock(mutex_);
+            std::scoped_lock lock(mutex_);
             closed_ = true;
         }
         cv_.notify_all();
@@ -83,9 +83,11 @@ int main() {
 
         // ========== TOOL REGISTRATION ==========
         // Tool: quick_task — completes immediately
-        nlohmann::json quick_schema = {{"type", "object"},
-                                       {"properties", {{"value", {{"type", "integer"}}}}},
-                                       {"required", nlohmann::json::array({"value"})}};
+        nlohmann::json quick_schema = {
+            {"type", "object"},
+            {"properties", {{"value", {{"type", "integer"}}}}},
+            {"required", nlohmann::json::array({"value"})},
+        };
 
         server.add_tool<nlohmann::json, CallToolResult>(
             "quick_task", "A quick task that completes immediately", quick_schema,
@@ -96,9 +98,11 @@ int main() {
             });
 
         // Tool: slow_task — simulates work with delay
-        nlohmann::json slow_schema = {{"type", "object"},
-                                      {"properties", {{"duration_ms", {{"type", "integer"}}}}},
-                                      {"required", nlohmann::json::array({"duration_ms"})}};
+        nlohmann::json slow_schema = {
+            {"type", "object"},
+            {"properties", {{"duration_ms", {{"type", "integer"}}}}},
+            {"required", nlohmann::json::array({"duration_ms"})},
+        };
 
         server.add_tool<nlohmann::json, CallToolResult>(
             "slow_task", "A task that takes time to complete", slow_schema,

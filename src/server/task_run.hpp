@@ -75,14 +75,14 @@ class TaskRun : public std::enable_shared_from_this<TaskRun> {
     void stop_expiry();
 
     /// Publishes @p record without waiting, for a caller that cannot suspend.
-    void publish_detached(std::shared_ptr<const TaskRecord> record);
+    void publish_detached(std::shared_ptr<const TaskRecord> record) const;
 
     /// Generates the key of the next request for input of the task. Keys never repeat within a task.
     std::uint64_t next_key() { return ++key_counter_; }
 
     /// Records a key the handler chose for a question. Returns false when the task used it before.
     bool claim_key(const std::string& key) {
-        const std::lock_guard lock(keys_mutex_);
+        const std::scoped_lock lock(keys_mutex_);
         return named_keys_.insert(key).second;
     }
 

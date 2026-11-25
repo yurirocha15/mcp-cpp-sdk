@@ -3,8 +3,10 @@
 #include "mcp/detail/constants.hpp"
 
 #include "mcp/detail/json/json_text_scan.hpp"
+#include "mcp/detail/text/unicode.hpp"
 
 #include <array>
+#include <charconv>
 #include <clocale>
 #include <cmath>
 #include <cstddef>
@@ -218,14 +220,14 @@ class FastParser {
                 run = at_;
                 continue;
             }
-            if (byte < 0x20U) {
+            if (byte < constants::unicode::g_C0_CONTROLS_END) {
                 return false;
             }
-            if (byte < 0x80U) {
+            if (byte < constants::unicode::g_ASCII_END) {
                 ++at_;
                 continue;
             }
-            const std::size_t length = json_text::utf8_sequence_length(at_, end_);
+            const std::size_t length = unicode::utf8_sequence_length(at_, end_);
             if (length == 0) {
                 return false;
             }
@@ -239,38 +241,14 @@ class FastParser {
         }
         std::uint32_t code = 0;
         for (int i = 0; i < 4; ++i) {
-            const unsigned char digit = *at_++;
-            code <<= 4U;
-            if (digit >= '0' && digit <= '9') {
-                code |= static_cast<std::uint32_t>(digit - '0');
-            } else if (digit >= 'a' && digit <= 'f') {
-                code |= static_cast<std::uint32_t>(digit - 'a' + 10);
-            } else if (digit >= 'A' && digit <= 'F') {
-                code |= static_cast<std::uint32_t>(digit - 'A' + 10);
-            } else {
+            const int digit = constants::encoding::g_HEX_VALUES[*at_++];
+            if (digit < 0) {
                 return false;
             }
+            code = (code << constants::encoding::g_HEX_DIGIT_BITS) | static_cast<std::uint32_t>(digit);
         }
         out = code;
         return true;
-    }
-
-    static void append_utf8(std::string& out, std::uint32_t code) {
-        if (code < 0x80U) {
-            out.push_back(static_cast<char>(code));
-        } else if (code < 0x800U) {
-            out.push_back(static_cast<char>(0xC0U | (code >> 6U)));
-            out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
-        } else if (code < 0x10000U) {
-            out.push_back(static_cast<char>(0xE0U | (code >> 12U)));
-            out.push_back(static_cast<char>(0x80U | ((code >> 6U) & 0x3FU)));
-            out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
-        } else {
-            out.push_back(static_cast<char>(0xF0U | (code >> 18U)));
-            out.push_back(static_cast<char>(0x80U | ((code >> 12U) & 0x3FU)));
-            out.push_back(static_cast<char>(0x80U | ((code >> 6U) & 0x3FU)));
-            out.push_back(static_cast<char>(0x80U | (code & 0x3FU)));
-        }
     }
 
     /// Reads the escape sequence that starts at the backslash under at_ and appends what it means.
@@ -309,21 +287,21 @@ class FastParser {
                 if (!hex4(code)) {
                     return false;
                 }
-                if (code >= 0xD800U && code <= 0xDBFFU) {
+                if (unicode::is_high_surrogate(code)) {
                     // A high surrogate must be followed by the escape of a low one.
                     if (end_ - at_ < 2 || at_[0] != '\\' || at_[1] != 'u') {
                         return false;
                     }
                     at_ += 2;
                     std::uint32_t low = 0;
-                    if (!hex4(low) || low < 0xDC00U || low > 0xDFFFU) {
+                    if (!hex4(low) || !unicode::is_low_surrogate(low)) {
                         return false;
                     }
-                    code = 0x10000U + ((code - 0xD800U) << 10U) + (low - 0xDC00U);
-                } else if (code >= 0xDC00U && code <= 0xDFFFU) {
+                    code = unicode::combine_surrogates(code, low);
+                } else if (unicode::is_low_surrogate(code)) {
                     return false;
                 }
-                append_utf8(out, code);
+                unicode::append_utf8(out, code);
                 return true;
             }
             default:
@@ -388,12 +366,10 @@ class FastParser {
     static bool integer(nlohmann::json& out, bool negative, const unsigned char* begin,
                         const unsigned char* end) {
         std::uint64_t magnitude = 0;
-        for (const unsigned char* digit = begin; digit < end; ++digit) {
-            const auto value = static_cast<std::uint64_t>(*digit - '0');
-            if (magnitude > (std::numeric_limits<std::uint64_t>::max() - value) / 10U) {
-                return false;
-            }
-            magnitude = magnitude * 10U + value;
+        const auto* const first = reinterpret_cast<const char*>(begin);
+        const auto* const last = reinterpret_cast<const char*>(end);
+        if (std::from_chars(first, last, magnitude).ec != std::errc{}) {
+            return false;
         }
         if (!negative) {
             out = static_cast<nlohmann::json::number_unsigned_t>(magnitude);
@@ -417,7 +393,7 @@ class FastParser {
             return false;
         }
         const auto length = static_cast<std::size_t>(at_ - start);
-        std::array<char, 64> small{};
+        std::array<char, constants::json_parse::g_STACK_NUMBER_BYTES> small{};
         std::string large;
         char* text = small.data();
         if (length >= small.size()) {

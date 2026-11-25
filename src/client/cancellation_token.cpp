@@ -9,7 +9,7 @@ CancellationToken::CancellationToken() : state_(std::make_shared<detail::Cancell
 void CancellationToken::cancel(std::optional<std::string> reason) const {
     std::map<std::uint64_t, detail::CancellationState::Callback> callbacks;
     {
-        std::lock_guard lock(state_->mutex);
+        std::scoped_lock lock(state_->mutex);
         if (state_->cancelled.load(std::memory_order_relaxed)) {
             return;
         }

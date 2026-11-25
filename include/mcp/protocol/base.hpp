@@ -51,8 +51,8 @@ inline bool has_json_value(const nlohmann::json& json_obj, const char* key) {
  * @brief The sender or recipient of messages and data in a conversation.
  */
 enum class Role : std::uint8_t {
-    eUser,      ///< The user.
-    eAssistant  ///< The assistant (LLM).
+    eUser,       ///< The user.
+    eAssistant,  ///< The assistant (LLM).
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(Role, {{Role::eUser, "user"}, {Role::eAssistant, "assistant"}})
@@ -155,7 +155,7 @@ enum class TaskStatus : std::uint8_t {
     eCompleted,      ///< Task has completed successfully.
     eFailed,         ///< Task has failed.
     eInputRequired,  ///< Task requires additional input.
-    eWorking         ///< Task is currently in progress.
+    eWorking,        ///< Task is currently in progress.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const TaskStatus& status);

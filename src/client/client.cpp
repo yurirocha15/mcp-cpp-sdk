@@ -186,7 +186,7 @@ Task<ConnectResult> Client::connect(const Implementation& client_info,
 
     Impl::start_read_loop(state);
     {
-        std::lock_guard lock(state->handlers_mutex);
+        std::scoped_lock lock(state->handlers_mutex);
         state->client_info = client_info;
         state->client_capabilities = capabilities;
     }
@@ -228,7 +228,7 @@ std::uint64_t Client::dropped_notifications() const {
 }
 
 std::size_t Client::pending_request_count() const {
-    std::lock_guard lock(impl_->pending_requests_mutex);
+    std::scoped_lock lock(impl_->pending_requests_mutex);
     return impl_->pending_requests.size();
 }
 
@@ -246,7 +246,7 @@ Task<ListToolsResult> Client::list_tools(const std::optional<std::string>& curso
                    impl_, methods::g_TOOLS_LIST, make_paginated_params(cursor), request_options)));
 }
 
-Task<CallToolResult> Client::call_tool_with(CallToolParams params,
+Task<CallToolResult> Client::call_tool_with(const CallToolParams& params,
                                             const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
@@ -255,30 +255,28 @@ Task<CallToolResult> Client::call_tool_with(CallToolParams params,
             throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                            "Client must connect before sending requests");
         }
-        return Impl::call_tool_following(impl_, nlohmann::json(std::move(params)), std::move(check),
+        return Impl::call_tool_following(impl_, nlohmann::json(params), std::move(check),
                                          request_options);
     }
     return checked_call_result(
-        send_request(methods::g_TOOLS_CALL, nlohmann::json(std::move(params)), request_options),
-        std::move(check));
+        send_request(methods::g_TOOLS_CALL, nlohmann::json(params), request_options), std::move(check));
 }
 
 Task<std::variant<CallToolResult, TaskHandle>> Client::start_tool_with(
-    CallToolParams params, const RequestOptions& request_options) {
+    const CallToolParams& params, const RequestOptions& request_options) {
     // [gcc11-sso: not-a-coroutine]
     auto check = impl_->output_check_for(params.name);
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
         throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                        "Client must connect before sending requests");
     }
-    return Impl::start_tool(impl_, nlohmann::json(std::move(params)), std::move(check),
-                            request_options);
+    return Impl::start_tool(impl_, nlohmann::json(params), std::move(check), request_options);
 }
 
 TaskHandle Client::task_handle(std::string id) {
     TaskData created;
     created.taskId = std::move(id);
-    return TaskHandle(impl_, std::move(created), std::nullopt);
+    return {impl_, std::move(created), std::nullopt};
 }
 
 Task<ListResourcesResult> Client::list_resources(const std::optional<std::string>& cursor,
@@ -338,12 +336,14 @@ Task<void> Client::cancel(const RequestId& request_id, const std::optional<std::
     if (impl_->modern_version()) {
         // A 2026-07-28 server sends nothing more for a cancelled request, so the caller stops
         // waiting now, and a response that arrives anyway finds no request and is dropped.
-        std::lock_guard lock(impl_->pending_requests_mutex);
+        std::scoped_lock lock(impl_->pending_requests_mutex);
         const auto iter = impl_->pending_requests.find(request_id.correlation_key());
         if (iter != impl_->pending_requests.end() && !iter->second->completed) {
             iter->second->cancel_write_before_start->store(true, std::memory_order_release);
-            iter->second->error =
-                Error{mcp::constants::jsonrpc::g_REQUEST_CANCELLED, "Request cancelled"};
+            iter->second->error = Error{
+                .code = mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                .message = "Request cancelled",
+            };
             iter->second->completed = true;
             Impl::signal_pending_request(*iter->second);
         }
@@ -355,7 +355,7 @@ Task<void> Client::cancel(const RequestId& request_id, const std::optional<std::
 }
 
 void Client::on_notification(const std::string& method, NotificationCallback callback) {
-    std::lock_guard lock(impl_->handlers_mutex);
+    std::scoped_lock lock(impl_->handlers_mutex);
     impl_->notification_handlers[method] = std::move(callback);
 }
 
@@ -378,7 +378,7 @@ void Client::on_progress(ProgressCallback callback) {
 }
 
 void Client::on_request(const std::string& method, RequestHandler handler) {
-    std::lock_guard lock(impl_->handlers_mutex);
+    std::scoped_lock lock(impl_->handlers_mutex);
     impl_->request_handlers[method] = std::move(handler);
 }
 
@@ -408,7 +408,7 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
     auto state = impl_;
     bool should_notify = false;
     {
-        std::lock_guard lock(state->handlers_mutex);
+        std::scoped_lock lock(state->handlers_mutex);
         state->roots = roots;
         if (!state->request_handlers.contains(methods::g_ROOTS_LIST)) {
             std::weak_ptr<Impl> weak_state = state;
@@ -422,7 +422,7 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
 
                     ListRootsResult result;
                     {
-                        std::lock_guard roots_lock(active_state->handlers_mutex);
+                        std::scoped_lock roots_lock(active_state->handlers_mutex);
                         result.roots = active_state->roots;
                     }
                     co_return nlohmann::json(std::move(result));

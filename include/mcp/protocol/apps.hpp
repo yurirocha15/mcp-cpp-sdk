@@ -10,6 +10,7 @@
 #include <mcp/protocol/tools.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -54,7 +55,7 @@ struct ResourceMeta {
 };
 
 /// Who may call a tool that links a view.
-enum class Visibility {
+enum class Visibility : std::uint8_t {
     eModel,  ///< Visible to and callable by the model.
     eApp,    ///< Callable by the view, from the server that serves it.
 };
@@ -98,8 +99,7 @@ MCP_API void from_json(const nlohmann::json& json_obj, ToolMeta& meta);
 /// @return Whether @p uri names a view resource: it starts with `ui://`.
 [[nodiscard]] inline bool is_view_uri(std::string_view uri) {
     return uri.size() > mcp::constants::apps::g_URI_PREFIX.size() &&
-           uri.substr(0, mcp::constants::apps::g_URI_PREFIX.size()) ==
-               mcp::constants::apps::g_URI_PREFIX;
+           uri.starts_with(mcp::constants::apps::g_URI_PREFIX);
 }
 
 /// @return `{"ui": meta}`, the `_meta` object that carries @p meta on a resource or a tool.
@@ -186,8 +186,11 @@ template <typename Meta>
 /// The settings object of the extension on the client side.
 [[nodiscard]] inline nlohmann::json client_settings() {
     return nlohmann::json{
-        {"mimeTypes",
-         nlohmann::json::array({std::string(mcp::constants::apps::g_RESOURCE_MIME_TYPE)})}};
+        {
+            "mimeTypes",
+            nlohmann::json::array({std::string(mcp::constants::apps::g_RESOURCE_MIME_TYPE)}),
+        },
+    };
 }
 
 /// Declares MCP Apps support in @p capabilities, as a host does. Replaces an earlier declaration.

@@ -2,6 +2,8 @@
 /// @brief How Client::Impl connects: the protocol revision it settles on with server/discover or
 /// initialize, and what it then sends with each request.
 
+#include <algorithm>
+
 #include "client_impl.hpp"
 
 namespace mcp {
@@ -88,8 +90,8 @@ std::vector<std::string> Client::Impl::advertised_versions(const Error& error) {
 
 bool Client::Impl::lists_modern_version(const Error& error) {
     const auto versions = advertised_versions(error);
-    return std::any_of(versions.begin(), versions.end(),
-                       [](const std::string& version) { return is_modern_protocol_version(version); });
+    return std::ranges::any_of(
+        versions, [](const std::string& version) { return is_modern_protocol_version(version); });
 }
 
 void Client::Impl::report_era(ProtocolEra era, EraReason reason,
@@ -100,7 +102,7 @@ void Client::Impl::report_era(ProtocolEra era, EraReason reason,
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
     try {
-        options.on_era_decision(EraDecision{era, reason, elapsed});
+        options.on_era_decision(EraDecision{.era = era, .reason = reason, .elapsed = elapsed});
     } catch (...) {
         // Documented: the hook observes; a failure of its own has no listener.
     }
@@ -111,7 +113,7 @@ std::optional<nlohmann::json> Client::Impl::initialize_params(const std::shared_
     InitializeRequest initialize_request;
     initialize_request.protocolVersion = version;
     initialize_request.capabilities = state->effective_capabilities();
-    std::lock_guard lock(state->handlers_mutex);
+    std::scoped_lock lock(state->handlers_mutex);
     initialize_request.clientInfo = state->client_info;
     return nlohmann::json(std::move(initialize_request));
 }
@@ -225,8 +227,7 @@ Task<ConnectResult> Client::Impl::adopt_discover(std::shared_ptr<Impl> state, Pr
         // A server can refuse a request whose version it lists, for instance when the
         // request is otherwise unacceptable; naming the version as unsupported would then
         // contradict the list.
-        const bool listed_by_server =
-            std::find(advertised.begin(), advertised.end(), version) != advertised.end();
+        const bool listed_by_server = std::ranges::find(advertised, version) != advertised.end();
         if (listed_by_server) {
             throw McpError(mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
                            "The server refused protocol version " + version +
@@ -263,7 +264,7 @@ bool Client::Impl::refuses_listed_version(const ProbeOutcome& outcome, const std
         return false;
     }
     const auto advertised = advertised_versions(*outcome.error);
-    return std::find(advertised.begin(), advertised.end(), version) != advertised.end();
+    return std::ranges::find(advertised, version) != advertised.end();
 }
 
 Task<ConnectResult> Client::Impl::connect_pinned_modern(std::shared_ptr<Impl> state,
@@ -372,12 +373,14 @@ Task<ConnectResult> Client::Impl::connect_session(std::shared_ptr<Impl> state) {
 }
 
 void Client::Impl::fail_probe(const std::shared_ptr<Impl>& state) {
-    std::lock_guard lock(state->pending_requests_mutex);
+    std::scoped_lock lock(state->pending_requests_mutex);
     for (auto& [id, pending_request] : state->pending_requests) {
         static_cast<void>(id);
         if (pending_request->probe && !pending_request->completed) {
-            pending_request->error = Error{mcp::constants::jsonrpc::g_PARSE_ERROR,
-                                           "Reply to server/discover is not JSON-RPC"};
+            pending_request->error = Error{
+                .code = mcp::constants::jsonrpc::g_PARSE_ERROR,
+                .message = "Reply to server/discover is not JSON-RPC",
+            };
             pending_request->completed = true;
             signal_pending_request(*pending_request);
         }
@@ -385,17 +388,17 @@ void Client::Impl::fail_probe(const std::shared_ptr<Impl>& state) {
 }
 
 void Client::Impl::become_modern(const std::string& version) {
-    std::lock_guard lock(era_mutex);
+    std::scoped_lock lock(era_mutex);
     modern_protocol_version = version;
 }
 
 std::optional<std::string> Client::Impl::modern_version() const {
-    std::lock_guard lock(era_mutex);
+    std::scoped_lock lock(era_mutex);
     return modern_protocol_version;
 }
 
 ClientCapabilities Client::Impl::effective_capabilities() const {
-    std::lock_guard lock(handlers_mutex);
+    std::scoped_lock lock(handlers_mutex);
     auto capabilities = client_capabilities;
     if (request_handlers.contains(methods::g_ROOTS_LIST) && !capabilities.roots) {
         capabilities.roots = ClientCapabilities::RootsCapability{};
@@ -404,8 +407,10 @@ ClientCapabilities Client::Impl::effective_capabilities() const {
         capabilities.sampling = ClientCapabilities::SamplingCapability{};
     }
     if (request_handlers.contains(methods::g_ELICITATION_CREATE) && !capabilities.elicitation) {
-        capabilities.elicitation =
-            ClientCapabilities::ElicitationCapability{nlohmann::json::object(), std::nullopt};
+        capabilities.elicitation = ClientCapabilities::ElicitationCapability{
+            .form = nlohmann::json::object(),
+            .url = std::nullopt,
+        };
     }
     return capabilities;
 }

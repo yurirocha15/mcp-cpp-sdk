@@ -1,4 +1,5 @@
 #include "mcp/protocol/protocol.hpp"
+#include "mcp/protocol/apps.hpp"
 #include "mcp/protocol/base.hpp"
 #include "mcp/protocol/capabilities.hpp"
 #include "mcp/protocol/completion.hpp"
@@ -19,6 +20,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <initializer_list>
 #include <mcp/core/constants.hpp>
 #include <string>
 #include <string_view>
@@ -243,6 +245,110 @@ TEST(ProtocolTest, MixedContentBlockSerialization) {
     EXPECT_EQ(std::get<mcp::ImageContent>(deserialized.content[1]).mimeType, "image/jpeg");
 }
 
+// Audio, resource links and embedded text and blob resources come back as the same block with
+// every field, optional ones included.
+TEST(ProtocolTest, AudioResourceLinkAndEmbeddedResourceBlocksRoundTrip) {
+    mcp::ResourceLink link;
+    link.uri = "file:///reports/q3.pdf";
+    link.name = "q3";
+    link.description = "Third quarter report";
+    link.mimeType = "application/pdf";
+    link.size = 52'428'800;
+    link.meta = json{{"origin", "archive"}};
+    link.annotations = mcp::Annotations{std::nullopt, "2026-10-01T00:00:00Z", 0.5};
+    link.title = "Q3 report";
+    link.icons = std::vector<mcp::Icon>{mcp::Icon{"https://example.com/pdf.png", "image/png"}};
+
+    mcp::EmbeddedResource text_resource;
+    text_resource.resource = mcp::TextResourceContents{"file:///notes.md", "# Notes", "text/markdown"};
+    text_resource.meta = json{{"revision", 3}};
+    text_resource.annotations = mcp::Annotations{std::nullopt, std::nullopt, 1.0};
+
+    mcp::EmbeddedResource blob_resource;
+    blob_resource.resource = mcp::BlobResourceContents{"file:///logo.png", "iVBORw0KGgo=", "image/png"};
+
+    mcp::CallToolResult result;
+    result.content.emplace_back(mcp::AudioContent{.data = "UklGRg==", .mimeType = "audio/wav"});
+    result.content.emplace_back(link);
+    result.content.emplace_back(text_resource);
+    result.content.emplace_back(blob_resource);
+
+    const json wire = result;
+    ASSERT_EQ(wire.at("content").size(), 4U);
+    EXPECT_EQ(wire["content"][0],
+              (json{{"type", "audio"}, {"data", "UklGRg=="}, {"mimeType", "audio/wav"}}));
+    EXPECT_EQ(wire["content"][1]["type"], "resource_link");
+    EXPECT_EQ(wire["content"][1]["size"], 52'428'800);
+    EXPECT_EQ(wire["content"][1]["_meta"], (json{{"origin", "archive"}}));
+    EXPECT_EQ(wire["content"][2]["type"], "resource");
+    EXPECT_EQ(wire["content"][2]["resource"]["text"], "# Notes");
+    EXPECT_EQ(wire["content"][2]["_meta"], (json{{"revision", 3}}));
+    EXPECT_EQ(wire["content"][3]["resource"]["blob"], "iVBORw0KGgo=");
+    EXPECT_FALSE(wire["content"][3].contains("_meta"));
+    EXPECT_FALSE(wire["content"][3].contains("annotations"));
+
+    const auto decoded = wire.get<mcp::CallToolResult>();
+    ASSERT_EQ(decoded.content.size(), 4U);
+
+    const auto& audio = std::get<mcp::AudioContent>(decoded.content[0]);
+    EXPECT_EQ(audio.data, "UklGRg==");
+    EXPECT_EQ(audio.mimeType, "audio/wav");
+
+    const auto& decoded_link = std::get<mcp::ResourceLink>(decoded.content[1]);
+    EXPECT_EQ(decoded_link.uri, link.uri);
+    EXPECT_EQ(decoded_link.name, link.name);
+    EXPECT_EQ(decoded_link.description, link.description);
+    EXPECT_EQ(decoded_link.mimeType, link.mimeType);
+    EXPECT_EQ(decoded_link.size, link.size);
+    EXPECT_EQ(decoded_link.meta, link.meta);
+    ASSERT_TRUE(decoded_link.annotations.has_value());
+    EXPECT_EQ(decoded_link.annotations->lastModified, "2026-10-01T00:00:00Z");
+    EXPECT_EQ(decoded_link.annotations->priority, 0.5);
+    EXPECT_EQ(decoded_link.title, link.title);
+    ASSERT_TRUE(decoded_link.icons.has_value());
+    ASSERT_EQ(decoded_link.icons->size(), 1U);
+    EXPECT_EQ(decoded_link.icons->front().source, "https://example.com/pdf.png");
+    EXPECT_EQ(decoded_link.icons->front().mimeType, "image/png");
+
+    const auto& decoded_text = std::get<mcp::EmbeddedResource>(decoded.content[2]);
+    const auto& text_contents = std::get<mcp::TextResourceContents>(decoded_text.resource);
+    EXPECT_EQ(text_contents.uri, "file:///notes.md");
+    EXPECT_EQ(text_contents.text, "# Notes");
+    EXPECT_EQ(text_contents.mimeType, "text/markdown");
+    EXPECT_EQ(decoded_text.meta, (json{{"revision", 3}}));
+    ASSERT_TRUE(decoded_text.annotations.has_value());
+    EXPECT_EQ(decoded_text.annotations->priority, 1.0);
+
+    const auto& decoded_blob = std::get<mcp::EmbeddedResource>(decoded.content[3]);
+    const auto& blob_contents = std::get<mcp::BlobResourceContents>(decoded_blob.resource);
+    EXPECT_EQ(blob_contents.blob, "iVBORw0KGgo=");
+    EXPECT_EQ(blob_contents.mimeType, "image/png");
+    EXPECT_FALSE(decoded_blob.meta.has_value());
+    EXPECT_FALSE(decoded_blob.annotations.has_value());
+}
+
+// A content block is decoded by its type, so one whose type is unknown, whose members do not fit
+// its type, or whose embedded resource is neither text nor a blob is refused rather than read as
+// something else.
+TEST(ProtocolTest, ContentBlocksThatDoNotFitTheirTypeAreRefused) {
+    EXPECT_THROW(static_cast<void>(json{{"type", "video"}, {"data", "AAAA"}}.get<mcp::ContentBlock>()),
+                 std::invalid_argument);
+    EXPECT_THROW(
+        static_cast<void>(
+            json{{"type", "resource"}, {"resource", {{"uri", "file:///x"}}}}.get<mcp::ContentBlock>()),
+        std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(json{{"type", "audio"}, {"data", "AAAA"}}.get<mcp::ContentBlock>()),
+                 nlohmann::json::exception);
+    EXPECT_THROW(
+        static_cast<void>(
+            json{{"type", "resource"}, {"uri", "file:///x"}, {"name", "x"}}.get<mcp::ResourceLink>()),
+        std::invalid_argument);
+    EXPECT_THROW(static_cast<void>(json{{"type", "resource_link"},
+                                        {"resource", {{"uri", "file:///x"}, {"text", "t"}}}}
+                                       .get<mcp::EmbeddedResource>()),
+                 std::invalid_argument);
+}
+
 TEST(ProtocolTest, ToolSerialization) {
     mcp::Tool tool;
     tool.name = "test-tool";
@@ -415,6 +521,16 @@ TEST(ProtocolTest, CompletionSerialization) {
     mcp::CompleteReference deserialized_ref = json_ref.get<mcp::CompleteReference>();
     EXPECT_EQ(std::get<mcp::PromptReference>(deserialized_ref).type, "ref/prompt");
     EXPECT_EQ(std::get<mcp::PromptReference>(deserialized_ref).name, "my_prompt");
+
+    const auto resource_ref =
+        json::parse(R"({"type":"ref/resource","uri":"file:///{path}"})").get<mcp::CompleteReference>();
+    ASSERT_TRUE(std::holds_alternative<mcp::ResourceTemplateReference>(resource_ref));
+    EXPECT_EQ(std::get<mcp::ResourceTemplateReference>(resource_ref).uri, "file:///{path}");
+    // The reference is one of the two the specification defines.
+    EXPECT_THROW(
+        static_cast<void>(
+            json::parse(R"({"type":"ref/tool","uri":"file:///{path}"})").get<mcp::CompleteReference>()),
+        std::invalid_argument);
 
     // Test CompleteParams
     mcp::CompleteParams params;
@@ -2251,6 +2367,36 @@ TEST(ProtocolTest, ResourceTemplateDecodesExplicitNullOptionals) {
     EXPECT_FALSE(tmpl.icons.has_value());
 }
 
+// Every optional member of a resource template is read from, and written back under, its wire
+// name.
+TEST(ProtocolTest, ResourceTemplateRoundTripsEveryMember) {
+    const json wire = {{"uriTemplate", "file:///{path}"},
+                       {"name", "files"},
+                       {"title", "Project files"},
+                       {"description", "Files of the project"},
+                       {"mimeType", "text/plain"},
+                       {"icons", json::array({{{"src", "https://example.com/files.png"},
+                                               {"mimeType", "image/png"},
+                                               {"sizes", json::array({"48x48"})},
+                                               {"theme", "dark"}}})},
+                       {"annotations",
+                        {{"audience", json::array({"user", "assistant"})},
+                         {"lastModified", "2026-01-02T03:04:05Z"},
+                         {"priority", 0.5}}},
+                       {"_meta", {{"example.com/owner", "docs"}}}};
+
+    const auto tmpl = wire.get<mcp::ResourceTemplate>();
+    EXPECT_EQ(tmpl.title, "Project files");
+    ASSERT_TRUE(tmpl.icons.has_value());
+    ASSERT_EQ(tmpl.icons->size(), 1U);
+    EXPECT_EQ(tmpl.icons->front().source, "https://example.com/files.png");
+    ASSERT_TRUE(tmpl.annotations.has_value());
+    EXPECT_EQ(tmpl.annotations->priority, 0.5);
+    ASSERT_TRUE(tmpl.meta.has_value());
+    EXPECT_EQ(tmpl.meta->at("example.com/owner"), "docs");
+    EXPECT_EQ(json(tmpl), wire);
+}
+
 TEST(ProtocolTest, ToolDecodesExplicitNullOptionals) {
     json tool_json = {{"name", "add"},          {"inputSchema", {{"type", "object"}}},
                       {"description", nullptr}, {"title", nullptr},
@@ -2457,6 +2603,97 @@ TEST(ProtocolTest, CallToolParamsStillRejectsNonObjectArguments) {
     // representable and a null there can only be malformed. This must NOT become acceptance.
     EXPECT_THROW((void)(json{{"name", "add"}, {"arguments", nullptr}}).get<mcp::CallToolParams>(),
                  std::invalid_argument);
+}
+
+namespace {
+
+/// Decodes @p control with each of @p members set to null, and checks that the result writes back
+/// as the control's does, so each null member read as absent.
+template <typename T>
+void expect_null_members_read_as_absent(const json& control,
+                                        std::initializer_list<const char*> members) {
+    json with_nulls = control;
+    for (const char* member : members) {
+        with_nulls[member] = nullptr;
+    }
+    SCOPED_TRACE(with_nulls.dump());
+    T decoded{};
+    ASSERT_NO_THROW(decoded = with_nulls.get<T>());
+    EXPECT_EQ(json(decoded), json(control.get<T>()));
+}
+
+}  // namespace
+
+// A peer that writes an absent optional member as null means what one that leaves it out means.
+// The member reads as absent and is not written back, whether it holds an object, a string or a
+// capability: a server that sends "tools": null has not declared tools.
+TEST(ProtocolTest, NullOptionalMembersReadAsAbsentInEveryMessage) {
+    const json text = {{"type", "text"}, {"text", "hi"}};
+    expect_null_members_read_as_absent<mcp::PaginatedRequestParams>(json::object(), {"_meta"});
+    expect_null_members_read_as_absent<mcp::CompleteParams>(
+        {{"ref", {{"type", "ref/prompt"}, {"name", "p"}}},
+         {"argument", {{"name", "a"}, {"value", "v"}}}},
+        {"context", "_meta"});
+    expect_null_members_read_as_absent<mcp::CompleteResult>(
+        {{"completion", {{"values", json::array()}}}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ResourceLink>(
+        {{"type", "resource_link"}, {"uri", "file:///a"}, {"name", "a"}}, {"_meta", "annotations"});
+    expect_null_members_read_as_absent<mcp::EmbeddedResource>(
+        {{"type", "resource"}, {"resource", {{"uri", "file:///a"}, {"text", "t"}}}},
+        {"_meta", "annotations"});
+    expect_null_members_read_as_absent<mcp::ToolUseContent>(
+        {{"type", "tool_use"}, {"id", "use-1"}, {"name", "lookup"}, {"input", json::object()}},
+        {"_meta"});
+    expect_null_members_read_as_absent<mcp::ElicitRequestURLParams>(
+        {{"mode", "url"}, {"message", "Sign in"}, {"url", "https://example.com/login"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ElicitRequestFormParams>(
+        {{"mode", "form"},
+         {"message", "Name?"},
+         {"requestedSchema", {{"type", "object"}, {"properties", json::object()}}}},
+        {"_meta"});
+    expect_null_members_read_as_absent<mcp::ElicitResult>({{"action", "decline"}},
+                                                          {"content", "_meta"});
+    expect_null_members_read_as_absent<mcp::ListResourcesRequest>({{"method", "resources/list"}},
+                                                                  {"params"});
+    expect_null_members_read_as_absent<mcp::ListResourcesResult>({{"resources", json::array()}},
+                                                                 {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListResourceTemplatesRequest>(
+        {{"method", "resources/templates/list"}}, {"params"});
+    expect_null_members_read_as_absent<mcp::ListResourceTemplatesResult>(
+        {{"resourceTemplates", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::Prompt>({{"name", "p"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::GetPromptRequestParams>({{"name", "p"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::GetPromptResult>({{"messages", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListPromptsRequest>({{"method", "prompts/list"}},
+                                                                {"params"});
+    expect_null_members_read_as_absent<mcp::ListPromptsResult>({{"prompts", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListToolsRequest>({{"method", "tools/list"}}, {"params"});
+    expect_null_members_read_as_absent<mcp::ListToolsResult>({{"tools", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::Root>({{"uri", "file:///r"}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::ListRootsResult>({{"roots", json::array()}}, {"_meta"});
+    expect_null_members_read_as_absent<mcp::SamplingMessage>({{"role", "user"}, {"content", text}},
+                                                             {"_meta"});
+    expect_null_members_read_as_absent<mcp::CreateMessageRequestParams>(
+        {{"messages", json::array()}, {"maxTokens", 1}},
+        {"modelPreferences", "toolChoice", "metadata", "_meta"});
+    expect_null_members_read_as_absent<mcp::CreateMessageResult>(
+        {{"role", "assistant"}, {"content", text}, {"model", "m"}}, {"stopReason", "_meta"});
+    expect_null_members_read_as_absent<mcp::ClientCapabilities>(
+        json::object(), {"elicitation", "experimental", "roots", "sampling"});
+    expect_null_members_read_as_absent<mcp::ClientCapabilities::ElicitationCapability>(json::object(),
+                                                                                       {"form", "url"});
+    expect_null_members_read_as_absent<mcp::ClientCapabilities::SamplingCapability>(
+        json::object(), {"context", "tools"});
+    expect_null_members_read_as_absent<mcp::ServerCapabilities>(
+        json::object(), {"completions", "experimental", "logging", "prompts", "resources", "tools"});
+    expect_null_members_read_as_absent<mcp::InitializeResult>(
+        {{"protocolVersion", "2025-11-25"},
+         {"capabilities", json::object()},
+         {"serverInfo", {{"name", "s"}, {"version", "1"}}}},
+        {"instructions"});
+    expect_null_members_read_as_absent<mcp::DiscoverRequest>(json::object(), {"_meta"});
+    expect_null_members_read_as_absent<mcp::apps::ResourcePermissions>(
+        json::object(), {"camera", "microphone", "geolocation", "clipboardWrite"});
 }
 
 TEST(PeerJsonTest, CountsNestingOutsideStringsOnly) {
@@ -2933,6 +3170,83 @@ TEST(ProtocolReuse, ReadingIntoAUsedValueMatchesAFreshRead) {
         {{"completion", {{"values", json::array({"a"})}, {"total", 1}, {"hasMore", false}}},
          {"_meta", meta}},
         {{"completion", {{"values", json::array({"a"})}}}});
+}
+
+namespace {
+
+/// Checks that @p value is written as @p expected and that reading @p expected back writes it again.
+template <typename T>
+void expect_written_as(const T& value, const char* expected_text) {
+    const auto expected = json::parse(expected_text);
+    EXPECT_EQ(json(value), expected);
+    EXPECT_EQ(json(expected.get<T>()), expected);
+}
+
+}  // namespace
+
+// Each optional member is written under its name in the specification's schema, and read back.
+TEST(ProtocolTest, OptionalMembersAreWrittenUnderTheirSchemaNames) {
+    mcp::ListResourcesRequest list_resources;
+    list_resources.params = mcp::ListResourcesRequestParams{.cursor = "page-2"};
+    expect_written_as(list_resources, R"({"method":"resources/list","params":{"cursor":"page-2"}})");
+    list_resources.params = mcp::ListResourcesRequestParams{};
+    expect_written_as(list_resources, R"({"method":"resources/list","params":{}})");
+
+    mcp::ListResourceTemplatesRequest list_templates;
+    list_templates.params = mcp::ListResourceTemplatesRequestParams{.cursor = "page-3"};
+    expect_written_as(list_templates,
+                      R"({"method":"resources/templates/list","params":{"cursor":"page-3"}})");
+
+    expect_written_as(mcp::PaginatedRequestParams{.cursor = "c", .meta = json{{"trace", "t1"}}},
+                      R"({"cursor":"c","_meta":{"trace":"t1"}})");
+
+    mcp::SamplingMessage message;
+    message.role = mcp::Role::eUser;
+    message.content = mcp::SamplingMessageContentBlock{mcp::TextContent{.text = "Hi"}};
+    message.meta = json{{"turn", 1}};
+    mcp::CreateMessageRequestParams sampling;
+    sampling.messages = {message};
+    sampling.maxTokens = 64;
+    sampling.modelPreferences = mcp::ModelPreferences{
+        .hints = std::vector<mcp::ModelHint>{{.name = "small"}}, .speedPriority = 1.0};
+    sampling.toolChoice = mcp::ToolChoice{.mode = "required"};
+    sampling.metadata = json{{"provider", "x"}};
+    sampling.meta = json{{"trace", "t2"}};
+    expect_written_as(sampling, R"({"messages":[{"role":"user","content":{"type":"text","text":"Hi"},
+        "_meta":{"turn":1}}],"maxTokens":64,"modelPreferences":{"hints":[{"name":"small"}],
+        "speedPriority":1.0},"toolChoice":{"mode":"required"},"metadata":{"provider":"x"},
+        "_meta":{"trace":"t2"}})");
+
+    mcp::ElicitRequestFormParams form;
+    form.message = "Name?";
+    form.requestedSchema = json::parse(R"({"type":"object","properties":{}})");
+    form.meta = json{{"trace", "t3"}};
+    expect_written_as(form, R"({"mode":"form","message":"Name?",
+        "requestedSchema":{"type":"object","properties":{}},"_meta":{"trace":"t3"}})");
+
+    expect_written_as(mcp::BlobResourceContents{"file:///a.bin", "AAE=", "application/octet-stream",
+                                                json{{"origin", "disk"}}},
+                      R"({"uri":"file:///a.bin","blob":"AAE=","mimeType":"application/octet-stream",
+                          "_meta":{"origin":"disk"}})");
+
+    mcp::ToolResultContent tool_result;
+    tool_result.toolUseId = "call-1";
+    tool_result.content = json::array();
+    tool_result.structuredContent = json{{"temperature", 21}};
+    tool_result.meta = json{{"trace", "t4"}};
+    expect_written_as(tool_result, R"({"type":"tool_result","toolUseId":"call-1","content":[],
+        "structuredContent":{"temperature":21},"_meta":{"trace":"t4"}})");
+
+    expect_written_as(mcp::ToolAnnotations{.destructiveHint = false,
+                                           .idempotentHint = true,
+                                           .openWorldHint = false,
+                                           .readOnlyHint = true,
+                                           .title = "T"},
+                      R"({"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,
+                          "readOnlyHint":true,"title":"T"})");
+
+    expect_written_as(mcp::Root{.uri = "file:///repo", .name = "repo", .meta = json{{"vcs", "git"}}},
+                      R"({"uri":"file:///repo","name":"repo","_meta":{"vcs":"git"}})");
 }
 
 }  // namespace protocol_test

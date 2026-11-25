@@ -9,7 +9,7 @@ OutputCheck Client::Impl::output_check_for(std::string_view name) const {
     if (!options.validate_tool_schemas) {
         return {};
     }
-    std::lock_guard lock(listed_tools_mutex);
+    std::scoped_lock lock(listed_tools_mutex);
     const auto found = listed_tools.find(name);
     if (found == listed_tools.end()) {
         return {};
@@ -18,17 +18,20 @@ OutputCheck Client::Impl::output_check_for(std::string_view name) const {
     // unchecked. Any other problem means the server declared a schema no client can use.
     const auto& problem = found->second.output_problem;
     if (problem && problem->category() != SchemaError::Category::eUnsupportedPattern) {
-        return {std::nullopt, problem};
+        return {.schema = std::nullopt, .refusal = problem};
     }
-    return {found->second.output_schema, std::nullopt};
+    return {.schema = found->second.output_schema, .refusal = std::nullopt};
 }
 
 std::optional<SchemaError> Client::Impl::remember_tool(const Tool& tool) {
     ListedTool listed{
-        tool.outputSchema ? std::optional<std::string>(tool.outputSchema->dump()) : std::nullopt,
-        std::nullopt, std::nullopt};
+        .output_text =
+            tool.outputSchema ? std::optional<std::string>(tool.outputSchema->dump()) : std::nullopt,
+        .output_schema = std::nullopt,
+        .output_problem = std::nullopt,
+    };
     {
-        std::lock_guard lock(listed_tools_mutex);
+        std::scoped_lock lock(listed_tools_mutex);
         const auto found = listed_tools.find(tool.name);
         if (found != listed_tools.end() && found->second.output_text == listed.output_text) {
             return found->second.output_problem;
@@ -43,7 +46,7 @@ std::optional<SchemaError> Client::Impl::remember_tool(const Tool& tool) {
             SchemaError(error.category(), std::string("outputSchema: ") + error.what());
     }
     auto problem = listed.output_problem;
-    std::lock_guard lock(listed_tools_mutex);
+    std::scoped_lock lock(listed_tools_mutex);
     listed_tools.insert_or_assign(tool.name, std::move(listed));
     return problem;
 }

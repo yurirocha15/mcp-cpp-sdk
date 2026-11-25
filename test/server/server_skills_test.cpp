@@ -105,12 +105,15 @@ TEST(SkillsWireTest, EntriesParseAndRoundTrip) {
              "digest": "sha256:ae7bc7e45f44a6381977ef1f772cbad6e38d8ec78903ea7b87abb373815a8f89", "size": 175},
             {"uri": "skill://acme/billing/refunds/examples/email.md",
              "digest": "sha256:a724fa5ed3b9e39c0e731fe1f0e866eb46d23969af25ecf0d5f41982e3e36bea", "size": 58}
-        ]
+        ],
+        "_meta": {"io.modelcontextprotocol.skills/owner": "billing"}
     })");
     const auto skill = wire.get<mcp::Skill>();
     EXPECT_FALSE(skill.dynamic);
     EXPECT_EQ(skill.resources.size(), 2U);
     EXPECT_EQ(skill.frontmatter["license"], "Apache-2.0");
+    ASSERT_TRUE(skill.meta.has_value());
+    EXPECT_EQ(*skill.meta, json::parse(R"({"io.modelcontextprotocol.skills/owner":"billing"})"));
     EXPECT_EQ(json(skill), wire);
     EXPECT_TRUE(skills::validate_skill(skill).empty());
 }
@@ -174,6 +177,13 @@ TEST(SkillsValidationTest, ReportsEachRuleTheExtensionPutsOnAnEntry) {
         unsafe.resources.push_back({"skill://acme/refunds/" + tail, digest, 1});
         EXPECT_FALSE(skills::validate_skill(unsafe).empty()) << tail;
     }
+    // Segments that only resemble dot segments are ordinary file names.
+    for (const std::string tail :
+         std::vector<std::string>{".hidden", "..x", "x..", "%2ex", "a/%2", "%2f", "v1.2/notes.md"}) {
+        auto ordinary = entry();
+        ordinary.resources.push_back({"skill://acme/refunds/" + tail, digest, 1});
+        EXPECT_TRUE(skills::validate_skill(ordinary).empty()) << tail;
+    }
 
     auto duplicated = entry();
     duplicated.resources.push_back(duplicated.resources.front());
@@ -198,12 +208,67 @@ TEST(SkillsValidationTest, ReportsEachRuleTheExtensionPutsOnAnEntry) {
     EXPECT_FALSE(skills::validate_skill(not_skill_file).empty());
 }
 
+// Each rule is reported in its own words, so a server author can tell which one an entry breaks.
+// The entries below break one rule each and otherwise follow every rule, including the name's
+// match with the last path segment.
+TEST(SkillsValidationTest, NamesTheRuleAnEntryBreaks) {
+    const auto digest = skills::sha256_digest("x");
+    const auto entry = [&digest](const std::string& name) {
+        mcp::Skill skill;
+        skill.uri = "skill://acme/" + name + "/SKILL.md";
+        skill.frontmatter = {{"name", name}, {"description", "d"}};
+        skill.resources = {{skill.uri, digest, 1}};
+        return skill;
+    };
+    const auto problems_of = [](const mcp::Skill& skill) {
+        std::string joined;
+        for (const auto& problem : skills::validate_skill(skill)) {
+            joined += problem + "\n";
+        }
+        return joined;
+    };
+
+    EXPECT_EQ(problems_of(entry("refunds")), "");
+    for (const auto& name : std::vector<std::string>{"Refunds", "-refunds", "refunds-", "re--funds",
+                                                     "re_funds", std::string(65, 'a')}) {
+        SCOPED_TRACE(name);
+        const auto problems = problems_of(entry(name));
+        EXPECT_NE(problems.find("is not a valid skill name"), std::string::npos) << problems;
+    }
+    EXPECT_EQ(problems_of(entry(std::string(64, 'a'))), "");
+
+    auto no_description = entry("refunds");
+    no_description.frontmatter["description"] = "";
+    auto long_description = entry("refunds");
+    long_description.frontmatter["description"] = std::string(1025, 'd');
+    for (const auto& skill : {no_description, long_description}) {
+        const auto problems = problems_of(skill);
+        EXPECT_NE(problems.find("description must be 1 to 1024 characters"), std::string::npos)
+            << problems;
+    }
+    auto longest_description = entry("refunds");
+    longest_description.frontmatter["description"] = std::string(1024, 'd');
+    EXPECT_EQ(problems_of(longest_description), "");
+
+    auto negative_size = entry("refunds");
+    negative_size.resources.push_back({"skill://acme/refunds/ref.md", digest, -1});
+    EXPECT_NE(problems_of(negative_size).find("size of skill://acme/refunds/ref.md is negative"),
+              std::string::npos)
+        << problems_of(negative_size);
+
+    auto empty_path = entry("refunds");
+    empty_path.resources.push_back({"skill://acme/refunds/", digest, 1});
+    EXPECT_NE(problems_of(empty_path).find("path is empty"), std::string::npos)
+        << problems_of(empty_path);
+}
+
 TEST(SkillsCapabilityTest, SettingsAndDetection) {
     EXPECT_EQ(skills::server_settings(false), json::object());
     EXPECT_EQ(skills::server_settings(true), (json{{"directoryRead", true}}));
 
     mcp::ServerCapabilities capabilities;
     EXPECT_FALSE(skills::supports_skills(capabilities));
+    EXPECT_FALSE(skills::supports_directory_read(capabilities));
     capabilities.extensions =
         std::map<std::string, json>{{"io.modelcontextprotocol/skills", json::object()}};
     EXPECT_TRUE(skills::supports_skills(capabilities));

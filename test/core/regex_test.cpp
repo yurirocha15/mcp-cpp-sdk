@@ -99,12 +99,18 @@ TEST(Regex, DotMatchesOneCodePointExceptLineTerminators) {
     EXPECT_FALSE(matches("^.$", "\n"));
     EXPECT_FALSE(matches("^.$", "\r"));
     EXPECT_FALSE(matches("^.$", "\xe2\x80\xa8"));  // LINE SEPARATOR
+    EXPECT_FALSE(matches("^.$", "\xe2\x80\xa9"));  // PARAGRAPH SEPARATOR
     EXPECT_TRUE(matches("^.$", "\xf0\x9f\x98\x80"));
     EXPECT_FALSE(matches("^..$", "\xf0\x9f\x98\x80"));
 }
 
 TEST(Regex, Escapes) {
     EXPECT_TRUE(matches("^\\x41$", "A"));
+    EXPECT_TRUE(matches("^\\x4a\\x4A$", "JJ"));
+    EXPECT_TRUE(matches("^\\u00e9$", "\xc3\xa9"));
+    // Leading zeros in \u{} are allowed; the value, not the digit count, is limited.
+    EXPECT_TRUE(matches("^\\u{0000041}$", "A"));
+    EXPECT_TRUE(matches("^\\u{00010FFFF}$", "\xf4\x8f\xbf\xbf"));
     EXPECT_TRUE(matches("^[\\u0041-\\u005A]+$", "ABC"));
     EXPECT_TRUE(matches("^\\u{1F600}$", "\xf0\x9f\x98\x80"));
     EXPECT_TRUE(matches("^\\uD83D\\uDE00$", "\xf0\x9f\x98\x80"));
@@ -113,17 +119,37 @@ TEST(Regex, Escapes) {
     EXPECT_TRUE(matches("^\\t\\n\\v\\f\\r$", "\t\n\v\f\r"));
     EXPECT_TRUE(matches("^\\/\\.\\*\\?\\+\\(\\)\\[\\]\\{\\}\\|\\^\\$\\\\$", "/.*?+()[]{}|^$\\"));
     EXPECT_TRUE(matches(std::string("^\\0$").c_str(), std::string(1, '\0')));
+    // An escaped '-' is a literal, inside a class and out.
+    EXPECT_TRUE(matches("^a\\-b$", "a-b"));
+    EXPECT_TRUE(matches("^[\\-x]+$", "-x-"));
+    EXPECT_FALSE(matches("^[\\-x]+$", "w"));
+    // A '-' at either end of a class is a literal.
+    EXPECT_TRUE(matches("^[a-]+$", "a-a"));
+    EXPECT_TRUE(matches("^[-a]+$", "-a-"));
+    EXPECT_FALSE(matches("^[a-]$", "b"));
+    // A high surrogate joins only a low surrogate that follows it; any other \u escape after it
+    // stands alone, so the class below holds the surrogate and 'A' as two members.
+    EXPECT_TRUE(matches("^[\\uD83D\\u0041]$", "A"));
+    EXPECT_FALSE(matches("^\\uD83D\\u0041$",
+                         "\xf0\x9f\x98\x80"
+                         "A"));
 }
 
 TEST(Regex, Groups) {
     EXPECT_TRUE(matches("^(?:a|b)c$", "bc"));
     EXPECT_TRUE(matches("^(?<name>a)b$", "ab"));
+    EXPECT_TRUE(matches("^(?<$a_1$>x)$", "x"));
     EXPECT_TRUE(matches("^((a))$", "a"));
 }
 
 TEST(Regex, InvalidUtf8InputReadsAsReplacementCharacter) {
     EXPECT_TRUE(matches("^.$", "\xff"));
     EXPECT_TRUE(matches("^\\uFFFD$", "\xc3"));
+    // A lead byte followed by a byte that does not continue it reads as one replacement
+    // character, and the byte after it is read on its own.
+    EXPECT_TRUE(matches("^\\uFFFD\\($",
+                        "\xc3"
+                        "("));
     EXPECT_TRUE(matches("^a.b$",
                         "a\xed\xa0\x80"
                         "b") == false);  // three replacement characters
@@ -156,8 +182,8 @@ TEST(Regex, RejectsMalformedPatterns) {
          {"*a", "a**", "+", "?", "^*", "\\b+", "{1}", "(a", "a)", "[a", "[z-a]", "a{3,2}", "\\"}) {
         EXPECT_EQ(refusal(pattern), RegexError::Kind::eInvalid) << pattern;
     }
-    for (const char* pattern :
-         {"\\q", "(?x)", "(?<>a)", "\\xZ1", "\\u12", "\\u{}", "\\u{110000}", "\\c1"}) {
+    for (const char* pattern : {"\\q", "(?x)", "(?<>a)", "\\xZ1", "\\u12", "\\u{}", "\\u{110000}",
+                                "\\u{41", "\\u{4G}", "\\u{0000110000}", "\\c1", "(?<a"}) {
         EXPECT_EQ(refusal(pattern), RegexError::Kind::eUnsupported) << pattern;
     }
 }

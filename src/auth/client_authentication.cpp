@@ -1,4 +1,5 @@
 #include <mcp/auth/client_authentication.hpp>
+#include <string_view>
 
 #include <openssl/bio.h>
 #include <openssl/bn.h>
@@ -46,16 +47,18 @@ KeyPtr load_private_key(const std::string& pem) {
 }
 
 bool is_p256(EVP_PKEY* key) {
-    std::array<char, 32> group{};
+    constexpr std::string_view p256 = "prime256v1";
+    // Room for P-256's name and a terminating null: a longer name does not fit, and is not P-256's.
+    std::array<char, p256.size() + 1> group{};
     std::size_t length = 0;
     return EVP_PKEY_get_utf8_string_param(key, OSSL_PKEY_PARAM_GROUP_NAME, group.data(), group.size(),
                                           &length) == 1 &&
-           std::string(group.data(), length) == "prime256v1";
+           std::string_view(group.data(), length) == p256;
 }
 
 /// The algorithms @p key can sign with, most widely accepted first.
 std::vector<std::string> algorithms_for(EVP_PKEY* key) {
-    if (EVP_PKEY_is_a(key, "RSA")) {
+    if (EVP_PKEY_is_a(key, "RSA") != 0) {
         if (EVP_PKEY_bits(key) < mcp::detail::constants::client_authentication::g_MIN_RSA_BITS) {
             throw std::invalid_argument(
                 "The RSA private key must be at least " +
@@ -64,7 +67,7 @@ std::vector<std::string> algorithms_for(EVP_PKEY* key) {
         }
         return {"RS256", "PS256"};
     }
-    if (EVP_PKEY_is_a(key, "EC") && is_p256(key)) {
+    if ((EVP_PKEY_is_a(key, "EC") != 0) && is_p256(key)) {
         return {"ES256"};
     }
     throw std::invalid_argument("The private key must be an RSA key or an EC key on P-256");
@@ -102,14 +105,15 @@ std::string sign(EVP_PKEY* key, const std::string& algorithm, const std::string&
     if (!context || EVP_DigestSignInit(context.get(), &key_context, EVP_sha256(), nullptr, key) != 1) {
         throw std::runtime_error("Could not start signing the client assertion");
     }
-    if (algorithm == "PS256") {
-        // RFC 7518 section 3.5: SHA-256 for the digest and the mask, salt as long as the digest.
-        if (EVP_PKEY_CTX_set_rsa_padding(key_context, RSA_PKCS1_PSS_PADDING) <= 0 ||
-            EVP_PKEY_CTX_set_rsa_pss_saltlen(key_context, RSA_PSS_SALTLEN_DIGEST) <= 0 ||
-            EVP_PKEY_CTX_set_rsa_mgf1_md(key_context, EVP_sha256()) <= 0) {
-            throw std::runtime_error("Could not select PSS padding");
-        }
+    if ((algorithm == "PS256") &&
+        (EVP_PKEY_CTX_set_rsa_padding(key_context, RSA_PKCS1_PSS_PADDING) <= 0 ||
+         EVP_PKEY_CTX_set_rsa_pss_saltlen(key_context, RSA_PSS_SALTLEN_DIGEST) <= 0 ||
+         EVP_PKEY_CTX_set_rsa_mgf1_md(key_context, EVP_sha256()) <= 0))
+    // RFC 7518 section 3.5: SHA-256 for the digest and the mask, salt as long as the digest.
+    {
+        throw std::runtime_error("Could not select PSS padding");
     }
+
     std::size_t length = 0;
     if (EVP_DigestSign(context.get(), nullptr, &length,
                        reinterpret_cast<const unsigned char*>(input.data()), input.size()) != 1) {
@@ -135,7 +139,7 @@ std::string choose_signing_algorithm(const PrivateKeyJwtConfig& config,
     const auto key = load_private_key(config.private_key_pem);
     const auto usable = algorithms_for(key.get());
     if (config.algorithm) {
-        if (std::find(usable.begin(), usable.end(), *config.algorithm) == usable.end()) {
+        if (std::ranges::find(usable, *config.algorithm) == usable.end()) {
             throw std::invalid_argument("The private key cannot sign with " + *config.algorithm);
         }
         return *config.algorithm;
@@ -156,7 +160,7 @@ std::string sign_client_assertion(const PrivateKeyJwtConfig& config, const std::
                                   const std::string& audience, const std::string& algorithm) {
     const auto key = load_private_key(config.private_key_pem);
     const auto usable = algorithms_for(key.get());
-    if (std::find(usable.begin(), usable.end(), algorithm) == usable.end()) {
+    if (std::ranges::find(usable, algorithm) == usable.end()) {
         throw std::invalid_argument("The private key cannot sign with " + algorithm);
     }
 
@@ -173,8 +177,12 @@ std::string sign_client_assertion(const PrivateKeyJwtConfig& config, const std::
         {"aud", config.audience ? *config.audience : audience},
         {"iat", issued_at},
         {"exp", issued_at + config.lifetime.count()},
-        {"jti", mcp::detail::generate_random_string(
-                    mcp::detail::constants::client_authentication::g_JTI_LENGTH)}};
+        {
+            "jti",
+            mcp::detail::generate_random_string(
+                mcp::detail::constants::client_authentication::g_JTI_LENGTH),
+        },
+    };
     const auto signing_input = mcp::detail::base64url_encode(header.dump()) + "." +
                                mcp::detail::base64url_encode(claims.dump());
     return signing_input + "." +
@@ -201,10 +209,8 @@ std::string authenticate_token_request(const ClientAuthentication& credentials,
         }
     } else if (credentials.private_key_jwt && acceptable("private_key_jwt")) {
         method = "private_key_jwt";
-    } else if (credentials.client_secret && lists_nothing) {
+    } else if (credentials.client_secret && (lists_nothing || lists(listed, "client_secret_basic"))) {
         // RFC 8414 section 2: a server that lists nothing accepts client_secret_basic.
-        method = "client_secret_basic";
-    } else if (credentials.client_secret && lists(listed, "client_secret_basic")) {
         method = "client_secret_basic";
     } else if (credentials.client_secret && lists(listed, "client_secret_post")) {
         method = "client_secret_post";

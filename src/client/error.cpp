@@ -19,6 +19,6 @@ McpError::McpError(Error error)
       error_(std::move(error)) {}
 
 McpError::McpError(int code, std::string message, std::optional<nlohmann::json> data)
-    : McpError(Error{code, std::move(message), std::move(data)}) {}
+    : McpError(Error{.code = code, .message = std::move(message), .data = std::move(data)}) {}
 
 }  // namespace mcp

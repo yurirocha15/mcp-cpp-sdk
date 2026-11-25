@@ -59,8 +59,7 @@ Middleware make_auth_middleware(TokenValidator validator) {
 
 std::string extract_bearer_token(std::string_view auth_header_value) {
     constexpr std::string_view prefix = "Bearer ";
-    if (auth_header_value.size() > prefix.size() &&
-        auth_header_value.substr(0, prefix.size()) == prefix) {
+    if (auth_header_value.size() > prefix.size() && auth_header_value.starts_with(prefix)) {
         return std::string(auth_header_value.substr(prefix.size()));
     }
     return {};

@@ -1237,6 +1237,37 @@ TEST_F(ServerHandlersTest, ResourceTemplateRegistrationRejectsDuplicateAndEquiva
     EXPECT_THROW(setup.server.add_resource_template(malformed), std::invalid_argument);
 }
 
+// A URI template is checked when it is registered: an empty template, a '}' without its '{', an
+// expression with no variable, an empty variable anywhere in a list (a comma at either end
+// included) and a variable name outside RFC 6570's varchar set are refused. Variable lists, prefix
+// and explode modifiers and operators are accepted.
+TEST_F(ServerHandlersTest, ResourceTemplateRegistrationChecksTheTemplateSyntax) {
+    mcp::ServerCapabilities caps;
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    int registered = 0;
+    const auto add = [&setup, &registered](const std::string& uri_template) {
+        mcp::ResourceTemplate tmpl;
+        tmpl.uriTemplate = uri_template;
+        tmpl.name = "template_" + std::to_string(++registered);
+        setup.server.add_resource_template(tmpl);
+    };
+
+    for (const std::string refused :
+         {"", "file:///path}", "file:///{}", "file:///{+}", "file:///{,a}", "file:///{a,}",
+          "file:///{a,,b}", "file:///{a-b}", "file:///{a b}", "file:///{:3}"}) {
+        SCOPED_TRACE(refused);
+        EXPECT_THROW(add(refused), std::invalid_argument);
+    }
+    for (const std::string accepted :
+         {"db://{schema}/{table,column}", "logs://{day:10}", "tags://list/{tags*}",
+          "docs://{+path}{?query,page}", "home://{user.name}/{%41}"}) {
+        SCOPED_TRACE(accepted);
+        EXPECT_NO_THROW(add(accepted));
+    }
+}
+
 TEST_F(ServerHandlersTest, AmbiguousResourceTemplateMatchReturnsInvalidParams) {
     mcp::ServerCapabilities caps;
     caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
@@ -1939,6 +1970,64 @@ TEST_F(ServerHandlersTest, ToolsListPagesThroughTheToolsByCursor) {
     EXPECT_EQ(null_cursor["result"]["nextCursor"], "2");
 }
 
+// The server hands out decimal offsets as cursors. A cursor that is not a string, not wholly a
+// decimal number, too large to be an offset, or past the end of the list is one it never issued,
+// and is refused with -32602 instead of being read as some page.
+TEST_F(ServerHandlersTest, ToolsListRefusesCursorsTheServerCannotHaveIssued) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    ServerSetup setup(io_ctx_, std::move(caps));
+    setup.server.set_page_size(2);
+    for (int i = 0; i < 3; ++i) {
+        setup.server.add_tool<AddParams, AddResult>(
+            "tool_" + std::to_string(i), "Tool", nlohmann::json{{"type", "object"}},
+            [](AddParams p) -> AddResult { return AddResult{p.augend + p.addend}; });
+    }
+
+    const std::map<std::string, nlohmann::json> cursors = {{"word", "next"},
+                                                           {"integer", 2},
+                                                           {"empty", ""},
+                                                           {"trailing-letters", "2abc"},
+                                                           {"signed", "+2"},
+                                                           {"negative", "-1"},
+                                                           {"leading-space", " 2"},
+                                                           {"end-of-list", "3"},
+                                                           {"too-large", "99999999999999999999999"}};
+    std::map<std::string, nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&](std::string_view msg) {
+        auto response = nlohmann::json::parse(msg);
+        const auto id = response.at("id").get<std::string>();
+        responses[id] = std::move(response);
+        if (responses.size() == cursors.size() + 1) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("init").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    for (const auto& [id, cursor] : cursors) {
+        setup.raw_transport->enqueue_message(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", id},
+            {"method", "tools/list"},
+            {"params", {{"cursor", cursor}}}}.dump());
+    }
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), cursors.size() + 1);
+    for (const auto& [id, cursor] : cursors) {
+        SCOPED_TRACE(id);
+        const auto& response = responses[id];
+        ASSERT_TRUE(response.contains("error")) << response;
+        EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
+        EXPECT_EQ(response["error"]["message"], "Invalid pagination cursor");
+    }
+}
+
 TEST_F(ServerHandlersTest, ToolsListResultIsTheListToolsResultOfTheRegisteredTools) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
@@ -2262,6 +2351,65 @@ TEST_F(ServerHandlersTest, CompletionReturnsResults) {
     EXPECT_EQ(completion["values"][2], "hero");
     EXPECT_EQ(completion["total"], 3);
     EXPECT_FALSE(completion["hasMore"].get<bool>());
+}
+
+// A completion for a resource template's argument reaches the provider with the template's URI and
+// the context. A reference of a type the specification does not define is invalid params, even when
+// it carries the uri of a resource reference.
+TEST_F(ServerHandlersTest, CompletionReferencesAResourceTemplateOrIsRefused) {
+    mcp::ServerCapabilities caps;
+    caps.completions = nlohmann::json::object();
+
+    ServerSetup setup(io_ctx_, std::move(caps));
+
+    std::vector<mcp::CompleteParams> seen;
+    setup.server.set_completion_provider(
+        [&seen](const mcp::CompleteParams& params) -> mcp::Task<mcp::CompleteResult> {
+            seen.push_back(params);
+            mcp::CompleteResult result;
+            result.completion.values = {"src/main.cpp"};
+            co_return result;
+        });
+
+    std::vector<nlohmann::json> responses;
+    setup.raw_transport->set_on_write([&responses, &setup](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        if (responses.size() == 3) {
+            setup.raw_transport->close();
+        }
+    });
+
+    setup.raw_transport->enqueue_message(make_initialize_request("1").dump());
+    setup.raw_transport->enqueue_message(make_initialized_notification().dump());
+    setup.raw_transport->enqueue_message(R"({"jsonrpc":"2.0","id":"2","method":"completion/complete",
+        "params":{"ref":{"type":"ref/resource","uri":"file:///{path}"},
+                  "argument":{"name":"path","value":"src/m"},
+                  "context":{"arguments":{"root":"/repo"}}}})");
+    setup.raw_transport->enqueue_message(R"({"jsonrpc":"2.0","id":"3","method":"completion/complete",
+        "params":{"ref":{"type":"ref/tool","name":"search","uri":"file:///{path}"},
+                  "argument":{"name":"query","value":"a"}}})");
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await setup.server.run(setup.transport, io_ctx_.get_executor());
+    });
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 3);
+    std::map<std::string, nlohmann::json> by_id;
+    for (const auto& response : responses) {
+        by_id[response.at("id").get<std::string>()] = response;
+    }
+    EXPECT_EQ(by_id["2"]["result"]["completion"]["values"],
+              nlohmann::json::parse(R"(["src/main.cpp"])"));
+    EXPECT_EQ(by_id["3"]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_PARAMS);
+    ASSERT_EQ(seen.size(), 1U);
+    const auto* reference = std::get_if<mcp::ResourceTemplateReference>(&seen[0].ref);
+    ASSERT_NE(reference, nullptr);
+    EXPECT_EQ(reference->uri, "file:///{path}");
+    EXPECT_EQ(seen[0].argument.value, "src/m");
+    ASSERT_TRUE(seen[0].context.has_value());
+    EXPECT_EQ(seen[0].context->arguments, (std::map<std::string, std::string>{{"root", "/repo"}}));
 }
 
 TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {

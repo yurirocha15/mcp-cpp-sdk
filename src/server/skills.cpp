@@ -38,7 +38,10 @@ void require_plain_path(const std::string& path, const std::string& what) {
     }
     for (const auto& segment : split_path(path)) {
         if (segment.empty() || segment == "." || segment == "..") {
-            throw std::invalid_argument(what + " has an empty, . or .. segment: " + path);
+            std::string message = what;
+            message += " has an empty, . or .. segment: ";
+            message += path;
+            throw std::invalid_argument(message);
         }
     }
 }
@@ -55,7 +58,8 @@ std::string guess_mime_type(const std::string& path) {
         {"yaml", "application/yaml"}, {"yml", "application/yaml"}, {"xml", "application/xml"},
         {"html", "text/html"},        {"css", "text/css"},         {"csv", "text/csv"},
         {"png", "image/png"},         {"jpg", "image/jpeg"},       {"jpeg", "image/jpeg"},
-        {"gif", "image/gif"},         {"svg", "image/svg+xml"},    {"pdf", "application/pdf"}};
+        {"gif", "image/gif"},         {"svg", "image/svg+xml"},    {"pdf", "application/pdf"},
+    };
     const auto dot = path.rfind('.');
     if (dot != std::string::npos && path.find('/', dot) == std::string::npos) {
         const auto found = s_types.find(path.substr(dot + 1));
@@ -68,10 +72,9 @@ std::string guess_mime_type(const std::string& path) {
 
 bool is_text_type(const std::string& mime_type) {
     const auto ends_with = [&](std::string_view suffix) {
-        return mime_type.size() >= suffix.size() &&
-               mime_type.compare(mime_type.size() - suffix.size(), suffix.size(), suffix) == 0;
+        return mime_type.size() >= suffix.size() && mime_type.ends_with(suffix);
     };
-    return mime_type.rfind("text/", 0) == 0 || mime_type == "application/json" ||
+    return mime_type.starts_with("text/") || mime_type == "application/json" ||
            mime_type == "application/xml" || mime_type == "application/yaml" || ends_with("+json") ||
            ends_with("+xml");
 }
@@ -94,8 +97,7 @@ Page page_of(const nlohmann::json& params, std::size_t total, std::size_t page_s
         const auto& text = cursor->get_ref<const std::string&>();
         const bool numeric =
             text.size() > mcp::detail::constants::skills::g_CURSOR_PREFIX.size() && text.size() < 11 &&
-            text.compare(0, mcp::detail::constants::skills::g_CURSOR_PREFIX.size(),
-                         mcp::detail::constants::skills::g_CURSOR_PREFIX) == 0 &&
+            text.starts_with(mcp::detail::constants::skills::g_CURSOR_PREFIX) &&
             std::all_of(
                 text.begin() +
                     static_cast<std::ptrdiff_t>(mcp::detail::constants::skills::g_CURSOR_PREFIX.size()),
@@ -162,8 +164,8 @@ SkillsExtension::SkillsExtension(Server& server, SkillsOptions options)
                 throw std::invalid_argument("skills/get needs a string uri");
             }
             const auto& wanted = uri->get_ref<const std::string&>();
-            const auto found = std::find_if(state->entries.begin(), state->entries.end(),
-                                            [&](const Skill& skill) { return skill.uri == wanted; });
+            const auto found = std::ranges::find_if(
+                state->entries, [&](const Skill& skill) { return skill.uri == wanted; });
             if (found == state->entries.end()) {
                 throw std::invalid_argument("No skill is served at " + wanted);
             }
@@ -231,8 +233,11 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
     }
     if (!entry.dynamic) {
         for (const auto& file : skill.files) {
-            entry.resources.push_back({root + "/" + file.path, sha256_digest(file.content),
-                                       static_cast<std::int64_t>(file.content.size())});
+            entry.resources.push_back({
+                .uri = root + "/" + file.path,
+                .digest = sha256_digest(file.content),
+                .size = static_cast<std::int64_t>(file.content.size()),
+            });
         }
     }
     if (const auto problems = validate_skill(entry); !problems.empty()) {
@@ -285,19 +290,27 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
                 const std::string bytes = generate ? generate() : content;
                 ReadResourceResult result;
                 if (is_text_type(mime_type)) {
-                    result.contents.emplace_back(
-                        TextResourceContents{uri, bytes, mime_type, std::nullopt});
+                    result.contents.emplace_back(TextResourceContents{
+                        .uri = uri,
+                        .text = bytes,
+                        .mimeType = mime_type,
+                        .meta = std::nullopt,
+                    });
                 } else {
                     result.contents.emplace_back(BlobResourceContents{
-                        uri, mcp::detail::base64_encode(bytes), mime_type, std::nullopt});
+                        .uri = uri,
+                        .blob = mcp::detail::base64_encode(bytes),
+                        .mimeType = mime_type,
+                        .meta = std::nullopt,
+                    });
                 }
                 return nlohmann::json(result);
             });
         state_->file_uris.insert(uri);
     }
     for (auto& [directory, children] : new_directories) {
-        std::sort(children.begin(), children.end(),
-                  [](const Resource& left, const Resource& right) { return left.uri < right.uri; });
+        std::ranges::sort(
+            children, [](const Resource& left, const Resource& right) { return left.uri < right.uri; });
         state_->directories[directory] = std::move(children);
     }
     state_->entries.push_back(std::move(entry));

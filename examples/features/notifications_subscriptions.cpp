@@ -20,6 +20,7 @@
 #include <mcp/server/server.hpp>
 #include <mcp/transport/memory.hpp>
 
+#include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -103,9 +104,17 @@ int main() {
         server.add_resource<nlohmann::json, nlohmann::json>(
             resource, [resource_uri](const nlohmann::json&) -> nlohmann::json {
                 return nlohmann::json{
-                    {"contents",
-                     nlohmann::json::array({nlohmann::json{
-                         {"uri", resource_uri}, {"mimeType", "text/plain"}, {"text", "Counter: 1"}}})}};
+                    {
+                        "contents",
+                        nlohmann::json::array({
+                            nlohmann::json{
+                                {"uri", resource_uri},
+                                {"mimeType", "text/plain"},
+                                {"text", "Counter: 1"},
+                            },
+                        }),
+                    },
+                };
             });
 
         // ========== TRANSPORT ==========
@@ -173,9 +182,11 @@ int main() {
                     std::cout << "[Server] Triggering notify_prompts_list_changed (nobody listens)\n";
                     co_await server.notify_prompts_list_changed();
 
-                    const char* expected[] = {"notifications/resources/updated",
-                                              "notifications/tools/list_changed",
-                                              "notifications/resources/list_changed"};
+                    const std::array expected{
+                        "notifications/resources/updated",
+                        "notifications/tools/list_changed",
+                        "notifications/resources/list_changed",
+                    };
                     for (const char* method : expected) {
                         std::optional<SubscriptionEvent> event = co_await stream.next();
                         if (!event) {

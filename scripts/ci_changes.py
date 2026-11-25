@@ -113,7 +113,7 @@ NATIVE_BUILDER = (
     "scripts/release/collect_build_identity.py",
 )
 JOB_INPUTS = {
-    "naming": (
+    "lint": (
         ".clang-tidy",
         "CMakeLists.txt",
         "VERSION",

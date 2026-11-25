@@ -25,8 +25,9 @@ class MCP_API HttpStatusError : public std::runtime_error {
      * @param message Human-readable error description.
      * @param authenticate_challenge Optional WWW-Authenticate header value.
      */
-    HttpStatusError(unsigned int status, std::string message, std::string authenticate_challenge = {})
-        : std::runtime_error(std::move(message)),
+    HttpStatusError(unsigned int status, const std::string& message,
+                    std::string authenticate_challenge = {})
+        : std::runtime_error(message),
           status_(status),
           authenticate_challenge_(std::move(authenticate_challenge)) {}
 
@@ -94,10 +95,12 @@ class MCP_API HttpClientTransport final : public ITransport {
     [[nodiscard]] std::string session_id() const;
 
     /**
-     * @brief Get the most recent SSE event identifier seen from the server.
+     * @brief Get the id of the last whole event in an event stream of a session of protocol
+     *        revision 2025-11-25 or earlier, which a resume sends as Last-Event-ID.
      *
-     * @return The last event ID used for resumable HTTP replay, or an empty string if none was
-     * received.
+     * @details The event streams of 2026-07-28 requests are not resumed, so their event ids are
+     * not kept.
+     * @return The event id, or an empty string if no event named one.
      */
     [[nodiscard]] std::string last_event_id() const;
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/transport.hpp>
@@ -69,12 +70,12 @@ struct StdioProcessOptions {
     std::function<void(const ProcessExit&)> on_exit;
     /// How long the process may take to exit after its standard input is closed, before it is sent
     /// SIGTERM (on Windows, before TerminateProcess).
-    std::chrono::milliseconds stdin_close_wait{std::chrono::seconds(2)};
+    std::chrono::milliseconds stdin_close_wait{mcp::constants::stdio::g_DEFAULT_SHUTDOWN_WAIT};
     /// How long it may take to exit after SIGTERM, before it is sent SIGKILL. Not used on Windows.
-    std::chrono::milliseconds terminate_wait{std::chrono::seconds(2)};
+    std::chrono::milliseconds terminate_wait{mcp::constants::stdio::g_DEFAULT_SHUTDOWN_WAIT};
     /// The longest line read from the process, in bytes, without its line ending. A longer one
     /// fails the read and shuts the process down.
-    std::size_t max_message_bytes = std::size_t{16} * 1024 * 1024;
+    std::size_t max_message_bytes = mcp::constants::stdio::g_DEFAULT_MAX_MESSAGE_BYTES;
     /// Run the server as the leader of its own process group (POSIX) or in a job object that ends
     /// with it (Windows), and send the shutdown signals, or terminate, the whole group or job. Helper
     /// processes the server starts, such as the node process behind an `npx` launcher, then do not
@@ -97,7 +98,7 @@ struct StdioRestartPolicy {
     /// restarts it.
     std::size_t max_restarts = 0;
     /// How long to wait before each start.
-    std::chrono::milliseconds delay{std::chrono::milliseconds(500)};
+    std::chrono::milliseconds delay{mcp::constants::stdio::g_DEFAULT_RESTART_DELAY};
     /// Also restart a server that ends on its own with status 0. By default only an abnormal end (a
     /// non-zero status or a signal) restarts it: a server that exits cleanly of its own accord is
     /// shutting down by choice.

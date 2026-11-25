@@ -25,9 +25,8 @@ namespace mcp {
  * @return true if the version is present in mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.
  */
 [[nodiscard]] constexpr bool is_supported_protocol_version(std::string_view version) {
-    return std::find(mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.begin(),
-                     mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end(),
-                     version) != mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end();
+    return std::ranges::find(mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS, version) !=
+           mcp::constants::protocol::g_SUPPORTED_PROTOCOL_VERSIONS.end();
 }
 
 /**
@@ -37,9 +36,8 @@ namespace mcp {
  * @return true if the version is present in mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.
  */
 [[nodiscard]] constexpr bool is_legacy_protocol_version(std::string_view version) {
-    return std::find(mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.begin(),
-                     mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end(),
-                     version) != mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end();
+    return std::ranges::find(mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS, version) !=
+           mcp::constants::protocol::g_LEGACY_PROTOCOL_VERSIONS.end();
 }
 
 /**
@@ -49,9 +47,8 @@ namespace mcp {
  * @return true if the version is present in mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.
  */
 [[nodiscard]] constexpr bool is_modern_protocol_version(std::string_view version) {
-    return std::find(mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.begin(),
-                     mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end(),
-                     version) != mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end();
+    return std::ranges::find(mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS, version) !=
+           mcp::constants::protocol::g_MODERN_PROTOCOL_VERSIONS.end();
 }
 
 /**

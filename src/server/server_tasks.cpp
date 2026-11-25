@@ -60,8 +60,11 @@ void Server::set_tool_task_mode(const std::string& name, ToolTaskMode mode) {
 
 std::string Server::Impl::missing_tasks_extension_wire(const RequestId& id) {
     nlohmann::json required = {
-        {"extensions",
-         {{std::string(mcp::constants::tasks::g_EXTENSION_ID), nlohmann::json::object()}}}};
+        {
+            "extensions",
+            {{std::string(mcp::constants::tasks::g_EXTENSION_ID), nlohmann::json::object()}},
+        },
+    };
     return make_error_wire(id, mcp::constants::jsonrpc::g_MISSING_REQUIRED_CLIENT_CAPABILITY,
                            "Missing required client capability",
                            {{"requiredCapabilities", std::move(required)}});
@@ -111,7 +114,7 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
 
     std::shared_ptr<detail::TaskRun> run;
     {
-        std::lock_guard lock(task_runs_mutex);
+        std::scoped_lock lock(task_runs_mutex);
         const auto found = task_runs.find(record->id);
         if (found != task_runs.end()) {
             run = found->second;
@@ -142,9 +145,8 @@ std::string Server::Impl::serve_task_request(const nlohmann::json& json_msg, std
 }
 
 bool Server::Impl::task_limit_reached_locked(const std::string& owner) const {
-    const auto owned = static_cast<std::size_t>(
-        std::count_if(task_runs.begin(), task_runs.end(),
-                      [&owner](const auto& entry) { return entry.second->owner == owner; }));
+    const auto owned = static_cast<std::size_t>(std::ranges::count_if(
+        task_runs, [&owner](const auto& entry) { return entry.second->owner == owner; }));
     return owned >= task_options.max_tasks_per_principal || task_runs.size() >= task_options.max_tasks;
 }
 
@@ -189,8 +191,10 @@ std::string Server::Impl::start_task(const nlohmann::json& json_msg, const Reque
     runs_lock.unlock();
 
     CallToolParams params{
-        *call.name, arguments,
-        call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt};
+        .name = *call.name,
+        .arguments = arguments,
+        .meta = call.meta != nullptr ? std::optional<nlohmann::json>(*call.meta) : std::nullopt,
+    };
     // The answer is complete before the handler can start, so it always describes a task that has
     // not run.
     auto answer = make_result_wire(json_msg.at("id").get<RequestId>(), scope,
@@ -226,17 +230,21 @@ Task<void> Server::Impl::run_task_worker(std::shared_ptr<Impl> impl,
     } catch (const InvalidParamsError& failure) {
         error = {{"code", mcp::constants::jsonrpc::g_INVALID_PARAMS}, {"message", failure.what()}};
     } catch (const nlohmann::json::exception&) {
-        error = {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
-                 {"message", "The result could not be encoded as JSON"}};
+        error = {
+            {"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
+            {"message", "The result could not be encoded as JSON"},
+        };
     } catch (const std::exception& failure) {
-        error = {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
-                 {"message", detail::sanitize_for_diagnostics(failure.what())}};
+        error = {
+            {"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
+            {"message", detail::sanitize_for_diagnostics(failure.what())},
+        };
     } catch (...) {
         error = {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR}, {"message", "Internal error"}};
     }
     run->stop_expiry();
     {
-        std::lock_guard lock(impl->task_runs_mutex);
+        std::scoped_lock lock(impl->task_runs_mutex);
         impl->task_runs.erase(run->id);
     }
     std::shared_ptr<const TaskRecord> finished;
@@ -269,7 +277,7 @@ Task<void> Server::Impl::notify_task(std::shared_ptr<Impl> impl,
                                      std::shared_ptr<const TaskRecord> record) {
     std::vector<std::shared_ptr<Listener>> targets;
     {
-        std::lock_guard lock(impl->listeners_mutex);
+        std::scoped_lock lock(impl->listeners_mutex);
         for (const auto& listener : impl->listeners) {
             if (listener->open() && listener->task_ids.contains(record->id)) {
                 targets.push_back(listener);
@@ -303,7 +311,7 @@ std::shared_ptr<const std::string> Server::Impl::task_notification_wire(const Ta
 void Server::Impl::abandon_tasks() {
     std::map<std::string, std::shared_ptr<detail::TaskRun>> running;
     {
-        std::lock_guard lock(task_runs_mutex);
+        std::scoped_lock lock(task_runs_mutex);
         running.swap(task_runs);
     }
     for (const auto& [id, run] : running) {

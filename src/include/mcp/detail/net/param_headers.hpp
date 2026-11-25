@@ -40,7 +40,7 @@ inline bool equals_ignoring_case(std::string_view lhs, std::string_view rhs) {
 /// RFC 9110 `token`: one or more `tchar`.
 inline bool is_http_token(std::string_view text) {
     constexpr std::string_view symbols = "!#$%&'*+-.^_`|~";
-    return !text.empty() && std::all_of(text.begin(), text.end(), [&](char raw) {
+    return !text.empty() && std::ranges::all_of(text, [&](char raw) {
         const bool alphanumeric =
             (raw >= 'a' && raw <= 'z') || (raw >= 'A' && raw <= 'Z') || (raw >= '0' && raw <= '9');
         return alphanumeric || symbols.find(raw) != std::string_view::npos;
@@ -125,7 +125,7 @@ class Collector {
    private:
     template <std::size_t N>
     static bool contains(const std::array<std::string_view, N>& keywords, std::string_view keyword) {
-        return std::find(keywords.begin(), keywords.end(), keyword) != keywords.end();
+        return std::ranges::find(keywords, keyword) != keywords.end();
     }
 
     void walk_map(const nlohmann::json& map, std::string& location, std::vector<std::string>& path,
@@ -168,7 +168,7 @@ class Collector {
                 throw refuse("repeats the header name " + name);
             }
         }
-        headers.push_back({name, path});
+        headers.push_back({.name = name, .path = path});
     }
 };
 
@@ -186,6 +186,7 @@ inline bool parse_header_integer(std::string_view text, std::int64_t& value) {
         return false;
     }
     const auto* end = whole.data() + whole.size();
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage): from_chars stops at end.
     const auto [stop, error] = std::from_chars(whole.data(), end, value);
     return error == std::errc{} && stop == end;
 }
@@ -279,7 +280,7 @@ inline std::optional<std::string> param_header_mismatch(const std::vector<ParamH
                 const auto number = value->get<double>();
                 constexpr auto limit = static_cast<double>(
                     mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER);
-                if (!(number >= -limit && number <= limit) ||
+                if (number < -limit || number > limit ||
                     number != static_cast<double>(static_cast<std::int64_t>(number))) {
                     return header_name + " cannot carry the argument's value";
                 }

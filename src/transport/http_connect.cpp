@@ -2,6 +2,7 @@
 
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/net/network_failure.hpp"
+#include "mcp/detail/net/param_headers.hpp"
 #include "mcp/detail/net/socket_deadline.hpp"
 #include "mcp/detail/net/tls.hpp"
 #include "mcp/detail/text/diagnostic_text.hpp"
@@ -34,6 +35,18 @@ struct Tunnel {
 };
 
 }  // namespace
+
+std::optional<HttpUrlScheme> http_url_scheme(std::string_view url) {
+    for (const auto prefix : {constants::url::g_HTTP_PREFIX, constants::url::g_HTTPS_PREFIX}) {
+        if (url.size() >= prefix.size() && equals_ignoring_case(url.substr(0, prefix.size()), prefix)) {
+            return HttpUrlScheme{
+                .prefix_length = prefix.size(),
+                .https = prefix == constants::url::g_HTTPS_PREFIX,
+            };
+        }
+    }
+    return std::nullopt;
+}
 
 std::string ConnectPlan::request_target(const std::string& path) const {
     if (!forwards_requests()) {
@@ -89,7 +102,7 @@ Task<void> establish(std::shared_ptr<Connection> connection,
                                                     : error.code());
         }
         const auto status = tunnel->parser.get().result_int();
-        if (status < 200 || status > 299) {
+        if (beast::http::to_status_class(status) != beast::http::status_class::successful) {
             throw TransportError(TransportError::Kind::eConnect,
                                  "The proxy refused the tunnel to " +
                                      sanitize_for_diagnostics(authority) + " with status " +

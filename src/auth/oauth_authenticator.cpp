@@ -39,10 +39,14 @@ struct OAuthAuthenticator::Impl {
             return return_false();
         }
 
-        auto operation = std::make_shared<RefreshOperation>(
-            RefreshOperation{std::move(owner), std::move(*stored), std::nullopt, std::nullopt});
+        auto operation = std::make_shared<RefreshOperation>(RefreshOperation{
+            .owner = std::move(owner),
+            .stored_token = std::move(*stored),
+            .new_token = std::nullopt,
+            .scope = std::nullopt,
+        });
         {
-            std::lock_guard lock(operation->owner->scope_mutex);
+            std::scoped_lock lock(operation->owner->scope_mutex);
             operation->scope = operation->owner->scope;
         }
         return run_refresh(std::move(operation));
@@ -52,7 +56,7 @@ struct OAuthAuthenticator::Impl {
     void cancel_pending() {
         std::optional<OAuthHttpClientScope> cancelled;
         {
-            std::lock_guard lock(scope_mutex);
+            std::scoped_lock lock(scope_mutex);
             if (closed) {
                 return;
             }
@@ -66,7 +70,7 @@ struct OAuthAuthenticator::Impl {
     void close() {
         std::optional<OAuthHttpClientScope> current;
         {
-            std::lock_guard lock(scope_mutex);
+            std::scoped_lock lock(scope_mutex);
             closed = true;
             current = scope;
         }

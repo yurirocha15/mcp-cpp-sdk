@@ -23,8 +23,9 @@ bool is_token_char(unsigned char character) {
 }
 
 std::string to_lower_ascii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+    std::ranges::transform(value, value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
     return value;
 }
 
@@ -157,7 +158,7 @@ std::vector<BearerChallenge> parse_www_authenticate(std::string_view header_valu
     std::vector<BearerChallenge> challenges;
     std::optional<BearerChallenge> current;
 
-    const auto flush = [&challenges, &current]() {
+    const auto flush = [&challenges, &current] {
         if (current) {
             challenges.push_back(std::move(*current));
             current.reset();
@@ -231,9 +232,8 @@ std::vector<BearerChallenge> parse_www_authenticate(const std::vector<std::strin
 }
 
 std::optional<BearerChallenge> select_bearer_challenge(const std::vector<BearerChallenge>& challenges) {
-    const auto match =
-        std::find_if(challenges.begin(), challenges.end(),
-                     [](const BearerChallenge& challenge) { return challenge.is_bearer(); });
+    const auto match = std::ranges::find_if(
+        challenges, [](const BearerChallenge& challenge) { return challenge.is_bearer(); });
     if (match == challenges.end()) {
         return std::nullopt;
     }
@@ -274,12 +274,16 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
                                                                 const AuthorizationResponse& response) {
     if (!request.state.empty()) {
         if (!response.state) {
-            return {AuthorizationResponseStatus::eStateMissing,
-                    "authorization response omitted the state parameter"};
+            return {
+                .status = AuthorizationResponseStatus::eStateMissing,
+                .message = "authorization response omitted the state parameter",
+            };
         }
         if (*response.state != request.state) {
-            return {AuthorizationResponseStatus::eStateMismatch,
-                    "authorization response state did not match the recorded value"};
+            return {
+                .status = AuthorizationResponseStatus::eStateMismatch,
+                .message = "authorization response state did not match the recorded value",
+            };
         }
     }
 
@@ -287,12 +291,16 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
     // default-port elision, no trailing-slash or percent-encoding normalization.
     if (response.iss) {
         if (*response.iss != request.issuer) {
-            return {AuthorizationResponseStatus::eIssuerMismatch,
-                    "authorization response iss did not match the recorded issuer"};
+            return {
+                .status = AuthorizationResponseStatus::eIssuerMismatch,
+                .message = "authorization response iss did not match the recorded issuer",
+            };
         }
     } else if (request.issuer_parameter_supported) {
-        return {AuthorizationResponseStatus::eIssuerMissing,
-                "authorization server advertises iss support but omitted the parameter"};
+        return {
+            .status = AuthorizationResponseStatus::eIssuerMissing,
+            .message = "authorization server advertises iss support but omitted the parameter",
+        };
     }
 
     // Only an issuer-authentic response may have its error values acted on or displayed.
@@ -302,14 +310,18 @@ AuthorizationResponseValidation validate_authorization_response(const Authorizat
         // us through a redirect the authorization server controls, and being issuer-authentic makes
         // it trustworthy as to origin, not as to content.
         return {
-            AuthorizationResponseStatus::eServerError,
-            "authorization server returned error " + detail::sanitize_for_diagnostics(*response.error)};
+            .status = AuthorizationResponseStatus::eServerError,
+            .message = "authorization server returned error " +
+                       detail::sanitize_for_diagnostics(*response.error),
+        };
     }
     if (!response.code || response.code->empty()) {
-        return {AuthorizationResponseStatus::eCodeMissing,
-                "authorization response carried no authorization code"};
+        return {
+            .status = AuthorizationResponseStatus::eCodeMissing,
+            .message = "authorization response carried no authorization code",
+        };
     }
-    return {AuthorizationResponseStatus::eAccepted, {}};
+    return {.status = AuthorizationResponseStatus::eAccepted, .message = {}};
 }
 
 }  // namespace mcp::auth

@@ -33,7 +33,7 @@
 #include <thread>
 
 namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 
 int main() {
     try {
@@ -69,9 +69,11 @@ int main() {
         Server server(server_info, server_caps);
 
         // Register a simple echo tool
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"text", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"text"})}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"text", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"text"})},
+        };
 
         server.add_tool<nlohmann::json, CallToolResult>(
             "echo", "Echo the input text", tool_schema,
@@ -88,7 +90,7 @@ int main() {
         std::cout << "Server will run in background thread\n";
 
         // Spawn server in background thread
-        std::thread server_thread([&server, http_port]() {
+        std::thread server_thread([&server, http_port] {
             try {
                 // This convenience method handles everything:
                 // - Creates io_context

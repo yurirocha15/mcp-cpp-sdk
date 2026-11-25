@@ -54,7 +54,7 @@ void TaskRun::stop_expiry() {
     }
 }
 
-void TaskRun::publish_detached(std::shared_ptr<const TaskRecord> record) {
+void TaskRun::publish_detached(std::shared_ptr<const TaskRecord> record) const {
     if (!publish) {
         return;
     }
@@ -107,7 +107,7 @@ Task<nlohmann::json> task_request_input(std::shared_ptr<TaskRun> run, nlohmann::
             throw std::invalid_argument("the key of a question for the client must not be empty");
         }
         constexpr std::string_view prefix = "input-";
-        if (text.size() > prefix.size() && text.compare(0, prefix.size(), prefix) == 0 &&
+        if (text.size() > prefix.size() && text.starts_with(prefix) &&
             text.find_first_not_of("0123456789", prefix.size()) == std::string::npos) {
             throw std::invalid_argument("the key '" + text +
                                         "' is reserved for the names the SDK generates");

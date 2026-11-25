@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
     auto last_mutex = std::make_shared<std::mutex>();
     server.add_text_resource(last_uri, "The last name remembered",
                              [last, last_mutex]() -> mcp::Task<std::string> {
-                                 const std::lock_guard lock(*last_mutex);
+                                 const std::scoped_lock lock(*last_mutex);
                                  co_return *last;
                              });
     server.capabilities().resources->subscribe = true;
@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
                     [&server, &last_uri, last,
                      last_mutex](const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
                         {
-                            const std::lock_guard lock(*last_mutex);
+                            const std::scoped_lock lock(*last_mutex);
                             *last = args.at("name").get<std::string>();
                         }
                         co_await server.notify_resource_updated(last_uri);
@@ -122,10 +122,14 @@ int main(int argc, char** argv) {
         [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
             mcp::CreateMessageRequestParams request;
             request.maxTokens = 100;
-            request.messages.push_back(
-                {mcp::Role::eUser,
-                 mcp::TextContent{.text = "Write a greeting for " + args.at("name").get<std::string>()},
-                 std::nullopt});
+            request.messages.push_back({
+                .role = mcp::Role::eUser,
+                .content =
+                    mcp::TextContent{
+                        .text = "Write a greeting for " + args.at("name").get<std::string>(),
+                    },
+                .meta = std::nullopt,
+            });
             const auto reply = co_await ctx.sample_llm(request);
             const auto* block = std::get_if<mcp::ContentBlock>(&reply.content);
             const auto* text = block != nullptr ? std::get_if<mcp::TextContent>(block) : nullptr;
@@ -175,13 +179,17 @@ int main(int argc, char** argv) {
     mcp::skills::SkillsExtension skills(server);
     mcp::skills::SkillDefinition greeting;
     greeting.path = "greeting";
-    greeting.frontmatter = {{"name", "greeting"},
-                            {"description", "How to greet people with the greet tool"}};
-    greeting.files.push_back({"SKILL.md",
-                              "---\nname: greeting\ndescription: How to greet people with the "
-                              "greet tool\n---\nCall greet with the person's name.\n",
-                              std::nullopt,
-                              {}});
+    greeting.frontmatter = {
+        {"name", "greeting"},
+        {"description", "How to greet people with the greet tool"},
+    };
+    greeting.files.push_back({
+        .path = "SKILL.md",
+        .content = "---\nname: greeting\ndescription: How to greet people with the "
+                   "greet tool\n---\nCall greet with the person's name.\n",
+        .mime_type = std::nullopt,
+        .generate = {},
+    });
     skills.add_skill(std::move(greeting));
 
     // The event loop: HTTP through a session manager that serves this server, until a signal.

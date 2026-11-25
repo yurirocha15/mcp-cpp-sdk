@@ -49,7 +49,7 @@ class MCP_API TaskHandle {
      * @throws McpError With mcp::constants::jsonrpc::g_INVALID_PARAMS when the server no longer knows
      * the task.
      */
-    Task<DetailedTask> get(const RequestOptions& request_options = {}) const;
+    [[nodiscard]] Task<DetailedTask> get(const RequestOptions& request_options = {}) const;
 
     /**
      * @brief Answer the requests of an `input_required` task with `tasks/update`.
@@ -58,8 +58,8 @@ class MCP_API TaskHandle {
      *        `inputRequests` that is answered, under the same key.
      * @param request_options Per-call options of the `tasks/update` request.
      */
-    Task<void> update(const nlohmann::json& input_responses,
-                      const RequestOptions& request_options = {}) const;
+    [[nodiscard]] Task<void> update(const nlohmann::json& input_responses,
+                                    const RequestOptions& request_options = {}) const;
 
     /// @brief Blocking calls to this task, for a handle of a Client constructed from an Endpoint
     /// (see Client::sync()).
@@ -75,7 +75,7 @@ class MCP_API TaskHandle {
      * @details The server decides whether and when the task stops: the task may still finish
      * with another status.
      */
-    Task<void> cancel(const RequestOptions& request_options = {}) const;
+    [[nodiscard]] Task<void> cancel(const RequestOptions& request_options = {}) const;
 
     /**
      * @brief Poll the task until it has finished and return its final state.
@@ -87,7 +87,7 @@ class MCP_API TaskHandle {
      * @throws McpError With mcp::constants::jsonrpc::g_REQUEST_TIMEOUT after
      * ClientOptions::task_timeout.
      */
-    Task<DetailedTask> wait(const RequestOptions& request_options = {}) const;
+    [[nodiscard]] Task<DetailedTask> wait(const RequestOptions& request_options = {}) const;
 
     /**
      * @brief wait(), then the tool's result.
@@ -97,7 +97,7 @@ class MCP_API TaskHandle {
      * @throws McpError The error a `failed` task carries, or mcp::constants::jsonrpc::g_INVALID_REQUEST
      * for a task that was cancelled.
      */
-    Task<CallToolResult> result(const RequestOptions& request_options = {}) const;
+    [[nodiscard]] Task<CallToolResult> result(const RequestOptions& request_options = {}) const;
 
    private:
     friend class SyncTaskHandle;

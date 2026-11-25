@@ -54,9 +54,11 @@ int main() {
         Server server(server_info, server_caps);
 
         // ========== TOOL REGISTRATION ==========
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"duration_ms", {{"type", "integer"}}}}},
-                                      {"required", nlohmann::json::array({"duration_ms"})}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"duration_ms", {{"type", "integer"}}}}},
+            {"required", nlohmann::json::array({"duration_ms"})},
+        };
 
         server.add_tool<nlohmann::json, CallToolResult>(
             "long_task", "A long-running task that reports progress and can be cancelled", tool_schema,

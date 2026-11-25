@@ -23,7 +23,7 @@ bool is_ascii_digit(char c) { return c >= '0' && c <= '9'; }
 /// 2019-09, `^[A-Za-z_][-A-Za-z0-9._]*$` in 2020-12.
 bool is_anchor_name(std::string_view name, SchemaDialect dialect) {
     const bool modern = dialect >= D::eDraft202012;
-    if (name.empty() || !(is_ascii_letter(name.front()) || (modern && name.front() == '_'))) {
+    if (name.empty() || (!is_ascii_letter(name.front()) && (!modern || name.front() != '_'))) {
         return false;
     }
     return std::all_of(name.begin() + 1, name.end(), [modern](char c) {
@@ -39,9 +39,10 @@ bool has_no_fragment(std::string_view id) {
 }
 
 bool is_simple_type(std::string_view type) {
-    static constexpr std::array<std::string_view, 7> s_types = {"array",  "boolean", "integer", "null",
-                                                                "number", "object",  "string"};
-    return std::find(s_types.begin(), s_types.end(), type) != s_types.end();
+    static constexpr std::array<std::string_view, 7> s_types = {
+        "array", "boolean", "integer", "null", "number", "object", "string",
+    };
+    return std::ranges::find(s_types, type) != s_types.end();
 }
 
 /// Checks one schema document against the rules of one dialect.
@@ -68,9 +69,10 @@ class Checker {
         }
         if (dialect_ == D::eDraft4) {
             // The draft-04 metaschema's `dependencies`: a boolean exclusive bound needs its bound.
-            for (const auto& [exclusive, bound] :
-                 {std::pair<const char*, const char*>{"exclusiveMaximum", "maximum"},
-                  std::pair<const char*, const char*>{"exclusiveMinimum", "minimum"}}) {
+            for (const auto& [exclusive, bound] : {
+                     std::pair<const char*, const char*>{"exclusiveMaximum", "maximum"},
+                     std::pair<const char*, const char*>{"exclusiveMinimum", "minimum"},
+                 }) {
                 if (value.contains(exclusive) && !value.contains(bound)) {
                     return fail(std::string(exclusive) + " requires " + bound);
                 }
@@ -87,6 +89,7 @@ class Checker {
        public:
         explicit Level(Checker& checker) : checker_(checker) {
             if (++checker_.depth_ > checker_.max_depth_) {
+                // NOLINTNEXTLINE(bugprone-std-exception-baseclass): see the declaration.
                 throw EvaluationTooDeep{};
             }
         }
@@ -363,13 +366,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!schema(member)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return schema(member);
+                                   });
     }
 
     /// An object whose members are string arrays.
@@ -377,13 +379,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!string_array(member)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return string_array(member);
+                                   });
     }
 
     /// An object whose members are schemas or string arrays.
@@ -391,13 +392,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!(member.is_array() ? string_array(member) : schema(member))) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return member.is_array() ? string_array(member) : schema(member);
+                                   });
     }
 
     bool anchor(const nlohmann::json& value) {
@@ -413,13 +413,12 @@ class Checker {
         if (!object(value)) {
             return false;
         }
-        for (const auto& [name, member] : value.items()) {
-            const Step step(*this, name);
-            if (!boolean(member)) {
-                return false;
-            }
-        }
-        return true;
+        return std::ranges::all_of(value.get_ref<const nlohmann::json::object_t&>(),
+                                   [this](const auto& entry) {
+                                       const auto& [name, member] = entry;
+                                       const Step step(*this, name);
+                                       return boolean(member);
+                                   });
     }
 
     static std::string expected(std::string_view wanted, const nlohmann::json& found) {
@@ -434,7 +433,7 @@ class Checker {
             pointer += '/';
             pointer += escape_pointer_token(token);
         }
-        problem_ = SchemaProblem{std::move(pointer), std::move(message)};
+        problem_ = SchemaProblem{.path = std::move(pointer), .message = std::move(message)};
         return false;
     }
 

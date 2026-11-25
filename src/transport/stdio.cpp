@@ -4,15 +4,15 @@
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/net/network_failure.hpp"
 
-#if defined(_WIN32)
+#ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
 #else
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
-#include <signal.h>
 #include <unistd.h>
+#include <csignal>
 #endif
 
 #include <array>
@@ -44,7 +44,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(__GLIBCXX__)
+#ifdef __GLIBCXX__
 #include <ext/stdio_filebuf.h>
 #endif
 
@@ -58,7 +58,7 @@ enum class LineResult : std::uint8_t {
     eTooLong,   ///< The line is over the limit.
 };
 
-#if defined(_WIN32)
+#ifdef _WIN32
 // _dup() takes the lowest free descriptor, so set aside any it hands out below
 // mcp::detail::constants::stdio::g_FIRST_PRIVATE_DESCRIPTOR and keep asking.
 int duplicate_descriptor(int descriptor) {
@@ -103,7 +103,7 @@ std::ptrdiff_t write_descriptor(int descriptor, const char* data, std::size_t si
 /// process, not on the writing thread, so the writer's blocked signal (see write_lines()) would not
 /// stop it there. The open file is set not to raise it, which every descriptor sharing it sees.
 void suppress_pipe_signal([[maybe_unused]] int descriptor) {
-#if defined(__APPLE__)
+#ifdef __APPLE__
     ::fcntl(descriptor, F_SETNOSIGPIPE, 1);
 #endif
 }
@@ -148,9 +148,11 @@ class DescriptorStreambuf final : public std::streambuf {
 };
 
 /// The buffers the process's standard streams started with. A program can replace them, and then
-/// std::cin and std::cout no longer stand for the descriptors.
+/// std::cin and std::cout no longer stand for the descriptors. rdbuf() only reads a pointer.
+// NOLINTBEGIN(bugprone-throwing-static-initialization)
 std::streambuf* const g_PROCESS_STDIN_BUFFER = std::cin.rdbuf();
 std::streambuf* const g_PROCESS_STDOUT_BUFFER = std::cout.rdbuf();
+// NOLINTEND(bugprone-throwing-static-initialization)
 
 /// Whether @p buffer is the process's own buffer for @p descriptor: the one the stream started with,
 /// or the one libstdc++ puts in its place when the program calls std::ios::sync_with_stdio(false).
@@ -158,7 +160,7 @@ bool is_process_buffer(std::streambuf* buffer, std::streambuf* original, int des
     if (buffer == original) {
         return true;
     }
-#if defined(__GLIBCXX__)
+#ifdef __GLIBCXX__
     auto* file_buffer = dynamic_cast<__gnu_cxx::stdio_filebuf<char>*>(buffer);
     return file_buffer != nullptr && file_buffer->fd() == descriptor;
 #else
@@ -220,9 +222,12 @@ class DescriptorLines {
    private:
     /// False at the end of the input, on a read that failed, and when woken.
     bool fill() {
-#if !defined(_WIN32)
+#ifndef _WIN32
         for (;;) {
-            std::array<pollfd, 2> watched{pollfd{descriptor_, POLLIN, 0}, pollfd{wake_, POLLIN, 0}};
+            std::array<pollfd, 2> watched{
+                pollfd{.fd = descriptor_, .events = POLLIN, .revents = 0},
+                pollfd{.fd = wake_, .events = POLLIN, .revents = 0},
+            };
             const nfds_t count = wake_ >= 0 ? 2 : 1;
             if (::poll(watched.data(), count, -1) < 0) {
                 if (errno == EINTR) {
@@ -392,7 +397,7 @@ struct StdioTransport::Impl {
         Pump(Pump&&) = delete;
         Pump& operator=(Pump&&) = delete;
         ~Pump() {
-#if !defined(_WIN32)
+#ifndef _WIN32
             if (wake_read >= 0) {
                 ::close(wake_read);
                 ::close(wake_write);
@@ -403,12 +408,12 @@ struct StdioTransport::Impl {
         /// Opens the pipe before the reader starts. @p closed tells whether close() has already
         /// run; it found no pipe to wake then, so the pipe starts out woken.
         void open_wake_pipe(const std::atomic<bool>& closed) {
-#if !defined(_WIN32)
+#ifndef _WIN32
             std::array<int, 2> ends{-1, -1};
             if (::pipe(ends.data()) == 0) {
                 ::fcntl(ends[0], F_SETFD, FD_CLOEXEC);
                 ::fcntl(ends[1], F_SETFD, FD_CLOEXEC);
-                std::lock_guard lock(mutex);
+                std::scoped_lock lock(mutex);
                 wake_read = ends[0];
                 wake_write = ends[1];
                 if (closed.load(std::memory_order_acquire)) {
@@ -421,10 +426,10 @@ struct StdioTransport::Impl {
         }
 
         void wake_input_wait() const noexcept {
-#if !defined(_WIN32)
+#ifndef _WIN32
             if (wake_write >= 0) {
                 const char byte = 0;
-                (void)!::write(wake_write, &byte, 1);
+                (void)(::write(wake_write, &byte, 1) == 0);
             }
 #endif
         }
@@ -441,7 +446,13 @@ struct StdioTransport::Impl {
             read_signal.expires_at(std::chrono::steady_clock::time_point::max());
         }
 
-        void wake_reader() noexcept { read_signal.cancel(); }
+        void wake_reader() noexcept {
+            try {
+                read_signal.cancel();
+            } catch (...) {
+                // steady_timer::cancel() is not noexcept; a failed wake-up has no caller to report to.
+            }
+        }
 
         std::ostream& output;
         boost::asio::strand<boost::asio::any_io_executor> strand;
@@ -465,7 +476,7 @@ struct StdioTransport::Impl {
         state->pump->state = state;
     }
 
-    Impl(const boost::asio::any_io_executor& executor, std::istream& input, OwnStdoutTag)
+    Impl(const boost::asio::any_io_executor& executor, std::istream& input, OwnStdoutTag /*unused*/)
         : owned_output(std::make_shared<OwnedStdout>()),
           input(input),
           state(std::make_shared<SharedState>(executor, owned_output->stream())) {
@@ -554,7 +565,9 @@ struct StdioTransport::Impl {
         }
     }
 
+    // Runs as a thread's body, where an exception that escapes ends the process either way.
     template <typename NextLine>
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     static void read_lines(NextLine next_line, const std::shared_ptr<Pump>& pump) noexcept {
         std::string failure;
         try {
@@ -562,7 +575,7 @@ struct StdioTransport::Impl {
             bool more = true;
             while (more) {
                 const auto limit = [&pump] {
-                    std::lock_guard lock(pump->mutex);
+                    std::scoped_lock lock(pump->mutex);
                     return pump->max_message_bytes;
                 }();
                 const auto result = next_line(line, limit);
@@ -599,7 +612,7 @@ struct StdioTransport::Impl {
             // Stream failures are reported to readers as end-of-input.
         }
 
-        std::lock_guard lock(pump->mutex);
+        std::scoped_lock lock(pump->mutex);
         pump->reader_done = true;
         if (auto shared_state = pump->state) {
             boost::asio::post(shared_state->strand,
@@ -618,12 +631,12 @@ struct StdioTransport::Impl {
             return shared_state;
         }
 
-        std::lock_guard lock(threads_mutex);
+        std::scoped_lock lock(threads_mutex);
         if (!reader_started && !shared_state->closed.load(std::memory_order_acquire)) {
             reader_started = true;
             if (reads_stdin_descriptor()) {
                 shared_state->pump->open_wake_pipe(shared_state->closed);
-                reader_thread = std::thread([pump = shared_state->pump]() {
+                reader_thread = std::thread([pump = shared_state->pump] {
                     DescriptorLines lines(mcp::detail::constants::stdio::g_STDIN_DESCRIPTOR,
                                           pump->wake_read);
                     read_lines([&lines](std::string& line,
@@ -631,7 +644,7 @@ struct StdioTransport::Impl {
                                pump);
                 });
             } else {
-                reader_thread = std::thread([&in = input, pump = shared_state->pump]() {
+                reader_thread = std::thread([&in = input, pump = shared_state->pump] {
                     std::vector<char> chunk(mcp::detail::constants::stdio::g_READ_CHUNK_BYTES);
                     read_lines(
                         [&in, &chunk](std::string& line, std::size_t limit) {
@@ -647,15 +660,17 @@ struct StdioTransport::Impl {
     /// Reports @p waiter's write finished, on the strand. Takes `pump.mutex` being held.
     static void complete_write(const std::shared_ptr<SharedState>& shared_state,
                                std::shared_ptr<WriteWaiter> waiter, bool written) {
-        boost::asio::post(shared_state->strand, [waiter = std::move(waiter), written]() {
+        boost::asio::post(shared_state->strand, [waiter = std::move(waiter), written] {
             waiter->done = true;
             waiter->written = written;
             waiter->signal.cancel();
         });
     }
 
+    // Runs as a thread's body, where an exception that escapes ends the process either way.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     static void write_lines(std::ostream& output, const std::shared_ptr<Pump>& pump) noexcept {
-#if !defined(_WIN32)
+#ifndef _WIN32
         // A reader that went away is a failed write here, not a signal that ends the process. The
         // signal stays pending on this thread, so nothing else in the process changes; on macOS
         // the standard output descriptor does not raise it at all (see suppress_pipe_signal()).
@@ -708,12 +723,12 @@ struct StdioTransport::Impl {
     }
 
     void ensure_writer_started() {
-        std::lock_guard lock(threads_mutex);
+        std::scoped_lock lock(threads_mutex);
         if (!writer_started) {
             writer_started = true;
             writer_thread =
                 std::thread([&output = state->output, pump = state->pump, keep_owned = owned_output,
-                             keep_raw = raw_stdout]() { write_lines(output, pump); });
+                             keep_raw = raw_stdout] { write_lines(output, pump); });
         }
     }
 
@@ -745,7 +760,7 @@ struct StdioTransport::Impl {
         }
 
         if (first_close) {
-            boost::asio::post(shared_state->strand, [shared_state]() { shared_state->wake_reader(); });
+            boost::asio::post(shared_state->strand, [shared_state] { shared_state->wake_reader(); });
         }
     }
 
@@ -767,7 +782,7 @@ struct StdioTransport::Impl {
                 auto message = std::move(shared_state->queue.front());
                 shared_state->queue.pop();
                 {
-                    std::lock_guard lock(shared_state->pump->mutex);
+                    std::scoped_lock lock(shared_state->pump->mutex);
                     shared_state->pump->queued_input_bytes -=
                         message.size() + mcp::detail::constants::stdio::g_INPUT_LINE_OVERHEAD;
                     shared_state->pump->wake.notify_all();
@@ -799,11 +814,11 @@ struct StdioTransport::Impl {
 
         auto waiter = std::make_shared<WriteWaiter>(shared_state->strand);
         {
-            std::lock_guard lock(shared_state->pump->mutex);
+            std::scoped_lock lock(shared_state->pump->mutex);
             if (shared_state->closed.load(std::memory_order_acquire)) {
                 throw TransportError(TransportError::Kind::eClosed, "StdioTransport is closed");
             }
-            shared_state->pump->outgoing.push_back({std::move(message), waiter});
+            shared_state->pump->outgoing.push_back({.message = std::move(message), .waiter = waiter});
             shared_state->pump->wake.notify_all();
         }
 
@@ -869,7 +884,7 @@ void StdioTransport::close() {
 }
 
 void StdioTransport::set_max_message_bytes(std::size_t bytes) {
-    std::lock_guard lock(impl_->state->pump->mutex);
+    std::scoped_lock lock(impl_->state->pump->mutex);
     impl_->state->pump->max_message_bytes = bytes;
 }
 

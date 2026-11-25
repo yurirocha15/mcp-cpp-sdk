@@ -28,6 +28,7 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <initializer_list>
 #include <map>
 #include <mcp/auth/client_identity.hpp>
 #include <mcp/auth/oauth.hpp>
@@ -920,6 +921,55 @@ TEST(AuthMetadataRedirectTest, FollowsARelativeRedirectWhoseQueryNamesAUrl) {
     EXPECT_EQ(body, json({{"ok", true}}));
     ASSERT_EQ(server.targets().size(), 2U);
     EXPECT_EQ(server.targets()[1], "/moved?from=http://example.com/");
+}
+
+// A Location that is a relative path resolves against the directory of the URL that answered,
+// without that URL's query, and against the root when the URL has no path (RFC 3986 section 5.2).
+TEST(AuthMetadataRedirectTest, FollowsPathRelativeRedirectsFromTheAnsweringDirectory) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+
+    server.set_handler([](const http::request<http::string_body>& request) {
+        const auto redirect = [](const char* location) {
+            http::response<http::string_body> response{http::status::found, 11};
+            response.set(http::field::location, location);
+            return response;
+        };
+        if (request.target() == "/meta/prm?tenant=1") {
+            return redirect("moved.json");
+        }
+        if (request.target() == "/meta/moved.json") {
+            return redirect("final.json?v=2");
+        }
+        if (request.target() == "/") {
+            return redirect("start.json");
+        }
+        return json_response({{"ok", true}});
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(5));
+
+    std::string failure;
+    json nested;
+    json rooted;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthHttpClient client(io_ctx.get_executor());
+        client.set_metadata_policy(loopback_policy(server.origin()));
+        try {
+            nested = co_await client.get_json(server.base_url() + "/meta/prm?tenant=1");
+            rooted = co_await client.get_json(server.base_url());
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        server.close();
+    });
+
+    io_ctx.run();
+
+    EXPECT_EQ(failure, "");
+    EXPECT_EQ(nested, json({{"ok", true}}));
+    EXPECT_EQ(rooted, json({{"ok", true}}));
+    EXPECT_EQ(server.targets(), (std::vector<std::string>{"/meta/prm?tenant=1", "/meta/moved.json",
+                                                          "/meta/final.json?v=2", "/", "/start.json"}));
 }
 
 TEST(AuthMetadataSizeCapTest, RejectsAnOversizedMetadataResponse) {
@@ -5346,6 +5396,51 @@ TEST(AuthProtectedResourceValidationTest,
     EXPECT_EQ(credentials->stores, 0);
 }
 
+// A resource document that lists no authorization server is refused for that reason, even when its
+// `resource` also fails to identify the server, and nothing else is fetched.
+TEST(AuthProtectedResourceValidationTest, ReportsMissingAuthorizationServersFirst) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        if (std::string(request.target()) == "/prm.json") {
+            return json_response(
+                {{"resource", "https://attacker.test/mcp"}, {"authorization_servers", json::array()}});
+        }
+        return status_response(http::status::not_found);
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(2));
+
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(server.origin());
+
+    std::promise<std::string> failure;
+    auto observed = failure.get_future();
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        std::string message;
+        try {
+            (void)co_await manager.try_handle_challenge(R"(Bearer realm="mcp", resource_metadata=")" +
+                                                        base + R"(/prm.json")");
+            message = "<no exception>";
+        } catch (const std::exception& error) {
+            message = error.what();
+        }
+        failure.set_value(message);
+        server.close();
+    });
+
+    io_ctx.run();
+
+    const auto message = observed.get();
+    EXPECT_NE(message.find("listed no authorization servers"), std::string::npos) << message;
+    EXPECT_EQ(server.targets(), std::vector<std::string>{"/prm.json"});
+}
+
 // The shorthand fields and client_identity.pre_registered both describe injected credentials, so a
 // config that sets both is refused instead of silently using one of them.
 TEST(AuthAuthorizationConfigTest, RefusesShorthandCredentialsAlongsidePreRegisteredOnes) {
@@ -5790,6 +5885,37 @@ TEST(AuthDiagnosticsSanitizingTest, BidirectionalOverridesAreFlattenedToo) {
     EXPECT_EQ(mcp::auth::detail::sanitize_for_diagnostics(arabic_neighbour), arabic_neighbour)
         << "U+061B is the Arabic semicolon, a printable character next to ALM, and must not be "
            "caught by a range written around U+061C";
+}
+
+// A four-byte character is kept. An overlong form of each length, a value past U+10FFFF and a
+// four-byte sequence cut short are each replaced, and so is a C1 control such as NEXT LINE, which
+// some log viewers take as a line break.
+TEST(AuthDiagnosticsSanitizingTest, EveryIllFormedSequenceLengthIsReplaced) {
+    const auto emoji = utf8_codepoint(0x1F600);
+    EXPECT_EQ(mcp::auth::detail::sanitize_for_diagnostics("a" + emoji + "b"), "a" + emoji + "b");
+
+    const auto bytes = [](std::initializer_list<unsigned char> values) {
+        std::string text;
+        for (const auto value : values) {
+            text.push_back(static_cast<char>(value));
+        }
+        return text;
+    };
+    const std::vector<std::string> ill_formed = {
+        bytes({0xC1, 0x81}),              // 'A' in two bytes
+        bytes({0xE0, 0x80, 0x81}),        // U+0001 in three bytes
+        bytes({0xF0, 0x80, 0x80, 0x81}),  // U+0001 in four bytes
+        bytes({0xF4, 0x90, 0x80, 0x80}),  // U+110000
+        bytes({0xF0, 0x9F, 0x98}),        // U+1F600 without its last byte
+        utf8_codepoint(0x85),             // NEXT LINE
+    };
+    for (const auto& sequence : ill_formed) {
+        const auto cleaned = mcp::auth::detail::sanitize_for_diagnostics("before" + sequence + "after");
+        EXPECT_TRUE(is_well_formed_utf8(cleaned)) << cleaned;
+        EXPECT_EQ(cleaned.find(sequence), std::string::npos) << cleaned;
+        EXPECT_NE(cleaned.find("before"), std::string::npos) << cleaned;
+        EXPECT_NE(cleaned.find("after"), std::string::npos) << cleaned;
+    }
 }
 
 // ---------------------------------------------------------------------------

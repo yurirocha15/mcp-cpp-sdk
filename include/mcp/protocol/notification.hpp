@@ -18,7 +18,7 @@ enum class LoggingLevel : std::uint8_t {
     eWarning,
     eNotice,
     eInfo,
-    eDebug
+    eDebug,
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(LoggingLevel, {{LoggingLevel::eEmergency, "emergency"},

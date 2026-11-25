@@ -15,7 +15,7 @@ namespace mcp::auth {
 /**
  * @brief How the client identity presented to an authorization server was obtained.
  */
-enum class ClientIdentitySource {
+enum class ClientIdentitySource : std::uint8_t {
     ePreRegistered,             ///< Supplied by the application; never re-registered.
     eClientIdMetadataDocument,  ///< A published HTTPS document URL used as the client identifier.
     eDynamicRegistration,       ///< Obtained from the server's RFC 7591 registration endpoint.
@@ -165,7 +165,7 @@ class MCP_API InMemoryClientCredentialStore : public ClientCredentialStore {
      * @param issuer Authorization server issuer used as the storage key.
      * @return The stored credentials, if present.
      */
-    std::optional<OAuthClientInformation> load(const std::string& issuer) const override;
+    [[nodiscard]] std::optional<OAuthClientInformation> load(const std::string& issuer) const override;
 
     /**
      * @brief Remove credentials from the in-memory cache.
@@ -209,7 +209,7 @@ struct ClientIdentityServerFacts {
 /**
  * @brief The client identity path chosen for one authorization server.
  */
-enum class ClientIdentityDecision {
+enum class ClientIdentityDecision : std::uint8_t {
     eUsePreRegistered,             ///< Present the application's injected credentials.
     eUseClientIdMetadataDocument,  ///< Present the configured document URL as the client ID.
     eReuseStoredRegistration,      ///< Present credentials already registered with this issuer.

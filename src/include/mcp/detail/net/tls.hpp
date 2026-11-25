@@ -48,6 +48,8 @@ struct SystemRoots {
     std::vector<X509*> certificates;
     /// Hashed certificate directories, which each store reads on demand.
     std::vector<std::string> directories;
+    /// Whether SSL_CERT_FILE or SSL_CERT_DIR named them, in place of the platform's stores.
+    bool from_environment{false};
 };
 
 /// The system's certificate authorities, read on first use and kept for the life of the process.

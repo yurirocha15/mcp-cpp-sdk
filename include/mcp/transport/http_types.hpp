@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mcp/core/async_fwd.hpp>
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 
 #include <chrono>
@@ -194,13 +195,14 @@ struct HttpConnectionLimits {
     /// How long reading one request may take, from waiting for its first byte to the end of its
     /// body, and how long the peer may take to read the answer; a connection that takes longer is
     /// closed. Zero means no limit.
-    std::chrono::milliseconds request_read_timeout{std::chrono::seconds(60)};
+    std::chrono::milliseconds request_read_timeout{
+        mcp::constants::http_server::g_DEFAULT_REQUEST_READ_TIMEOUT};
     /// Requests being handled at once. One past it is answered 503.
-    std::size_t max_requests{4096};
+    std::size_t max_requests{mcp::constants::http_server::g_DEFAULT_MAX_REQUESTS};
     /// Memory the requests being read or handled may hold together: a body by what has arrived
     /// while it is read, a JSON-RPC message by what it takes parsed. A request past it is answered
     /// 503.
-    std::size_t max_request_bytes{std::size_t{1024} * 1024 * 1024};
+    std::size_t max_request_bytes{mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BYTES};
 };
 
 /**
@@ -208,25 +210,28 @@ struct HttpConnectionLimits {
  */
 struct StreamOptions {
     /// How often an open stream carries an SSE comment, so idle intermediaries keep it open.
-    std::chrono::milliseconds keepalive_interval{15000};
+    std::chrono::milliseconds keepalive_interval{
+        mcp::constants::http_server::g_DEFAULT_KEEPALIVE_INTERVAL};
     /// After a client half-closes its connection, how often the server checks that the client is
     /// still there: by writing an SSE comment to a stream, where a write that fails cancels the
     /// request, or, for a client that does not accept a stream, by looking for a reset on the
     /// socket. A client that accepts a stream gets one when it half-closes, since a clean close
     /// shows no reset and is found only by a failed write; its answer then has status 200.
-    std::chrono::milliseconds disconnect_probe_interval{1000};
+    std::chrono::milliseconds disconnect_probe_interval{
+        mcp::constants::http_server::g_DEFAULT_DISCONNECT_PROBE_INTERVAL};
     /// Notifications a request may have waiting to be written. A notification that would take the
     /// request past this limit, or past max_queued_bytes, is dropped and counted in
     /// StreamStats::dropped_notifications; the request carries on and its answer is unchanged.
     /// A subscriptions/listen stream instead ends when a notification is dropped, so that the
     /// client reconnects and lists again.
-    std::size_t max_queued_notifications{4096};
+    std::size_t max_queued_notifications =
+        mcp::constants::http_server::g_DEFAULT_MAX_QUEUED_NOTIFICATIONS;
     /// Bytes of notifications a request may have waiting to be written or being written, counted
     /// as the size of each serialized message. Notifications are dropped over this limit as over
     /// max_queued_notifications. The bytes are also charged to the connection memory budget
     /// (HttpConnectionLimits::max_request_bytes), so a notification the budget cannot hold is
     /// dropped too. A message larger than the limit is always dropped.
-    std::size_t max_queued_bytes{1024 * 1024};
+    std::size_t max_queued_bytes{mcp::constants::http_server::g_DEFAULT_MAX_QUEUED_BYTES};
 };
 
 /**

@@ -1,10 +1,12 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -23,23 +25,24 @@ struct SchemaOptions {
     /// Deepest nesting of objects and arrays accepted in a value checked against a schema.
     /// Validation recurses with the value wherever the schema descends into it, so this bounds the
     /// stack a validation can use.
-    std::size_t max_instance_depth = 64;
+    std::size_t max_instance_depth = mcp::constants::schema::g_DEFAULT_MAX_INSTANCE_DEPTH;
     /// Most violations reported by one `validate()` call; validation stops after this many.
-    std::size_t max_reported_violations = 8;
+    std::size_t max_reported_violations = mcp::constants::schema::g_DEFAULT_MAX_REPORTED_VIOLATIONS;
     /// Pattern matching steps one `validate()` call may take, before the allowance for the value's
     /// text below. A step takes a few nanoseconds.
-    std::size_t base_pattern_steps = 16'000'000;
+    std::size_t base_pattern_steps = mcp::constants::schema::g_DEFAULT_BASE_PATTERN_STEPS;
     /// Further pattern matching steps allowed for every byte of string and property name in the
     /// value. Typical patterns take a handful of steps per byte.
-    std::size_t pattern_steps_per_text_byte = 64;
+    std::size_t pattern_steps_per_text_byte =
+        mcp::constants::schema::g_DEFAULT_PATTERN_STEPS_PER_TEXT_BYTE;
     /// Most evaluation work one `validate()` call may do, and checking a schema against its
     /// dialect's rules when it is compiled. The work allowed grows with the size of the value times the
     /// size of the schema, up to this; a validation that needs more is stopped and reported as a
     /// violation.
-    std::size_t max_evaluation_work = 256'000'000;
+    std::size_t max_evaluation_work = mcp::constants::schema::g_DEFAULT_MAX_EVALUATION_WORK;
     /// Most instructions, in all, that the `pattern` and `patternProperties` regular expressions of
     /// one schema may compile to. An instruction takes about 12 bytes.
-    std::size_t max_pattern_instructions = 1'000'000;
+    std::size_t max_pattern_instructions = mcp::constants::schema::g_DEFAULT_MAX_PATTERN_INSTRUCTIONS;
 };
 
 /**
@@ -50,7 +53,7 @@ struct SchemaOptions {
 class MCP_API SchemaError : public std::invalid_argument {
    public:
     /// Why the schema was refused.
-    enum class Category {
+    enum class Category : std::uint8_t {
         eInvalidSchema,       ///< The schema is not valid under its dialect's metaschema, holds
                               ///< NaN or Infinity, has a pattern that is not a regular
                               ///< expression, or evaluating it exceeds the evaluation limits on

@@ -271,6 +271,28 @@ TEST(AuthClientRegistrationRequestTest, CarriesApplicationTypeAndTheRefreshToken
     EXPECT_EQ(body.at("redirect_uris"), json::array({"http://127.0.0.1:9999/callback"}));
     EXPECT_EQ(body.at("client_name"), "conformance-client");
     EXPECT_FALSE(body.contains("scope"));
+    for (const char* absent :
+         {"client_uri", "software_id", "software_version", "token_endpoint_auth_method"}) {
+        EXPECT_FALSE(body.contains(absent)) << absent;
+    }
+}
+
+// RFC 7591 section 2: the optional client metadata the application sets goes into the request.
+TEST(AuthClientRegistrationRequestTest, CarriesTheOptionalMetadataThatIsSet) {
+    mcp::auth::OAuthClientMetadata metadata;
+    metadata.redirect_uris = {"http://127.0.0.1:9999/callback"};
+    metadata.client_uri = "https://client.example";
+    metadata.software_id = "4NRB1-0XZABZI9E6-5SM3R";
+    metadata.software_version = "2.1";
+    metadata.token_endpoint_auth_method = "none";
+
+    const auto body = mcp::auth::build_registration_request(
+        metadata, facts_with("https://issuer.example", false, "https://issuer.example/register"));
+
+    EXPECT_EQ(body.at("client_uri"), "https://client.example");
+    EXPECT_EQ(body.at("software_id"), "4NRB1-0XZABZI9E6-5SM3R");
+    EXPECT_EQ(body.at("software_version"), "2.1");
+    EXPECT_EQ(body.at("token_endpoint_auth_method"), "none");
 }
 
 TEST(AuthClientRegistrationRequestTest, RequestsOfflineAccessOnlyWhenTheServerAdvertisesIt) {
@@ -316,11 +338,13 @@ TEST(AuthClientInformationTest, ReportsSecretExpiryOnlyForANonZeroExpiryInThePas
 TEST(AuthClientInformationTest, SerializesTheIssuerBindingAlongsideTheCredentials) {
     auto information = credentials("client", "https://issuer.example");
     information.client_secret = "secret";
+    information.client_id_issued_at = 1000;
     information.client_secret_expires_at = 1234;
 
     const nlohmann::json serialized = information;
     EXPECT_EQ(serialized.at("client_id"), "client");
     EXPECT_EQ(serialized.at("client_secret"), "secret");
+    EXPECT_EQ(serialized.at("client_id_issued_at"), 1000);
     EXPECT_EQ(serialized.at("client_secret_expires_at"), 1234);
     EXPECT_EQ(serialized.at("issuer"), "https://issuer.example");
 
@@ -329,6 +353,7 @@ TEST(AuthClientInformationTest, SerializesTheIssuerBindingAlongsideTheCredential
     const auto parsed = serialized.get<mcp::auth::OAuthClientInformation>();
     EXPECT_EQ(parsed.client_id, "client");
     EXPECT_EQ(parsed.client_secret, "secret");
+    EXPECT_EQ(parsed.client_id_issued_at, 1000);
     EXPECT_EQ(parsed.client_secret_expires_at, 1234);
     EXPECT_TRUE(parsed.issuer.empty());
 }
@@ -847,6 +872,96 @@ TEST(AuthTokenEndpointAuthLoopbackTest, SendsNoSecretAtAllWhenTheServerAdvertise
     EXPECT_EQ(server.body_for("/token").find("registered-secret"), std::string::npos);
 }
 
+namespace {
+
+/// What the token request of one authorization carried.
+struct TokenRequestSeen {
+    std::exception_ptr failure;
+    std::string authorization_url;
+    std::string authorization;
+    std::string body;
+};
+
+/// Authorizes once against a server that advertises @p methods as its token endpoint
+/// authentication methods (nothing when unset) and names @p authorize_path as its authorization
+/// endpoint, as a client whose secret is @p secret.
+TokenRequestSeen token_request_for(const std::optional<json>& methods,
+                                   const std::optional<std::string>& secret,
+                                   const std::string& authorize_path) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([&](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/prm") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            auto metadata = server_metadata(base, "", false, false);
+            metadata["authorization_endpoint"] = base + authorize_path;
+            if (methods) {
+                metadata["token_endpoint_auth_methods_supported"] = *methods;
+            }
+            return json_response(metadata);
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return not_found();
+    });
+
+    IdentityFixture fixture;
+    fixture.config.server_url = base + "/mcp";
+    fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+    fixture.config.client_id = "negotiating-client";
+    fixture.config.client_secret = secret;
+    fixture.config.client_issuer = base;
+    fixture.config.policy = loopback_policy(server.origin());
+    run_single_challenge(server, fixture, io_ctx, R"(Bearer resource_metadata=")" + base + R"(/prm")",
+                         3);
+    return {fixture.failure, fixture.authorization_url, server.authorization_for("/token"),
+            server.body_for("/token")};
+}
+
+}  // namespace
+
+// The client prefers client_secret_basic to client_secret_post, uses `none` when it has no secret,
+// and sends the secret in the request body to a server that advertises no method. An authorization
+// endpoint whose URL has a query keeps it.
+TEST(AuthTokenEndpointAuthLoopbackTest, TheMethodFollowsWhatTheServerAdvertises) {
+    const std::string secret = "negotiated-secret";
+
+    const auto both = token_request_for(json::array({"client_secret_post", "client_secret_basic"}),
+                                        secret, "/authorize");
+    ASSERT_EQ(both.failure, nullptr);
+    // "negotiating-client:negotiated-secret" base64-encoded.
+    EXPECT_EQ(both.authorization, "Basic bmVnb3RpYXRpbmctY2xpZW50Om5lZ290aWF0ZWQtc2VjcmV0");
+    EXPECT_EQ(both.body.find("client_secret"), std::string::npos) << both.body;
+
+    const auto post_only =
+        token_request_for(json::array({"private_key_jwt", "client_secret_post"}), secret, "/authorize");
+    ASSERT_EQ(post_only.failure, nullptr);
+    EXPECT_TRUE(post_only.authorization.empty());
+    EXPECT_NE(post_only.body.find("client_secret=negotiated-secret"), std::string::npos)
+        << post_only.body;
+
+    const auto public_client =
+        token_request_for(json::array({"client_secret_basic", "none"}), std::nullopt, "/authorize");
+    ASSERT_EQ(public_client.failure, nullptr);
+    EXPECT_TRUE(public_client.authorization.empty());
+    EXPECT_NE(public_client.body.find("client_id=negotiating-client"), std::string::npos)
+        << public_client.body;
+
+    const auto unadvertised = token_request_for(std::nullopt, secret, "/authorize?tenant=7");
+    ASSERT_EQ(unadvertised.failure, nullptr);
+    EXPECT_TRUE(unadvertised.authorization.empty());
+    EXPECT_NE(unadvertised.body.find("client_secret=negotiated-secret"), std::string::npos)
+        << unadvertised.body;
+    EXPECT_NE(unadvertised.authorization_url.find("/authorize?tenant=7&"), std::string::npos)
+        << unadvertised.authorization_url;
+}
+
 TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssuer) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -898,6 +1013,57 @@ TEST(AuthClientIdentityLoopbackTest, ReusesTheRegistrationRecordedForTheSameIssu
     EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eDynamicRegistration);
     EXPECT_EQ(fixture.identity->client_id, "registered-client");
     EXPECT_EQ(server.count("/register"), 1U);
+}
+
+// A stored registration whose secret the server has retired, or that names another issuer than the
+// one it is stored under, is not presented: the client registers again and stores the new one.
+TEST(AuthClientIdentityLoopbackTest, AnExpiredOrMisboundStoredRegistrationIsReplaced) {
+    for (const bool expired : {true, false}) {
+        SCOPED_TRACE(expired ? "expired secret" : "other issuer");
+        asio::io_context io_ctx;
+        LoopbackServer server(io_ctx);
+        const auto base = server.base_url();
+        server.set_handler([&base](const http::request<http::string_body>& request) {
+            const std::string target(request.target());
+            if (target == "/prm") {
+                return json_response(
+                    {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+            }
+            if (target == "/.well-known/oauth-authorization-server") {
+                return json_response(server_metadata(base, "", false, true));
+            }
+            if (target == "/register") {
+                return json_response({{"client_id", "registered-client"}}, http::status::created);
+            }
+            if (target == "/token") {
+                return json_response(token_document());
+            }
+            return not_found();
+        });
+
+        IdentityFixture fixture;
+        fixture.config.server_url = base + "/mcp";
+        fixture.config.redirect_uri = "http://127.0.0.1:9999/callback";
+        fixture.config.credential_store = fixture.credentials;
+        fixture.config.policy = loopback_policy(server.origin());
+        auto stale = credentials("stale-client", expired ? base : "https://other.example");
+        stale.client_secret = "stale-secret";
+        if (expired) {
+            stale.client_secret_expires_at = 1;
+        }
+        fixture.credentials->store(base, stale);
+
+        run_single_challenge(server, fixture, io_ctx,
+                             R"(Bearer resource_metadata=")" + base + R"(/prm")", 4);
+
+        ASSERT_EQ(fixture.failure, nullptr);
+        ASSERT_TRUE(fixture.identity.has_value());
+        EXPECT_EQ(fixture.identity->client_id, "registered-client");
+        EXPECT_EQ(server.count("/register"), 1U);
+        const auto stored = fixture.credentials->load(base);
+        ASSERT_TRUE(stored.has_value());
+        EXPECT_EQ(stored->client_id, "registered-client");
+    }
 }
 
 namespace {

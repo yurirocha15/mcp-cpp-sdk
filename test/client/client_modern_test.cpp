@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -674,6 +675,42 @@ TEST(ClientEra, PinnedModernRefusalNamesTheServedVersions) {
     EXPECT_EQ(harness.peer.count("initialize"), 0u);
 }
 
+// The versions a refusal lists are its `supported` strings; other entries are skipped. A refusal
+// without such a list reaches the caller as the server wrote it.
+TEST(ClientEra, PinnedModernRefusalReadsOnlyTheVersionStringsItLists) {
+    const auto refusal_with = [](const json& data) {
+        Harness harness(pinned_options("2026-07-28"));
+        harness.peer.reply = [data](const json& request) -> std::optional<json> {
+            return error_to(request, mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                            "Unsupported protocol version", std::make_optional(data));
+        };
+        std::optional<mcp::McpError> failure;
+        harness.run([&]() -> mcp::Task<void> {
+            try {
+                co_await harness.client->connect("test-client", "1.0");
+            } catch (const mcp::McpError& error) {
+                failure = error;
+            }
+        });
+        EXPECT_EQ(harness.peer.count("initialize"), 0u);
+        return failure;
+    };
+
+    const auto mixed = refusal_with(json::parse(R"({"supported":["2025-11-25",5,null]})"));
+    ASSERT_TRUE(mixed.has_value());
+    EXPECT_EQ(mixed->code(), mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
+    const std::string message = mixed->what();
+    EXPECT_NE(message.find("it supports 2025-11-25. Use"), std::string::npos) << message;
+
+    for (const auto& data : {json("2025-11-25"), json::parse(R"({"supported":"2025-11-25"})"),
+                             json::parse(R"({"supported":[5]})")}) {
+        const auto unlisted = refusal_with(data);
+        ASSERT_TRUE(unlisted.has_value()) << data;
+        EXPECT_EQ(unlisted->code(), mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION);
+        EXPECT_EQ(unlisted->message(), "Unsupported protocol version") << data;
+    }
+}
+
 // A refusal that lists the pinned version itself must not call that version unsupported. The
 // client asks once more before it gives up.
 TEST(ClientEra, PinnedModernRefusalListingTheRequestedVersionSaysSo) {
@@ -1227,16 +1264,20 @@ TEST(ClientEra, CancellationTokenEndsItsCallsInBothEras) {
     }
 }
 
-// A request given a token that is already cancelled fails without being sent.
+// A request given a token that is already cancelled fails without being sent. Every copy of the
+// token reports the cancel.
 TEST(ClientEra, CancelledTokenSendsNothing) {
     Harness harness(pinned_options("2026-07-28"));
     harness.peer.reply = modern_peer;
     int code = 0;
+    const mcp::CancellationToken token;
+    const auto copy = token;
+    EXPECT_FALSE(copy.is_cancelled());
     harness.run([&]() -> mcp::Task<void> {
         co_await harness.client->connect("test-client", "1.0");
         mcp::RequestOptions request_options;
-        request_options.cancellation = mcp::CancellationToken();
-        request_options.cancellation->cancel();
+        request_options.cancellation = token;
+        token.cancel();
         try {
             const json arguments = json::object();
             co_await harness.client->call_tool("slow", arguments, request_options);
@@ -1244,6 +1285,7 @@ TEST(ClientEra, CancelledTokenSendsNothing) {
             code = error.code();
         }
     });
+    EXPECT_TRUE(copy.is_cancelled());
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_REQUEST_CANCELLED);
     EXPECT_EQ(harness.peer.count("tools/call"), 0u);
     EXPECT_TRUE(harness.peer.with_method("notifications/cancelled").empty());
@@ -1315,6 +1357,37 @@ TEST(ClientEra, CallerMetaTraceparentPreserved) {
     EXPECT_EQ(meta.at(std::string(g_version_key)), "2026-07-28");
     EXPECT_TRUE(meta.contains(std::string(g_capabilities_key)));
     EXPECT_EQ(calls[0].at("params").at("name"), "echo");
+}
+
+// The client adds its own keys to a request's `_meta`, so the params must be an object, or null for
+// none, and a `_meta` the caller gives must be an object. Anything else is refused unsent.
+TEST(ClientEra, RequestParamsThatCannotCarryMetaAreRefusedUnsent) {
+    Harness harness(auto_options());
+    harness.peer.reply = modern_peer;
+
+    std::vector<int> codes;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("test-client", "1.0");
+        const std::optional<json> null_params = json(nullptr);
+        auto listed = harness.client->send_request("tools/list", null_params);
+        co_await std::move(listed);
+        const std::array<std::optional<json>, 2> refused{json::array({1}), json{{"_meta", 5}}};
+        for (const auto& params : refused) {
+            try {
+                auto pending = harness.client->send_request("tools/list", params);
+                co_await std::move(pending);
+                codes.push_back(0);
+            } catch (const mcp::McpError& error) {
+                codes.push_back(error.code());
+            }
+        }
+    });
+
+    EXPECT_EQ(codes, (std::vector<int>{mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                                       mcp::constants::jsonrpc::g_INVALID_PARAMS}));
+    const auto listings = harness.peer.with_method("tools/list");
+    ASSERT_EQ(listings.size(), 1u);
+    EXPECT_EQ(Harness::meta_of(listings[0]).at(std::string(g_version_key)), "2026-07-28");
 }
 
 TEST(ClientEra, CapabilitiesDerivedFromHandlers) {
@@ -1463,6 +1536,37 @@ TEST(ClientPinned, ProbeTimeoutMustBePositive) {
     mcp::ClientOptions options;
     options.probe_timeout = std::chrono::milliseconds(0);
     EXPECT_THROW(mcp::Client(transport, io.get_executor(), options), std::invalid_argument);
+}
+
+// Every limit of ClientOptions must be positive, and the client refuses one that is not. A response
+// cache that is off has its limits left unchecked.
+TEST(ClientPinned, EveryLimitMustBePositive) {
+    boost::asio::io_context io;
+    auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
+    const std::vector<std::function<void(mcp::ClientOptions&)>> invalid = {
+        [](mcp::ClientOptions& options) { options.subscription_queue_limit = 0; },
+        [](mcp::ClientOptions& options) { options.task_poll_interval = std::chrono::milliseconds(0); },
+        [](mcp::ClientOptions& options) { options.task_timeout = std::chrono::milliseconds(-1); },
+        [](mcp::ClientOptions& options) { options.max_incoming_request_bytes = 0; },
+        [](mcp::ClientOptions& options) {
+            options.response_cache.enabled = true;
+            options.response_cache.max_entries = 0;
+        },
+        [](mcp::ClientOptions& options) {
+            options.response_cache.enabled = true;
+            options.response_cache.max_ttl = std::chrono::milliseconds(0);
+        },
+    };
+    for (std::size_t index = 0; index < invalid.size(); ++index) {
+        SCOPED_TRACE(index);
+        mcp::ClientOptions options;
+        invalid[index](options);
+        EXPECT_THROW(mcp::Client(transport, io.get_executor(), options), std::invalid_argument);
+    }
+
+    mcp::ClientOptions cache_off;
+    cache_off.response_cache.max_entries = 0;
+    EXPECT_NO_THROW(mcp::Client(transport, io.get_executor(), cache_off));
 }
 
 // ---------------------------------------------------------------------------

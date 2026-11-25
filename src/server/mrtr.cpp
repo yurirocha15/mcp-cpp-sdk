@@ -9,6 +9,8 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 
+#include <algorithm>
+#include <array>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/redirect_error.hpp>
@@ -34,13 +36,11 @@ std::string_view key_prefix(std::string_view method) {
 
 /// Whether @p key is one of the generated names: a kind prefix, a dash and a number.
 bool is_generated_key(std::string_view key) {
-    for (const std::string_view prefix : {"elicitation-", "sampling-", "roots-"}) {
-        if (key.size() > prefix.size() && key.substr(0, prefix.size()) == prefix &&
-            key.find_first_not_of("0123456789", prefix.size()) == std::string_view::npos) {
-            return true;
-        }
-    }
-    return false;
+    constexpr std::array<std::string_view, 3> prefixes{"elicitation-", "sampling-", "roots-"};
+    return std::ranges::any_of(prefixes, [key](std::string_view prefix) {
+        return key.size() > prefix.size() && key.starts_with(prefix) &&
+               key.find_first_not_of("0123456789", prefix.size()) == std::string_view::npos;
+    });
 }
 
 /// Wakes the request waiting for the entry. Posted, so that questions other coroutines of the
@@ -302,13 +302,11 @@ bool client_can_answer_input(const nlohmann::json& request_meta) {
     if (declared == request_meta.end() || !declared->is_object()) {
         return false;
     }
-    for (const char* name : {"elicitation", "sampling", "roots"}) {
+    constexpr std::array<const char*, 3> names{"elicitation", "sampling", "roots"};
+    return std::ranges::any_of(names, [&declared](const char* name) {
         const auto capability = declared->find(name);
-        if (capability != declared->end() && capability->is_object()) {
-            return true;
-        }
-    }
-    return false;
+        return capability != declared->end() && capability->is_object();
+    });
 }
 
 bool InlineInput::refuse(const nlohmann::json& request) {
@@ -319,13 +317,13 @@ bool InlineInput::refuse(const nlohmann::json& request) {
     if (missing.empty()) {
         return false;
     }
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     missing_.merge_patch(missing);
     return true;
 }
 
 nlohmann::json InlineInput::missing_capabilities() const {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return missing_;
 }
 
@@ -446,15 +444,17 @@ std::string mrtr_principal_digest(std::string_view principal) {
 }
 
 std::string mrtr_seal_state(const sealed_state::Codec& codec, const MrtrSealedState& state) {
-    const nlohmann::json payload = {{"v", 1},
-                                    {"i", state.id},
-                                    {"e", state.expires_ms},
-                                    {"p", state.principal_digest},
-                                    {"m", state.method},
-                                    {"d", base64url_encode(state.params_digest)},
-                                    {"r", state.round},
-                                    {"k", state.asked},
-                                    {"a", state.answers}};
+    const nlohmann::json payload = {
+        {"v", 1},
+        {"i", state.id},
+        {"e", state.expires_ms},
+        {"p", state.principal_digest},
+        {"m", state.method},
+        {"d", base64url_encode(state.params_digest)},
+        {"r", state.round},
+        {"k", state.asked},
+        {"a", state.answers},
+    };
     auto sealed = codec.seal(mcp::detail::dump_json(payload));
     return sealed ? std::move(sealed.token) : std::string{};
 }

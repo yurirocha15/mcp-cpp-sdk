@@ -52,18 +52,23 @@ int main() {
         Server server(server_info, server_caps);
 
         // Register a simple echo tool
-        nlohmann::json echo_schema = {{"type", "object"},
-                                      {"properties", {{"message", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"message"})}};
+        nlohmann::json echo_schema = {
+            {"type", "object"},
+            {"properties", {{"message", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"message"})},
+        };
 
-        server.add_tool("echo", "Echo tool for benchmarking", echo_schema,
-                        [](const nlohmann::json& args) -> nlohmann::json {
-                            std::string msg = args.at("message").get<std::string>();
-                            return nlohmann::json{
-                                {"content", nlohmann::json::array(
-                                                {nlohmann::json{{"type", "text"}, {"text", msg}}})},
-                            };
-                        });
+        server.add_tool(
+            "echo", "Echo tool for benchmarking", echo_schema,
+            [](const nlohmann::json& args) -> nlohmann::json {
+                std::string msg = args.at("message").get<std::string>();
+                return nlohmann::json{
+                    {
+                        "content",
+                        nlohmann::json::array({nlohmann::json{{"type", "text"}, {"text", msg}}}),
+                    },
+                };
+            });
 
         // ========== CLIENT SETUP ==========
         Implementation client_info;
@@ -108,7 +113,7 @@ int main() {
                     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
                     // Calculate metrics
-                    double total_ms = duration.count();
+                    const double total_ms = std::chrono::duration<double, std::milli>(duration).count();
                     double avg_latency_ms = total_ms / num_iterations;
                     double calls_per_sec = (num_iterations * 1000.0) / total_ms;
 

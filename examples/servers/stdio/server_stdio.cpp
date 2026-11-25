@@ -75,16 +75,19 @@ int main() {
         nlohmann::json add_schema = {
             {"type", "object"},
             {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}},
-            {"required", nlohmann::json::array({"a", "b"})}};
+            {"required", nlohmann::json::array({"a", "b"})},
+        };
 
         server.add_tool<AddInput, AddOutput>(
             "add", "Add two numbers", add_schema,
             [](AddInput in) -> AddOutput { return AddOutput{.result = in.a + in.b}; });
 
         // Tool: greet — sync handler, with context
-        nlohmann::json greet_schema = {{"type", "object"},
-                                       {"properties", {{"name", {{"type", "string"}}}}},
-                                       {"required", nlohmann::json::array({"name"})}};
+        nlohmann::json greet_schema = {
+            {"type", "object"},
+            {"properties", {{"name", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"name"})},
+        };
 
         server.add_tool<GreetInput, GreetOutput>(
             "greet", "Greet someone by name", greet_schema,
@@ -93,9 +96,11 @@ int main() {
             });
 
         // Tool: echo_async — async handler, no context
-        nlohmann::json echo_schema = {{"type", "object"},
-                                      {"properties", {{"text", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"text"})}};
+        nlohmann::json echo_schema = {
+            {"type", "object"},
+            {"properties", {{"text", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"text"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "echo_async", "Echo the input asynchronously", echo_schema,
@@ -108,9 +113,11 @@ int main() {
         // In a session of 2025-11-25 or earlier the log message reaches the client unless
         // logging/setLevel raised the session's level above info. A 2026-07-28 request gets it
         // only when the request names info or a less severe level (RequestOptions::log_level).
-        nlohmann::json upper_schema = {{"type", "object"},
-                                       {"properties", {{"text", {{"type", "string"}}}}},
-                                       {"required", nlohmann::json::array({"text"})}};
+        nlohmann::json upper_schema = {
+            {"type", "object"},
+            {"properties", {{"text", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"text"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "log_and_upper", "Uppercase the input and log via context", upper_schema,

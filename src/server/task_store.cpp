@@ -2,8 +2,11 @@
 #include "mcp/detail/text/secure_random.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <utility>
 
@@ -11,59 +14,36 @@ namespace mcp {
 
 namespace {
 
-// Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm), so formatting needs neither
-// gmtime nor the platform's thread-safe variants of it.
-void civil_from_days(std::int64_t days, std::int64_t& year, unsigned& month, unsigned& day) {
-    days += 719468;
-    const std::int64_t era = (days >= 0 ? days : days - 146096) / 146097;
-    const auto day_of_era = static_cast<unsigned>(days - era * 146097);
-    const unsigned year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
-    year = static_cast<std::int64_t>(year_of_era) + era * 400;
-    const unsigned day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    const unsigned shifted_month = (5 * day_of_year + 2) / 153;
-    day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    month = shifted_month < 10 ? shifted_month + 3 : shifted_month - 9;
-    year += month <= 2 ? 1 : 0;
-}
-
-std::string two_digits(unsigned value) {
-    return std::string{static_cast<char>('0' + value / 10 % 10), static_cast<char>('0' + value % 10)};
+/// Appends @p value in decimal, with leading zeros to @p width digits.
+void append_padded(std::string& text, long long value, std::size_t width) {
+    const std::string digits = std::to_string(value);
+    if (digits.size() < width) {
+        text.append(width - digits.size(), '0');
+    }
+    text += digits;
 }
 
 }  // namespace
 
 std::string format_task_time(std::chrono::system_clock::time_point time) {
     using namespace std::chrono;
-    const auto total_ms = duration_cast<milliseconds>(time.time_since_epoch()).count();
-    std::int64_t seconds = total_ms / 1000;
-    std::int64_t millis = total_ms % 1000;
-    if (millis < 0) {
-        millis += 1000;
-        --seconds;
-    }
-    std::int64_t days = seconds / 86400;
-    std::int64_t second_of_day = seconds % 86400;
-    if (second_of_day < 0) {
-        second_of_day += 86400;
-        --days;
-    }
-    std::int64_t year = 0;
-    unsigned month = 0;
-    unsigned day = 0;
-    civil_from_days(days, year, month, day);
-
-    std::string text = std::to_string(year);
-    while (text.size() < 4) {
-        text.insert(text.begin(), '0');
-    }
-    text += '-' + two_digits(month) + '-' + two_digits(day) + 'T';
-    text += two_digits(static_cast<unsigned>(second_of_day / 3600)) + ':' +
-            two_digits(static_cast<unsigned>(second_of_day / 60 % 60)) + ':' +
-            two_digits(static_cast<unsigned>(second_of_day % 60)) + '.';
-    text += static_cast<char>('0' + millis / 100);
-    text += static_cast<char>('0' + millis / 10 % 10);
-    text += static_cast<char>('0' + millis % 10);
+    const auto day = floor<days>(time);
+    const year_month_day date{day};
+    const hh_mm_ss clock{floor<milliseconds>(time - day)};
+    std::string text;
+    append_padded(text, static_cast<int>(date.year()), 4);
+    text += '-';
+    append_padded(text, static_cast<unsigned>(date.month()), 2);
+    text += '-';
+    append_padded(text, static_cast<unsigned>(date.day()), 2);
+    text += 'T';
+    append_padded(text, clock.hours().count(), 2);
+    text += ':';
+    append_padded(text, clock.minutes().count(), 2);
+    text += ':';
+    append_padded(text, clock.seconds().count(), 2);
+    text += '.';
+    append_padded(text, clock.subseconds().count(), 3);
     text += 'Z';
     return text;
 }
@@ -156,7 +136,7 @@ struct InMemoryTaskStore::Impl {
     // when there is no such task or it has finished.
     template <typename Change>
     std::optional<TaskRecord> change_open(std::string_view id, Change&& change) {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         auto* record = find(id);
         if (record == nullptr || record->terminal()) {
             return std::nullopt;
@@ -182,12 +162,11 @@ std::optional<TaskRecord> InMemoryTaskStore::create(
     const std::string owner_text(owner);
     std::string id = mcp::detail::generate_secure_session_id();
 
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     const auto at = impl_->now();
     impl_->purge_expired(at);
-    const auto owned = static_cast<std::size_t>(
-        std::count_if(impl_->tasks.begin(), impl_->tasks.end(),
-                      [&owner_text](const auto& entry) { return entry.second.owner == owner_text; }));
+    const auto owned = static_cast<std::size_t>(std::ranges::count_if(
+        impl_->tasks, [&owner_text](const auto& entry) { return entry.second.owner == owner_text; }));
     if (owned >= impl_->options.max_tasks_per_owner && !impl_->evict_finished(&owner_text)) {
         return std::nullopt;
     }
@@ -207,7 +186,7 @@ std::optional<TaskRecord> InMemoryTaskStore::create(
 }
 
 std::optional<TaskRecord> InMemoryTaskStore::get(std::string_view owner, std::string_view id) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     const auto* record = impl_->find(id);
     if (record == nullptr || record->owner != owner) {
         return std::nullopt;
@@ -258,7 +237,7 @@ std::optional<TaskRecord> InMemoryTaskStore::submit_input_responses(std::string_
 
 std::optional<nlohmann::json> InMemoryTaskStore::take_input_response(std::string_view id,
                                                                      std::string_view key) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     auto* record = impl_->find(id);
     if (record == nullptr) {
         return std::nullopt;
@@ -302,7 +281,7 @@ std::optional<TaskRecord> InMemoryTaskStore::cancel(std::string_view id, std::st
 }
 
 std::size_t InMemoryTaskStore::size() {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     impl_->purge_expired(impl_->now());
     return impl_->tasks.size();
 }

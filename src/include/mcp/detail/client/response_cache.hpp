@@ -40,7 +40,7 @@ class ResponseCache {
     /// The result kept under @p key while it is fresh at @p now.
     [[nodiscard]] std::optional<nlohmann::json> find(const std::string& key,
                                                      Clock::time_point now = Clock::now()) {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         const auto found = entries_.find(key);
         if (found == entries_.end()) {
             return std::nullopt;
@@ -55,7 +55,7 @@ class ResponseCache {
     /// Read before a call whose result may be kept; store() keeps nothing when a notification
     /// dropped results since.
     [[nodiscard]] std::uint64_t generation() const {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         return generation_;
     }
 
@@ -66,7 +66,7 @@ class ResponseCache {
                const std::optional<nlohmann::json>& params, const nlohmann::json& result,
                std::uint64_t since, Clock::time_point received = Clock::now()) {
         const auto ttl = fresh_for(result);
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         if (ttl <= std::chrono::milliseconds::zero()) {
             entries_.erase(key);
             return;
@@ -77,10 +77,9 @@ class ResponseCache {
         std::erase_if(entries_,
                       [received](const auto& entry) { return received >= entry.second.expires; });
         if (entries_.size() >= options_.max_entries && !entries_.contains(key)) {
-            entries_.erase(std::min_element(entries_.begin(), entries_.end(),
-                                            [](const auto& left, const auto& right) {
-                                                return left.second.expires < right.second.expires;
-                                            }));
+            entries_.erase(std::ranges::min_element(entries_, [](const auto& left, const auto& right) {
+                return left.second.expires < right.second.expires;
+            }));
         }
         const auto room =
             std::chrono::duration_cast<std::chrono::milliseconds>(Clock::time_point::max() - received);
@@ -110,7 +109,7 @@ class ResponseCache {
                 return;
             }
             const auto& name = uri->get_ref<const std::string&>();
-            std::lock_guard lock(mutex_);
+            std::scoped_lock lock(mutex_);
             ++generation_;
             std::erase_if(entries_, [&name](const auto& entry) {
                 return entry.second.method == mcp::constants::methods::g_RESOURCES_READ &&
@@ -130,7 +129,7 @@ class ResponseCache {
         } else {
             return;
         }
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         ++generation_;
         std::erase_if(entries_, [first, second](const auto& entry) {
             return entry.second.method == first || entry.second.method == second;
@@ -140,20 +139,20 @@ class ResponseCache {
     /// Drops every result of @p method, as when a server refuses a cursor it handed out: its
     /// pages may no longer fit together.
     void forget(std::string_view method) {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         ++generation_;
         std::erase_if(entries_, [method](const auto& entry) { return entry.second.method == method; });
     }
 
     /// Drops everything.
     void clear() {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         ++generation_;
         entries_.clear();
     }
 
     [[nodiscard]] std::size_t size() const {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         return entries_.size();
     }
 

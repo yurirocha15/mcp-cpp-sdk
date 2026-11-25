@@ -439,6 +439,56 @@ TEST_F(ClientCoreTest, RequestsFailImmediatelyBeforeConnect) {
     EXPECT_THROW(static_cast<void>(client.send_notification("notifications/test", std::nullopt)),
                  mcp::McpError);
     EXPECT_THROW(static_cast<void>(client.ping()), mcp::McpError);
+    EXPECT_THROW(static_cast<void>(client.start_tool("echo", nlohmann::json::object())), mcp::McpError);
+    EXPECT_TRUE(transport->written().empty());
+}
+
+// A client connects once. connect() on a client already closed fails with CONNECTION_CLOSED and
+// sends nothing, and a second connect() on a connected client is refused without another handshake.
+TEST_F(ClientCoreTest, ConnectIsRefusedAfterCloseAndOnAConnectedClient) {
+    auto closed_transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    mcp::Client closed_client(closed_transport, io_ctx_.get_executor(), legacy_client_options());
+    closed_client.close();
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    raw_transport->set_on_write([raw_transport](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (json_msg.contains("id")) {
+            raw_transport->enqueue_message(
+                make_result_response(json_msg["id"].get<std::string>(), make_initialize_result())
+                    .dump());
+        }
+    });
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+
+    std::optional<int> closed_code;
+    std::optional<int> second_code;
+    std::string second_message;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            co_await closed_client.connect("test-client", "0.1");
+        } catch (const mcp::McpError& error) {
+            closed_code = error.code();
+        }
+        co_await client.connect("test-client", "0.1");
+        try {
+            co_await client.connect("test-client", "0.1");
+        } catch (const mcp::McpError& error) {
+            second_code = error.code();
+            second_message = error.what();
+        }
+        raw_transport->close();
+    });
+    io_ctx_.run();
+
+    ASSERT_TRUE(closed_code.has_value());
+    EXPECT_EQ(*closed_code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED);
+    EXPECT_TRUE(closed_transport->written().empty());
+    ASSERT_TRUE(second_code.has_value());
+    EXPECT_EQ(*second_code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_NE(second_message.find("already been initialized"), std::string::npos) << second_message;
+    EXPECT_EQ(raw_transport->written().size(), 2U);
 }
 
 TEST_F(ClientCoreTest, ConnectHandshakeFollowsMcpOrder) {
@@ -767,6 +817,49 @@ TEST_F(ClientCoreTest, ConnectReturnsServerCapabilities) {
     ASSERT_TRUE(init_result.capabilities.tools.has_value());
     ASSERT_TRUE(init_result.capabilities.tools->listChanged.has_value());
     EXPECT_TRUE(*init_result.capabilities.tools->listChanged);
+}
+
+// A server that writes its absent members as null has connected, without instructions and without
+// the capabilities it wrote as null.
+TEST_F(ClientCoreTest, ConnectReadsNullMembersOfTheInitializeResultAsAbsent) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    auto init_result_json = make_initialize_result();
+    init_result_json["instructions"] = nullptr;
+    init_result_json["capabilities"] = {
+        {"tools", nullptr}, {"logging", nullptr}, {"prompts", {{"listChanged", nullptr}}}};
+
+    raw_transport->set_on_write(
+        [raw_transport, init_result_json = std::move(init_result_json)](std::string_view msg) {
+            auto json_msg = nlohmann::json::parse(msg);
+            if (json_msg.contains("id")) {
+                auto id = json_msg["id"].get<std::string>();
+                raw_transport->enqueue_message(make_result_response(id, init_result_json).dump());
+            }
+        });
+
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+
+    std::optional<mcp::ConnectResult> init_result;
+    std::string failure;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        try {
+            init_result = co_await client.connect("test-client", "0.1");
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        raw_transport->close();
+    });
+
+    io_ctx_.run();
+
+    ASSERT_TRUE(init_result.has_value()) << failure;
+    EXPECT_FALSE(init_result->instructions.has_value());
+    EXPECT_FALSE(init_result->capabilities.tools.has_value());
+    EXPECT_FALSE(init_result->capabilities.logging.has_value());
+    ASSERT_TRUE(init_result->capabilities.prompts.has_value());
+    EXPECT_FALSE(init_result->capabilities.prompts->listChanged.has_value());
 }
 
 TEST_F(ClientCoreTest, PingSendsRequestAndReceivesResponse) {
@@ -1535,6 +1628,55 @@ TEST_F(ClientCoreTest, ResultWithNullErrorMemberIsNotAProtocolViolation) {
         << "the control response failed too, so the null member is not the difference: "
         << outcome.second_failure;
     EXPECT_TRUE(outcome.reported.empty()) << "a well-formed response was reported as an error";
+}
+
+// A response must carry exactly one of `result` and `error`. One with both, or with neither,
+// still names its request, so that request fails at once instead of waiting out its deadline,
+// and the session goes on.
+TEST_F(ClientCoreTest, ResponseWithBothOrNeitherOfResultAndErrorFailsOnlyItsOwnRequest) {
+    const std::vector<std::function<nlohmann::json(const std::string&)>> responses = {
+        [](const std::string& id) {
+            return nlohmann::json{{"jsonrpc", "2.0"},
+                                  {"id", id},
+                                  {"result", nlohmann::json::object()},
+                                  {"error", {{"code", -32000}, {"message", "also failed"}}}};
+        },
+        [](const std::string& id) { return nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}}; },
+    };
+    for (const auto& response : responses) {
+        boost::asio::io_context io_ctx;
+        const auto outcome = send_two_requests(io_ctx, [&response](const std::string& id) {
+            return std::vector<nlohmann::json>{response(id)};
+        });
+        SCOPED_TRACE(response("1").dump());
+
+        ASSERT_TRUE(outcome.first_threw) << "the malformed response was taken as a result";
+        EXPECT_EQ(outcome.first_code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
+        EXPECT_NE(outcome.first_message.find("exactly one of result or error"), std::string::npos)
+            << "actual: " << outcome.first_message;
+        EXPECT_TRUE(outcome.second_succeeded)
+            << "the session died on one malformed response: " << outcome.second_failure;
+    }
+}
+
+// With strict validation, the default, a message without `"jsonrpc": "2.0"` or with a method that
+// is not a string is reported and dropped. The answer that follows still completes the request.
+TEST_F(ClientCoreTest, MessagesThatAreNotJsonRpcTwoAreReportedAndDropped) {
+    const auto outcome = send_two_requests(io_ctx_, [](const std::string& id) {
+        return std::vector<nlohmann::json>{
+            {{"id", id}, {"result", {{"from", "no jsonrpc member"}}}},
+            {{"jsonrpc", "1.0"}, {"id", id}, {"result", {{"from", "another version"}}}},
+            {{"jsonrpc", "2.0"}, {"method", 42}},
+            {{"jsonrpc", "2.0"}, {"id", id}, {"result", nlohmann::json::object()}}};
+    });
+
+    EXPECT_FALSE(outcome.first_threw) << "actual: " << outcome.first_message;
+    EXPECT_TRUE(outcome.second_succeeded)
+        << "the session died on a message that is not JSON-RPC 2.0: " << outcome.second_failure;
+    ASSERT_EQ(outcome.reported.size(), 3U) << "a drop was silent";
+    for (const auto& reported : outcome.reported) {
+        EXPECT_EQ(reported.code, mcp::constants::jsonrpc::g_PARSE_ERROR) << reported.message;
+    }
 }
 
 }  // namespace client_core_test

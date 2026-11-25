@@ -8,6 +8,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,8 +24,9 @@ namespace net = boost::asio;
 namespace {
 
 std::string lower(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(),
-                   [](unsigned char symbol) { return static_cast<char>(std::tolower(symbol)); });
+    std::ranges::transform(text, text.begin(), [](unsigned char symbol) {
+        return static_cast<char>(std::tolower(symbol));
+    });
     return text;
 }
 
@@ -60,11 +64,12 @@ bool split_host_port(const std::string& authority, std::string& host, std::strin
 }
 
 bool is_port(const std::string& text) {
-    if (text.empty() || text.size() > 5 || text.find_first_not_of("0123456789") != std::string::npos) {
-        return false;
-    }
-    const auto value = std::stoul(text);
-    return value > 0 && value <= 65535;
+    // As many digits as the largest port has, at most.
+    constexpr std::size_t max_digits = std::numeric_limits<std::uint16_t>::digits10 + 1;
+    std::uint16_t value = 0;
+    const char* const end = text.data() + text.size();
+    const auto [stop, error] = std::from_chars(text.data(), end, value);
+    return text.size() <= max_digits && error == std::errc{} && stop == end && value > 0;
 }
 
 /// Whether one NO_PROXY entry covers @p host (lower case, no brackets) on @p port.
@@ -105,7 +110,7 @@ bool entry_matches(const std::string& raw_entry, const std::string& host, const 
     if (!error) {
         return host_is_address && entry_address == address;
     }
-    if (entry_host.rfind("*.", 0) == 0) {
+    if (entry_host.starts_with("*.")) {
         entry_host.erase(0, 2);
     } else if (!entry_host.empty() && entry_host.front() == '.') {
         entry_host.erase(0, 1);

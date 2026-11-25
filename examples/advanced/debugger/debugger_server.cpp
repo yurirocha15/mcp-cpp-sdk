@@ -5,8 +5,8 @@
 #include <lldb/API/LLDB.h>
 #include <lldb/API/SBHostOS.h>
 #else
-// Stand-ins for the LLDB API this example uses, named as LLDB names them.
-// NOLINTBEGIN(readability-identifier-naming)
+// Stand-ins for the LLDB API this example uses, declared as LLDB declares them.
+// NOLINTBEGIN
 namespace lldb {
 using pid_t = unsigned long long;
 enum StateType {
@@ -193,7 +193,7 @@ class SBDebugger {
     SBTarget GetTargetAtIndex(unsigned int) const { return {}; }
 };
 }  // namespace lldb
-// NOLINTEND(readability-identifier-naming)
+// NOLINTEND
 #endif  // __has_include(<lldb/API/LLDB.h>)
 
 #include <boost/asio/co_spawn.hpp>
@@ -331,7 +331,7 @@ static void print_usage(const char* prog) {
 enum class ParseResult : std::uint8_t {
     eOk,
     eHelp,
-    eError
+    eError,
 };
 
 static ParseResult parse_args(int argc, char** argv, AppOptions& opts) {
@@ -638,9 +638,11 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         auto listener_ptr =
             std::make_shared<lldb::SBListener>(lldb::SBListener("mcp-process-listener"));
 
-        nlohmann::json command_schema = {{"type", "object"},
-                                         {"properties", {{"command", {{"type", "string"}}}}},
-                                         {"required", nlohmann::json::array({"command"})}};
+        nlohmann::json command_schema = {
+            {"type", "object"},
+            {"properties", {{"command", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"command"})},
+        };
         server.add_tool<CommandInput, mcp::CallToolResult>(
             "lldb_command", "Run raw LLDB command", command_schema,
             [debugger_ptr](CommandInput args) -> mcp::Task<mcp::CallToolResult> {
@@ -666,11 +668,16 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
         nlohmann::json launch_schema = {
             {"type", "object"},
-            {"properties",
-             {{"program", {{"type", "string"}}},
-              {"args", {{"type", "array"}, {"items", {{"type", "string"}}}}},
-              {"stop_at_entry", {{"type", "boolean"}}}}},
-            {"required", nlohmann::json::array({"program"})}};
+            {
+                "properties",
+                {
+                    {"program", {{"type", "string"}}},
+                    {"args", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                    {"stop_at_entry", {{"type", "boolean"}}},
+                },
+            },
+            {"required", nlohmann::json::array({"program"})},
+        };
         server.add_tool<LaunchInput, mcp::CallToolResult>(
             "launch", "Launch program under LLDB", launch_schema,
             [debugger_ptr, target_ptr,
@@ -723,7 +730,8 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
         nlohmann::json attach_schema = {
             {"type", "object"},
-            {"properties", {{"pid", {{"type", "integer"}}}, {"name", {{"type", "string"}}}}}};
+            {"properties", {{"pid", {{"type", "integer"}}}, {"name", {{"type", "string"}}}}},
+        };
         server.add_tool<AttachInput, mcp::CallToolResult>(
             "attach", "Attach to existing process", attach_schema,
             [debugger_ptr, target_ptr,
@@ -772,12 +780,18 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                 }
             });
 
-        nlohmann::json bp_schema = {{"type", "object"},
-                                    {"properties",
-                                     {{"file", {{"type", "string"}}},
-                                      {"line", {{"type", "integer"}}},
-                                      {"function_name", {{"type", "string"}}},
-                                      {"condition", {{"type", "string"}}}}}};
+        nlohmann::json bp_schema = {
+            {"type", "object"},
+            {
+                "properties",
+                {
+                    {"file", {{"type", "string"}}},
+                    {"line", {{"type", "integer"}}},
+                    {"function_name", {{"type", "string"}}},
+                    {"condition", {{"type", "string"}}},
+                },
+            },
+        };
         server.add_tool<BreakpointInput, mcp::CallToolResult>(
             "set_breakpoint", "Set file/line or function breakpoint", bp_schema,
             [target_ptr](BreakpointInput args) -> mcp::Task<mcp::CallToolResult> {
@@ -866,10 +880,17 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
         nlohmann::json step_schema = {
             {"type", "object"},
-            {"properties",
-             {{"thread_index", {{"type", "integer"}}},
-              {"type",
-               {{"type", "string"}, {"enum", nlohmann::json::array({"over", "into", "out"})}}}}}};
+            {
+                "properties",
+                {
+                    {"thread_index", {{"type", "integer"}}},
+                    {
+                        "type",
+                        {{"type", "string"}, {"enum", nlohmann::json::array({"over", "into", "out"})}},
+                    },
+                },
+            },
+        };
         server.add_tool<StepInput, mcp::CallToolResult>(
             "step", "Step selected thread", step_schema,
             [target_ptr, listener_ptr](StepInput args) -> mcp::Task<mcp::CallToolResult> {
@@ -941,12 +962,18 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                 }
             });
 
-        nlohmann::json eval_schema = {{"type", "object"},
-                                      {"properties",
-                                       {{"expression", {{"type", "string"}}},
-                                        {"thread_index", {{"type", "integer"}}},
-                                        {"frame_index", {{"type", "integer"}}}}},
-                                      {"required", nlohmann::json::array({"expression"})}};
+        nlohmann::json eval_schema = {
+            {"type", "object"},
+            {
+                "properties",
+                {
+                    {"expression", {{"type", "string"}}},
+                    {"thread_index", {{"type", "integer"}}},
+                    {"frame_index", {{"type", "integer"}}},
+                },
+            },
+            {"required", nlohmann::json::array({"expression"})},
+        };
         server.add_tool<EvalInput, mcp::CallToolResult>(
             "evaluate", "Evaluate expression", eval_schema,
             [target_ptr](EvalInput args) -> mcp::Task<mcp::CallToolResult> {
@@ -1000,8 +1027,11 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
 
         nlohmann::json bt_schema = {
             {"type", "object"},
-            {"properties",
-             {{"thread_index", {{"type", "integer"}}}, {"count", {{"type", "integer"}}}}}};
+            {
+                "properties",
+                {{"thread_index", {{"type", "integer"}}}, {"count", {{"type", "integer"}}}},
+            },
+        };
         server.add_tool<BacktraceInput, mcp::CallToolResult>(
             "backtrace", "Collect thread backtrace", bt_schema,
             [target_ptr](BacktraceInput args) -> mcp::Task<mcp::CallToolResult> {
@@ -1052,11 +1082,13 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                             mod = safe_cstr(module.GetFileSpec().GetFilename(), "<unknown>");
                         }
 
-                        frames.push_back({{"frame_index", i},
-                                          {"function", safe_cstr(frame.GetFunctionName(), "<unknown>")},
-                                          {"file", file},
-                                          {"line", line},
-                                          {"module", mod}});
+                        frames.push_back({
+                            {"frame_index", i},
+                            {"function", safe_cstr(frame.GetFunctionName(), "<unknown>")},
+                            {"file", file},
+                            {"line", line},
+                            {"module", mod},
+                        });
                     }
 
                     nlohmann::json out;
@@ -1093,10 +1125,11 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         if (!t.IsValid()) {
                             continue;
                         }
-                        rows.push_back(
-                            {{"index", i},
-                             {"triple", safe_cstr(t.GetTriple(), "<unknown>")},
-                             {"executable", safe_cstr(t.GetExecutable().GetFilename(), "<unknown>")}});
+                        rows.push_back({
+                            {"index", i},
+                            {"triple", safe_cstr(t.GetTriple(), "<unknown>")},
+                            {"executable", safe_cstr(t.GetExecutable().GetFilename(), "<unknown>")},
+                        });
                     }
                     mcp::TextResourceContents c;
                     c.uri = params.uri;
@@ -1153,12 +1186,14 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         }
                         std::array<char, g_STOP_DESC_BUF_SIZE> stop_buf{};
                         th.GetStopDescription(stop_buf.data(), stop_buf.size());
-                        rows.push_back({{"index", i},
-                                        {"thread_id", th.GetThreadID()},
-                                        {"name", safe_cstr(th.GetName(), "<unnamed>")},
-                                        {"stop_reason", stop_reason_to_string(th.GetStopReason())},
-                                        {"stop_description", safe_cstr(stop_buf.data(), "")},
-                                        {"queue", safe_cstr(th.GetQueueName(), "")}});
+                        rows.push_back({
+                            {"index", i},
+                            {"thread_id", th.GetThreadID()},
+                            {"name", safe_cstr(th.GetName(), "<unnamed>")},
+                            {"stop_reason", stop_reason_to_string(th.GetStopReason())},
+                            {"stop_description", safe_cstr(stop_buf.data(), "")},
+                            {"queue", safe_cstr(th.GetQueueName(), "")},
+                        });
                     }
                     mcp::TextResourceContents c;
                     c.uri = params.uri;
@@ -1226,10 +1261,12 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                                 }
                             }
                         }
-                        rows.push_back({{"id", bp.GetID()},
-                                        {"enabled", bp.IsEnabled()},
-                                        {"hit_count", bp.GetHitCount()},
-                                        {"description", desc}});
+                        rows.push_back({
+                            {"id", bp.GetID()},
+                            {"enabled", bp.IsEnabled()},
+                            {"hit_count", bp.GetHitCount()},
+                            {"description", desc},
+                        });
                     }
                     mcp::TextResourceContents c;
                     c.uri = params.uri;

@@ -19,7 +19,7 @@ namespace mcp::detail {
 class MCP_API RegexError : public std::invalid_argument {
    public:
     /// Why the pattern was refused.
-    enum class Kind {
+    enum class Kind : std::uint8_t {
         eInvalid,      ///< Not a regular expression under ECMA-262, with or without Annex B.
         eUnsupported,  ///< Uses syntax `Regex` does not implement, such as a lookahead.
         eTooLarge,     ///< Exceeds a limit of `Regex` or of the enclosing `PatternBudget`.

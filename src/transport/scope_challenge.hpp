@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <mcp/transport/http_types.hpp>
 
 #include <algorithm>
@@ -13,10 +14,10 @@ namespace mcp::detail {
 
 /// What the scope check decided about one request.
 struct ScopeCheck {
-    enum class Outcome {
+    enum class Outcome : std::uint8_t {
         eAllowed,
         eInsufficient,
-        eFailed
+        eFailed,
     };
     Outcome outcome{Outcome::eAllowed};
     /// The challenge of the `403`, set when @c outcome is @c eInsufficient.
@@ -41,15 +42,17 @@ inline ScopeCheck check_request_scopes(const ScopeRequirementProvider& required,
     const auto method = request_json.at("method").get<std::string>();
     static const nlohmann::json s_no_params;
     const auto params_it = request_json.find("params");
-    const ScopeRequestContext context{method,
-                                      params_it == request_json.end() ? s_no_params : *params_it};
+    const ScopeRequestContext context{
+        .method = method,
+        .params = params_it == request_json.end() ? s_no_params : *params_it,
+    };
     std::vector<std::string> needed;
     try {
         needed = required(context);
     } catch (...) {
-        return {ScopeCheck::Outcome::eFailed, {}};
+        return {.outcome = ScopeCheck::Outcome::eFailed, .challenge = {}};
     }
-    const bool satisfied = std::all_of(needed.begin(), needed.end(), [&held](const auto& scope) {
+    const bool satisfied = std::ranges::all_of(needed, [&held](const auto& scope) {
         return held && std::find(held->begin(), held->end(), scope) != held->end();
     });
     if (satisfied) {
@@ -65,9 +68,9 @@ inline ScopeCheck check_request_scopes(const ScopeRequirementProvider& required,
         // A scope that cannot be quoted in the header is a provider failure, not a client's.
         (void)format_www_authenticate(challenge);
     } catch (const std::invalid_argument&) {
-        return {ScopeCheck::Outcome::eFailed, {}};
+        return {.outcome = ScopeCheck::Outcome::eFailed, .challenge = {}};
     }
-    return {ScopeCheck::Outcome::eInsufficient, std::move(challenge)};
+    return {.outcome = ScopeCheck::Outcome::eInsufficient, .challenge = std::move(challenge)};
 }
 
 }  // namespace mcp::detail

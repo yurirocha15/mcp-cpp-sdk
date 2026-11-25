@@ -85,6 +85,30 @@ TEST_F(HttpTransportTest, AnAddressItCannotBindIsAConnectFailure) {
         EXPECT_STREQ(error.what(), "Invalid bind address: not-an-address");
     }
     EXPECT_EQ(kind, mcp::TransportError::Kind::eConnect);
+
+    // 192.0.2.1 is reserved for documentation (RFC 5737), so no interface of the host has it.
+    kind.reset();
+    try {
+        mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "192.0.2.1", 0);
+    } catch (const mcp::TransportError& error) {
+        kind = error.kind();
+        EXPECT_EQ(std::string_view(error.what()).rfind("Failed to bind HTTP acceptor: ", 0), 0U)
+            << error.what();
+    }
+    EXPECT_EQ(kind, mcp::TransportError::Kind::eConnect);
+}
+
+// A closed transport starts nothing: its listen() ends at once and leaves the event loop nothing
+// to wait for.
+TEST_F(HttpTransportTest, ListenAfterCloseEndsAtOnce) {
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+    server_transport.close();
+    bool ended = false;
+    mcp_test::spawn_then(io_ctx_, server_transport.listen(),
+                         [&ended](const std::exception_ptr& error) { ended = error == nullptr; });
+    io_ctx_.poll();
+    EXPECT_TRUE(ended);
+    EXPECT_TRUE(io_ctx_.stopped());
 }
 
 TEST_F(HttpTransportTest, AClientWhoseServerRefusesTheConnectionGetsAConnectFailure) {
@@ -488,46 +512,89 @@ TEST_F(HttpTransportTest, ClientCloseDeletesSentToServer) {
     EXPECT_EQ(peer.deletes(), 1);
 }
 
+// Within a session, a request whose MCP-Protocol-Version header names a version initialize could
+// not have negotiated is refused and changes nothing: the session ends only on a DELETE with a
+// version it accepts.
 TEST_F(HttpTransportTest, ServerRejectsInvalidProtocolVersion) {
-    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18085);
-
+    mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 0);
+    const auto port = std::to_string(server_transport.port());
     mcp_test::spawn_detached(io_ctx_, server_transport.listen());
 
-    bool client_received_error = false;
+    std::vector<nlohmann::json> read;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
         try {
-            beast::tcp_stream stream(io_ctx_.get_executor());
-            auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
-            auto endpoints = co_await resolver.async_resolve("127.0.0.1", "18085", asio::use_awaitable);
-            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
-
-            http::request<http::string_body> request{http::verb::post, "/mcp", 11};
-            request.set(http::field::host, "127.0.0.1");
-            request.set(http::field::content_type, "application/json");
-            request.set("MCP-Protocol-Version", "0000-00-00");
-            request.body() = R"({"jsonrpc":"2.0","method":"ping","id":1})";
-            request.prepare_payload();
-
-            co_await http::async_write(stream, request, asio::use_awaitable);
-
-            beast::flat_buffer response_buffer;
-            http::response<http::string_body> response;
-            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
-
-            if (response.result() == http::status::bad_request) {
-                client_received_error = true;
+            for (;;) {
+                read.push_back(nlohmann::json::parse(co_await server_transport.read_message()));
+                if (read.back().value("method", "") == "initialize") {
+                    const nlohmann::json initialize_response = {
+                        {"jsonrpc", "2.0"},
+                        {"result",
+                         {{"protocolVersion", "2025-06-18"},
+                          {"serverInfo", {{"name", "test-server"}, {"version", "1.0.0"}}},
+                          {"capabilities", nlohmann::json::object()}}},
+                        {"id", read.back().at("id")}};
+                    co_await server_transport.write_message(initialize_response.dump());
+                }
             }
-
-            beast::error_code shutdown_error;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
-        } catch (...) {
+        } catch (const std::exception&) {
+            // The transport closed.
         }
+    });
+
+    unsigned int status = 0;
+    unsigned int ended_status = 0;
+    std::string body;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        beast::tcp_stream stream(io_ctx_.get_executor());
+        auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
+        auto endpoints = co_await resolver.async_resolve("127.0.0.1", port, asio::use_awaitable);
+        co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+
+        http::request<http::string_body> init_request{http::verb::post, "/mcp", 11};
+        init_request.set(http::field::host, "127.0.0.1");
+        init_request.set(http::field::content_type, "application/json");
+        init_request.set(http::field::accept, "application/json, text/event-stream");
+        init_request.body() =
+            R"({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"test-client","version":"1.0.0"},"capabilities":{}}})";
+        init_request.prepare_payload();
+        co_await http::async_write(stream, init_request, asio::use_awaitable);
+
+        beast::flat_buffer response_buffer;
+        http::response<http::string_body> init_response;
+        co_await http::async_read(stream, response_buffer, init_response, asio::use_awaitable);
+
+        // A POST with a version no revision defines is read as a 2026-07-28 request, so the
+        // session's own check is seen on a DELETE.
+        http::request<http::string_body> end_session{http::verb::delete_, "/mcp", 11};
+        end_session.set(http::field::host, "127.0.0.1");
+        end_session.set("MCP-Session-Id", init_response["MCP-Session-Id"]);
+        end_session.set("MCP-Protocol-Version", "0000-00-00");
+        end_session.prepare_payload();
+        co_await http::async_write(stream, end_session, asio::use_awaitable);
+
+        http::response<http::string_body> response;
+        co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+        status = response.result_int();
+        body = response.body();
+
+        end_session.set("MCP-Protocol-Version", "2025-06-18");
+        co_await http::async_write(stream, end_session, asio::use_awaitable);
+        http::response<http::string_body> ended;
+        co_await http::async_read(stream, response_buffer, ended, asio::use_awaitable);
+        ended_status = ended.result_int();
+
+        beast::error_code shutdown_error;
+        stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
         server_transport.close();
     });
 
     io_ctx_.run();
 
-    EXPECT_TRUE(client_received_error);
+    EXPECT_EQ(status, 400U);
+    EXPECT_EQ(body, R"({"error":"Invalid MCP-Protocol-Version header"})");
+    EXPECT_EQ(ended_status, 200U);
+    ASSERT_EQ(read.size(), 1U);
+    EXPECT_EQ(read.front().value("method", ""), "initialize");
 }
 
 TEST_F(HttpTransportTest, NotificationReturns202) {
@@ -1848,6 +1915,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
 TEST_F(HttpTransportTest, NonAtomicConfigurationLocksWhenListeningStarts) {
     mcp::HttpServerTransport server(io_ctx_.get_executor(), "127.0.0.1", 0);
     auto listener = server.listen();
+    EXPECT_THROW(static_cast<void>(server.listen()), std::logic_error);
 
     EXPECT_NO_THROW(server.set_json_only(true));
     EXPECT_THROW(server.set_allowed_origins({"https://trusted.example"}), std::logic_error);
@@ -2614,43 +2682,56 @@ TEST_F(HttpTransportTest, OnlyOneBearerValidatorMayBeInstalled) {
     async_first.close();
 }
 
+// A body longer than the limit, the default one or one the application sets, is refused.
 TEST_F(HttpTransportTest, RequestBodyBeyondTheLimitIsRejected) {
-    auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
-    const auto port = server->port();
+    mcp::HttpServerTransport zero_limit(io_ctx_.get_executor(), "127.0.0.1", 0);
+    EXPECT_THROW(zero_limit.set_max_request_body_bytes(0), std::invalid_argument);
+    zero_limit.close();
 
-    mcp_test::spawn_detached(io_ctx_, server->listen());
+    for (const std::size_t limit :
+         {std::size_t{0}, mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES / 2}) {
+        asio::io_context io;
+        auto server = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
+        if (limit != 0) {
+            server->set_max_request_body_bytes(limit);
+        }
+        const auto port = server->port();
+        const auto beyond =
+            (limit != 0 ? limit : mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES) + 1;
 
-    unsigned int status = 0;
-    mcp_test::spawn_then(
-        io_ctx_,
-        [&]() -> mcp::Task<void> {
-            // Announcing the length is enough: the parser rejects the request before the body is
-            // sent, which is the point of the limit.
-            const std::string header =
-                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
-                "Content-Length: " +
-                std::to_string(mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES + 1) +
-                "\r\n\r\n";
+        mcp_test::spawn_detached(io, server->listen());
 
-            beast::tcp_stream stream(io_ctx_.get_executor());
-            asio::ip::tcp::resolver resolver(io_ctx_.get_executor());
-            auto endpoints =
-                co_await resolver.async_resolve("127.0.0.1", std::to_string(port), asio::use_awaitable);
-            co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
-            co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
+        unsigned int status = 0;
+        mcp_test::spawn_then(
+            io,
+            [&]() -> mcp::Task<void> {
+                // Announcing the length is enough: the parser rejects the request before the body
+                // is sent, which is the point of the limit.
+                const std::string header =
+                    "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+                    "Content-Length: " +
+                    std::to_string(beyond) + "\r\n\r\n";
 
-            beast::flat_buffer response_buffer;
-            http::response<http::string_body> response;
-            co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
-            status = response.result_int();
+                beast::tcp_stream stream(io.get_executor());
+                asio::ip::tcp::resolver resolver(io.get_executor());
+                auto endpoints = co_await resolver.async_resolve("127.0.0.1", std::to_string(port),
+                                                                 asio::use_awaitable);
+                co_await stream.async_connect(*endpoints.begin(), asio::use_awaitable);
+                co_await asio::async_write(stream, asio::buffer(header), asio::use_awaitable);
 
-            beast::error_code shutdown_error;
-            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
-        },
-        [server](const std::exception_ptr&) { server->close(); });
-    io_ctx_.run();
+                beast::flat_buffer response_buffer;
+                http::response<http::string_body> response;
+                co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
+                status = response.result_int();
 
-    EXPECT_EQ(status, 413);
+                beast::error_code shutdown_error;
+                stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, shutdown_error);
+            },
+            [server](const std::exception_ptr&) { server->close(); });
+        io.run();
+
+        EXPECT_EQ(status, 413) << "limit " << limit;
+    }
 }
 
 TEST_F(HttpTransportTest, ProtectedResourceMetadataRequiresAnAbsoluteResourceUrl) {
@@ -3297,8 +3378,9 @@ TEST_F(HttpTransportTest, ANewSessionDoesNotReceiveTheEndedSessionsSubscriptionU
 }
 
 // A handler still running when its client ends the session sends nothing more: neither its log
-// messages nor its result reach the next client. The request it was answering is told the session
-// ended instead of waiting for an answer that will not come.
+// messages, its own requests nor its result reach the next client, and a request it makes fails at
+// once. The request it was answering is told the session ended instead of waiting for an answer
+// that will not come.
 TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
@@ -3308,6 +3390,7 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     gate.expires_at(std::chrono::steady_clock::time_point::max());
     bool tool_started = false;
     bool tool_finished = false;
+    std::string request_error;
     server.add_tool<nlohmann::json, mcp::CallToolResult>(
         "slow", "Answers once the test opens the gate", nlohmann::json{{"type", "object"}},
         [&](mcp::Context& context, nlohmann::json) -> mcp::Task<mcp::CallToolResult> {
@@ -3315,6 +3398,11 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
             boost::system::error_code ignored;
             co_await gate.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
             co_await context.log_info("late-log-from-the-first-session");
+            try {
+                (void)co_await context.request_roots();
+            } catch (const std::exception& error) {
+                request_error = error.what();
+            }
             tool_finished = true;
             co_return mcp::make_tool_text_result("late-result-from-the-first-session");
         });
@@ -3394,6 +3482,8 @@ TEST_F(HttpTransportTest, OutputOfTheEndedSessionDoesNotReachTheNextSession) {
     EXPECT_EQ(first_call.status, 500U) << first_call.body;
     ASSERT_FALSE(second_init_event.empty());
     EXPECT_EQ(replay.body.find("first-session"), std::string::npos) << replay.body;
+    EXPECT_EQ(replay.body.find("roots/list"), std::string::npos) << replay.body;
+    EXPECT_EQ(request_error, "the client ended the session this request belongs to");
 }
 
 // The log level is chosen by a client for its session. A client that starts a new session after

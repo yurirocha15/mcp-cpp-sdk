@@ -33,9 +33,11 @@ int main() {
         Server server(info, caps);
 
         // Tool: summarize — async with context, calls ctx.sample_llm() for reverse RPC
-        nlohmann::json schema = {{"type", "object"},
-                                 {"properties", {{"text", {{"type", "string"}}}}},
-                                 {"required", nlohmann::json::array({"text"})}};
+        nlohmann::json schema = {
+            {"type", "object"},
+            {"properties", {{"text", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"text"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "summarize", "Summarize text by asking the client LLM via sampling", schema,

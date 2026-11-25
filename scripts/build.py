@@ -176,6 +176,10 @@ CLANG_VERSION = "18"
 MSAN_LLVM_COMMIT = "3b5b5c1ec4a3095ab096dd780e84d7ab81f3d7ff"
 MSAN_LIBCXX_DIR = "build/msan-libcxx"
 
+# A source line with none of these holds no decision of its own: gcov's branches on it come from
+# code the compiler generates or inlines there, such as exception and cleanup paths.
+NO_DECISION_LINE = r"^(?!.*(\b(if|while|for|switch|case)\b|\?|&&|\|\|)).*"
+
 
 def find_clang():
     """Return (C compiler, C++ compiler) for Clang, or None if there is no complete pair."""
@@ -476,12 +480,15 @@ def main():
                   "--output-on-failure", *ctest_args, quiet=args.quiet, extra_env=extra_env)
 
         if args.coverage:
-            # The HTML report is for reading; the Cobertura XML is what CI uploads to Codecov.
-            run("gcovr", "-r", ".", "-f", "include/", "-f", "src/", f"-j{args.jobs}",
-                "--exclude-unreachable-branches", "--exclude-throw-branches",
-                "--html-details", f"{build_dir}/coverage.html",
-                "--cobertura", f"{build_dir}/coverage.xml",
-                "--txt-summary")
+            # The HTML report is for reading; the JSON report counts each branch of a line apart,
+            # which shows the outcome never reached. The Cobertura XML, which CI uploads to Codecov,
+            # leaves out the branches of lines that hold no decision.
+            gcovr = ["gcovr", "-r", ".", "-f", "include/", "-f", "src/", f"-j{args.jobs}",
+                     "--exclude-unreachable-branches", "--exclude-throw-branches"]
+            run(*gcovr, "--html-details", f"{build_dir}/coverage.html",
+                "--json", f"{build_dir}/coverage.json", "--txt-summary")
+            run(*gcovr, "--exclude-branches-by-pattern", NO_DECISION_LINE,
+                "--cobertura", f"{build_dir}/coverage.xml")
 
     if args.docs:
         try:

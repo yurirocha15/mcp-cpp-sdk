@@ -149,7 +149,7 @@ std::int64_t integer_bound(double value, bool is_minimum) {
 /// throws std::invalid_argument.
 std::int64_t integer_default(double value) {
     constexpr double k_limit = 9223372036854775808.0;
-    if (!(value >= -k_limit && value < k_limit) || std::trunc(value) != value) {
+    if (value < -k_limit || value >= k_limit || std::trunc(value) != value) {
         throw std::invalid_argument("An integer elicitation field's default is not an int64 integer");
     }
     return static_cast<std::int64_t>(value);
@@ -401,15 +401,17 @@ void from_json(const nlohmann::json& json_obj, ElicitRequestURLParams& params) {
     if (detail::has_json_value(json_obj, "elicitationId")) {
         params.elicitationId = json_obj.at("elicitationId").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
 
 void to_json(nlohmann::json& json_obj, const ElicitRequestFormParams& params) {
-    json_obj = nlohmann::json{{"mode", params.mode},
-                              {"message", params.message},
-                              {"requestedSchema", params.requestedSchema}};
+    json_obj = nlohmann::json{
+        {"mode", params.mode},
+        {"message", params.message},
+        {"requestedSchema", params.requestedSchema},
+    };
     if (params.meta) {
         json_obj["_meta"] = *params.meta;
     }
@@ -422,7 +424,7 @@ void from_json(const nlohmann::json& json_obj, ElicitRequestFormParams& params) 
     }
     json_obj.at("message").get_to(params.message);
     json_obj.at("requestedSchema").get_to(params.requestedSchema);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -495,10 +497,10 @@ void to_json(nlohmann::json& json_obj, const ElicitResult& result) {
 void from_json(const nlohmann::json& json_obj, ElicitResult& result) {
     result = ElicitResult{};
     json_obj.at("action").get_to(result.action);
-    if (json_obj.contains("content")) {
+    if (detail::has_json_value(json_obj, "content")) {
         result.content = json_obj.at("content").get<nlohmann::json>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }

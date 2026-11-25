@@ -536,6 +536,33 @@ TEST_F(HttpServerModernTest, ClientThatLeavesCancelsItsHandler) {
     EXPECT_TRUE(cancelled);
 }
 
+// With no server bound, a request waits in the transport for its reader under an id of the
+// transport's own. A client that leaves before the answer has the request cancelled under that id,
+// so the reader can stop working on it.
+TEST_F(HttpServerModernTest, AnUnservedRequestWhoseClientLeavesIsCancelledForTheReader) {
+    json request;
+    json cancel;
+    auto exchange = [&]() -> mcp::Task<void> {
+        const auto body = call_tool(1, "echo");
+        auto client = co_await send_and_stay(io_ctx_.get_executor(), transport_->port(), body.dump(),
+                                             modern_headers(body));
+        const auto request_text = co_await transport_->read_message();
+        request = json::parse(request_text);
+        beast::error_code ignored;
+        (void)client->socket().close(ignored);
+        const auto cancel_text = co_await transport_->read_message();
+        cancel = json::parse(cancel_text);
+    };
+    run_unserved(exchange);
+
+    ASSERT_TRUE(request.contains("id")) << request;
+    EXPECT_EQ(request.value("method", ""), "tools/call") << request;
+    EXPECT_NE(request.at("id"), json(1)) << request;
+    EXPECT_EQ(cancel.value("method", ""), "notifications/cancelled") << cancel;
+    EXPECT_EQ(cancel.value(json::json_pointer("/params/requestId"), json()), request.at("id"))
+        << cancel;
+}
+
 // Each request waiting here takes one of a limited number of places, for any client.
 TEST_F(HttpServerModernTest, ClientsThatLeaveGiveTheirPlacesBack) {
     static constexpr int g_clients = 256;

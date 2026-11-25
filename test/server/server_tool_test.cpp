@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -360,23 +361,57 @@ TEST_F(ServerToolTest, RawToolAcceptsCompleteCallToolResult) {
 }
 
 TEST_F(ServerToolTest, RawToolRejectsIncompleteCallToolResult) {
-    mcp::ServerCapabilities caps;
-    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
-    ServerSetup setup(io_ctx_, std::move(caps));
+    const std::vector<std::pair<nlohmann::json, std::string>> cases = {
+        {{{"message", "not a CallToolResult"}},
+         "Raw tool result must be a CallToolResult object with content"},
+        {nlohmann::json("just text"), "Raw tool result must be a CallToolResult object with content"},
+        {{{"content", nlohmann::json::array()}, {"_meta", "owner"}},
+         "CallToolResult _meta must be a JSON object"},
+    };
+    for (const auto& [result, message] : cases) {
+        SCOPED_TRACE(result.dump());
+        boost::asio::io_context io_ctx;
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        ServerSetup setup(io_ctx, std::move(caps));
 
-    mcp::Tool tool;
-    tool.name = "invalid-raw";
-    tool.inputSchema = {{"type", "object"}};
-    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
-        return {{"message", "not a CallToolResult"}};
-    });
+        mcp::Tool tool;
+        tool.name = "invalid-raw";
+        tool.inputSchema = {{"type", "object"}};
+        setup.server.add_raw_tool(tool,
+                                  [result](const nlohmann::json&) -> nlohmann::json { return result; });
 
-    auto responses = call_tool(setup, "invalid-raw");
+        auto responses = call_tool(setup, "invalid-raw", io_ctx);
 
-    ASSERT_EQ(responses.size(), 2);
-    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
-    EXPECT_NE(responses[1]["error"]["message"].get<std::string>().find("CallToolResult"),
-              std::string::npos);
+        ASSERT_EQ(responses.size(), 2);
+        EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+        EXPECT_EQ(responses[1]["error"]["message"], message);
+    }
+}
+
+// A value that is neither an object nor a string becomes the text of the result, as JSON, and no
+// structuredContent, which before 2026-07-28 must be an object.
+TEST_F(ServerToolTest, NonTemplateSyncHandlerReturningAScalarOrListAnswersWithItsText) {
+    const std::vector<nlohmann::json> values = {nlohmann::json(42), nlohmann::json::array({1, "a"}),
+                                                nlohmann::json(true), nlohmann::json(nullptr)};
+    for (const auto& value : values) {
+        SCOPED_TRACE(value.dump());
+        boost::asio::io_context io_ctx;
+        mcp::ServerCapabilities caps;
+        caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+        ServerSetup setup(io_ctx, std::move(caps));
+
+        setup.server.add_tool("fetch", "Returns a value", nlohmann::json{{"type", "object"}},
+                              [value](const nlohmann::json&) -> nlohmann::json { return value; });
+
+        auto responses = call_tool(setup, "fetch", io_ctx);
+
+        ASSERT_EQ(responses.size(), 2);
+        ASSERT_TRUE(responses[1].contains("result")) << responses[1];
+        EXPECT_EQ(responses[1]["result"]["content"],
+                  nlohmann::json::array({{{"type", "text"}, {"text", value.dump()}}}));
+        EXPECT_FALSE(responses[1]["result"].contains("structuredContent"));
+    }
 }
 
 namespace {
@@ -1034,6 +1069,32 @@ TEST_F(ServerToolOutputTest, NonConformingStructuredContentIsAnInternalError) {
     EXPECT_EQ(setup.server.tool_validation_stats().structured_content_rejections, 1U);
 }
 
+// The error names each violation the check finds, at its place in the result.
+TEST_F(ServerToolOutputTest, NonConformingStructuredContentNamesEachViolation) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    mcp::Tool tool;
+    tool.name = "pair";
+    tool.inputSchema = {{"type", "object"}};
+    tool.outputSchema = nlohmann::json::parse(R"({
+        "type": "object",
+        "properties": {"count": {"type": "integer"}, "label": {"type": "string"}}
+    })");
+    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+        return mcp::make_tool_structured_result(nlohmann::json{{"count", "three"}, {"label", 3}});
+    });
+
+    auto responses = call_tool(setup, "pair");
+
+    ASSERT_EQ(responses.size(), 2U);
+    ASSERT_TRUE(responses[1].contains("error")) << responses[1];
+    const auto message = responses[1].at("error").at("message").get<std::string>();
+    const auto count_at = message.find("/count: ");
+    const auto label_at = message.find("/label: ");
+    ASSERT_NE(count_at, std::string::npos) << message;
+    ASSERT_NE(label_at, std::string::npos) << message;
+    EXPECT_NE(message.find("; ", std::min(count_at, label_at)), std::string::npos) << message;
+}
+
 TEST_F(ServerToolOutputTest, ConformingStructuredContentIsReturned) {
     ServerSetup setup(io_ctx_, tool_capabilities());
     add_measure_tool(setup, {{"size", 7}});
@@ -1053,6 +1114,28 @@ TEST_F(ServerToolOutputTest, ErrorResultsAreNotChecked) {
 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_TRUE(responses[1].at("result").value("isError", false));
+}
+
+// A tool with an outputSchema owes structuredContent in every result that is not an error, so one
+// without it fails the call instead of reaching the client as if it conformed.
+TEST_F(ServerToolOutputTest, ResultWithoutStructuredContentIsAnInternalError) {
+    ServerSetup setup(io_ctx_, tool_capabilities());
+    mcp::Tool tool;
+    tool.name = "measure";
+    tool.inputSchema = {{"type", "object"}};
+    tool.outputSchema = nlohmann::json{{"type", "object"}};
+    setup.server.add_raw_tool(tool, [](const nlohmann::json&) -> nlohmann::json {
+        return mcp::make_tool_text_result("seven");
+    });
+
+    auto responses = call_tool(setup, "measure");
+
+    ASSERT_EQ(responses.size(), 2);
+    ASSERT_TRUE(responses[1].contains("error")) << responses[1];
+    const auto& error = responses[1].at("error");
+    EXPECT_EQ(error.at("code"), mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    const auto message = error.at("message").get<std::string>();
+    EXPECT_NE(message.find("must return structuredContent"), std::string::npos) << message;
 }
 
 TEST_F(ServerToolOutputTest, CheckCanBeTurnedOff) {

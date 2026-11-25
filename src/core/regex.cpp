@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -10,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/text/unicode.hpp"
 
 namespace mcp::detail {
 
@@ -44,60 +46,26 @@ struct Instruction {
 /// Decodes the UTF-8 code point at `text[pos]` and advances `pos`. A malformed or truncated
 /// sequence yields U+FFFD and advances one byte.
 char32_t decode_utf8(std::string_view text, std::size_t& pos) {
-    const auto lead = static_cast<unsigned char>(text[pos]);
-    if (lead < 0x80) {
+    const auto sequence = unicode::decode_utf8(text, pos);
+    if (sequence.length == 0) {
         ++pos;
-        return lead;
+        return constants::unicode::g_REPLACEMENT_CHARACTER;
     }
-    std::size_t length = 0;
-    char32_t value = 0;
-    char32_t minimum = 0;
-    if ((lead & 0xE0) == 0xC0) {
-        length = 2;
-        value = lead & 0x1F;
-        minimum = 0x80;
-    } else if ((lead & 0xF0) == 0xE0) {
-        length = 3;
-        value = lead & 0x0F;
-        minimum = 0x800;
-    } else if ((lead & 0xF8) == 0xF0) {
-        length = 4;
-        value = lead & 0x07;
-        minimum = 0x10000;
-    } else {
-        ++pos;
-        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-    }
-    if (pos + length > text.size()) {
-        ++pos;
-        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-    }
-    for (std::size_t i = 1; i < length; ++i) {
-        const auto byte = static_cast<unsigned char>(text[pos + i]);
-        if ((byte & 0xC0) != 0x80) {
-            ++pos;
-            return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-        }
-        value = (value << 6) | (byte & 0x3F);
-    }
-    if (value < minimum || value > mcp::detail::constants::regex::g_MAX_CODE_POINT ||
-        (value >= 0xD800 && value <= 0xDFFF)) {
-        ++pos;
-        return mcp::detail::constants::regex::g_REPLACEMENT_CHARACTER;
-    }
-    pos += length;
-    return value;
+    pos += sequence.length;
+    return sequence.code_point;
 }
 
 bool is_word_character(char32_t c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
-bool is_line_terminator(char32_t c) { return c == '\n' || c == '\r' || c == 0x2028 || c == 0x2029; }
+bool is_line_terminator(char32_t c) {
+    return c == '\n' || c == '\r' || c == constants::unicode::g_LINE_SEPARATOR ||
+           c == constants::unicode::g_PARAGRAPH_SEPARATOR;
+}
 
 std::vector<Range> normalize(std::vector<Range> ranges) {
-    std::sort(ranges.begin(), ranges.end(),
-              [](const Range& lhs, const Range& rhs) { return lhs.first < rhs.first; });
+    std::ranges::sort(ranges, [](const Range& lhs, const Range& rhs) { return lhs.first < rhs.first; });
     std::vector<Range> merged;
     for (const auto& range : ranges) {
         if (!merged.empty() && range.first <= merged.back().last + 1) {
@@ -114,30 +82,39 @@ std::vector<Range> complement(const std::vector<Range>& ranges) {
     char32_t next = 0;
     for (const auto& range : normalize(ranges)) {
         if (range.first > next) {
-            result.push_back({next, range.first - 1});
+            result.push_back({.first = next, .last = range.first - 1});
         }
         next = range.last + 1;
     }
-    if (next <= mcp::detail::constants::regex::g_MAX_CODE_POINT) {
-        result.push_back({next, mcp::detail::constants::regex::g_MAX_CODE_POINT});
+    if (next <= constants::unicode::g_MAX_CODE_POINT) {
+        result.push_back({.first = next, .last = constants::unicode::g_MAX_CODE_POINT});
     }
     return result;
 }
 
-std::vector<Range> digit_ranges() { return {{'0', '9'}}; }
+std::vector<Range> digit_ranges() { return {{.first = '0', .last = '9'}}; }
 
-std::vector<Range> word_ranges() { return {{'0', '9'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'}}; }
+std::vector<Range> word_ranges() {
+    return {
+        {.first = '0', .last = '9'},
+        {.first = 'A', .last = 'Z'},
+        {.first = '_', .last = '_'},
+        {.first = 'a', .last = 'z'},
+    };
+}
 
 /// ECMAScript WhiteSpace and LineTerminator.
 std::vector<Range> space_ranges() {
-    return {{0x09, 0x0D},     {0x20, 0x20},     {0xA0, 0xA0},     {0x1680, 0x1680}, {0x2000, 0x200A},
-            {0x2028, 0x2029}, {0x202F, 0x202F}, {0x205F, 0x205F}, {0x3000, 0x3000}, {0xFEFF, 0xFEFF}};
+    std::vector<Range> ranges;
+    ranges.reserve(constants::regex::g_SPACE_RANGES.size());
+    for (const auto& [first, last] : constants::regex::g_SPACE_RANGES) {
+        ranges.push_back({.first = first, .last = last});
+    }
+    return ranges;
 }
 
 bool contains(const std::vector<Range>& ranges, char32_t c) {
-    auto iter =
-        std::upper_bound(ranges.begin(), ranges.end(), c,
-                         [](char32_t value, const Range& range) { return value < range.first; });
+    auto iter = std::ranges::upper_bound(ranges, c, std::ranges::less{}, &Range::first);
     return iter != ranges.begin() && c <= std::prev(iter)->last;
 }
 
@@ -194,8 +171,8 @@ class Parser {
             kind, "invalid regular expression at offset " + std::to_string(pos_) + ": " + reason);
     }
 
-    bool at_end() const { return pos_ >= text_.size(); }
-    char32_t peek(std::size_t ahead = 0) const {
+    [[nodiscard]] bool at_end() const { return pos_ >= text_.size(); }
+    [[nodiscard]] char32_t peek(std::size_t ahead = 0) const {
         return pos_ + ahead < text_.size() ? text_[pos_ + ahead] : char32_t{0};
     }
     bool accept(char32_t c) {
@@ -227,7 +204,7 @@ class Parser {
     }
 
     std::size_t parse_alternation(std::uint32_t depth) {
-        path_.push_back({next_alternation_++, 0});
+        path_.emplace_back(next_alternation_++, 0);
         std::vector<std::size_t> alternatives{parse_concat(depth)};
         while (accept('|')) {
             ++path_.back().second;
@@ -269,7 +246,8 @@ class Parser {
             std::size_t digits = 0;
             std::uint64_t value = 0;
             while (!at_end() && peek() >= '0' && peek() <= '9') {
-                value = std::min<std::uint64_t>(value * 10 + (peek() - '0'), s_past_limit);
+                value = std::min<std::uint64_t>(
+                    (value * constants::encoding::g_DECIMAL_BASE) + (peek() - '0'), s_past_limit);
                 ++pos_;
                 ++digits;
             }
@@ -322,7 +300,7 @@ class Parser {
         } else if (accept('?')) {
             min = 0;
             max = 1;
-        } else if (!(peek() == '{' && parse_braces(min, max))) {
+        } else if (peek() != '{' || !parse_braces(min, max)) {
             return atom;
         }
         if (assertion) {
@@ -450,17 +428,13 @@ class Parser {
         std::uint32_t value = 0;
         for (std::size_t i = 0; i < digits; ++i) {
             const char32_t h = peek();
-            std::uint32_t nibble = 0;
-            if (h >= '0' && h <= '9') {
-                nibble = h - '0';
-            } else if (h >= 'a' && h <= 'f') {
-                nibble = h - 'a' + 10;
-            } else if (h >= 'A' && h <= 'F') {
-                nibble = h - 'A' + 10;
-            } else {
+            const int nibble =
+                h < constants::unicode::g_ASCII_END ? constants::encoding::g_HEX_VALUES[h] : -1;
+            if (nibble < 0) {
                 fail(RegexError::Kind::eUnsupported, "invalid hexadecimal escape");
             }
-            value = value * 16 + nibble;
+            value =
+                (value << constants::encoding::g_HEX_DIGIT_BITS) | static_cast<std::uint32_t>(nibble);
             ++pos_;
         }
         return value;
@@ -471,9 +445,12 @@ class Parser {
         if (accept('{')) {
             std::uint32_t value = 0;
             std::size_t digits = 0;
+            // Leading zeros are allowed, and checking the value after each digit keeps it far below
+            // the uint32_t limit.
             while (!at_end() && peek() != '}') {
-                value = value * 16 + parse_hex(1);
-                if (++digits > 6 || value > mcp::detail::constants::regex::g_MAX_CODE_POINT) {
+                value = (value << constants::encoding::g_HEX_DIGIT_BITS) | parse_hex(1);
+                ++digits;
+                if (value > constants::unicode::g_MAX_CODE_POINT) {
                     fail(RegexError::Kind::eUnsupported, "code point out of range");
                 }
             }
@@ -483,12 +460,12 @@ class Parser {
             return value;
         }
         std::uint32_t value = parse_hex(4);
-        if (value >= 0xD800 && value <= 0xDBFF && peek() == '\\' && peek(1) == 'u') {
+        if (unicode::is_high_surrogate(value) && peek() == '\\' && peek(1) == 'u') {
             const std::size_t save = pos_;
             pos_ += 2;
             const std::uint32_t low = parse_hex(4);
-            if (low >= 0xDC00 && low <= 0xDFFF) {
-                return 0x10000 + ((value - 0xD800) << 10) + (low - 0xDC00);
+            if (unicode::is_low_surrogate(low)) {
+                return unicode::combine_surrogates(value, low);
             }
             pos_ = save;
         }
@@ -505,44 +482,48 @@ class Parser {
         ++pos_;
         switch (c) {
             case 'd':
-                return {std::nullopt, digit_ranges()};
+                return {.code_point = std::nullopt, .set = digit_ranges()};
             case 'D':
-                return {std::nullopt, complement(digit_ranges())};
+                return {.code_point = std::nullopt, .set = complement(digit_ranges())};
             case 'w':
-                return {std::nullopt, word_ranges()};
+                return {.code_point = std::nullopt, .set = word_ranges()};
             case 'W':
-                return {std::nullopt, complement(word_ranges())};
+                return {.code_point = std::nullopt, .set = complement(word_ranges())};
             case 's':
-                return {std::nullopt, space_ranges()};
+                return {.code_point = std::nullopt, .set = space_ranges()};
             case 'S':
-                return {std::nullopt, complement(space_ranges())};
+                return {.code_point = std::nullopt, .set = complement(space_ranges())};
             case 't':
-                return {char32_t{'\t'}, {}};
+                return {.code_point = char32_t{'\t'}, .set = {}};
             case 'n':
-                return {char32_t{'\n'}, {}};
+                return {.code_point = char32_t{'\n'}, .set = {}};
             case 'v':
-                return {char32_t{'\v'}, {}};
+                return {.code_point = char32_t{'\v'}, .set = {}};
             case 'f':
-                return {char32_t{'\f'}, {}};
+                return {.code_point = char32_t{'\f'}, .set = {}};
             case 'r':
-                return {char32_t{'\r'}, {}};
+                return {.code_point = char32_t{'\r'}, .set = {}};
             case '0':
                 if (peek() >= '0' && peek() <= '9') {
                     fail(RegexError::Kind::eUnsupported, "octal escapes are not supported");
                 }
-                return {char32_t{0}, {}};
+                return {.code_point = char32_t{0}, .set = {}};
             case 'c': {
                 const char32_t letter = peek();
-                if (!((letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z'))) {
+                if ((letter < 'a' || letter > 'z') && (letter < 'A' || letter > 'Z')) {
                     fail(RegexError::Kind::eUnsupported, "invalid \\c escape");
                 }
                 ++pos_;
-                return {static_cast<char32_t>(letter % 32), {}};
+                return {
+                    .code_point =
+                        static_cast<char32_t>(letter % constants::regex::g_CONTROL_LETTER_MODULUS),
+                    .set = {},
+                };
             }
             case 'x':
-                return {static_cast<char32_t>(parse_hex(2)), {}};
+                return {.code_point = static_cast<char32_t>(parse_hex(2)), .set = {}};
             case 'u':
-                return {parse_unicode_escape(), {}};
+                return {.code_point = parse_unicode_escape(), .set = {}};
             case 'p':
             case 'P':
                 fail(RegexError::Kind::eUnsupported, "Unicode property escapes are not supported");
@@ -550,11 +531,11 @@ class Parser {
                 fail(RegexError::Kind::eUnsupported, "backreferences are not supported");
             case 'b':
                 if (in_class) {
-                    return {char32_t{'\b'}, {}};
+                    return {.code_point = char32_t{'\b'}, .set = {}};
                 }
                 break;
             case '-':
-                return {char32_t{'-'}, {}};
+                return {.code_point = char32_t{'-'}, .set = {}};
             default:
                 break;
         }
@@ -566,7 +547,7 @@ class Parser {
             fail(RegexError::Kind::eUnsupported,
                  "unknown escape \\" + std::string(1, static_cast<char>(c)));
         }
-        return {c, {}};
+        return {.code_point = c, .set = {}};
     }
 
     std::size_t parse_escape() {
@@ -594,7 +575,7 @@ class Parser {
         }
         const char32_t c = peek();
         ++pos_;
-        return {c, {}};
+        return {.code_point = c, .set = {}};
     }
 
     std::size_t parse_class() {
@@ -609,22 +590,22 @@ class Parser {
                     if (*low.code_point > *high.code_point) {
                         fail(RegexError::Kind::eInvalid, "range out of order in character class");
                     }
-                    ranges.push_back({*low.code_point, *high.code_point});
+                    ranges.push_back({.first = *low.code_point, .last = *high.code_point});
                     continue;
                 }
                 // A set on either side of '-' makes the '-' literal (ECMA-262 Annex B).
                 for (const auto* atom : {&low, &high}) {
                     if (atom->code_point) {
-                        ranges.push_back({*atom->code_point, *atom->code_point});
+                        ranges.push_back({.first = *atom->code_point, .last = *atom->code_point});
                     } else {
                         ranges.insert(ranges.end(), atom->set.begin(), atom->set.end());
                     }
                 }
-                ranges.push_back({'-', '-'});
+                ranges.push_back({.first = '-', .last = '-'});
                 continue;
             }
             if (low.code_point) {
-                ranges.push_back({*low.code_point, *low.code_point});
+                ranges.push_back({.first = *low.code_point, .last = *low.code_point});
             } else {
                 ranges.insert(ranges.end(), low.set.begin(), low.set.end());
             }
@@ -660,16 +641,16 @@ class Compiler {
             case Node::Kind::eEmpty:
                 return;
             case Node::Kind::eChar:
-                emit({Op::eChar, node.code_point, 0});
+                emit({.op = Op::eChar, .arg1 = node.code_point, .arg2 = 0});
                 return;
             case Node::Kind::eAny:
-                emit({Op::eAny, 0, 0});
+                emit({.op = Op::eAny, .arg1 = 0, .arg2 = 0});
                 return;
             case Node::Kind::eClass:
-                emit({Op::eClass, node.class_index, 0});
+                emit({.op = Op::eClass, .arg1 = node.class_index, .arg2 = 0});
                 return;
             case Node::Kind::eAssertion:
-                emit({node.assertion, 0, 0});
+                emit({.op = node.assertion, .arg1 = 0, .arg2 = 0});
                 return;
             case Node::Kind::eConcat:
                 for (auto child : node.children) {
@@ -698,15 +679,15 @@ class Compiler {
    private:
     static constexpr std::size_t g_max_compile_visits = Regex::max_program_size * 8;
 
-    std::uint32_t here() const { return static_cast<std::uint32_t>(program_.size()); }
+    [[nodiscard]] std::uint32_t here() const { return static_cast<std::uint32_t>(program_.size()); }
 
     void compile_alternation(const Node& node) {
         std::vector<std::size_t> jumps;
         for (std::size_t i = 0; i + 1 < node.children.size(); ++i) {
-            const auto split = emit({Op::eSplit, 0, 0});
+            const auto split = emit({.op = Op::eSplit, .arg1 = 0, .arg2 = 0});
             program_[split].arg1 = here();
             compile(node.children[i]);
-            jumps.push_back(emit({Op::eJump, 0, 0}));
+            jumps.push_back(emit({.op = Op::eJump, .arg1 = 0, .arg2 = 0}));
             program_[split].arg2 = here();
         }
         compile(node.children.back());
@@ -729,17 +710,17 @@ class Compiler {
         }
         if (!node.max) {
             // L1: split L2, L3; L2: child; jump L1; L3:
-            const auto split = emit({Op::eSplit, 0, 0});
+            const auto split = emit({.op = Op::eSplit, .arg1 = 0, .arg2 = 0});
             program_[split].arg1 = here();
             compile(child);
-            emit({Op::eJump, static_cast<std::uint32_t>(split), 0});
+            emit({.op = Op::eJump, .arg1 = static_cast<std::uint32_t>(split), .arg2 = 0});
             program_[split].arg2 = here();
             return;
         }
         // Each optional copy: split L1, END; L1: child. All exits jump to the same end.
         std::vector<std::size_t> splits;
         for (std::uint32_t i = node.min; i < *node.max; ++i) {
-            const auto split = emit({Op::eSplit, 0, 0});
+            const auto split = emit({.op = Op::eSplit, .arg1 = 0, .arg2 = 0});
             program_[split].arg1 = here();
             splits.push_back(split);
             compile(child);
@@ -767,7 +748,7 @@ class ThreadList {
         count_ = 0;
     }
 
-    bool contains(std::uint32_t pc) const {
+    [[nodiscard]] bool contains(std::uint32_t pc) const {
         const auto slot = sparse_[pc];
         return slot < count_ && dense_[slot] == pc;
     }
@@ -776,7 +757,7 @@ class ThreadList {
         dense_[count_++] = pc;
     }
     void clear() { count_ = 0; }
-    std::size_t size() const { return count_; }
+    [[nodiscard]] std::size_t size() const { return count_; }
     std::uint32_t operator[](std::size_t i) const { return dense_[i]; }
 
    private:
@@ -879,7 +860,7 @@ Regex::Regex(std::string_view pattern) {
     program->classes = std::move(parser.classes);
     Compiler compiler(parser.nodes, program->instructions);
     compiler.compile(root);
-    compiler.emit({Op::eMatch, 0, 0});
+    compiler.emit({.op = Op::eMatch, .arg1 = 0, .arg2 = 0});
     program->anchored = program->instructions.front().op == Op::eInputStart;
     if (g_active_budget != nullptr) {
         std::size_t ranges = 0;
@@ -975,7 +956,12 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
     if (offset < input.size()) {
         current_char = decode_utf8(input, offset);
     }
-    Position where{true, !current_char, false, current_char && is_word_character(*current_char)};
+    Position where{
+        .at_start = true,
+        .at_end = !current_char,
+        .previous_is_word = false,
+        .next_is_word = current_char && is_word_character(*current_char),
+    };
 
     if (add_thread(current, 0, where)) {
         return true;
@@ -993,8 +979,12 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
         if (offset < input.size()) {
             following = decode_utf8(input, offset);
         }
-        const Position after{false, !following, is_word_character(c),
-                             following && is_word_character(*following)};
+        const Position after{
+            .at_start = false,
+            .at_end = !following,
+            .previous_is_word = is_word_character(c),
+            .next_is_word = following && is_word_character(*following),
+        };
         next.clear();
         for (std::size_t i = 0; i < current.size(); ++i) {
             const auto pc = current[i];

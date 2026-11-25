@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mcp/client/subscription.hpp>
 
 #include "client_impl.hpp"
@@ -52,7 +53,7 @@ SubscriptionFilter Subscription::acknowledged() const {
     if (!state_) {
         return {};
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->acknowledged;
 }
 
@@ -64,13 +65,13 @@ SubscriptionFilter Subscription::unhonored() const {
     missing.promptsListChanged = asked.promptsListChanged && !honored.promptsListChanged;
     missing.resourcesListChanged = asked.resourcesListChanged && !honored.resourcesListChanged;
     for (const auto& uri : asked.resourceSubscriptions) {
-        if (std::find(honored.resourceSubscriptions.begin(), honored.resourceSubscriptions.end(),
-                      uri) == honored.resourceSubscriptions.end()) {
+        if (std::ranges::find(honored.resourceSubscriptions, uri) ==
+            honored.resourceSubscriptions.end()) {
             missing.resourceSubscriptions.push_back(uri);
         }
     }
     for (const auto& id : asked.taskIds) {
-        if (std::find(honored.taskIds.begin(), honored.taskIds.end(), id) == honored.taskIds.end()) {
+        if (std::ranges::find(honored.taskIds, id) == honored.taskIds.end()) {
             missing.taskIds.push_back(id);
         }
     }
@@ -97,7 +98,7 @@ std::optional<SubscriptionEnd> Subscription::end_reason() const {
     if (!state_) {
         return SubscriptionEnd::eCancelled;
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->ended;
 }
 
@@ -105,7 +106,7 @@ std::optional<Error> Subscription::end_error() const {
     if (!state_) {
         return std::nullopt;
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->failure;
 }
 
@@ -113,7 +114,7 @@ std::uint64_t Subscription::dropped_events() const {
     if (!state_) {
         return 0;
     }
-    std::lock_guard lock(state_->mutex);
+    std::scoped_lock lock(state_->mutex);
     return state_->dropped;
 }
 

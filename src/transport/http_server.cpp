@@ -8,6 +8,7 @@
 #include "mcp/detail/protocol/modern_methods.hpp"
 #include "mcp/detail/protocol/request_meta.hpp"
 #include "mcp/detail/transport/host_policy.hpp"
+#include "mcp/detail/transport/http_acceptor.hpp"
 #include "mcp/detail/transport/http_limits.hpp"
 #include "mcp/detail/transport/http_request_metadata.hpp"
 #include "mcp/detail/transport/principal.hpp"
@@ -144,7 +145,11 @@ struct HttpServerTransport::Impl {
     /// taken over by another client's initialize, belongs to another principal, or never existed.
     /// Like a terminated session, it is not found, so a client starts a new one.
     static SessionCheckResult session_not_found() {
-        return SessionCheckResult{false, "Session not found", http::status::not_found};
+        return SessionCheckResult{
+            .ok = false,
+            .error_message = "Session not found",
+            .status = http::status::not_found,
+        };
     }
 
     Impl(const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
@@ -156,37 +161,7 @@ struct HttpServerTransport::Impl {
           state(std::make_shared<SharedState>(strand)),
           event_store(event_store_capacity) {
         state->timer.expires_at(std::chrono::steady_clock::time_point::max());
-
-        boost::system::error_code ec;
-        const auto bind_address = boost::asio::ip::make_address(this->host, ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect, "Invalid bind address: " + this->host);
-        }
-
-        const auto endpoint = boost::asio::ip::tcp::endpoint(bind_address, this->port);
-        (void)acceptor.open(endpoint.protocol(), ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to open HTTP acceptor: " + ec.message(), ec);
-        }
-
-        (void)acceptor.set_option(boost::asio::socket_base::reuse_address(true), ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to set reuse_address: " + ec.message(), ec);
-        }
-
-        (void)acceptor.bind(endpoint, ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to bind HTTP acceptor: " + ec.message(), ec);
-        }
-
-        (void)acceptor.listen(boost::asio::socket_base::max_listen_connections, ec);
-        if (ec) {
-            throw TransportError(TransportError::Kind::eConnect,
-                                 "Failed to listen on HTTP acceptor: " + ec.message(), ec);
-        }
+        detail::open_http_acceptor(acceptor, this->host, this->port);
     }
 
     static bool is_initialize_result_response(const nlohmann::json& response_json) {
@@ -216,7 +191,7 @@ struct HttpServerTransport::Impl {
     }
 
     bool begin_listening() {
-        std::lock_guard lock(configuration_mutex);
+        std::scoped_lock lock(configuration_mutex);
         if (state->closed.load(std::memory_order_acquire)) {
             return false;
         }
@@ -271,7 +246,8 @@ struct HttpServerTransport::Impl {
 
     /// Queues a message with the principal that sent it, so the server reads the two together.
     void enqueue_incoming_message(std::string message_payload, std::string principal) const {
-        state->queue.push(IncomingMessage{std::move(message_payload), std::move(principal)});
+        state->queue.push(
+            IncomingMessage{.message = std::move(message_payload), .principal = std::move(principal)});
         state->timer.cancel();
     }
 
@@ -348,7 +324,7 @@ struct HttpServerTransport::Impl {
     bool session_left_idle(const detail::IncomingRequest& request) const {
         std::chrono::milliseconds timeout{};
         {
-            std::lock_guard lock(configuration_mutex);
+            std::scoped_lock lock(configuration_mutex);
             timeout = session_idle_timeout;
         }
         return session_active && timeout > std::chrono::milliseconds::zero() &&
@@ -359,9 +335,9 @@ struct HttpServerTransport::Impl {
     /// Whether a request of the session waits for its answer. Requests sent without a session, such
     /// as a 2026-07-28 client's, belong to no session and do not keep it in use.
     [[nodiscard]] bool session_request_waiting() const {
-        return std::any_of(
-            pending_responses.begin(), pending_responses.end(),
-            [this](const auto& entry) { return !sessionless_request_ids.contains(entry.first); });
+        return std::ranges::any_of(pending_responses, [this](const auto& entry) {
+            return !sessionless_request_ids.contains(entry.first);
+        });
     }
 
     Task<SessionCheckResult> validate_post_session(const detail::IncomingRequest& request) {
@@ -370,40 +346,40 @@ struct HttpServerTransport::Impl {
 
         if (session_id.has_value()) {
             if (!session_header_present) {
-                co_return SessionCheckResult{false, "Session active"};
+                co_return SessionCheckResult{.ok = false, .error_message = "Session active"};
             }
             if (session_header_it->value() != *session_id) {
                 co_return session_not_found();
             }
-            co_return SessionCheckResult{true, {}};
+            co_return SessionCheckResult{.ok = true, .error_message = {}};
         }
 
         if (session_active && !session_header_present) {
-            co_return SessionCheckResult{false, "Session active"};
+            co_return SessionCheckResult{.ok = false, .error_message = "Session active"};
         }
 
         if (session_header_present) {
             co_return session_not_found();
         }
 
-        co_return SessionCheckResult{true, {}};
+        co_return SessionCheckResult{.ok = true, .error_message = {}};
     }
 
     Task<SessionCheckResult> validate_delete_session(const detail::IncomingRequest& request) {
         if (!session_id.has_value()) {
-            co_return SessionCheckResult{true, {}};
+            co_return SessionCheckResult{.ok = true, .error_message = {}};
         }
 
         const auto session_header_it = request.find("MCP-Session-Id");
         if (session_header_it == request.end()) {
-            co_return SessionCheckResult{false, "Missing MCP-Session-Id header"};
+            co_return SessionCheckResult{.ok = false, .error_message = "Missing MCP-Session-Id header"};
         }
 
         if (session_header_it->value() != *session_id) {
             co_return session_not_found();
         }
 
-        co_return SessionCheckResult{true, {}};
+        co_return SessionCheckResult{.ok = true, .error_message = {}};
     }
 
     Task<std::optional<std::shared_ptr<boost::asio::steady_timer>>> register_pending_request(
@@ -416,9 +392,14 @@ struct HttpServerTransport::Impl {
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
 
-        pending_responses.emplace(
-            request_id_key, PendingResponse{timer_signal, std::nullopt, std::nullopt, std::nullopt,
-                                            std::move(client_request_id), false});
+        pending_responses.emplace(request_id_key, PendingResponse{
+                                                      .ready_timer = timer_signal,
+                                                      .response_body = std::nullopt,
+                                                      .session_header = std::nullopt,
+                                                      .event_id = std::nullopt,
+                                                      .client_request_id = std::move(client_request_id),
+                                                      .response_ready = false,
+                                                  });
         co_return timer_signal;
     }
 
@@ -456,8 +437,11 @@ struct HttpServerTransport::Impl {
         }
 
         PendingResult pending_result{
-            std::move(pending_it->second.response_body), std::move(pending_it->second.session_header),
-            std::move(pending_it->second.event_id), pending_it->second.session_ended};
+            .response_body = std::move(pending_it->second.response_body),
+            .session_header = std::move(pending_it->second.session_header),
+            .event_id = std::move(pending_it->second.event_id),
+            .session_ended = pending_it->second.session_ended,
+        };
         pending_responses.erase(pending_it);
         sessionless_request_ids.erase(request_id_key);
         co_return pending_result;
@@ -575,16 +559,22 @@ struct HttpServerTransport::Impl {
                                                   const nlohmann::json& request_json) const {
         std::vector<std::string> served;
         {
-            std::lock_guard lock(configuration_mutex);
+            std::scoped_lock lock(configuration_mutex);
             served = served_versions;
         }
         const auto id = request_json.value("id", nlohmann::json(nullptr));
         auto message = detail::initialize_not_served_message(served);
-        nlohmann::json error_body = {{"jsonrpc", "2.0"},
-                                     {"error",
-                                      {{"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND},
-                                       {"message", std::move(message)},
-                                       {"data", {{"supported", std::move(served)}}}}}};
+        nlohmann::json error_body = {
+            {"jsonrpc", "2.0"},
+            {
+                "error",
+                {
+                    {"code", mcp::constants::jsonrpc::g_METHOD_NOT_FOUND},
+                    {"message", std::move(message)},
+                    {"data", {{"supported", std::move(served)}}},
+                },
+            },
+        };
         if (detail::is_request_id(id)) {
             error_body["id"] = id;
         }
@@ -593,10 +583,10 @@ struct HttpServerTransport::Impl {
 
     /// Whether any version the Server serves is one that initialize negotiates.
     bool serves_legacy() const {
-        std::lock_guard lock(configuration_mutex);
-        return std::any_of(
-            served_versions.begin(), served_versions.end(),
-            [](const std::string& version) { return is_legacy_protocol_version(version); });
+        std::scoped_lock lock(configuration_mutex);
+        return std::ranges::any_of(served_versions, [](const std::string& version) {
+            return is_legacy_protocol_version(version);
+        });
     }
 
     std::optional<StringResponse> check_protocol_version(const detail::IncomingRequest& request,
@@ -625,12 +615,8 @@ struct HttpServerTransport::Impl {
             is_legacy_protocol_version(header_value(protocol_header_it))) {
             return std::nullopt;
         }
-
-        if (!is_initialize) {
-            return make_error_response(request, http::status::bad_request,
-                                       "Invalid MCP-Protocol-Version header");
-        }
-        return std::nullopt;
+        return make_error_response(request, http::status::bad_request,
+                                   "Invalid MCP-Protocol-Version header");
     }
 
     /// The 403 for a request whose Host the policy refuses, checked on every request.
@@ -730,24 +716,30 @@ struct HttpServerTransport::Impl {
             return {};
         }
         if (!bearer_token_validator) {
-            return {std::nullopt, detail::request_principal(std::nullopt, authorization)};
+            return {
+                .refusal = std::nullopt,
+                .principal = detail::request_principal(std::nullopt, authorization),
+            };
         }
 
         const auto token = http_bearer_token(authorization);
         if (token.empty()) {
-            return {make_unauthorized_response(request), {}};
+            return {.refusal = make_unauthorized_response(request), .principal = {}};
         }
         std::optional<TokenValidation> validation;
         try {
             validation = bearer_token_validator(token);
         } catch (...) {
-            return {make_validator_failure_response(request), {}};
+            return {.refusal = make_validator_failure_response(request), .principal = {}};
         }
         if (!validation->accepted) {
-            return {make_unauthorized_response(request), {}};
+            return {.refusal = make_unauthorized_response(request), .principal = {}};
         }
-        return {std::nullopt, detail::request_principal(validation->principal_id, authorization),
-                std::move(validation->scopes)};
+        return {
+            .refusal = std::nullopt,
+            .principal = detail::request_principal(validation->principal_id, authorization),
+            .scopes = std::move(validation->scopes),
+        };
     }
 
     /// @brief Run the bearer check against an async validator. Only entered when one is installed.
@@ -755,28 +747,35 @@ struct HttpServerTransport::Impl {
         const auto authorization = request_authorization(request);
         const auto token = http_bearer_token(authorization);
         if (token.empty()) {
-            co_return Authorization{make_unauthorized_response(request), {}};
+            co_return Authorization{.refusal = make_unauthorized_response(request), .principal = {}};
         }
         std::optional<TokenValidation> validation;
         try {
             validation = co_await async_bearer_token_validator(std::string(token));
         } catch (...) {
-            co_return Authorization{make_validator_failure_response(request), {}};
+            co_return Authorization{
+                .refusal = make_validator_failure_response(request),
+                .principal = {},
+            };
         }
         if (!validation->accepted) {
-            co_return Authorization{make_unauthorized_response(request), {}};
+            co_return Authorization{.refusal = make_unauthorized_response(request), .principal = {}};
         }
-        co_return Authorization{std::nullopt,
-                                detail::request_principal(validation->principal_id, authorization),
-                                std::move(validation->scopes)};
+        co_return Authorization{
+            .refusal = std::nullopt,
+            .principal = detail::request_principal(validation->principal_id, authorization),
+            .scopes = std::move(validation->scopes),
+        };
     }
 
     static StringResponse make_jsonrpc_error_response(const detail::IncomingRequest& request,
                                                       http::status status_code, int code,
                                                       std::string message,
                                                       nlohmann::json id = nullptr) {
-        nlohmann::json body = {{"jsonrpc", "2.0"},
-                               {"error", {{"code", code}, {"message", std::move(message)}}}};
+        nlohmann::json body = {
+            {"jsonrpc", "2.0"},
+            {"error", {{"code", code}, {"message", std::move(message)}}},
+        };
         // An error that names no request leaves out `id`, as MCP's schema has it.
         if (!id.is_null()) {
             body["id"] = std::move(id);
@@ -834,9 +833,11 @@ struct HttpServerTransport::Impl {
     /// Tells the Server that nobody waits for the request any more, as the session manager does
     /// when its stream closes. 2026-07-28 has no other way to say so over HTTP.
     void cancel_abandoned_request(const std::string& sentinel_id, std::string principal) const {
-        nlohmann::json notification = {{"jsonrpc", "2.0"},
-                                       {"method", methods::g_NOTIFICATIONS_CANCELLED},
-                                       {"params", {{"requestId", sentinel_id}}}};
+        nlohmann::json notification = {
+            {"jsonrpc", "2.0"},
+            {"method", methods::g_NOTIFICATIONS_CANCELLED},
+            {"params", {{"requestId", sentinel_id}}},
+        };
         enqueue_incoming_message(mcp::detail::dump_json(notification), std::move(principal));
     }
 
@@ -870,37 +871,26 @@ struct HttpServerTransport::Impl {
         }
         std::shared_ptr<const detail::ModernDispatch> dispatch;
         boost::asio::any_io_executor dispatch_executor;
-        detail::ParamHeaderCheck check;
         {
-            std::lock_guard lock(configuration_mutex);
+            std::scoped_lock lock(configuration_mutex);
             dispatch = modern_dispatch;
             dispatch_executor = modern_dispatch_executor;
-            check = param_header_check;
         }
         if (dispatch) {
             // The server checks the Mcp-Param headers of the request it is given.
-            const detail::ModernStart start{strand,
-                                            std::move(dispatch_executor),
-                                            stream_options,
-                                            stream_counters,
-                                            json_only_.load(std::memory_order_acquire),
-                                            &bytes.counter(),
-                                            bytes.limit(),
-                                            true};
+            const detail::ModernStart start{
+                .strand = strand,
+                .dispatch_executor = std::move(dispatch_executor),
+                .options = stream_options,
+                .counters = stream_counters,
+                .json_only = json_only_.load(std::memory_order_acquire),
+                .budget = &bytes.counter(),
+                .budget_limit = bytes.limit(),
+                .check_headers = true,
+            };
             co_return detail::start_modern_exchange(request, std::move(request_json),
                                                     std::move(principal), start, *dispatch);
         }
-        if (detail::method_is(request_json.at("method"), methods::g_TOOLS_CALL)) {
-            if (check) {
-                if (auto mismatch = check(request_json, detail::mcp_param_headers(request))) {
-                    header_mismatch_rejections.fetch_add(1, std::memory_order_relaxed);
-                    co_return make_jsonrpc_error_response(
-                        request, http::status::bad_request, mcp::constants::jsonrpc::g_HEADER_MISMATCH,
-                        "Header mismatch: " + *mismatch, request_json.at("id"));
-                }
-            }
-        }
-
         // Sessionless requests wait in the session's incoming queue, so a stranger could otherwise
         // delay the session's own requests by sending many at once.
         if (sessionless_request_ids.size() >= g_max_pending_sessionless_requests) {
@@ -1023,7 +1013,8 @@ struct HttpServerTransport::Impl {
         // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
         // request of the server's own reaches it while the handler waits for the answer.
         const auto accept_it = request.find(http::field::accept);
-        if (!is_initialize_request(request_json) && request.version() >= 11 &&
+        if (!is_initialize_request(request_json) &&
+            request.version() >= mcp::detail::constants::http_client::g_VERSION_11 &&
             !json_only_.load(std::memory_order_acquire) && accept_it != request.end() &&
             detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
                 std::string_view::npos) {
@@ -1182,7 +1173,7 @@ struct HttpServerTransport::Impl {
                 if (get_timer) {
                     get_timer->cancel();
                 }
-                get_timer = signal;
+                get_timer = std::move(signal);
                 get_events.clear();
             } else if (stream_name.has_value()) {
                 for (auto& [key, pending] : pending_responses) {
@@ -1194,7 +1185,7 @@ struct HttpServerTransport::Impl {
                     legacy->generation = ++pending.generation;
                     pending.detached = false;
                     pending.ready_timer->cancel();
-                    pending.ready_timer = signal;
+                    pending.ready_timer = std::move(signal);
                     pending.stream_events.clear();
                     break;
                 }
@@ -1216,7 +1207,7 @@ struct HttpServerTransport::Impl {
             get_stream = std::to_string(++response_streams);
         }
         legacy->generation = ++get_generation;
-        get_timer = signal;
+        get_timer = std::move(signal);
         get_events.clear();
         // An event with an id and no data lets a 2025-11-25 client resume a stream that has carried
         // nothing yet.
@@ -1245,6 +1236,7 @@ struct HttpServerTransport::Impl {
             }
             bool finished = false;
             bool session_ended = false;
+            bool wrote = false;
             std::optional<std::string> response_body;
             std::optional<std::string> session_header;
             SseEventList* waiting = nullptr;
@@ -1328,6 +1320,7 @@ struct HttpServerTransport::Impl {
                     co_return false;
                 }
                 stream_open = true;
+                wrote = true;
             }
 
             if (!events.empty()) {
@@ -1348,6 +1341,7 @@ struct HttpServerTransport::Impl {
                     detach_stream(*legacy);
                     co_return false;
                 }
+                wrote = true;
             }
 
             if (finished) {
@@ -1356,6 +1350,12 @@ struct HttpServerTransport::Impl {
                     stream, http::make_chunk_last(),
                     boost::asio::redirect_error(boost::asio::use_awaitable, error));
                 co_return !error && request.keep_alive();
+            }
+
+            // A signal that comes while a write is suspended finds no wait to cancel, so after a
+            // write the stream looks for events again before it waits.
+            if (wrote) {
+                continue;
             }
 
             // An open stream carries a comment now and then, which keeps intermediaries from
@@ -1519,8 +1519,13 @@ struct HttpServerTransport::Impl {
                 break;
             }
             if (auto* exchange = std::get_if<2>(&reply)) {
-                const detail::ModernServing serving{state->closed, stream_options, *stream_counters,
-                                                    header_mismatch_rejections, connection_limits};
+                const detail::ModernServing serving{
+                    .closed = state->closed,
+                    .options = stream_options,
+                    .counters = *stream_counters,
+                    .header_mismatch_rejections = header_mismatch_rejections,
+                    .limits = connection_limits,
+                };
                 if (!co_await detail::serve_modern_exchange(stream, request_buffer, request, *exchange,
                                                             client_finished_sending, serving,
                                                             response_head)) {
@@ -1686,11 +1691,9 @@ struct HttpServerTransport::Impl {
 
     mutable std::mutex configuration_mutex;
     bool listening_started{false};
-    /// Guarded by configuration_mutex: Server::run() installs it while the transport may be
-    /// listening already.
-    detail::ParamHeaderCheck param_header_check;
-    /// Guarded by configuration_mutex, like param_header_check: what serves 2026-07-28 requests
-    /// directly once Server::run() reads the transport, and where it runs.
+    /// Guarded by configuration_mutex, since Server::run() installs them while the transport may be
+    /// listening already: what serves 2026-07-28 requests directly once Server::run() reads the
+    /// transport, and where it runs.
     std::shared_ptr<const detail::ModernDispatch> modern_dispatch;
     boost::asio::any_io_executor modern_dispatch_executor;
     /// Set before listen(); read while serving.
@@ -1717,13 +1720,15 @@ struct HttpServerTransport::Impl {
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::chrono::steady_clock::time_point session_last_used;
     /// Guarded by configuration_mutex.
-    std::chrono::milliseconds session_idle_timeout{std::chrono::minutes(5)};
+    std::chrono::milliseconds session_idle_timeout{
+        mcp::constants::http_server::g_DEFAULT_SESSION_IDLE_TIMEOUT};
     std::unordered_set<std::string> sessionless_request_ids;
     std::string sentinel_id_prefix;
     std::uint64_t sentinel_id_counter{0};
     std::optional<std::string> session_id;
     std::string negotiated_protocol_version{
-        std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
+        std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+    };
     bool session_active{false};
     std::string session_principal;
     std::string initializing_principal;
@@ -1793,7 +1798,7 @@ void HttpServerTransport::set_json_only(bool json_only) {
 
 void HttpServerTransport::set_stream_options(StreamOptions options) {
     detail::check_stream_options(options);
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->stream_options = options;
 }
@@ -1801,7 +1806,7 @@ void HttpServerTransport::set_stream_options(StreamOptions options) {
 StreamStats HttpServerTransport::stream_stats() const { return impl_->stream_counters->snapshot(); }
 
 void HttpServerTransport::set_allowed_origins(std::vector<std::string> origins) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->allowed_origins.clear();
     impl_->allowed_origins.reserve(origins.size());
@@ -1812,14 +1817,14 @@ void HttpServerTransport::set_allowed_origins(std::vector<std::string> origins) 
 }
 
 void HttpServerTransport::set_allow_all_origins(bool allow_all) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->allow_all_origins = allow_all;
 }
 
 void HttpServerTransport::set_allowed_hosts(const std::vector<std::string>& hosts) {
     detail::HostPolicy policy(hosts);
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->host_policy = std::move(policy);
 }
@@ -1829,13 +1834,13 @@ void HttpServerTransport::set_tls(const TlsServerOptions& options) {
 }
 
 void HttpServerTransport::set_tls(std::shared_ptr<const TlsServerContext> context) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->tls = std::move(context);
 }
 
 void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator validator) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     if (validator && impl_->async_bearer_token_validator) {
         throw std::logic_error("HttpServerTransport accepts one bearer token validator");
@@ -1844,7 +1849,7 @@ void HttpServerTransport::set_bearer_token_validator(BearerTokenValidator valida
 }
 
 void HttpServerTransport::set_async_bearer_token_validator(AsyncBearerTokenValidator validator) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     if (validator && impl_->bearer_token_validator) {
         throw std::logic_error("HttpServerTransport accepts one bearer token validator");
@@ -1853,12 +1858,12 @@ void HttpServerTransport::set_async_bearer_token_validator(AsyncBearerTokenValid
 }
 
 void HttpServerTransport::set_session_idle_timeout(std::chrono::milliseconds timeout) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->session_idle_timeout = timeout;
 }
 
 void HttpServerTransport::set_connection_limits(const HttpConnectionLimits& limits) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     if (limits.max_requests == 0 || limits.max_request_bytes == 0) {
         throw std::invalid_argument("HTTP connection limits must allow a request");
@@ -1867,7 +1872,7 @@ void HttpServerTransport::set_connection_limits(const HttpConnectionLimits& limi
 }
 
 void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     if (max_bytes == 0) {
         throw std::invalid_argument("Maximum request body size must be greater than zero");
@@ -1876,7 +1881,7 @@ void HttpServerTransport::set_max_request_body_bytes(std::size_t max_bytes) {
 }
 
 void HttpServerTransport::set_bearer_challenge(BearerChallengeConfig challenge) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     auto rendered = impl_->render_challenge(challenge);
     impl_->bearer_challenge = std::move(challenge);
@@ -1884,13 +1889,13 @@ void HttpServerTransport::set_bearer_challenge(BearerChallengeConfig challenge) 
 }
 
 void HttpServerTransport::set_scope_requirements(ScopeRequirementProvider provider) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->scope_requirements = std::move(provider);
 }
 
 void HttpServerTransport::set_protected_resource_metadata(ProtectedResourceMetadataConfig metadata) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     if (metadata.resource.empty()) {
         throw std::invalid_argument("Protected-resource metadata requires a resource URL");
@@ -1913,7 +1918,7 @@ void HttpServerTransport::set_protected_resource_metadata(ProtectedResourceMetad
 }
 
 void HttpServerTransport::set_unauthenticated_paths(std::vector<std::string> paths) {
-    std::lock_guard lock(impl_->configuration_mutex);
+    std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->unauthenticated_paths.clear();
     impl_->unauthenticated_paths.reserve(paths.size());
@@ -1957,13 +1962,13 @@ Task<void> HttpServerTransport::write_related_message(std::string_view message,
 void HttpServerTransport::close() {
     auto impl = impl_;
     {
-        std::lock_guard lock(impl->configuration_mutex);
+        std::scoped_lock lock(impl->configuration_mutex);
         if (impl->state->closed.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
     }
 
-    boost::asio::post(impl->strand, [impl]() {
+    boost::asio::post(impl->strand, [impl] {
         boost::system::error_code ec;
         (void)impl->acceptor.cancel(ec);
         (void)impl->acceptor.close(ec);
@@ -1983,7 +1988,7 @@ void HttpServerTransport::close() {
     });
 
     boost::asio::post(impl->state->timer.get_executor(),
-                      [state = impl->state]() { state->timer.cancel(); });
+                      [state = impl->state] { state->timer.cancel(); });
 }
 
 Task<void> HttpServerTransport::listen() {
@@ -2082,8 +2087,7 @@ void bind_server(HttpServerTransport& transport, HttpServerBinding binding) {
     if (binding.modern_dispatch && !binding.dispatch_executor) {
         throw std::invalid_argument("bind_server() needs a dispatch_executor for modern_dispatch");
     }
-    std::lock_guard lock(transport.impl_->configuration_mutex);
-    transport.impl_->param_header_check = std::move(binding.param_header_check);
+    std::scoped_lock lock(transport.impl_->configuration_mutex);
     transport.impl_->served_versions = std::move(binding.served_versions);
     transport.impl_->modern_dispatch =
         binding.modern_dispatch

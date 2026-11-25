@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "server_impl.hpp"
 
 namespace methods = mcp::constants::methods;
@@ -11,7 +13,7 @@ Server::Server(const Implementation& server_info, const ServerCapabilities& capa
 }
 
 Server::Server(std::shared_ptr<Impl> impl) : impl_(std::move(impl)) {
-    std::lock_guard lock(impl_->registry->members_mutex);
+    std::scoped_lock lock(impl_->registry->members_mutex);
     impl_->registry->members.push_back(impl_);
 }
 
@@ -19,11 +21,9 @@ Server::Impl::~Impl() {
     // Leaves the registry's members now: make_shared put this implementation in one allocation with
     // its control block, which the member's weak pointer would otherwise keep until the next
     // registry_members() call, one per ended session of run_http().
-    std::lock_guard lock(registry->members_mutex);
+    std::scoped_lock lock(registry->members_mutex);
     auto& members = registry->members;
-    members.erase(std::remove_if(members.begin(), members.end(),
-                                 [](const std::weak_ptr<Impl>& member) { return member.expired(); }),
-                  members.end());
+    std::erase_if(members, [](const std::weak_ptr<Impl>& member) { return member.expired(); });
 }
 
 std::unique_ptr<Server> Server::session_server() const {
@@ -53,7 +53,7 @@ Server::~Server() {
 }
 
 void Server::Impl::forget_tools_text() {
-    std::lock_guard lock(tools_text_mutex);
+    std::scoped_lock lock(tools_text_mutex);
     tools_text.reset();
     tools_text_built = false;
     tools_text_schemas.clear();
@@ -68,7 +68,7 @@ const std::string& listed_schema_text(const CompiledSchema& schema,
     auto text = listed_schema_text_cache().find(schema);
     if (!text) {
         text = std::make_shared<const ListedSchemaText>(
-            ListedSchemaText{schema, mcp::detail::dump_json(schema.schema())});
+            ListedSchemaText{.schema = schema, .text = mcp::detail::dump_json(schema.schema())});
         listed_schema_text_cache().insert(text);
     }
     held.push_back(text);
@@ -99,28 +99,27 @@ void Server::Impl::append_listed_tool(std::string& text, const ListedTool& liste
         std::string_view mark;
         const CompiledSchema* schema;
     };
-    std::vector<Splice> splices{{once(input_mark), input_mark, &listed.input}};
+    std::vector<Splice> splices{{.at = once(input_mark), .mark = input_mark, .schema = &listed.input}};
     if (listed.output) {
-        splices.push_back({once(output_mark), output_mark, &*listed.output});
+        splices.push_back({.at = once(output_mark), .mark = output_mark, .schema = &*listed.output});
     }
-    if (std::any_of(splices.begin(), splices.end(),
-                    [](const Splice& splice) { return splice.at == std::string::npos; })) {
+    if (std::ranges::any_of(splices,
+                            [](const Splice& splice) { return splice.at == std::string::npos; })) {
         text += mcp::detail::dump_json(listed.listed_json());
         return;
     }
-    std::sort(splices.begin(), splices.end(),
-              [](const Splice& a, const Splice& b) { return a.at < b.at; });
+    std::ranges::sort(splices, [](const Splice& a, const Splice& b) { return a.at < b.at; });
     std::size_t copied = 0;
     for (const auto& splice : splices) {
         text.append(shell_text, copied, splice.at - copied);
         text += listed_schema_text(*splice.schema, held);
         copied = splice.at + splice.mark.size();
     }
-    text.append(shell_text, copied, std::string::npos);
+    text.append(std::string_view(shell_text).substr(copied));
 }
 
 std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
-    std::lock_guard lock(tools_text_mutex);
+    std::scoped_lock lock(tools_text_mutex);
     if (!tools_text_built) {
         tools_text_built = true;
         try {
@@ -150,8 +149,13 @@ void Server::Impl::add_tool_registration(Tool&& tool, std::string name, Compiled
     }
     tool.inputSchema = nullptr;
     tool.outputSchema.reset();
-    tools.push_back(ListedTool{std::move(tool), schemas.input, schemas.output});
-    ToolRegistration registration{std::move(handler), result_mode, std::move(schemas)};
+    tools.push_back(
+        ListedTool{.tool = std::move(tool), .input = schemas.input, .output = schemas.output});
+    ToolRegistration registration{
+        .handler = std::move(handler),
+        .result_mode = result_mode,
+        .schemas = std::move(schemas),
+    };
     registration.sync_handler = std::move(sync_handler);
     tool_handlers.emplace(std::move(name), std::move(registration));
 }
@@ -284,7 +288,11 @@ Resource text_resource(const Resource& resource) {
 nlohmann::json text_contents(const Resource& resource, std::string text) {
     ReadResourceResult result;
     result.contents.emplace_back(TextResourceContents{
-        .uri = resource.uri, .text = std::move(text), .mimeType = resource.mimeType, .meta = {}});
+        .uri = resource.uri,
+        .text = std::move(text),
+        .mimeType = resource.mimeType,
+        .meta = {},
+    });
     return result;
 }
 
@@ -393,7 +401,11 @@ void Server::register_resource_template(const ResourceTemplate& tmpl, TypeErased
     }
 
     impl_->resource_templates.push_back(Impl::ResourceTemplateRegistration{
-        tmpl, std::move(pattern.source), std::move(pattern.matcher), std::move(handler)});
+        .metadata = tmpl,
+        .matcher_source = std::move(pattern.source),
+        .matcher = std::move(pattern.matcher),
+        .handler = std::move(handler),
+    });
     impl_->imply_resources();
 }
 
@@ -424,8 +436,11 @@ std::uint64_t Server::dropped_notifications() const {
 }
 
 ToolValidationStats Server::tool_validation_stats() const {
-    return {impl_->argument_rejections.load(std::memory_order_relaxed),
-            impl_->structured_content_rejections.load(std::memory_order_relaxed)};
+    return {
+        .argument_rejections = impl_->argument_rejections.load(std::memory_order_relaxed),
+        .structured_content_rejections =
+            impl_->structured_content_rejections.load(std::memory_order_relaxed),
+    };
 }
 
 void Server::set_page_size(std::size_t size) { impl_->page_size = size; }
@@ -507,9 +522,11 @@ void Server::set_protocol_policy(ServerProtocolPolicy policy) {
 }
 
 ProtocolRejectionStats Server::protocol_rejection_stats() const {
-    return {impl_->invalid_metadata_rejections.load(std::memory_order_relaxed),
-            impl_->unsupported_version_rejections.load(std::memory_order_relaxed),
-            impl_->legacy_shaped_rejections.load(std::memory_order_relaxed)};
+    return {
+        .invalid_metadata = impl_->invalid_metadata_rejections.load(std::memory_order_relaxed),
+        .unsupported_version = impl_->unsupported_version_rejections.load(std::memory_order_relaxed),
+        .legacy_shaped = impl_->legacy_shaped_rejections.load(std::memory_order_relaxed),
+    };
 }
 
 void Server::on_subscribe(const SubscriptionHandler& handler) { impl_->subscribe_handler = handler; }
@@ -579,7 +596,7 @@ void Server::close_subscriptions() {
 std::size_t Server::subscription_count() const {
     std::size_t count = 0;
     for (const auto& member : impl_->registry_members()) {
-        std::lock_guard lock(member->listeners_mutex);
+        std::scoped_lock lock(member->listeners_mutex);
         count += member->listeners.size();
     }
     return count;
@@ -593,7 +610,7 @@ bool Server::Impl::transport_started_new_session() const {
 }
 
 std::shared_ptr<Server::Session> Server::Impl::session_snapshot() const {
-    std::lock_guard lock(session_mutex);
+    std::scoped_lock lock(session_mutex);
     return session;
 }
 
@@ -619,8 +636,11 @@ void Server::Impl::abandon_pending_requests(Session& session) {
     for (auto& [id, pending] : session.pending_requests) {
         static_cast<void>(id);
         if (!pending.completed) {
-            pending.error = Error{mcp::constants::jsonrpc::g_CONNECTION_CLOSED, "Server session closed",
-                                  std::nullopt};
+            pending.error = Error{
+                .code = mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+                .message = "Server session closed",
+                .data = std::nullopt,
+            };
             pending.completed = true;
         }
         pending.timer->cancel();
@@ -659,7 +679,7 @@ void Server::Impl::reset_session(const std::shared_ptr<Session>& session) {
     }
 
     {
-        std::lock_guard lock(session_mutex);
+        std::scoped_lock lock(session_mutex);
         if (this->session == session) {
             this->session.reset();
         }

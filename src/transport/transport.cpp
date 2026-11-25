@@ -7,6 +7,8 @@
 #include <boost/beast/http/error.hpp>
 #include <boost/beast/websocket/error.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <string>
 #include <string_view>
@@ -16,7 +18,7 @@ namespace mcp {
 
 Task<IncomingMessage> ITransport::read_incoming() {
     auto message = co_await read_message();
-    co_return IncomingMessage{std::move(message), {}};
+    co_return IncomingMessage{.message = std::move(message), .principal = {}};
 }
 
 Task<void> ITransport::write_related_message(std::string_view message,
@@ -43,19 +45,18 @@ bool is_error(const boost::system::error_code& code, const boost::system::error_
 bool is_connection_end(const boost::system::error_code& code) {
     namespace error = boost::asio::error;
     using http_error = boost::beast::http::error;
-    for (const boost::system::error_code end :
-         {boost::system::error_code(error::eof), boost::system::error_code(error::connection_reset),
-          boost::system::error_code(error::connection_aborted),
-          boost::system::error_code(error::broken_pipe),
-          boost::system::error_code(error::not_connected),
-          boost::system::error_code(http_error::end_of_stream),
-          boost::system::error_code(http_error::partial_message),
-          boost::system::error_code(boost::beast::websocket::error::closed)}) {
-        if (is_error(code, end)) {
-            return true;
-        }
-    }
-    return false;
+    const std::array ends{
+        boost::system::error_code(error::eof),
+        boost::system::error_code(error::connection_reset),
+        boost::system::error_code(error::connection_aborted),
+        boost::system::error_code(error::broken_pipe),
+        boost::system::error_code(error::not_connected),
+        boost::system::error_code(http_error::end_of_stream),
+        boost::system::error_code(http_error::partial_message),
+        boost::system::error_code(boost::beast::websocket::error::closed),
+    };
+    return std::ranges::any_of(
+        ends, [&code](const boost::system::error_code& end) { return is_error(code, end); });
 }
 
 /// Whether @p code says a message was larger than the transport's limit.

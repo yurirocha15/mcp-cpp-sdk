@@ -44,7 +44,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     std::shared_ptr<const MrtrOptions> options;
     std::shared_ptr<const detail::sealed_state::Codec> codec;
     {
-        std::lock_guard lock(mrtr_mutex);
+        std::scoped_lock lock(mrtr_mutex);
         options = mrtr_options;
         codec = mrtr_codec;
     }
@@ -79,7 +79,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     if (entry) {
         {
             // The resumed handler counts as this retry, until it ends or parks again.
-            std::lock_guard lock(mrtr_mutex);
+            std::scoped_lock lock(mrtr_mutex);
             entry->in_flight = scope.in_flight;
             entry->count_again = scope.count_again;
         }
@@ -115,7 +115,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
             entry->sealed = true;
         }
         {
-            std::lock_guard lock(mrtr_mutex);
+            std::scoped_lock lock(mrtr_mutex);
             entry->in_flight = scope.in_flight;
             entry->count_again = scope.count_again;
         }
@@ -137,7 +137,7 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
     // so the request gives up what the handler held.
     const auto end_sealed_handler = [this, &entry, sealed] {
         if (sealed) {
-            std::lock_guard lock(mrtr_mutex);
+            std::scoped_lock lock(mrtr_mutex);
             entry->in_flight.reset();
             entry->ended = true;
         }
@@ -200,9 +200,11 @@ Task<std::string> Server::Impl::dispatch_mrtr(const nlohmann::json& json_msg, st
         token = park(entry, principal, method, detail::mrtr_params_digest(params),
                      detail::json_memory_cost(json_msg));
     }
-    nlohmann::json result = {{"resultType", "input_required"},
-                             {"inputRequests", std::move(outcome.requests)},
-                             {"requestState", token}};
+    nlohmann::json result = {
+        {"resultType", "input_required"},
+        {"inputRequests", std::move(outcome.requests)},
+        {"requestState", token},
+    };
     co_return make_result_wire(json_msg.at("id").get<RequestId>(), request_meta, std::move(result),
                                std::nullopt);
 }
@@ -289,7 +291,7 @@ Task<void> Server::Impl::run_mrtr_handler(std::shared_ptr<Impl> impl,
         error_payload = "Internal error";
     }
     {
-        std::lock_guard lock(impl->mrtr_mutex);
+        std::scoped_lock lock(impl->mrtr_mutex);
         entry->in_flight.reset();
         entry->ended = true;
     }
@@ -309,7 +311,7 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
     std::shared_ptr<const MrtrOptions> options;
     auto expiry = std::make_shared<boost::asio::steady_timer>(entry->strand);
     {
-        std::lock_guard lock(mrtr_mutex);
+        std::scoped_lock lock(mrtr_mutex);
         options = mrtr_options;
         const std::string who = principal ? *principal : std::string{};
         // Gives up the longest-waiting handler that @p matches selects, if any.
@@ -363,13 +365,20 @@ std::string Server::Impl::park(const std::shared_ptr<detail::MrtrEntry>& entry,
             evict_oldest([](const ParkedRequest&) { return true; });
             parked_bytes -= evicted.back().bytes;
         }
-        parked_requests.emplace(token, ParkedRequest{entry, who, std::string(method), std::move(digest),
-                                                     ++next_park_sequence, expiry, bytes});
+        parked_requests.emplace(token, ParkedRequest{
+                                           .entry = entry,
+                                           .principal = who,
+                                           .method = std::string(method),
+                                           .digest = std::move(digest),
+                                           .sequence = ++next_park_sequence,
+                                           .expiry = expiry,
+                                           .bytes = bytes,
+                                       });
         // A parked handler is bounded by the limits above instead of the in-flight limits.
         entry->in_flight.reset();
     }
     for (auto& victim : evicted) {
-        finish_eviction(std::move(victim), MrtrEvictionReason::eCapacity, *options);
+        finish_eviction(victim, MrtrEvictionReason::eCapacity, *options);
     }
     expiry->expires_after(options->ttl);
     expiry->async_wait(
@@ -426,7 +435,7 @@ std::shared_ptr<detail::MrtrEntry> Server::Impl::take_parked(
     std::shared_ptr<boost::asio::steady_timer> expiry;
     std::shared_ptr<detail::MrtrEntry> entry;
     {
-        std::lock_guard lock(mrtr_mutex);
+        std::scoped_lock lock(mrtr_mutex);
         const auto found = parked_requests.find(token);
         if (found == parked_requests.end()) {
             mrtr_counters->resume_unknown.fetch_add(1, std::memory_order_relaxed);
@@ -454,7 +463,7 @@ void Server::Impl::evict_parked(const std::string& token, MrtrEvictionReason rea
     ParkedRequest victim;
     std::shared_ptr<const MrtrOptions> options;
     {
-        std::lock_guard lock(mrtr_mutex);
+        std::scoped_lock lock(mrtr_mutex);
         const auto found = parked_requests.find(token);
         if (found == parked_requests.end()) {
             return;
@@ -463,17 +472,17 @@ void Server::Impl::evict_parked(const std::string& token, MrtrEvictionReason rea
         parked_requests.erase(found);
         options = mrtr_options;
     }
-    finish_eviction(std::move(victim), reason, *options);
+    finish_eviction(victim, reason, *options);
 }
 
-void Server::Impl::finish_eviction(ParkedRequest victim, MrtrEvictionReason reason,
+void Server::Impl::finish_eviction(const ParkedRequest& victim, MrtrEvictionReason reason,
                                    const MrtrOptions& options) {
     auto& counter = reason == MrtrEvictionReason::eExpired ? mrtr_counters->evicted_ttl
                                                            : mrtr_counters->evicted_cap;
     counter.fetch_add(1, std::memory_order_relaxed);
     {
         // A handler that goes on without its answers works for no request, and counts as one.
-        std::lock_guard lock(mrtr_mutex);
+        std::scoped_lock lock(mrtr_mutex);
         if (!victim.entry->ended && victim.entry->count_again) {
             victim.entry->in_flight = victim.entry->count_again(victim.bytes);
         }
@@ -492,7 +501,7 @@ void Server::Impl::finish_eviction(ParkedRequest victim, MrtrEvictionReason reas
 void Server::Impl::abandon_all_parked() {
     std::unordered_map<std::string, ParkedRequest> abandoned;
     {
-        std::lock_guard lock(mrtr_mutex);
+        std::scoped_lock lock(mrtr_mutex);
         abandoned.swap(parked_requests);
     }
     for (auto& [token, parked] : abandoned) {
@@ -548,7 +557,7 @@ void Server::set_mrtr_options(MrtrOptions options) {
     }
     wipe(options.sealing_keys);
     auto snapshot = std::make_shared<const MrtrOptions>(std::move(options));
-    std::lock_guard lock(impl_->mrtr_mutex);
+    std::scoped_lock lock(impl_->mrtr_mutex);
     impl_->mrtr_codec = std::move(codec);
     impl_->mrtr_options = std::move(snapshot);
 }
@@ -556,7 +565,7 @@ void Server::set_mrtr_options(MrtrOptions options) {
 MrtrStats Server::mrtr_stats() const {
     MrtrStats stats;
     {
-        std::lock_guard lock(impl_->mrtr_mutex);
+        std::scoped_lock lock(impl_->mrtr_mutex);
         stats.parked = impl_->parked_requests.size();
     }
     const auto& counters = *impl_->mrtr_counters;

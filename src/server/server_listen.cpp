@@ -136,7 +136,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     }
 
     {
-        std::lock_guard lock(listeners_mutex);
+        std::scoped_lock lock(listeners_mutex);
         listeners.push_back(listener);
     }
     // The state of each listed task as it is now follows the acknowledgment, so that a task that
@@ -155,7 +155,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         std::shared_ptr<Listener> listener;
         ~Removal() { impl->remove_listener(listener); }
     };
-    const Removal removal{shared_from_this(), listener};
+    const Removal removal{.impl = shared_from_this(), .listener = listener};
 
     // A transport that sets the cancellation flag wakes the wait through this; the flag is read
     // after registering, so a cancellation that came first is not missed.
@@ -172,7 +172,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     for (bool drained = false; !drained;) {
         std::vector<std::shared_ptr<const std::string>> batch;
         {
-            std::lock_guard lock(listener->gate);
+            std::scoped_lock lock(listener->gate);
             batch.swap(listener->pending);
             drained = batch.empty();
             listener->acknowledged = drained;
@@ -231,7 +231,7 @@ Task<void> Server::Impl::wait_for_listener_end(std::shared_ptr<Listener> listene
 
 void Server::Impl::remove_listener(const std::shared_ptr<Listener>& listener) {
     {
-        std::lock_guard lock(listeners_mutex);
+        std::scoped_lock lock(listeners_mutex);
         std::erase(listeners, listener);
     }
     if (listener->session) {
@@ -243,7 +243,7 @@ void Server::Impl::end_listeners(ListenEnd reason, const std::shared_ptr<Session
                                  const std::string* key) {
     std::vector<std::shared_ptr<Listener>> ending;
     {
-        std::lock_guard lock(listeners_mutex);
+        std::scoped_lock lock(listeners_mutex);
         for (const auto& listener : listeners) {
             if ((session == nullptr || listener->session == session) &&
                 (key == nullptr || listener->key == *key)) {
@@ -265,7 +265,7 @@ bool Server::Impl::legacy_broadcast_wanted() const {
 Task<void> Server::Impl::notify_listeners(ListenTopic topic, std::shared_ptr<const std::string> uri) {
     std::vector<std::shared_ptr<Listener>> targets;
     {
-        std::lock_guard lock(listeners_mutex);
+        std::scoped_lock lock(listeners_mutex);
         for (const auto& listener : listeners) {
             bool wanted = false;
             switch (topic) {

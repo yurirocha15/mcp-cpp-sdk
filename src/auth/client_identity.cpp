@@ -41,7 +41,7 @@ std::string join_scope(const std::vector<std::string>& values) {
 }
 
 bool contains(const std::vector<std::string>& values, std::string_view needle) {
-    return std::find(values.begin(), values.end(), needle) != values.end();
+    return std::ranges::find(values, needle) != values.end();
 }
 
 }  // namespace
@@ -151,13 +151,13 @@ InMemoryClientCredentialStore::~InMemoryClientCredentialStore() = default;
 
 void InMemoryClientCredentialStore::store(const std::string& issuer,
                                           OAuthClientInformation information) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     impl_->credentials[issuer] = std::move(information);
 }
 
 std::optional<OAuthClientInformation> InMemoryClientCredentialStore::load(
     const std::string& issuer) const {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     const auto iter = impl_->credentials.find(issuer);
     if (iter == impl_->credentials.end()) {
         return std::nullopt;
@@ -166,7 +166,7 @@ std::optional<OAuthClientInformation> InMemoryClientCredentialStore::load(
 }
 
 void InMemoryClientCredentialStore::remove(const std::string& issuer) {
-    std::lock_guard lock(impl_->mutex);
+    std::scoped_lock lock(impl_->mutex);
     impl_->credentials.erase(issuer);
 }
 

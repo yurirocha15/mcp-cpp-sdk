@@ -1,0 +1,7 @@
+---
+# Examples show sample values, ports and timeouts where they are used, as the documentation quotes
+# them, let an exception end the program rather than wrap main() in handlers, and use the short
+# brace forms the documentation teaches, such as tool_params({{"name", "string", "Who to greet"}}).
+InheritParentConfig: true
+Checks: '-readability-magic-numbers,-bugprone-exception-escape,-modernize-use-designated-initializers'
+...

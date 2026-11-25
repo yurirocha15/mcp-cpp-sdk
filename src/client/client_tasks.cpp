@@ -60,8 +60,10 @@ Task<nlohmann::json> Client::Impl::wait_for_task(std::shared_ptr<Impl> state, nl
             if (!fresh->empty()) {
                 std::shared_ptr<const nlohmann::json> questions = std::move(fresh);
                 auto responses = co_await answer_input_requests(state, std::move(questions), limit);
-                nlohmann::json update = {{"taskId", params.at("taskId")},
-                                         {"inputResponses", std::move(responses)}};
+                nlohmann::json update = {
+                    {"taskId", params.at("taskId")},
+                    {"inputResponses", std::move(responses)},
+                };
                 co_await task_request(state, methods::g_TASKS_UPDATE, std::move(update),
                                       request_options);
             }

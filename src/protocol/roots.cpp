@@ -21,7 +21,7 @@ void from_json(const nlohmann::json& json_obj, Root& root) {
     if (detail::has_json_value(json_obj, "name")) {
         root.name = json_obj.at("name").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         root.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -44,7 +44,7 @@ void to_json(nlohmann::json& json_obj, const ListRootsResult& result) {
 void from_json(const nlohmann::json& json_obj, ListRootsResult& result) {
     result = ListRootsResult{};
     json_obj.at("roots").get_to(result.roots);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }

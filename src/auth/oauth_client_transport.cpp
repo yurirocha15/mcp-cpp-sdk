@@ -93,7 +93,7 @@ struct OAuthClientTransport::Impl {
             try {
                 ITransport::InteractionObserver observer;
                 {
-                    std::lock_guard lock(owner_->observer_mutex);
+                    std::scoped_lock lock(owner_->observer_mutex);
                     observer = owner_->interaction_observer;
                 }
                 if (observer) {
@@ -117,7 +117,7 @@ struct OAuthClientTransport::Impl {
                   OAuthClientTransportOptions replay_options)
         : inner(std::move(wrapped)),
           authenticator(std::move(token_authenticator)),
-          options(std::move(replay_options)) {}
+          options(replay_options) {}
 
     static void erase_pending_locked(Impl& owner, PendingMap::iterator iter) {
         owner.pending_bytes -= iter->second.retained_bytes;
@@ -170,7 +170,7 @@ struct OAuthClientTransport::Impl {
     static std::optional<std::uint64_t> remember_request(
         const std::shared_ptr<Impl>& owner, const std::string& key,
         const std::shared_ptr<const std::string>& wire) {
-        std::lock_guard lock(owner->pending_mutex);
+        std::scoped_lock lock(owner->pending_mutex);
         const auto now = Clock::now();
         prune_expired_locked(*owner, now);
 
@@ -205,9 +205,14 @@ struct OAuthClientTransport::Impl {
 
         owner->pending_order.push_back(key);
         try {
-            owner->pending_requests.emplace(
-                key, PendingRequest{wire, expires_at, std::prev(owner->pending_order.end()), *bytes,
-                                    generation});
+            owner->pending_requests.emplace(key,
+                                            PendingRequest{
+                                                .wire = wire,
+                                                .expires_at = expires_at,
+                                                .order_position = std::prev(owner->pending_order.end()),
+                                                .retained_bytes = *bytes,
+                                                .generation = generation,
+                                            });
         } catch (...) {
             owner->pending_order.pop_back();
             throw;
@@ -224,14 +229,20 @@ struct OAuthClientTransport::Impl {
         if (!request.params) {
             request.params = nlohmann::json::object();
         }
+        // Positional params, or a `_meta` that is not an object, have no place for the token, so
+        // such a request goes out as written.
         auto& params = *request.params;
         if (!params.is_object()) {
-            params = nlohmann::json::object();
+            return mcp::detail::dump_json(nlohmann::json(request));
         }
-        if (!params.contains("_meta")) {
-            params["_meta"] = nlohmann::json::object();
+        auto& meta = params["_meta"];
+        if (meta.is_null()) {
+            meta = nlohmann::json::object();
         }
-        params["_meta"]["auth_token"] = token;
+        if (!meta.is_object()) {
+            return mcp::detail::dump_json(nlohmann::json(request));
+        }
+        meta["auth_token"] = token;
         return mcp::detail::dump_json(nlohmann::json(request));
     }
 
@@ -271,7 +282,7 @@ struct OAuthClientTransport::Impl {
         if (!operation->request_key || !operation->request_generation) {
             return;
         }
-        std::lock_guard lock(operation->owner->pending_mutex);
+        std::scoped_lock lock(operation->owner->pending_mutex);
         const auto iter = operation->owner->pending_requests.find(*operation->request_key);
         if (iter != operation->owner->pending_requests.end() &&
             iter->second.generation == *operation->request_generation) {
@@ -294,7 +305,7 @@ struct OAuthClientTransport::Impl {
     /// refresh that close() cut short would hand over to an interactive authorization for a
     /// transport nobody can use any more.
     static bool is_closed(Impl& owner) {
-        std::lock_guard lock(owner.pending_mutex);
+        std::scoped_lock lock(owner.pending_mutex);
         return owner.closed;
     }
 
@@ -429,7 +440,7 @@ struct OAuthClientTransport::Impl {
             if (const auto* result = std::get_if<JSONRPCResultResponse>(&message)) {
                 key = result->id.correlation_key();
             } else if (const auto* error = std::get_if<JSONRPCErrorResponse>(&message);
-                       error && error->id) {
+                       (error != nullptr) && error->id) {
                 key = error->id->correlation_key();
                 unauthorized = error->error.code == jsonrpc::g_UNAUTHORIZED;
             }
@@ -437,7 +448,7 @@ struct OAuthClientTransport::Impl {
                 return {};
             }
 
-            std::lock_guard lock(owner->pending_mutex);
+            std::scoped_lock lock(owner->pending_mutex);
             prune_expired_locked(*owner, Clock::now());
             const auto iter = owner->pending_requests.find(*key);
             if (iter == owner->pending_requests.end()) {
@@ -505,10 +516,10 @@ OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
             "OAuthClientTransport requires an inner transport and authenticator");
     }
 
-    impl_ = std::make_shared<Impl>(std::move(inner), std::move(authenticator), std::move(options));
+    impl_ = std::make_shared<Impl>(std::move(inner), std::move(authenticator), options);
     if (const auto http_transport = std::dynamic_pointer_cast<mcp::HttpClientTransport>(impl_->inner)) {
         std::weak_ptr<Authenticator> weak_authenticator = impl_->authenticator;
-        http_transport->set_bearer_token_provider([weak_authenticator]() {
+        http_transport->set_bearer_token_provider([weak_authenticator] {
             const auto active_authenticator = weak_authenticator.lock();
             return active_authenticator ? active_authenticator->get_access_token() : std::string{};
         });
@@ -523,7 +534,7 @@ bool OAuthClientTransport::overlapping_writes() const noexcept {
 }
 
 void OAuthClientTransport::set_interaction_observer(InteractionObserver observer) {
-    std::lock_guard lock(impl_->observer_mutex);
+    std::scoped_lock lock(impl_->observer_mutex);
     impl_->interaction_observer = std::move(observer);
 }
 
@@ -533,7 +544,7 @@ Task<void> OAuthClientTransport::write_message(std::string_view message) {
 
 void OAuthClientTransport::close() {
     {
-        std::lock_guard lock(impl_->pending_mutex);
+        std::scoped_lock lock(impl_->pending_mutex);
         if (impl_->closed) {
             return;
         }

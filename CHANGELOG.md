@@ -36,6 +36,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The built-in transports throw `TransportError` for their failures, network errors included; `kind()` tells closed, connect, I/O and protocol failures apart; `code()` holds a network error's code.
 - `mcp::constants::methods` names the JSON-RPC methods the SDK sends and handles, such as `g_TOOLS_CALL`.
 - `Icon`, `Implementation`, `ServerCapabilities` and `InitializeResult` compare with `==`.
+- `mcp::constants` names the numeric defaults of the options, such as `client::g_DEFAULT_REQUEST_TIMEOUT` for `ClientOptions::request_timeout`.
 
 ### Changed
 
@@ -77,6 +78,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Each `Client` call and its `Client::sync()` twin take `RequestOptions` as a last parameter that defaults to none, in place of a second overload.
 - `create_memory_transport_pair()` is named `make_memory_transport_pair()`, like the other factory functions.
 - HTTP servers allocate less for each request, and `StreamableHttpSessionManager` sessions reach their `Server` without memory transports.
+- The calls of `TaskHandle` and of its `sync()` form that return a value or a `Task` are `[[nodiscard]]`.
 
 ### Removed
 
@@ -108,6 +110,41 @@ These changes in behavior need no change to compile:
 
 ### Fixed
 
+- A list request whose cursor is not wholly a decimal offset within the list,
+  such as `2abc`, `-1` or one past the end, is answered with -32602 instead of a
+  page.
+- Registering a resource template whose variable list ends with a comma, such as
+  `{a,}`, throws `std::invalid_argument`, as one that starts with a comma does.
+- An optional member a peer sends as `null` reads as absent in every protocol
+  type: `"instructions": null` no longer fails a legacy `connect()`, and
+  `"tools": null` no longer declares tools.
+- A message for a stream of a 2025-11-25 or earlier session that comes while the
+  stream writes is sent once the write ends, instead of with the next keep-alive
+  comment.
+- A client's request no longer fails when the server cancels a request of its
+  own that has the same id, as it does for an elicitation it stops waiting for.
+- A client trusts no authority when `SSL_CERT_FILE` or `SSL_CERT_DIR` is set but
+  names none, instead of OpenSSL's defaults; with OpenSSL 3.0, a missing
+  `SSL_CERT_DIR` failed handshakes.
+- A `completion/complete` request whose reference type is neither `ref/prompt`
+  nor `ref/resource` is answered with -32602 instead of being read as a resource
+  reference.
+- `StreamableHttpSessionManager::listen()` called after `close()` no longer
+  starts a timer that keeps the event loop running for 30 seconds.
+- A schema `pattern` may write a `\u{...}` escape with leading zeros, such as
+  `\u{0000041}`, as ECMAScript allows, instead of being refused.
+- A client reads event streams as the SSE standard has it: a lone CR ends a
+  line, and an event the stream ends inside of is dropped instead of being read
+  as a message.
+- A stream of a 2025-11-25 or earlier session that breaks inside an event
+  resumes after the last whole event, so the broken event is sent again instead
+  of lost.
+- `HttpClientTransport` and `OAuthHttpClient` take a URL whose scheme is in
+  uppercase, such as `HTTPS://`, which the metadata fetch policy already took.
+- The metadata fetch policy refuses a URL with text other than a port after an
+  IPv6 host, such as `https://[2001:db8::1]x/`, which the fetch itself refused.
+- `OAuthClientTransport` sends a request with positional (array) params as
+  written, instead of replacing the params with an object that holds the token.
 - The friend declaration of `decode_elicitation_content()` is exported like its
   first declaration, so MSVC no longer reports warning C4273 for it.
 - The AUR package's build no longer prints a gpg warning that the release key

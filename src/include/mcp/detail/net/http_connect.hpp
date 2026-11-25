@@ -6,14 +6,26 @@
 
 #include <boost/asio/ip/tcp.hpp>
 
+#include <cstddef>
 #include <mcp/core/async.hpp>
 #include <mcp/transport/tls.hpp>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace mcp::detail {
+
+/// The scheme an `http` or `https` URL starts with.
+struct HttpUrlScheme {
+    std::size_t prefix_length{0};  ///< The length of `http://` or `https://`.
+    bool https{false};
+};
+
+/// The scheme of @p url when it is `http` or `https`, in any case of letters, since URL schemes
+/// are compared without regard to case (RFC 3986 section 3.1); nullopt for any other URL.
+std::optional<HttpUrlScheme> http_url_scheme(std::string_view url);
 
 /// How a client reaches one server: directly or through a proxy, in plain text or over TLS.
 struct ConnectPlan {

@@ -3,6 +3,7 @@
 #include <mcp/auth/pkce.hpp>
 #include <mcp/core/async.hpp>
 
+#include "authorization_common.hpp"
 #include "mcp/detail/text/encoding.hpp"
 #include "mcp/detail/text/secure_random.hpp"
 
@@ -48,44 +49,10 @@ namespace {
 /// re-opens the hole silently.
 using detail::sanitize_for_diagnostics;
 
-/// RFC 9728 section 3.3: does a protected-resource metadata `resource` value identify the server this
-/// client is configured for? Accepted when the two are byte-exact, or when `resource` is a proper URI
-/// prefix of `server_url` under RFC 8707 audience semantics: same scheme and authority, compared
-/// byte-exact with no normalization (an explicit default port differs from an implicit one), and a
-/// path that is empty/`"/"` (matches any path) or a prefix of the server URL's path on a `/` segment
-/// boundary. A single trailing `/` on `resource`'s path is ignored. `resource` may not carry a query
-/// or fragment.
-///
-/// An origin-root resource is accepted for any path by design: the root-PRM layout (conformance
-/// `auth/metadata-var2`). This only decides whether the value may be sent as the `resource`
-/// parameter; the authorization server remains the arbiter of the audience it issues.
-bool resource_identifies_server(const std::string& resource, const std::string& server_url) {
-    if (resource == server_url) {
-        return true;
-    }
-    if (resource.find('?') != std::string::npos || resource.find('#') != std::string::npos) {
-        return false;
-    }
-    const auto resource_origin = metadata_url_origin(resource);
-    const auto server_origin = metadata_url_origin(server_url);
-    if (resource_origin.empty() || resource_origin != server_origin) {
-        return false;
-    }
-    auto resource_path = resource.substr(resource_origin.size());
-    if (resource_path.empty() || resource_path == "/") {
-        return true;
-    }
-    if (resource_path.back() == '/') {
-        resource_path.pop_back();
-    }
-    const auto server_path = server_url.substr(server_origin.size());
-    if (server_path == resource_path) {
-        return true;
-    }
-    return server_path.size() > resource_path.size() &&
-           server_path.compare(0, resource_path.size(), resource_path) == 0 &&
-           server_path[resource_path.size()] == '/';
-}
+using detail::join_scopes;
+using detail::resource_identifies_server;
+using detail::split_scopes;
+using detail::union_scopes;
 
 /// Throws unless `endpoint` is fit to hand the application as the authorization URL, which it opens
 /// in a browser. The server names it, so it must be an absolute `https` URL (`http` only on loopback,
@@ -100,7 +67,7 @@ void require_browser_safe_authorization_endpoint(const MetadataFetchPolicy& poli
                std::string_view("-._~:/?[]@!$&'()*+,;=%").find(static_cast<char>(character)) !=
                    std::string_view::npos;
     };
-    bool acceptable = !endpoint.empty() && std::all_of(endpoint.begin(), endpoint.end(), uri_character);
+    bool acceptable = !endpoint.empty() && std::ranges::all_of(endpoint, uri_character);
     if (acceptable) {
         auto any_origin = policy;
         any_origin.origin_allowance = [](const std::string& /*origin*/) { return true; };
@@ -144,55 +111,6 @@ void require_resource_identifies_server(const std::string& resource, const std::
 }  // namespace
 
 namespace {
-
-/// Join scopes into the space-delimited form an authorization request carries.
-std::string join_scopes(const std::vector<std::string>& scopes) {
-    std::string joined;
-    for (const auto& scope : scopes) {
-        if (!joined.empty()) {
-            joined.push_back(' ');
-        }
-        joined += scope;
-    }
-    return joined;
-}
-
-std::vector<std::string> split_scopes(std::string_view scopes) {
-    std::vector<std::string> split;
-    std::size_t cursor = 0;
-    while (cursor < scopes.size()) {
-        const auto next = scopes.find(' ', cursor);
-        const auto token = scopes.substr(cursor, next == std::string_view::npos ? next : next - cursor);
-        if (!token.empty()) {
-            split.emplace_back(token);
-        }
-        if (next == std::string_view::npos) {
-            break;
-        }
-        cursor = next + 1;
-    }
-    return split;
-}
-
-/// Union of two scope strings, preserving the order of `primary` and appending whatever only
-/// `secondary` carries. Step-up authorization re-authorizes on a challenge that names only what the
-/// refused operation needed, so without the union an earlier grant's scopes would be dropped.
-std::optional<std::string> union_scopes(const std::optional<std::string>& primary,
-                                        const std::optional<std::string>& secondary) {
-    if (!primary || primary->empty()) {
-        return secondary && !secondary->empty() ? secondary : std::nullopt;
-    }
-    if (!secondary || secondary->empty()) {
-        return primary;
-    }
-    auto merged = split_scopes(*primary);
-    for (auto& candidate : split_scopes(*secondary)) {
-        if (std::find(merged.begin(), merged.end(), candidate) == merged.end()) {
-            merged.push_back(std::move(candidate));
-        }
-    }
-    return join_scopes(merged);
-}
 
 /// Choose the token endpoint authentication method from what the server advertises.
 ///
@@ -360,7 +278,7 @@ struct OAuthAuthorizationManager::Impl {
         }
         std::optional<std::string> granted;
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             granted = granted_scope_for(owner, issuer);
         }
         return union_scopes(selected, granted);
@@ -386,7 +304,7 @@ struct OAuthAuthorizationManager::Impl {
         }
         std::optional<std::string> granted;
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             granted = granted_scope_for(owner, issuer);
         }
         if (!granted) {
@@ -394,8 +312,8 @@ struct OAuthAuthorizationManager::Impl {
         }
         const auto held = split_scopes(*granted);
         const auto wanted = split_scopes(*challenge.scope);
-        return !wanted.empty() && std::all_of(wanted.begin(), wanted.end(), [&held](const auto& scope) {
-            return std::find(held.begin(), held.end(), scope) != held.end();
+        return !wanted.empty() && std::ranges::all_of(wanted, [&held](const auto& scope) {
+            return std::ranges::find(held, scope) != held.end();
         });
     }
 
@@ -602,7 +520,7 @@ struct OAuthAuthorizationManager::Impl {
             operation->auth_metadata = co_await operation->discovery->discover_auth_server(
                 operation->resource_metadata->authorization_servers.front());
         } catch (...) {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             if (operation->flight->cancelled) {
                 throw std::runtime_error("OAuth authorization attempt was cancelled");
             }
@@ -649,7 +567,7 @@ struct OAuthAuthorizationManager::Impl {
         operation->token_config = build_token_config(owner, *operation->auth_metadata,
                                                      operation->request, operation->identity);
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             // cancel() stops a leader through its aborted client, but one served discovery from the
             // cache with a pre-registered identity makes no network call before the consent
             // callback, so the abort alone would not keep it from prompting the user.
@@ -670,7 +588,7 @@ struct OAuthAuthorizationManager::Impl {
         operation->token = co_await operation->http_client->exchange_code(
             operation->token_config, *operation->response.code, operation->request.code_verifier);
         {
-            std::lock_guard lock(owner.state_mutex);
+            std::scoped_lock lock(owner.state_mutex);
             // Recorded only now that this server issued a token. Until then the stored refresh token
             // still belongs to the server before it, and a refresh must keep going there: a step-up
             // that fails at consent or at the exchange must not point it at the new server.
@@ -679,7 +597,7 @@ struct OAuthAuthorizationManager::Impl {
             // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
             const auto& granted_scope =
                 operation->token.scope ? operation->token.scope : operation->request.scope;
-            owner.granted = GrantedScope{operation->request.issuer, granted_scope};
+            owner.granted = GrantedScope{.issuer = operation->request.issuer, .scope = granted_scope};
         }
         owner.token_store->store(owner.config.server_url, operation->token);
         co_return true;
@@ -698,7 +616,7 @@ struct OAuthAuthorizationManager::Impl {
         if (!flight) {
             return;
         }
-        net::dispatch(flight_strand, [flight = std::move(flight)]() {
+        net::dispatch(flight_strand, [flight = std::move(flight)] {
             flight->timer.expires_at(net::steady_timer::time_point::min());
         });
     }
@@ -752,7 +670,7 @@ struct OAuthAuthorizationManager::Impl {
         std::exception_ptr failure;
         bool succeeded = false;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             // close() expires the same timer to release a follower parked here; a follower that
             // wakes because the manager closed gets a clear error rather than the misleading "not
             // authorized" that the leader's own outcome would otherwise report. Checked before the
@@ -801,7 +719,7 @@ struct OAuthAuthorizationManager::Impl {
         }
 
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             // After cancel() the manager may already be running a newer flight; that one is not
             // this leader's to end.
             if (owner->flight == finished) {
@@ -835,7 +753,7 @@ struct OAuthAuthorizationManager::Impl {
         std::shared_ptr<Flight> joined;
         auto operation = std::make_shared<ChallengeOperation>();
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             // Checked in the same critical section that reads or creates `flight`: close() also
             // takes this lock, so the two can never interleave as a new flight being created right
             // after close() already ran past it, unnoticed. (http_client's own sticky abort would
@@ -866,7 +784,7 @@ struct OAuthAuthorizationManager::Impl {
         auto operation = std::make_shared<RefreshOperation>();
         std::shared_ptr<Flight> joined;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (!owner->token_config || owner->closed) {
                 return return_false();
             }
@@ -901,7 +819,7 @@ struct OAuthAuthorizationManager::Impl {
             failure = std::current_exception();
         }
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (owner->refresh_flight == finished) {
                 owner->refresh_flight.reset();
             }
@@ -931,7 +849,7 @@ struct OAuthAuthorizationManager::Impl {
         std::exception_ptr failure;
         bool succeeded = false;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (flight->finished) {
                 failure = flight->failure;
                 succeeded = flight->succeeded;
@@ -1010,7 +928,7 @@ struct OAuthAuthorizationManager::Impl {
         std::shared_ptr<Flight> refresh;
         std::shared_ptr<OAuthHttpClient> client;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (owner->closed) {
                 return;
             }
@@ -1035,7 +953,7 @@ struct OAuthAuthorizationManager::Impl {
         std::shared_ptr<Flight> refresh;
         std::shared_ptr<OAuthHttpClient> client;
         {
-            std::lock_guard lock(owner->state_mutex);
+            std::scoped_lock lock(owner->state_mutex);
             if (owner->closed || (!owner->flight && !owner->refresh_flight)) {
                 return;
             }
@@ -1139,12 +1057,12 @@ void OAuthAuthorizationManager::close() { Impl::close(impl_); }
 void OAuthAuthorizationManager::cancel_pending() { Impl::cancel(impl_); }
 
 std::optional<AuthorizationRequest> OAuthAuthorizationManager::last_authorization_request() const {
-    std::lock_guard lock(impl_->state_mutex);
+    std::scoped_lock lock(impl_->state_mutex);
     return impl_->last_request;
 }
 
 std::optional<OAuthClientInformation> OAuthAuthorizationManager::last_client_identity() const {
-    std::lock_guard lock(impl_->state_mutex);
+    std::scoped_lock lock(impl_->state_mutex);
     return impl_->last_identity;
 }
 

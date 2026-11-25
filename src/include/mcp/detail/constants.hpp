@@ -2,10 +2,13 @@
 
 #include <array>
 #include <chrono>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <mcp/core/constants.hpp>
 #include <string_view>
+#include <utility>
 
 namespace mcp::detail::constants {
 
@@ -33,7 +36,203 @@ inline constexpr std::string_view g_BASE64URL_ALPHABET =
 /// Size of a SHA-256 digest, in bytes.
 inline constexpr std::size_t g_SHA256_DIGEST_LENGTH = 32;
 
+/// The bits of one byte.
+inline constexpr unsigned g_BITS_PER_BYTE = CHAR_BIT;
+
+/// The number of distinct byte values.
+inline constexpr std::size_t g_BYTE_VALUES = 256;
+
+/// The bits of one byte.
+inline constexpr std::uint32_t g_BYTE_MASK = 0xFF;
+
+/// The bits of one hexadecimal digit.
+inline constexpr std::uint32_t g_HEX_DIGIT_MASK = 0x0F;
+
+/// The bits one hexadecimal digit carries.
+inline constexpr unsigned g_HEX_DIGIT_BITS = 4;
+
+/// The base of decimal numerals.
+inline constexpr unsigned g_DECIMAL_BASE = 10;
+
+/// The bits one base64 digit carries, and their mask.
+inline constexpr unsigned g_BASE64_DIGIT_BITS = 6;
+inline constexpr std::uint32_t g_BASE64_DIGIT_MASK = 0x3F;
+
+/// The value of each byte as a digit of @p digits, or -1 for a byte that is not one.
+/// @p same_values, when given, spells the same values with other characters, as uppercase
+/// hexadecimal does. The entries are std::int16_t, not signed char, so that they read as numbers.
+constexpr std::array<std::int16_t, g_BYTE_VALUES> digit_values(std::string_view digits,
+                                                               std::string_view same_values = {}) {
+    std::array<std::int16_t, g_BYTE_VALUES> values{};
+    values.fill(-1);
+    for (const auto spelling : {digits, same_values}) {
+        for (std::size_t value = 0; value < spelling.size(); ++value) {
+            values[static_cast<unsigned char>(spelling[value])] = static_cast<std::int16_t>(value);
+        }
+    }
+    return values;
+}
+
+/// The value of each byte as a hexadecimal digit of either case, or -1.
+inline constexpr std::array<std::int16_t, g_BYTE_VALUES> g_HEX_VALUES =
+    digit_values(g_HEX_DIGITS, g_HEX_DIGITS_UPPER);
+
+/// The value of each byte as a standard base64 digit, or -1.
+inline constexpr std::array<std::int16_t, g_BYTE_VALUES> g_BASE64_VALUES =
+    digit_values(g_BASE64_ALPHABET);
+
+/// The value of each byte as a base64url digit, or -1.
+inline constexpr std::array<std::int16_t, g_BYTE_VALUES> g_BASE64URL_VALUES =
+    digit_values(g_BASE64URL_ALPHABET);
+
 }  // namespace encoding
+
+/// Unicode code points, and how UTF-8 and UTF-16 write them.
+namespace unicode {
+
+/// The end of the C0 control characters, U+0000 to U+001F, which JSON strings escape.
+inline constexpr std::uint32_t g_C0_CONTROLS_END = 0x20;
+
+/// U+007F DELETE, a control character that follows the last visible ASCII character.
+inline constexpr std::uint32_t g_DELETE = 0x7F;
+
+/// The C1 control characters, U+0080 to U+009F.
+inline constexpr std::uint32_t g_C1_CONTROLS_FIRST = 0x80;
+inline constexpr std::uint32_t g_C1_CONTROLS_LAST = 0x9F;
+
+/// The bidirectional embeddings and overrides, U+202A to U+202E.
+inline constexpr std::uint32_t g_BIDI_EMBEDDINGS_FIRST = 0x202A;
+inline constexpr std::uint32_t g_BIDI_EMBEDDINGS_LAST = 0x202E;
+
+/// The bidirectional isolates, U+2066 to U+2069.
+inline constexpr std::uint32_t g_BIDI_ISOLATES_FIRST = 0x2066;
+inline constexpr std::uint32_t g_BIDI_ISOLATES_LAST = 0x2069;
+
+/// The implicit bidirectional marks: LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK and ARABIC LETTER
+/// MARK.
+inline constexpr std::uint32_t g_LEFT_TO_RIGHT_MARK = 0x200E;
+inline constexpr std::uint32_t g_RIGHT_TO_LEFT_MARK = 0x200F;
+inline constexpr std::uint32_t g_ARABIC_LETTER_MARK = 0x061C;
+
+/// The first code point past ASCII. UTF-8 writes code points from here on in two or more bytes.
+inline constexpr std::uint32_t g_ASCII_END = 0x80;
+
+/// The bits of an ASCII byte.
+inline constexpr std::uint32_t g_ASCII_MASK = 0x7F;
+
+/// The first code point UTF-8 writes in three bytes.
+inline constexpr std::uint32_t g_THREE_BYTE_FIRST = 0x800;
+
+/// The first code point past the Basic Multilingual Plane. UTF-8 writes code points from here on
+/// in four bytes, and UTF-16 as a surrogate pair.
+inline constexpr std::uint32_t g_SUPPLEMENTARY_FIRST = 0x10000;
+
+/// The last code point.
+inline constexpr std::uint32_t g_MAX_CODE_POINT = 0x10FFFF;
+
+/// U+FFFD, which stands in for text that cannot be decoded.
+inline constexpr std::uint32_t g_REPLACEMENT_CHARACTER = 0xFFFD;
+
+/// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR, which JavaScript treats as line
+/// terminators.
+inline constexpr std::uint32_t g_LINE_SEPARATOR = 0x2028;
+inline constexpr std::uint32_t g_PARAGRAPH_SEPARATOR = 0x2029;
+
+/// UTF-16 high surrogates, U+D800 to U+DBFF.
+inline constexpr std::uint32_t g_HIGH_SURROGATE_FIRST = 0xD800;
+inline constexpr std::uint32_t g_HIGH_SURROGATE_LAST = 0xDBFF;
+
+/// UTF-16 low surrogates, U+DC00 to U+DFFF.
+inline constexpr std::uint32_t g_LOW_SURROGATE_FIRST = 0xDC00;
+inline constexpr std::uint32_t g_LOW_SURROGATE_LAST = 0xDFFF;
+
+/// The bits of a supplementary code point, less g_SUPPLEMENTARY_FIRST, that each surrogate of a
+/// pair carries.
+inline constexpr unsigned g_SURROGATE_BITS = 10;
+
+/// A UTF-8 continuation byte is 10xxxxxx: this tag under g_UTF8_TAG_MASK, then six payload bits.
+inline constexpr std::uint32_t g_UTF8_CONTINUATION_TAG = 0x80;
+inline constexpr std::uint32_t g_UTF8_TAG_MASK = 0xC0;
+inline constexpr unsigned g_UTF8_PAYLOAD_BITS = 6;
+inline constexpr std::uint32_t g_UTF8_PAYLOAD_MASK = 0x3F;
+
+/// The tag of the lead byte of a UTF-8 sequence, by sequence length: 110xxxxx, 1110xxxx and
+/// 11110xxx. The lead of a sequence of n bytes carries g_ASCII_MASK >> n payload bits.
+inline constexpr std::array g_UTF8_LEAD_TAGS{0x00U, 0x00U, 0xC0U, 0xE0U, 0xF0U};
+
+/// The longest UTF-8 sequence, in bytes.
+inline constexpr std::size_t g_UTF8_MAX_LENGTH = 4;
+
+/// What a lead byte starts in well-formed UTF-8: the length of the sequence, 0 for a byte that
+/// starts none, and the range of the byte that follows it. Every later byte of the sequence is a
+/// continuation byte.
+struct Utf8Lead {
+    std::uint8_t length;
+    std::uint8_t second_first;
+    std::uint8_t second_last;
+};
+
+/// Unicode's table 3-7, well-formed UTF-8 byte sequences, by lead byte. The narrower second-byte
+/// ranges after E0, ED, F0 and F4 leave out overlong forms, surrogates and code points past
+/// U+10FFFF.
+inline constexpr std::array<Utf8Lead, encoding::g_BYTE_VALUES> g_UTF8_LEADS = [] {
+    struct Row {
+        std::uint8_t first_lead;
+        std::uint8_t last_lead;
+        Utf8Lead lead;
+    };
+    constexpr std::array rows{
+        Row{
+            .first_lead = 0xC2,
+            .last_lead = 0xDF,
+            .lead = {.length = 2, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xE0,
+            .last_lead = 0xE0,
+            .lead = {.length = 3, .second_first = 0xA0, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xE1,
+            .last_lead = 0xEC,
+            .lead = {.length = 3, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xED,
+            .last_lead = 0xED,
+            .lead = {.length = 3, .second_first = 0x80, .second_last = 0x9F},
+        },
+        Row{
+            .first_lead = 0xEE,
+            .last_lead = 0xEF,
+            .lead = {.length = 3, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xF0,
+            .last_lead = 0xF0,
+            .lead = {.length = 4, .second_first = 0x90, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xF1,
+            .last_lead = 0xF3,
+            .lead = {.length = 4, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xF4,
+            .last_lead = 0xF4,
+            .lead = {.length = 4, .second_first = 0x80, .second_last = 0x8F},
+        },
+    };
+    std::array<Utf8Lead, encoding::g_BYTE_VALUES> leads{};
+    for (const auto& row : rows) {
+        for (unsigned byte = row.first_lead; byte <= row.last_lead; ++byte) {
+            leads[byte] = row.lead;
+        }
+    }
+    return leads;
+}();
+
+}  // namespace unicode
 
 /// Session identifier format.
 namespace session {
@@ -52,11 +251,17 @@ inline constexpr int g_VERSION_11 = 11;
 /// Timeout of a client request, in seconds.
 inline constexpr int g_TIMEOUT_SECONDS = 30;
 
+/// The default of HttpClientTransport::set_response_timeout().
+inline constexpr std::chrono::milliseconds g_DEFAULT_RESPONSE_TIMEOUT = std::chrono::minutes(10);
+
+/// The buffer a response body is read into, a part at a time.
+inline constexpr std::size_t g_READ_CHUNK_BYTES = 8192;
+
 /// First status code of an error response (400 Bad Request).
 inline constexpr int g_STATUS_BAD_REQUEST = 400;
 
 /// The most a single response body or SSE line may hold before the exchange is abandoned.
-inline constexpr std::size_t g_MAX_MODERN_MESSAGE_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_MAX_MODERN_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
 
 /// How many times one request's event stream is resumed after it ends without the response.
 inline constexpr int g_MAX_STREAM_RESUMES = 3;
@@ -95,6 +300,12 @@ inline constexpr std::string_view g_HTTPS_PREFIX = "https://";
 
 inline constexpr std::string_view g_WELL_KNOWN_PREFIX = "/.well-known/oauth-protected-resource";
 
+/// The port an `http` URL names when it names none.
+inline constexpr std::uint32_t g_HTTP_DEFAULT_PORT = 80;
+
+/// The port an `https` URL names when it names none.
+inline constexpr std::uint32_t g_HTTPS_DEFAULT_PORT = 443;
+
 }  // namespace url
 
 /// Read-ahead sizes of the per-request exchange watcher.
@@ -104,7 +315,7 @@ namespace modern_exchange {
 inline constexpr std::size_t g_WATCH_READ_SIZE = 4096;
 
 /// Read-ahead held at once; past this the watch stops until the request is answered.
-inline constexpr std::size_t g_MAX_READ_AHEAD = 64 * 1024;
+inline constexpr std::size_t g_MAX_READ_AHEAD = std::size_t{64} * 1024;
 
 }  // namespace modern_exchange
 
@@ -132,12 +343,12 @@ inline constexpr int g_STDERR_DESCRIPTOR = 2;
 inline constexpr int g_FIRST_PRIVATE_DESCRIPTOR = 3;
 
 /// The WebSocket transports' default limit, so a message fits every transport or none.
-inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
 
-inline constexpr std::size_t g_READ_CHUNK_BYTES = 64U * 1024U;
+inline constexpr std::size_t g_READ_CHUNK_BYTES = std::size_t{64} * 1024;
 
 /// Input is read ahead of read_message() up to this many bytes.
-inline constexpr std::size_t g_MAX_READ_AHEAD_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_MAX_READ_AHEAD_BYTES = std::size_t{16} * 1024 * 1024;
 
 /// What an empty line costs in the queue, so short lines cannot fill memory unnoticed.
 inline constexpr std::size_t g_INPUT_LINE_OVERHEAD = 64;
@@ -150,7 +361,11 @@ inline constexpr std::chrono::seconds g_FINAL_FLUSH_WAIT{1};
 /// Pipe buffer size and shutdown capabilities of the stdio client process handling.
 namespace stdio_client {
 
-inline constexpr std::size_t g_CHUNK_BYTES = 64U * 1024U;
+/// The exit status of a child whose exec failed, the status POSIX shells give a command they cannot
+/// find.
+inline constexpr int g_EXEC_FAILED_STATUS = 127;
+
+inline constexpr std::size_t g_CHUNK_BYTES = std::size_t{64} * 1024;
 
 /// How long a killed process may take to be seen as ended, which the destructor of a Client that
 /// launched it waits on top of the process's stdin_close_wait and terminate_wait.
@@ -158,7 +373,7 @@ inline constexpr std::chrono::milliseconds g_KILL_WAIT{1000};
 
 /// Whether the process can be asked to exit before it is killed: SIGTERM on POSIX, nothing on Windows.
 inline constexpr bool g_HAS_TERMINATE_STEP =
-#if defined(_WIN32)
+#ifdef _WIN32
     false;
 #else
     true;
@@ -172,7 +387,7 @@ namespace websocket {
 inline constexpr auto g_NEVER = std::chrono::steady_clock::time_point::max();
 
 /// What Beast defaults to, and what the stdio transport uses.
-inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = 16U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
 
 }  // namespace websocket
 
@@ -206,13 +421,19 @@ namespace server {
 // client sends. Real resource identifiers sit far below this.
 inline constexpr std::size_t g_MAX_TEMPLATE_MATCH_URI_LENGTH = 512;
 
+/// The default of Server::set_max_in_flight_requests().
+inline constexpr std::size_t g_DEFAULT_MAX_IN_FLIGHT_REQUESTS = 1024;
+
+/// The default of Server::set_reverse_request_timeout().
+inline constexpr std::chrono::milliseconds g_DEFAULT_REVERSE_REQUEST_TIMEOUT = std::chrono::minutes(10);
+
 /// The default of Server::set_max_in_flight_bytes().
-inline constexpr std::size_t g_DEFAULT_MAX_IN_FLIGHT_BYTES = 256U * 1024U * 1024U;
+inline constexpr std::size_t g_DEFAULT_MAX_IN_FLIGHT_BYTES = std::size_t{256} * 1024 * 1024;
 
 /// Resources one session may subscribe to, and the bytes of their URIs together.
 inline constexpr std::size_t g_MAX_SUBSCRIPTIONS = 4096;
 
-inline constexpr std::size_t g_MAX_SUBSCRIPTION_BYTES = 8U * 1024U * 1024U;
+inline constexpr std::size_t g_MAX_SUBSCRIPTION_BYTES = std::size_t{8} * 1024 * 1024;
 
 /// The longest tool name the tools page of the specification allows.
 inline constexpr std::size_t g_MAX_TOOL_NAME_LENGTH = 128;
@@ -239,9 +460,9 @@ namespace json_dump {
 
 /// For each byte below 0x80, the letter of its two-character escape, `u` for one written as
 /// `\u00XX`, or 0 for a byte written as it is.
-inline constexpr std::array<char, 0x80> g_ESCAPES = [] {
-    std::array<char, 0x80> escapes{};
-    for (std::size_t byte = 0; byte < 0x20; ++byte) {
+inline constexpr std::array<char, unicode::g_ASCII_END> g_ESCAPES = [] {
+    std::array<char, unicode::g_ASCII_END> escapes{};
+    for (std::size_t byte = 0; byte < unicode::g_C0_CONTROLS_END; ++byte) {
         escapes[byte] = 'u';
     }
     escapes['\b'] = 'b';
@@ -264,14 +485,34 @@ namespace json_parse {
 /// with AddressSanitizer. Deeper text is left to nlohmann::json, whose parser keeps its own stack.
 inline constexpr std::size_t g_MAX_FAST_DEPTH = 128;
 
+/// The buffer on the stack that a number is copied into, with a terminating null, for strtod. A
+/// longer number is copied to the heap.
+inline constexpr std::size_t g_STACK_NUMBER_BYTES = 64;
+
 }  // namespace json_parse
 
-/// Unicode code point bounds of the regular expression engine.
+/// The regular expression engine.
 namespace regex {
 
-inline constexpr char32_t g_MAX_CODE_POINT = 0x10FFFF;
+/// ECMAScript WhiteSpace and LineTerminator, as code point ranges in ascending order.
+inline constexpr std::array<std::pair<char32_t, char32_t>, 10> g_SPACE_RANGES{
+    {
+        {0x09, 0x0D},
+        {0x20, 0x20},
+        {0xA0, 0xA0},
+        {0x1680, 0x1680},
+        {0x2000, 0x200A},
+        {0x2028, 0x2029},
+        {0x202F, 0x202F},
+        {0x205F, 0x205F},
+        {0x3000, 0x3000},
+        {0xFEFF, 0xFEFF},
+    },
+};
 
-inline constexpr char32_t g_REPLACEMENT_CHARACTER = 0xFFFD;
+/// An ECMAScript `\cX` escape stands for the control character whose code is the letter's code
+/// modulo this.
+inline constexpr char32_t g_CONTROL_LETTER_MODULUS = 32;
 
 }  // namespace regex
 
@@ -304,7 +545,8 @@ inline constexpr std::array<std::string_view, 10> g_NAMES = {
     mcp::constants::methods::g_PROMPTS_GET,
     mcp::constants::methods::g_COMPLETION_COMPLETE,
     mcp::constants::methods::g_RESOURCES_TEMPLATES_LIST,
-    mcp::constants::methods::g_SUBSCRIPTIONS_LISTEN};
+    mcp::constants::methods::g_SUBSCRIPTIONS_LISTEN,
+};
 
 }  // namespace modern_methods
 
@@ -312,29 +554,33 @@ inline constexpr std::array<std::string_view, 10> g_NAMES = {
 namespace param_headers {
 
 /// Keywords whose value is one subschema.
-inline constexpr std::array<std::string_view, 12> g_SCHEMA_KEYWORDS = {"additionalProperties",
-                                                                       "unevaluatedProperties",
-                                                                       "propertyNames",
-                                                                       "items",
-                                                                       "additionalItems",
-                                                                       "unevaluatedItems",
-                                                                       "contains",
-                                                                       "not",
-                                                                       "if",
-                                                                       "then",
-                                                                       "else",
-                                                                       "contentSchema"};
+inline constexpr std::array<std::string_view, 12> g_SCHEMA_KEYWORDS = {
+    "additionalProperties",
+    "unevaluatedProperties",
+    "propertyNames",
+    "items",
+    "additionalItems",
+    "unevaluatedItems",
+    "contains",
+    "not",
+    "if",
+    "then",
+    "else",
+    "contentSchema",
+};
 
 /// Keywords whose value is an array of subschemas.
-inline constexpr std::array<std::string_view, 5> g_SCHEMA_ARRAY_KEYWORDS = {"allOf", "anyOf", "oneOf",
-                                                                            "prefixItems", "items"};
+inline constexpr std::array<std::string_view, 5> g_SCHEMA_ARRAY_KEYWORDS = {
+    "allOf", "anyOf", "oneOf", "prefixItems", "items",
+};
 
 /// Keywords whose value maps names to subschemas, other than `properties`.
 inline constexpr std::array<std::string_view, 5> g_SCHEMA_MAP_KEYWORDS = {
-    "patternProperties", "dependentSchemas", "$defs", "definitions", "dependencies"};
+    "patternProperties", "dependentSchemas", "$defs", "definitions", "dependencies",
+};
 
 /// The largest integer an `x-mcp-header` argument may hold: 2^53 - 1.
-inline constexpr std::int64_t g_MAX_SAFE_HEADER_INTEGER = (std::int64_t{1} << 53) - 1;
+inline constexpr std::int64_t g_MAX_SAFE_HEADER_INTEGER = 9'007'199'254'740'991;
 
 }  // namespace param_headers
 
@@ -373,7 +619,7 @@ inline constexpr std::size_t g_HEADER_SIZE = 1 + g_KID_SIZE + g_SALT_SIZE;
 /// The shortest valid token: header, no ciphertext, tag.
 inline constexpr std::size_t g_MIN_TOKEN_BYTES = g_HEADER_SIZE + g_TAG_SIZE;
 
-inline constexpr std::size_t g_DEFAULT_MAX_TOKEN_CHARS = 64 * 1024;
+inline constexpr std::size_t g_DEFAULT_MAX_TOKEN_CHARS = std::size_t{64} * 1024;
 
 }  // namespace sealed_token
 
@@ -396,6 +642,11 @@ inline constexpr std::size_t g_MAX_COUNTED_NAME_BYTES = 1024;
 /// Work allowed per unit of the value (see ValueShape::units), before the allowance for each node
 /// of the schema below.
 inline constexpr std::size_t g_WORK_PER_UNIT = 256;
+
+/// A value's size in units (see ValueShape::units) counts one per level of its paths, one per this
+/// many bytes of the names on them, and one per g_TEXT_BYTES_PER_UNIT bytes of its text.
+inline constexpr std::size_t g_PATH_BYTES_PER_UNIT = 32;
+inline constexpr std::size_t g_TEXT_BYTES_PER_UNIT = 16;
 
 /// Further work allowed per unit of the value for each node of the schema: a step that compares
 /// the value with a schema value, such as an `enum` member, costs 8.
@@ -463,18 +714,81 @@ inline constexpr std::string_view g_OFFLINE_ACCESS = "offline_access";
 
 }  // namespace client_identity
 
-/// Octet extraction for IPv4 address checks.
+/// IPv4 special-purpose address blocks, which a metadata fetch must not reach.
 namespace ipv4 {
 
-inline constexpr std::uint32_t g_OCTET_MASK = 0xFFU;
+/// An address block: an address in host byte order and the number of leading bits that name the
+/// block.
+struct Block {
+    std::uint32_t network;
+    unsigned prefix_length;  ///< 1 to 32.
 
-inline constexpr int g_OCTET1_SHIFT = 24;
+    /// Whether @p address, in host byte order, is in the block.
+    [[nodiscard]] constexpr bool contains(std::uint32_t address) const {
+        const unsigned host_bits = std::numeric_limits<std::uint32_t>::digits - prefix_length;
+        return (address >> host_bits) == (network >> host_bits);
+    }
+};
 
-inline constexpr int g_OCTET2_SHIFT = 16;
+/// The address a.b.c.d in host byte order.
+constexpr std::uint32_t address(std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) {
+    constexpr unsigned bits = encoding::g_BITS_PER_BYTE;
+    return (std::uint32_t{a} << (3U * bits)) | (std::uint32_t{b} << (2U * bits)) |
+           (std::uint32_t{c} << bits) | std::uint32_t{d};
+}
 
-inline constexpr int g_OCTET3_SHIFT = 8;
+/// Loopback, 127.0.0.0/8 (RFC 1122).
+inline constexpr Block g_LOOPBACK{.network = address(127, 0, 0, 0), .prefix_length = 8};
+
+/// Link-local, 169.254.0.0/16 (RFC 3927).
+inline constexpr Block g_LINK_LOCAL{.network = address(169, 254, 0, 0), .prefix_length = 16};
+
+/// Private use, 10.0.0.0/8, 172.16.0.0/12 and 192.168.0.0/16 (RFC 1918).
+inline constexpr std::array g_PRIVATE_USE{
+    Block{.network = address(10, 0, 0, 0), .prefix_length = 8},
+    Block{.network = address(172, 16, 0, 0), .prefix_length = 12},
+    Block{.network = address(192, 168, 0, 0), .prefix_length = 16},
+};
+
+/// Limited broadcast, 255.255.255.255 (RFC 919).
+inline constexpr std::uint32_t g_LIMITED_BROADCAST = address(255, 255, 255, 255);
+
+/// Multicast, 224.0.0.0/4 (RFC 5771).
+inline constexpr Block g_MULTICAST{.network = address(224, 0, 0, 0), .prefix_length = 4};
+
+/// Blocks that reach no public host: "this network" 0.0.0.0/8 (RFC 791), reserved 240.0.0.0/4
+/// (RFC 1112), shared address space 100.64.0.0/10 (RFC 6598), IETF protocol assignments
+/// 192.0.0.0/24 (RFC 6890), benchmarking 198.18.0.0/15 (RFC 2544), and the documentation blocks
+/// 192.0.2.0/24, 198.51.100.0/24 and 203.0.113.0/24 (RFC 5737).
+inline constexpr std::array g_RESERVED{
+    Block{.network = address(0, 0, 0, 0), .prefix_length = 8},
+    Block{.network = address(240, 0, 0, 0), .prefix_length = 4},
+    Block{.network = address(100, 64, 0, 0), .prefix_length = 10},
+    Block{.network = address(192, 0, 0, 0), .prefix_length = 24},
+    Block{.network = address(198, 18, 0, 0), .prefix_length = 15},
+    Block{.network = address(192, 0, 2, 0), .prefix_length = 24},
+    Block{.network = address(198, 51, 100, 0), .prefix_length = 24},
+    Block{.network = address(203, 0, 113, 0), .prefix_length = 24},
+};
 
 }  // namespace ipv4
+
+/// IPv6 address blocks that embed an IPv4 address or reach no public host.
+namespace ipv6 {
+
+/// The NAT64 well-known prefix, 64:ff9b::/96 (RFC 6052). An IPv4 address follows it.
+inline constexpr std::array<unsigned char, 12> g_NAT64_PREFIX{
+    0x00, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0,
+};
+
+/// The 6to4 prefix, 2002::/16 (RFC 3056). An IPv4 address follows it.
+inline constexpr std::array<unsigned char, 2> g_SIX_TO_FOUR_PREFIX{0x20, 0x02};
+
+/// Unique local addresses, fc00::/7 (RFC 4193): a first byte that is this prefix under this mask.
+inline constexpr unsigned char g_UNIQUE_LOCAL_PREFIX = 0xFC;
+inline constexpr unsigned char g_UNIQUE_LOCAL_MASK = 0xFE;
+
+}  // namespace ipv6
 
 /// Requests a Client sends.
 namespace client_requests {

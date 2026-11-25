@@ -16,7 +16,7 @@ SessionPipe::SessionPipe(const boost::asio::any_io_executor& strand, Router rout
     : strand_(strand), signal_(strand), router_(std::move(router)), on_close_(std::move(on_close)) {}
 
 void SessionPipe::deliver(nlohmann::json message) {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     if (closed_.load(std::memory_order_acquire)) {
         throw TransportError(TransportError::Kind::eClosed, "transport closed");
     }
@@ -36,7 +36,7 @@ void SessionPipe::wake_reader() {
 Task<std::optional<nlohmann::json>> SessionPipe::next_message() {
     for (;;) {
         {
-            std::lock_guard lock(mutex_);
+            std::scoped_lock lock(mutex_);
             if (!incoming_.empty()) {
                 std::optional<nlohmann::json> message(std::move(incoming_.front()));
                 incoming_.pop_front();
@@ -85,7 +85,7 @@ void SessionPipe::close() {
         return;
     }
     {
-        std::lock_guard lock(mutex_);
+        std::scoped_lock lock(mutex_);
         wake_reader();
     }
     if (on_close_) {

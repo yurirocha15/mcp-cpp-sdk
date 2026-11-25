@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <set>
+#include <utility>
 #include "cache_hints.hpp"
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/text/encoding.hpp"
@@ -107,7 +108,7 @@ namespace mcp::skills {
 namespace {
 
 bool is_lowercase_hex(std::string_view text) {
-    return std::all_of(text.begin(), text.end(), [](char character) {
+    return std::ranges::all_of(text, [](char character) {
         return (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f');
     });
 }
@@ -129,7 +130,7 @@ bool is_dot_segment(std::string_view segment) {
 
 /// Describes what is wrong with @p relative, a file path under a skill's directory, or returns an
 /// empty string. It applies the rule the server enforces on the paths it serves.
-std::string path_problem(std::string_view relative) {
+std::string_view path_problem(std::string_view relative) {
     if (relative.empty()) {
         return "is empty";
     }
@@ -166,7 +167,7 @@ bool is_valid_skill_name(std::string_view name) {
         name.front() == '-' || name.back() == '-' || name.find("--") != std::string_view::npos) {
         return false;
     }
-    return std::all_of(name.begin(), name.end(), [](char character) {
+    return std::ranges::all_of(name, [](char character) {
         return (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') ||
                character == '-';
     });
@@ -205,14 +206,14 @@ std::vector<std::string> validate_skill(const Skill& skill) {
     const auto& description = skill.frontmatter.at("description").get_ref<const std::string&>();
     if (description.empty() ||
         description.size() > mcp::detail::constants::skills::g_MAX_DESCRIPTION_LENGTH) {
-        problems.push_back("description must be 1 to 1024 characters");
+        problems.emplace_back("description must be 1 to 1024 characters");
     }
 
     if (skill.dynamic) {
         return problems;
     }
     if (skill.resources.size() > mcp::constants::skills::g_MAX_RESOURCES_PER_SKILL) {
-        problems.push_back("lists more than 512 files");
+        problems.emplace_back("lists more than 512 files");
     }
     std::set<std::string> seen;
     std::int64_t total = 0;
@@ -228,14 +229,14 @@ std::vector<std::string> validate_skill(const Skill& skill) {
         } else if (root) {
             const auto problem = path_problem(std::string_view(resource.uri).substr(root->size() + 1));
             if (!problem.empty()) {
-                problems.push_back("lists a file whose path " + problem + ": " + resource.uri);
+                problems.push_back("lists a file whose path " + std::string(problem) + ": " +
+                                   resource.uri);
             }
         }
         const bool well_formed =
             resource.digest.size() == mcp::detail::constants::skills::g_DIGEST_PREFIX.size() +
                                           mcp::detail::constants::skills::g_DIGEST_HEX_LENGTH &&
-            resource.digest.compare(0, mcp::detail::constants::skills::g_DIGEST_PREFIX.size(),
-                                    mcp::detail::constants::skills::g_DIGEST_PREFIX) == 0 &&
+            resource.digest.starts_with(mcp::detail::constants::skills::g_DIGEST_PREFIX) &&
             is_lowercase_hex(std::string_view(resource.digest)
                                  .substr(mcp::detail::constants::skills::g_DIGEST_PREFIX.size()));
         if (!well_formed) {
@@ -248,23 +249,26 @@ std::vector<std::string> validate_skill(const Skill& skill) {
         }
     }
     if (!lists_skill_file) {
-        problems.push_back("resources does not list SKILL.md");
+        problems.emplace_back("resources does not list SKILL.md");
     }
     if (total > mcp::constants::skills::g_MAX_SKILL_BYTES) {
-        problems.push_back("listed files add up to more than 16 MiB");
+        problems.emplace_back("listed files add up to more than 16 MiB");
     }
     return problems;
 }
 
 Verification verify_content(const SkillResource& entry, std::string_view bytes) {
-    if (static_cast<std::int64_t>(bytes.size()) != entry.size) {
-        return {false, "size of " + entry.uri + " is " + std::to_string(bytes.size()) +
-                           " bytes, the entry lists " + std::to_string(entry.size)};
+    if (std::cmp_not_equal(bytes.size(), entry.size)) {
+        return {
+            .ok = false,
+            .message = "size of " + entry.uri + " is " + std::to_string(bytes.size()) +
+                       " bytes, the entry lists " + std::to_string(entry.size),
+        };
     }
     if (sha256_digest(bytes) != entry.digest) {
-        return {false, "digest of " + entry.uri + " differs from the entry"};
+        return {.ok = false, .message = "digest of " + entry.uri + " differs from the entry"};
     }
-    return {true, {}};
+    return {.ok = true, .message = {}};
 }
 
 }  // namespace mcp::skills

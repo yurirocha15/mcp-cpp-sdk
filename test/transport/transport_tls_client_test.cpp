@@ -214,14 +214,36 @@ std::optional<TlsError::Reason> greet_failure(const std::string& url, Configure 
     return std::nullopt;
 }
 
-/// Whether greet() succeeds.
-bool greets(const std::string& url, Configure configure) {
+/// What @p error says, followed by what the errors it nests say.
+std::string error_chain(const std::exception& error) {
+    std::string text = error.what();
+    try {
+        std::rethrow_if_nested(error);
+    } catch (const std::exception& inner) {
+        text += ": " + error_chain(inner);
+    } catch (...) {
+    }
+    return text;
+}
+
+/// Why greet() fails, or empty when it succeeds.
+std::string greet_error(const std::string& url, Configure configure) {
     try {
         greet(url, std::move(configure));
-    } catch (const std::exception&) {
-        return false;
+    } catch (const std::exception& error) {
+        return error_chain(error);
     }
-    return true;
+    return {};
+}
+
+/// Ends the child process of a death test: with 0 when @p failure is empty, or else with 1 after
+/// printing it, so that the test's output says what went wrong.
+[[noreturn]] void exit_reporting(const std::string& failure) {
+    if (!failure.empty()) {
+        std::fprintf(stderr, "%s\n", failure.c_str());
+        std::exit(1);
+    }
+    std::exit(0);
 }
 
 std::string https_url(unsigned short port, const std::string& host = "localhost") {
@@ -564,6 +586,11 @@ TEST(TlsClientTest, SettingsThatCannotBeUsed) {
     // A query or a fragment may follow the host without a path.
     EXPECT_NO_THROW(mcp::HttpClientTransport(io.get_executor(), "http://example.test?x=1"));
     EXPECT_NO_THROW(mcp::HttpClientTransport(io.get_executor(), "https://[::1]#top"));
+    // The scheme is read in any case of letters, so TLS settings apply to an HTTPS URL alone.
+    mcp::HttpClientTransport upper_secure(io.get_executor(), "HTTPS://example.test/mcp");
+    EXPECT_NO_THROW(upper_secure.set_tls(mcp::TlsClientOptions{}));
+    mcp::HttpClientTransport mixed_plain(io.get_executor(), "Http://example.test/mcp");
+    EXPECT_THROW(mixed_plain.set_tls(mcp::TlsClientOptions{}), std::invalid_argument);
 
     mcp::HttpClientTransport secure(io.get_executor(), "https://example.test/mcp");
     EXPECT_THROW(secure.set_server_name(""), std::invalid_argument);
@@ -659,7 +686,7 @@ TEST(TlsClientRootsDeathTest, TheEnvironmentNamesTheSystemAuthorities) {
         {
             set_variable(X509_get_default_cert_file_env(), file.string().c_str());
             set_variable(X509_get_default_cert_dir_env(), list({unhashed, "", missing, file}).c_str());
-            std::exit(greets(url, default_roots()) ? 0 : 1);
+            exit_reporting(greet_error(url, default_roots()));
         },
         ::testing::ExitedWithCode(0), "");
 
@@ -668,7 +695,7 @@ TEST(TlsClientRootsDeathTest, TheEnvironmentNamesTheSystemAuthorities) {
         {
             set_variable(X509_get_default_cert_file_env(), "");
             set_variable(X509_get_default_cert_dir_env(), list({missing, hashed}).c_str());
-            std::exit(greets(url, default_roots()) ? 0 : 1);
+            exit_reporting(greet_error(url, default_roots()));
         },
         ::testing::ExitedWithCode(0), "");
 
@@ -678,23 +705,44 @@ TEST(TlsClientRootsDeathTest, TheEnvironmentNamesTheSystemAuthorities) {
         {
             set_variable(X509_get_default_cert_file_env(), "");
             set_variable(X509_get_default_cert_dir_env(), missing.string().c_str());
-            const bool refused =
-                greet_failure(url, default_roots()) == TlsError::Reason::eUntrustedCertificate;
+            std::string failure;
+            try {
+                greet(url, default_roots());
+                failure = "the server was trusted";
+            } catch (const std::exception& error) {
+                if (tls_reason(error) != TlsError::Reason::eUntrustedCertificate) {
+                    failure = "the server was refused for another reason: " + error_chain(error);
+                }
+            }
             set_variable(X509_get_default_cert_file_env(), file.string().c_str());
-            std::exit(refused && greets(url, default_roots()) ? 0 : 1);
+            if (const auto later = greet_error(url, default_roots());
+                failure.empty() && !later.empty()) {
+                failure = "a later client failed: " + later;
+            }
+            exit_reporting(failure);
         },
         ::testing::ExitedWithCode(0), "");
 }
 
 // A host name written with a trailing dot is the same name; the certificate is checked, and the
-// server name sent, without it.
+// server name sent, without it. The proxy reaches the server whatever name the client uses, so
+// nothing resolves the name.
 TEST(TlsClientTest, AHostWithATrailingDotIsCheckedWithoutIt) {
-    const PlainServer server;
+    const PlainServer server({"mcp.example.test"});
     const TlsFront front(front_for(certs().server), server.port());
-    greet(https_url(front.port(), "localhost."), with_tls(trusting(certs().ca)));
+    const TestProxy proxy(front.port());
+    mcp::ProxyOptions proxy_options;
+    proxy_options.https_proxy = "http://127.0.0.1:" + std::to_string(proxy.port());
+    const auto options = trusting(certs().ca);
+
+    greet("https://mcp.example.test./mcp", [&](mcp::HttpClientTransport& transport) {
+        transport.set_tls(options);
+        transport.set_proxy(proxy_options);
+    });
+
     ASSERT_FALSE(front.server_names().empty());
     for (const auto& name : front.server_names()) {
-        EXPECT_EQ(name, "localhost");
+        EXPECT_EQ(name, "mcp.example.test");
     }
 }
 

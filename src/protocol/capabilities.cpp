@@ -107,10 +107,10 @@ void to_json(nlohmann::json& j, const ClientCapabilities::ElicitationCapability&
 
 void from_json(const nlohmann::json& j, ClientCapabilities::ElicitationCapability& cap) {
     cap = ClientCapabilities::ElicitationCapability{};
-    if (j.contains("form")) {
+    if (detail::has_json_value(j, "form")) {
         cap.form = j.at("form");
     }
-    if (j.contains("url")) {
+    if (detail::has_json_value(j, "url")) {
         cap.url = j.at("url");
     }
 }
@@ -141,10 +141,10 @@ void to_json(nlohmann::json& j, const ClientCapabilities::SamplingCapability& ca
 
 void from_json(const nlohmann::json& j, ClientCapabilities::SamplingCapability& cap) {
     cap = ClientCapabilities::SamplingCapability{};
-    if (j.contains("context")) {
+    if (detail::has_json_value(j, "context")) {
         cap.context = j.at("context");
     }
-    if (j.contains("tools")) {
+    if (detail::has_json_value(j, "tools")) {
         cap.tools = j.at("tools");
     }
 }
@@ -170,16 +170,16 @@ void to_json(nlohmann::json& j, const ClientCapabilities& cap) {
 
 void from_json(const nlohmann::json& j, ClientCapabilities& cap) {
     cap = ClientCapabilities{};
-    if (j.contains("elicitation")) {
+    if (detail::has_json_value(j, "elicitation")) {
         cap.elicitation = j.at("elicitation").get<ClientCapabilities::ElicitationCapability>();
     }
-    if (j.contains("experimental")) {
+    if (detail::has_json_value(j, "experimental")) {
         cap.experimental = j.at("experimental");
     }
-    if (j.contains("roots")) {
+    if (detail::has_json_value(j, "roots")) {
         cap.roots = j.at("roots").get<ClientCapabilities::RootsCapability>();
     }
-    if (j.contains("sampling")) {
+    if (detail::has_json_value(j, "sampling")) {
         cap.sampling = j.at("sampling").get<ClientCapabilities::SamplingCapability>();
     }
     if (detail::has_json_value(j, "extensions")) {
@@ -262,22 +262,22 @@ void to_json(nlohmann::json& j, const ServerCapabilities& cap) {
 
 void from_json(const nlohmann::json& j, ServerCapabilities& cap) {
     cap = ServerCapabilities{};
-    if (j.contains("completions")) {
+    if (detail::has_json_value(j, "completions")) {
         cap.completions = j.at("completions");
     }
-    if (j.contains("experimental")) {
+    if (detail::has_json_value(j, "experimental")) {
         cap.experimental = j.at("experimental");
     }
-    if (j.contains("logging")) {
+    if (detail::has_json_value(j, "logging")) {
         cap.logging = j.at("logging");
     }
-    if (j.contains("prompts")) {
+    if (detail::has_json_value(j, "prompts")) {
         cap.prompts = j.at("prompts").get<ServerCapabilities::PromptsCapability>();
     }
-    if (j.contains("resources")) {
+    if (detail::has_json_value(j, "resources")) {
         cap.resources = j.at("resources").get<ServerCapabilities::ResourcesCapability>();
     }
-    if (j.contains("tools")) {
+    if (detail::has_json_value(j, "tools")) {
         cap.tools = j.at("tools").get<ServerCapabilities::ToolsCapability>();
     }
     if (detail::has_json_value(j, "extensions")) {
@@ -304,9 +304,11 @@ void from_json(const nlohmann::json& json_obj, InitializeRequest& value) {
 }
 
 void to_json(nlohmann::json& json_obj, const InitializeResult& res) {
-    json_obj = nlohmann::json{{"protocolVersion", res.protocolVersion},
-                              {"capabilities", res.capabilities},
-                              {"serverInfo", res.serverInfo}};
+    json_obj = nlohmann::json{
+        {"protocolVersion", res.protocolVersion},
+        {"capabilities", res.capabilities},
+        {"serverInfo", res.serverInfo},
+    };
     if (res.instructions) {
         json_obj["instructions"] = *res.instructions;
     }
@@ -317,7 +319,7 @@ void from_json(const nlohmann::json& json_obj, InitializeResult& res) {
     json_obj.at("protocolVersion").get_to(res.protocolVersion);
     json_obj.at("capabilities").get_to(res.capabilities);
     json_obj.at("serverInfo").get_to(res.serverInfo);
-    if (json_obj.contains("instructions")) {
+    if (detail::has_json_value(json_obj, "instructions")) {
         res.instructions = json_obj.at("instructions").get<std::string>();
     }
 }
@@ -331,7 +333,7 @@ void to_json(nlohmann::json& json_obj, const DiscoverRequest& req) {
 
 void from_json(const nlohmann::json& json_obj, DiscoverRequest& req) {
     req = DiscoverRequest{};
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         req.meta = json_obj.at("_meta");
     }
 }
@@ -356,7 +358,7 @@ void from_json(const nlohmann::json& json_obj, DiscoverResult& res) {
     json_obj.at("resultType").get_to(res.resultType);
     json_obj.at("supportedVersions").get_to(res.supportedVersions);
     json_obj.at("capabilities").get_to(res.capabilities);
-    if (json_obj.contains("_meta") &&
+    if (detail::has_json_value(json_obj, "_meta") &&
         detail::has_json_value(json_obj.at("_meta"), "io.modelcontextprotocol/serverInfo")) {
         res.serverInfo =
             json_obj.at("_meta").at("io.modelcontextprotocol/serverInfo").get<ServerInfo>();

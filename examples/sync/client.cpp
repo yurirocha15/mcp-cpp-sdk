@@ -111,8 +111,11 @@ int main(int argc, char** argv) {
 
     // Elicitation: this handler answers the server's questions for the user.
     client.on_elicitation([](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
-        co_return mcp::ElicitResult{mcp::ElicitAction::eAccept, nlohmann::json{{"title", "Dr."}},
-                                    std::nullopt};
+        co_return mcp::ElicitResult{
+            .action = mcp::ElicitAction::eAccept,
+            .content = nlohmann::json{{"title", "Dr."}},
+            .meta = std::nullopt,
+        };
     });
 
     // Sampling: this handler answers the server's requests for model output.

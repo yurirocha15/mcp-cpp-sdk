@@ -32,7 +32,9 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace transport_http_client_modern_test {
@@ -535,6 +537,44 @@ TEST(HttpClientModern, IntegerOutsideTheSafeRangeGetsNoParamHeader) {
     }
 }
 
+// An integer argument written as a float with no fraction is sent as that integer, within the safe
+// range; one with a fraction gets no header. A false boolean is sent as false.
+TEST(HttpClientModern, IntegralFloatsAndFalseGetParamHeaders) {
+    asio::io_context io;
+    RawServer raw(
+        io, [](const Recorded& request) { return modern_reply(request, json::array({route_tool()})); });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+
+    const std::vector<json> calls = {json{{"count", 42.0}}, json{{"count", -9007199254740991.0}},
+                                     json{{"count", 1.5}}, json{{"count", 9007199254740992.0}},
+                                     json{{"flag", false}}};
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("floats", "1.0");
+        co_await client.list_tools();
+        for (const auto& arguments : calls) {
+            co_await client.call_tool("route", arguments);
+        }
+        client.close();
+    });
+
+    const std::vector<Expected> expected = {{{"mcp-param-count", "42"}},
+                                            {{"mcp-param-count", "-9007199254740991"}},
+                                            {},
+                                            {},
+                                            {{"mcp-param-flag", "false"}}};
+    ASSERT_EQ(raw.requests.size(), 2 + expected.size());
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+        const auto& request = raw.requests[2 + index];
+        SCOPED_TRACE(request.body);
+        auto params = mcp_headers(request);
+        for (auto iter = params.begin(); iter != params.end();) {
+            iter = iter->first.rfind("mcp-param-", 0) == 0 ? std::next(iter) : params.erase(iter);
+        }
+        EXPECT_EQ(params, expected[index]);
+    }
+}
+
 TEST(HttpClientModern, Base64NameAndParam) {
     asio::io_context io;
     json tool = route_tool();
@@ -653,6 +693,95 @@ TEST(HttpClientModern, InvalidXMcpHeaderToolsExcluded) {
     }
     ASSERT_EQ(raw.requests.size(), 3u);
     EXPECT_EQ(raw.requests[2].header("Mcp-Param-Region"), "eu");
+}
+
+// A tools/list the server answers with an error reaches the caller as that error, and the header
+// annotations of the last listing that succeeded stay in use.
+TEST(HttpClientModern, AFailedToolsListingKeepsTheKnownHeaders) {
+    int listings = 0;
+    asio::io_context io;
+    RawServer raw(io, [&](const Recorded& request) {
+        if (request.rpc_method() == "tools/list" && ++listings == 2) {
+            return json_reply(rpc_error(request.parsed(), mcp::constants::jsonrpc::g_INTERNAL_ERROR,
+                                        "listing failed"));
+        }
+        return modern_reply(request, json::array({route_tool()}));
+    });
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), modern_options());
+
+    std::optional<int> code;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("failed-listing", "1.0");
+        co_await client.list_tools();
+        try {
+            co_await client.list_tools();
+        } catch (const mcp::McpError& failure) {
+            code = failure.code();
+        }
+        const json arguments = {{"region", "eu"}};
+        co_await client.call_tool("route", arguments);
+        client.close();
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    ASSERT_EQ(raw.requests.size(), 4U);
+    EXPECT_EQ(raw.requests[3].rpc_method(), "tools/call");
+    EXPECT_EQ(raw.requests[3].header("Mcp-Param-Region"), "eu");
+}
+
+// The header annotations of a tools/list read in pages add up across the pages, and a listing that
+// starts over without a cursor forgets the tools it no longer lists.
+TEST(HttpClientModern, ToolHeadersAddUpAcrossPagesAndStartOverWithANewListing) {
+    const auto header_tool = [](const std::string& name, const std::string& argument,
+                                const std::string& header) {
+        return json{{"name", name},
+                    {"inputSchema",
+                     {{"type", "object"},
+                      {"properties", {{argument, {{"type", "string"}, {"x-mcp-header", header}}}}}}}};
+    };
+    int listings = 0;
+    asio::io_context io;
+    RawServer raw(io, [&](const Recorded& request) {
+        if (request.rpc_method() != "tools/list") {
+            return modern_reply(request, json::array());
+        }
+        const auto message = request.parsed();
+        json result = {{"resultType", "complete"}};
+        if (message.value("params", json::object()).contains("cursor")) {
+            result["tools"] = json::array({header_tool("b", "zone", "Zone")});
+        } else if (++listings == 1) {
+            result["tools"] = json::array({header_tool("a", "region", "Region")});
+            result["nextCursor"] = "2";
+        } else {
+            result["tools"] = json::array({header_tool("b", "zone", "Zone")});
+        }
+        return json_reply(rpc_result(message, result));
+    });
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), modern_options());
+
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("pages", "1.0");
+        co_await client.list_tools();
+        const std::optional<std::string> next = "2";
+        co_await client.list_tools(next);
+        json region = {{"region", "eu"}};
+        json zone = {{"zone", "z1"}};
+        co_await client.call_tool("a", region);
+        co_await client.call_tool("b", zone);
+        co_await client.list_tools();
+        co_await client.call_tool("a", region);
+        co_await client.call_tool("b", zone);
+        client.close();
+    });
+
+    ASSERT_EQ(raw.requests.size(), 8u);
+    for (const std::size_t call : {3u, 4u, 6u, 7u}) {
+        EXPECT_EQ(raw.requests[call].rpc_method(), "tools/call") << raw.requests[call].body;
+    }
+    EXPECT_EQ(raw.requests[3].header("Mcp-Param-Region"), "eu");
+    EXPECT_EQ(raw.requests[4].header("Mcp-Param-Zone"), "z1");
+    EXPECT_FALSE(raw.requests[6].header("Mcp-Param-Region").has_value());
+    EXPECT_EQ(raw.requests[7].header("Mcp-Param-Zone"), "z1");
 }
 
 TEST(HttpClientModern, HeaderMismatchRefreshThenRetry) {
@@ -887,6 +1016,52 @@ TEST(HttpClientModern, NoSessionIdSentInModern) {
     EXPECT_EQ(transport->last_event_id(), "");
 }
 
+// A 2025-11-25 server may answer a POST with a whole SSE body. Its lines may end in CRLF, a field
+// name may be followed by no space, one message may span several data lines, and the last event id
+// is kept for a resume.
+TEST(HttpClientModern, ALegacySseAnswerWithCrlfLinesAndSplitDataIsRead) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.method != "POST") {
+            return status_reply(405);
+        }
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        if (method == "initialize") {
+            reply.body = "event: message\r\nid:1\r\ndata:" +
+                         rpc_result(message, legacy_initialize_result()).dump() + "\r\n\r\n";
+        } else if (method == "tools/list") {
+            const auto text = rpc_result(message, json{{"tools", json::array({route_tool()})}}).dump();
+            const auto comma = text.find(',');
+            reply.body = "id: 2\r\ndata: " + text.substr(0, comma + 1) +
+                         "\r\ndata: " + text.substr(comma + 1) + "\r\n\r\n";
+        } else {
+            reply = status_reply(202);
+        }
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::pinned("2025-11-25");
+    mcp::Client client(transport, io.get_executor(), options);
+
+    mcp::ConnectResult connected;
+    std::vector<std::string> tool_names;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        connected = co_await client.connect("legacy-sse", "1.0");
+        for (const auto& tool : (co_await client.list_tools()).tools) {
+            tool_names.push_back(tool.name);
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(connected.protocolVersion, "2025-11-25");
+    EXPECT_EQ(tool_names, std::vector<std::string>{"route"});
+    EXPECT_EQ(transport->last_event_id(), "2");
+}
+
 // ---------------------------------------------------------------------------
 // Streamed answers
 // ---------------------------------------------------------------------------
@@ -932,6 +1107,50 @@ TEST(HttpClientModern, StreamedNotificationsArriveBeforeTheResult) {
 
     EXPECT_TRUE(progress_seen);
     EXPECT_EQ(result["content"][0]["text"], "done");
+}
+
+// In the event stream of a 2025-11-25 session a field name may be followed by no space, an id that
+// holds NUL is ignored, and so is a retry that is not a short decimal number, as the SSE standard
+// has it.
+TEST(HttpClientModern, StreamFieldsAreReadAsTheSseStandardHasIt) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.method != "POST") {
+            return status_reply(405);
+        }
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        if (method == "initialize") {
+            return json_reply(rpc_result(message, legacy_initialize_result()));
+        }
+        if (method != "tools/call") {
+            return status_reply(202);
+        }
+        const json result =
+            rpc_result(message, {{"content", json::array({{{"type", "text"}, {"text", "done"}}})}});
+        std::string events = "retry: soon\nretry:1234567890\nid:7\n: comment\n\nid: a";
+        events.push_back('\0');
+        events += "b\ndata:" + result.dump() + "\n\n";
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        reply.body = std::move(events);
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::pinned("2025-11-25");
+    mcp::Client client(transport, io.get_executor(), options);
+
+    json result;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("fields", "1.0");
+        json params = {{"name", "slow"}, {"arguments", json::object()}};
+        result = co_await client.send_request("tools/call", params);
+        client.close();
+    });
+
+    EXPECT_EQ(result["content"][0]["text"], "done");
+    EXPECT_EQ(transport->last_event_id(), "7");
 }
 
 TEST(HttpClientModern, CancelClosesTheResponseStream) {
@@ -1810,20 +2029,28 @@ TEST(HttpClientLegacy, InitializeRefusedWithAnErrorStatusReportsTheJsonRpcError)
     }
 }
 
-// The body of such an error may leave the id out or null; it still answers the initialize.
+// The body of such an error may leave the id out or null, and the jsonrpc member out; it still
+// answers the initialize.
 TEST(HttpClientLegacy, InitializeErrorWithoutAnIdStillReachesTheCaller) {
-    const auto error = legacy_connect_error(400, [](const json&) {
-        return json{{"jsonrpc", "2.0"},
-                    {"id", nullptr},
-                    {"error", {{"code", -32600}, {"message", "Bad Request: unsupported version"}}}};
-    });
-    EXPECT_NE(error.find("unsupported version"), std::string::npos) << error;
+    const json error_object = {{"code", -32600}, {"message", "Bad Request: unsupported version"}};
+    for (const auto& body : {json{{"jsonrpc", "2.0"}, {"id", nullptr}, {"error", error_object}},
+                             json{{"error", error_object}}}) {
+        SCOPED_TRACE(body.dump());
+        const auto error = legacy_connect_error(400, [&body](const json&) { return body; });
+        EXPECT_NE(error.find("unsupported version"), std::string::npos) << error;
+    }
 }
 
-// A body that is not a JSON-RPC error leaves the plain HTTP status error.
+// A body that is not a JSON-RPC error, or whose error has no integer code, leaves the plain HTTP
+// status error.
 TEST(HttpClientLegacy, InitializeRefusedWithoutAJsonRpcErrorReportsTheStatus) {
-    const auto error = legacy_connect_error(400, [](const json&) { return json{{"detail", "no"}}; });
-    EXPECT_NE(error.find("status 400"), std::string::npos) << error;
+    for (const auto& body : {json{{"detail", "no"}}, json::array({1, 2}), json{{"error", "refused"}},
+                             json{{"error", {{"code", "-32600"}, {"message", "refused"}}}},
+                             json{{"error", {{"code", -32600.5}, {"message", "refused"}}}}}) {
+        SCOPED_TRACE(body.dump());
+        const auto error = legacy_connect_error(400, [&body](const json&) { return body; });
+        EXPECT_NE(error.find("status 400"), std::string::npos) << error;
+    }
 }
 
 /// The HTTP status of the HttpStatusError nested in @p error, the McpError a client call threw.
@@ -1880,6 +2107,57 @@ TEST(HttpClientLegacy, ErrorStatusInsideASessionKeepsItsHttpStatus) {
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_CONNECTION_CLOSED) << other;
     EXPECT_EQ(status, 404u);
     EXPECT_EQ(data_status, 404u);
+}
+
+// A 2026-07-28 request answered 400, 404 or 405 with a JSON-RPC error fails with that error, even
+// when the body leaves out the request's id or the "jsonrpc" member. A body whose error is not a
+// JSON-RPC error object leaves the HTTP status as the failure.
+TEST(HttpClientModern, AnErrorStatusCarriesTheServersJsonRpcError) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.rpc_method() != "tools/call") {
+            return modern_reply(request, json::array({route_tool()}));
+        }
+        const auto region = request.parsed()["params"]["arguments"].value("region", "");
+        if (region == "bare") {
+            return status_reply(404, R"({"error":{"code":-32602,"message":"Unknown region"}})");
+        }
+        if (region == "text") {
+            return status_reply(400, R"({"error":"Unknown region"})");
+        }
+        return status_reply(400, R"({"jsonrpc":"2.0","id":null,"error":{"code":"bad","message":"x"}})");
+    });
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), modern_options());
+
+    std::vector<int> codes;
+    std::vector<std::optional<unsigned int>> statuses;
+    std::string message;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("errors", "1.0");
+        const std::array<std::string_view, 3> regions{"bare", "text", "code"};
+        for (const auto region : regions) {
+            try {
+                const json arguments = {{"region", std::string(region)}};
+                co_await client.call_tool("route", arguments);
+                codes.push_back(0);
+            } catch (const mcp::McpError& failure) {
+                codes.push_back(failure.code());
+                statuses.push_back(nested_http_status(failure));
+                if (region == "bare") {
+                    message = failure.what();
+                }
+            }
+        }
+        client.close();
+    });
+
+    ASSERT_EQ(codes.size(), 3U);
+    EXPECT_EQ(codes[0], mcp::constants::jsonrpc::g_INVALID_PARAMS);
+    EXPECT_NE(message.find("Unknown region"), std::string::npos) << message;
+    ASSERT_EQ(statuses.size(), 3U);
+    EXPECT_EQ(statuses[0], std::nullopt);
+    EXPECT_EQ(statuses[1], 400U);
+    EXPECT_EQ(statuses[2], 400U);
 }
 
 // A new session started in place of a forgotten one that answers with another version and other
@@ -2129,6 +2407,165 @@ TEST(HttpClientModern, EventWithoutAnEndIsCutOffAtTheMessageLimit) {
     EXPECT_NE(failure.find("too long"), std::string::npos) << failure;
 }
 
+// One line without its end is bounded on its own, before it can become part of an event: the
+// call ends at the message limit instead of buffering the line for as long as the server sends.
+TEST(HttpClientModern, LineWithoutAnEndIsCutOffAtTheMessageLimit) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        if (request.rpc_method() != "tools/call") {
+            return modern_reply(request, json::array());
+        }
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        reply.stream.push_back({"data: ", nullptr});
+        const std::string mebibyte(std::size_t{1024} * 1024, 'x');
+        for (int sent = 0; sent < 17; ++sent) {
+            reply.stream.push_back({mebibyte, nullptr});
+        }
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    auto options = modern_options();
+    // The call ends at the message limit; its timeout only reports a stream that is never cut off.
+    options.request_timeout = g_hang_guard;
+    mcp::Client client(transport, io.get_executor(), options);
+
+    std::string failure;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("stream", "1.0");
+        try {
+            json arguments = json::object();
+            co_await client.call_tool("slow", arguments);
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        client.close();
+    });
+
+    EXPECT_NE(failure.find("An SSE line from the server is too long"), std::string::npos) << failure;
+}
+
+// The stream of a response is read as the SSE standard reads one: comment and unknown fields are
+// skipped, CRLF, LF and CR each end a line, a line or a CRLF may arrive in pieces, and the data
+// lines of one event are joined with a newline. A last event the stream ends without its blank line
+// is dropped, so the call then fails for want of a response.
+TEST(HttpClientModern, StreamLinesEndAsTheSseStandardHasIt) {
+    for (const bool ended : {true, false}) {
+        SCOPED_TRACE(ended ? "ended" : "unended");
+        asio::io_context io;
+        RawServer raw(io, [ended](const Recorded& request) {
+            if (request.rpc_method() != "tools/call") {
+                return modern_reply(request, json::array());
+            }
+            const auto message = request.parsed();
+            const auto progress =
+                json{{"jsonrpc", "2.0"},
+                     {"method", "notifications/progress"},
+                     {"params", {{"progressToken", "t1"}, {"progress", 1}, {"total", 2}}}}
+                    .dump();
+            const auto result =
+                rpc_result(message, {{"resultType", "complete"},
+                                     {"content", json::array({{{"type", "text"}, {"text", "done"}}})}})
+                    .dump();
+            const auto half = progress.size() / 2;
+            const auto comma = result.find(',');
+            Reply reply;
+            reply.content_type = "text/event-stream";
+            reply.stream.push_back({": keep-alive\r\n\r\n", nullptr});
+            reply.stream.push_back(
+                {"event: message\rretry: 1000\r\ndata: " + progress.substr(0, half), nullptr});
+            reply.stream.push_back({progress.substr(half) + "\r", nullptr});
+            reply.stream.push_back({"\n\r\n", nullptr});
+            const auto split_result =
+                "data: " + result.substr(0, comma + 1) + "\rdata: " + result.substr(comma + 1);
+            reply.stream.push_back({ended ? split_result + "\r\r" : split_result, nullptr});
+            return reply;
+        });
+        auto transport = make_transport(io, raw.url());
+        mcp::Client client(transport, io.get_executor(), modern_options());
+        int progress_seen = 0;
+        client.on_progress([&progress_seen](const mcp::ProgressNotificationParams& params) {
+            if (params.progress == 1 && params.total == 2) {
+                ++progress_seen;
+            }
+        });
+
+        json result;
+        std::string failure;
+        run_guarded(io, raw, [&]() -> mcp::Task<void> {
+            co_await client.connect("stream", "1.0");
+            json params = {
+                {"name", "slow"}, {"arguments", json::object()}, {"_meta", {{"progressToken", "t1"}}}};
+            try {
+                result = co_await client.send_request("tools/call", params);
+            } catch (const std::exception& error) {
+                failure = error.what();
+            }
+            client.close();
+        });
+
+        EXPECT_EQ(progress_seen, 1);
+        if (ended) {
+            ASSERT_TRUE(result.is_object()) << failure;
+            EXPECT_EQ(result["content"][0]["text"], "done");
+        } else {
+            EXPECT_TRUE(result.is_null()) << result;
+            EXPECT_NE(failure.find("ended without a response"), std::string::npos) << failure;
+        }
+    }
+}
+
+// A legacy server may answer a POST with its whole event stream as the body. That body is read
+// the same way: CRLF and lone CR line ends, and an event whose data spans several lines.
+TEST(HttpClientLegacy, EventStreamBodyWithCrlfCrAndMultiLineDataIsRead) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        const auto message = request.parsed();
+        const auto method = message.is_object() ? message.value("method", "") : "";
+        if (method == "initialize") {
+            auto reply = json_reply(rpc_result(message, legacy_initialize_result()));
+            reply.headers.emplace_back("Mcp-Session-Id", "session-1");
+            return reply;
+        }
+        if (method != "tools/call") {
+            Reply accepted;
+            accepted.status = 202;
+            return accepted;
+        }
+        const auto result =
+            rpc_result(message, {{"content", json::array({{{"type", "text"}, {"text", "done"}}})}})
+                .dump();
+        const auto comma = result.find(',');
+        Reply reply;
+        reply.content_type = "text/event-stream";
+        reply.body = ": comment\r\nevent: message\r\nid: 7\rdata: " + result.substr(0, comma + 1) +
+                     "\r\ndata: " + result.substr(comma + 1) + "\r\n\r\n";
+        return reply;
+    });
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(make_transport(io, raw.url()), io.get_executor(), options);
+
+    std::string text;
+    std::string failure;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        try {
+            co_await client.connect("legacy", "1.0");
+            json arguments = json::object();
+            const auto result = co_await client.call_tool("slow", arguments);
+            if (!result.content.empty() &&
+                std::holds_alternative<mcp::TextContent>(result.content[0])) {
+                text = std::get<mcp::TextContent>(result.content[0]).text;
+            }
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(text, "done") << failure;
+}
+
 namespace {
 
 /// A legacy server whose every GET stream carries `stream_text` and then ends. `gets` records when
@@ -2170,6 +2607,68 @@ void run_ending_streams(EndingStreams& streams, std::size_t wanted) {
 }
 
 }  // namespace
+
+// A request's stream that breaks inside an event is resumed after the last event that arrived
+// whole: the id of the broken one counts only once its blank line arrives.
+TEST(HttpClientLegacyStream, AStreamBrokenInsideAnEventResumesAfterTheLastWholeEvent) {
+    asio::io_context io;
+    json call;
+    std::optional<std::string> resumed_after;
+    RawServer raw(io, [&call, &resumed_after](const Recorded& request) {
+        Reply reply;
+        reply.headers = {{"Mcp-Session-Id", "s1"}};
+        if (request.method == "GET") {
+            // The session's own GET stream names no event; the resume of the call's stream does.
+            const auto last_event_id = request.header("Last-Event-ID");
+            if (!last_event_id) {
+                reply.status = 405;
+                return reply;
+            }
+            resumed_after = last_event_id;
+            reply.content_type = "text/event-stream";
+            const auto result = rpc_result(call, {{"content", json::array()}}).dump();
+            reply.stream = {Step{"id: 2\ndata: " + result + "\n\n", {}}};
+            return reply;
+        }
+        const auto message = request.parsed();
+        const auto method = message.value("method", "");
+        if (method == "initialize") {
+            reply.body = rpc_result(message, legacy_initialize_result()).dump();
+            return reply;
+        }
+        if (method != "tools/call") {
+            reply.status = 202;
+            return reply;
+        }
+        call = message;
+        const json note = {{"jsonrpc", "2.0"},
+                           {"method", "notifications/message"},
+                           {"params", {{"level", "info"}, {"data", "tick"}}}};
+        reply.content_type = "text/event-stream";
+        reply.stream = {Step{"id: 1\n" + sse_event(note) + "id: 2\ndata: {\"jsonrpc\"", {}}};
+        return reply;
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(transport, io.get_executor(), options);
+
+    json result;
+    std::string failure;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("resume", "1.0");
+        json params = {{"name", "slow"}, {"arguments", json::object()}};
+        try {
+            result = co_await client.send_request("tools/call", params);
+        } catch (const std::exception& error) {
+            failure = error.what();
+        }
+        client.close();
+    });
+
+    EXPECT_EQ(resumed_after, "1");
+    EXPECT_TRUE(result.contains("content")) << failure;
+}
 
 // A legacy request whose event stream stays quiet past set_response_timeout() ends with
 // g_CONNECTION_CLOSED, and the message says it timed out rather than that the transport is closed.

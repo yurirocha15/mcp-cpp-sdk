@@ -36,7 +36,7 @@ std::string server_program(int argc, char** argv) {
     if (argc > 1) {
         return argv[1];
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     const char* name = "example-server-simple.exe";
 #else
     const char* name = "example-server-simple";

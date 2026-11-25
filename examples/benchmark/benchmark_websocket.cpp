@@ -27,7 +27,7 @@
 #include <string>
 
 namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 
 int main() {
     try {
@@ -56,14 +56,26 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"message", {{"type", "string"}}}}}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"message", {{"type", "string"}}}}},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
-            "echo", "Echo benchmark tool", tool_schema, [](nlohmann::json args) -> nlohmann::json {
+            "echo", "Echo benchmark tool", tool_schema,
+            [](const nlohmann::json& args) -> nlohmann::json {
                 std::string msg = args.value("message", "ping");
-                return nlohmann::json{{"content", nlohmann::json::array({nlohmann::json{
-                                                      {"type", "text"}, {"text", msg}}})}};
+                return nlohmann::json{
+                    {
+                        "content",
+                        nlohmann::json::array({
+                            nlohmann::json{
+                                {"type", "text"},
+                                {"text", msg},
+                            },
+                        }),
+                    },
+                };
             });
 
         asio::co_spawn(
@@ -115,10 +127,10 @@ int main() {
                 }
 
                 auto end = std::chrono::high_resolution_clock::now();
-                auto total_us =
-                    std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-                double total_sec = total_us / 1'000'000.0;
-                double avg_ms = (total_us / 1000.0) / num_iterations;
+                const std::chrono::duration<double> total = end - start;
+                const double total_sec = total.count();
+                const double avg_ms =
+                    std::chrono::duration<double, std::milli>(total).count() / num_iterations;
                 double calls_per_sec = num_iterations / total_sec;
 
                 std::cout << "\n" << std::string(70, '=') << "\n";

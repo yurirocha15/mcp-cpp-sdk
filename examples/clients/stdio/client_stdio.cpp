@@ -35,7 +35,7 @@ static std::string server_program(int argc, char** argv) {
     if (argc > 1) {
         return argv[1];
     }
-#if defined(_WIN32)
+#ifdef _WIN32
     const char* name = "example-server-stdio.exe";
 #else
     const char* name = "example-server-stdio";
@@ -143,7 +143,7 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         prompt_args["language"] = "C++";
                         prompt_args["code"] = "int main() { return 0; }";
                         auto prompt_result =
-                            co_await client.get_prompt(prompts.prompts[0].name, std::move(prompt_args));
+                            co_await client.get_prompt(prompts.prompts[0].name, prompt_args);
                         for (const auto& msg : prompt_result.messages) {
                             if (const auto* text = std::get_if<TextContent>(&msg.content)) {
                                 std::cerr << "Prompt message: " << text->text << "\n";

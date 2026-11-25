@@ -1,6 +1,7 @@
 #include <mcp/protocol/completion.hpp>
 
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <variant>
 
@@ -21,7 +22,7 @@ void from_json(const nlohmann::json& json_obj, PaginatedRequestParams& params) {
     if (detail::has_json_value(json_obj, "cursor")) {
         params.cursor = json_obj.at("cursor").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -51,10 +52,13 @@ void to_json(nlohmann::json& json_obj, const CompleteReference& ref) {
 }
 
 void from_json(const nlohmann::json& json_obj, CompleteReference& ref) {
-    if (json_obj.at("type") == "ref/prompt") {
+    const auto& type = json_obj.at("type");
+    if (type == "ref/prompt") {
         ref = json_obj.get<PromptReference>();
-    } else {
+    } else if (type == "ref/resource") {
         ref = json_obj.get<ResourceTemplateReference>();
+    } else {
+        throw std::invalid_argument("Unknown completion reference type");
     }
 }
 
@@ -99,7 +103,7 @@ void from_json(const nlohmann::json& json_obj, CompleteParams& params) {
     if (json_obj.contains("context") && !json_obj.at("context").is_null()) {
         params.context = json_obj.at("context").get<CompleteContext>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -135,7 +139,7 @@ void to_json(nlohmann::json& json_obj, const CompleteResult& result) {
 void from_json(const nlohmann::json& json_obj, CompleteResult& result) {
     result = CompleteResult{};
     json_obj.at("completion").get_to(result.completion);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }

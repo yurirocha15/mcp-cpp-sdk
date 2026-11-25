@@ -69,10 +69,12 @@ Follow these naming conventions, which ``.clang-tidy`` enforces with
 * **Macros**: ``UPPER_CASE`` (e.g., ``MCP_DEPRECATED``)
 * **Namespaces**: ``lower_case`` (e.g., ``namespace mcp { namespace detail { ... } }``)
 
-``make lint`` runs the check locally. The CI ``Identifier naming`` job runs only
-``readability-identifier-naming`` over ``src/``, ``include/`` and ``examples/``,
-the directories ``make lint`` checks, and fails on any violation. It runs when a
-change touches those directories, ``.clang-tidy`` or the CMake files.
+``make lint`` runs clang-tidy locally over ``include/`` and ``src/`` with the checks
+``.clang-tidy`` enables, and fails on any warning. The CI ``clang-tidy`` job runs the
+same checks over the same directories, and checks ``examples/`` for identifier naming
+only. It runs when a change touches those directories, ``.clang-tidy`` or the CMake
+files. CI uses clang-tidy 23.1.4 (``python3 -m pip install clang-tidy==23.1.4``); older
+versions report findings that it does not.
 
 Code Formatting
 ^^^^^^^^^^^^^^^
@@ -192,7 +194,11 @@ CI collects the report in its GCC sanitizer build
 (``python scripts/build.py --sanitize --coverage --test``, which writes
 ``build/sanitize/coverage.xml``) and uploads it to
 `Codecov <https://app.codecov.io/gh/yurirocha15/mcp-cpp-sdk>`_, which comments
-on pull requests with the coverage of the changed lines.
+on pull requests with the coverage of the changed lines. That report leaves out
+the branches of lines without an ``if``, loop, ``switch``, ``?:``, ``&&`` or
+``||``: they come from code the compiler generates or inlines there, such as
+exception and cleanup paths. ``build/sanitize/coverage.json``, kept as the
+``coverage-report`` artifact of the CI run, has every branch.
 
 Sanitizers
 ^^^^^^^^^^

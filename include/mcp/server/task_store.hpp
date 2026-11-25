@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/tasks.hpp>
 
@@ -131,9 +132,9 @@ class MCP_API TaskStore {
 struct InMemoryTaskStoreOptions {
     /// Tasks one owner may hold at once, finished ones included until they expire. At the limit
     /// the owner's oldest finished task makes room, and create() refuses when there is none.
-    std::size_t max_tasks_per_owner = 100;
+    std::size_t max_tasks_per_owner = mcp::constants::tasks::g_DEFAULT_MAX_TASKS_PER_OWNER;
     /// Tasks the store may hold in all, with the same rule.
-    std::size_t max_tasks = 10000;
+    std::size_t max_tasks = mcp::constants::tasks::g_DEFAULT_MAX_TASKS;
     /// The current time; unset reads the system clock. Tests set it to expire tasks without
     /// waiting.
     std::function<std::chrono::system_clock::time_point()> clock;

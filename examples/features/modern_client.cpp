@@ -84,11 +84,14 @@ int main() {
 
         // A list result of a 2026-07-28 request carries ttlMs and cacheScope. Without this call the
         // defaults apply: 0 (do not reuse the result) and private.
-        server.set_cache_hints(CacheTarget::eToolsList, CacheHint{60000, CacheScope::ePublic});
+        server.set_cache_hints(CacheTarget::eToolsList,
+                               CacheHint{.ttlMs = 60000, .scope = CacheScope::ePublic});
 
-        nlohmann::json tool_schema = {{"type", "object"},
-                                      {"properties", {{"name", {{"type", "string"}}}}},
-                                      {"required", nlohmann::json::array({"name"})}};
+        nlohmann::json tool_schema = {
+            {"type", "object"},
+            {"properties", {{"name", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"name"})},
+        };
 
         server.add_tool<nlohmann::json, nlohmann::json>(
             "greet", "Greets someone and logs the call", tool_schema,
@@ -96,9 +99,16 @@ int main() {
                 // Sent only when the request that called the tool set RequestOptions::log_level.
                 co_await ctx.log_info("greet was called");
                 co_return nlohmann::json{
-                    {"content", nlohmann::json::array({nlohmann::json{
-                                    {"type", "text"},
-                                    {"text", "Hello, " + args.at("name").get<std::string>() + "!"}}})}};
+                    {
+                        "content",
+                        nlohmann::json::array({
+                            nlohmann::json{
+                                {"type", "text"},
+                                {"text", "Hello, " + args.at("name").get<std::string>() + "!"},
+                            },
+                        }),
+                    },
+                };
             });
 
         auto [client_transport, server_transport] = make_memory_transport_pair(io_ctx.get_executor());

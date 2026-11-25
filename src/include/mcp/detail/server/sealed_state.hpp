@@ -9,15 +9,13 @@
 #include <vector>
 #include "mcp/detail/constants.hpp"
 
-namespace mcp::detail {
-
 /// Sealed tokens: bytes that only a holder of the key ring can produce or read, carried as an opaque
 /// string. The wire form is `base64url(ver(1) | kid(4) | salt(16) | ciphertext | tag(16))` with
 /// `ver` 1. Each token gets its own AES-256-GCM key, HKDF-SHA256 of the master key with a fresh
 /// 128-bit random salt, so the fixed zero nonce is never reused under one key. The AAD is
 /// `ver | kid | salt`. This layer only seals and opens bytes; what the bytes mean, and when a token
 /// has expired, is for the caller.
-namespace sealed_state {
+namespace mcp::detail::sealed_state {
 
 /// One master key and the id that names it in a token. Each SealKey overwrites its own copy of the
 /// secret with `OPENSSL_cleanse` when it is destroyed, and the secret is never printed. A copy
@@ -47,7 +45,7 @@ class SealKey {
     std::array<std::uint8_t, mcp::detail::constants::sealed_token::g_KEY_SIZE> secret_;
 };
 
-enum class SealError {
+enum class SealError : std::uint8_t {
     eNone,
     /// The ring has no keys.
     eNoKey,
@@ -57,7 +55,7 @@ enum class SealError {
     eCryptoFailure,
 };
 
-enum class OpenError {
+enum class OpenError : std::uint8_t {
     eNone,
     eEmpty,
     /// Longer than the cap; checked before any decoding.
@@ -104,6 +102,4 @@ class Codec {
     std::size_t max_token_chars_;
 };
 
-}  // namespace sealed_state
-
-}  // namespace mcp::detail
+}  // namespace mcp::detail::sealed_state

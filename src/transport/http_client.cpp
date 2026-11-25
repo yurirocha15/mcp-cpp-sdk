@@ -60,14 +60,15 @@ namespace {
 /// Reads a text/event-stream body in the pieces the network delivers it and returns the data of each
 /// event as soon as its terminating blank line arrives. It keeps the last event id and the
 /// reconnection time the server asked for, which a resume needs; comment lines and other fields are
-/// skipped.
+/// skipped. As the SSE standard has it, CRLF, LF and CR each end a line, an `id` counts once its
+/// event has arrived whole, and an event the stream ends inside of is dropped.
 class SseDecoder {
    public:
     SseDecoder() = default;
     /// A decoder for a stream resumed after the event @p last_id.
-    explicit SseDecoder(std::string last_id) : last_id_(std::move(last_id)) {}
+    explicit SseDecoder(std::string last_id) : last_id_(last_id), id_buffer_(std::move(last_id)) {}
 
-    /// The id of the last event that named one, which a resume sends as Last-Event-ID.
+    /// The id of the last whole event that named one, which a resume sends as Last-Event-ID.
     [[nodiscard]] const std::string& last_id() const { return last_id_; }
 
     /// The reconnection time a `retry` field asked for, if one did.
@@ -79,7 +80,13 @@ class SseDecoder {
     std::vector<std::string> feed(std::string_view chunk) {
         std::vector<std::string> events;
         for (const char symbol : chunk) {
-            if (symbol != '\n') {
+            // The LF of a CRLF, which may come in the next chunk, ends no line of its own.
+            const bool second_of_crlf = symbol == '\n' && after_carriage_return_;
+            after_carriage_return_ = symbol == '\r';
+            if (second_of_crlf) {
+                continue;
+            }
+            if (symbol != '\n' && symbol != '\r') {
                 line_.push_back(symbol);
                 if (line_.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
                     throw TransportError(TransportError::Kind::eProtocol,
@@ -92,55 +99,35 @@ class SseDecoder {
         return events;
     }
 
-    /// The event a stream that ends without a final blank line still carries.
-    std::vector<std::string> finish() {
-        std::vector<std::string> events;
-        if (!line_.empty()) {
-            consume_line(events);
-        }
-        if (!payload_.empty()) {
-            events.push_back(std::move(payload_));
-            payload_.clear();
-            carried_anything_ = true;
-        }
-        return events;
-    }
-
    private:
     void consume_line(std::vector<std::string>& events) {
-        if (!line_.empty() && line_.back() == '\r') {
-            line_.pop_back();
-        }
         if (line_.empty()) {
+            // The blank line ends the event: its id, or the one before, becomes the stream's.
+            if (id_named_) {
+                last_id_ = id_buffer_;
+                id_named_ = false;
+                carried_anything_ = true;
+            }
             if (!payload_.empty()) {
                 events.push_back(std::move(payload_));
                 payload_.clear();
                 carried_anything_ = true;
             }
-        } else if (line_.compare(0, 3, "id:") == 0) {
-            std::string_view value = std::string_view(line_).substr(3);
-            if (!value.empty() && value.front() == ' ') {
-                value.remove_prefix(1);
-            }
+        } else if (const auto id = field_value("id:")) {
+            const std::string_view value = *id;
             // An id holding NUL is ignored, as the SSE standard has it.
             if (value.find('\0') == std::string_view::npos) {
-                last_id_.assign(value.data(), value.size());
-                carried_anything_ = true;
+                id_buffer_.assign(value.data(), value.size());
+                id_named_ = true;
             }
-        } else if (line_.compare(0, 6, "retry:") == 0) {
-            std::string_view value = std::string_view(line_).substr(6);
-            if (!value.empty() && value.front() == ' ') {
-                value.remove_prefix(1);
-            }
+        } else if (const auto retry = field_value("retry:")) {
+            const std::string_view value = *retry;
             if (!value.empty() && value.size() <= g_max_retry_digits &&
                 value.find_first_not_of("0123456789") == std::string_view::npos) {
                 retry_ = std::chrono::milliseconds(std::stoll(std::string(value)));
             }
-        } else if (line_.compare(0, 5, "data:") == 0) {
-            std::string_view value = std::string_view(line_).substr(5);
-            if (!value.empty() && value.front() == ' ') {
-                value.remove_prefix(1);
-            }
+        } else if (const auto data = field_value("data:")) {
+            const std::string_view value = *data;
             if (payload_.size() + value.size() + 1 >
                 mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
                 throw TransportError(TransportError::Kind::eProtocol,
@@ -154,12 +141,30 @@ class SseDecoder {
         line_.clear();
     }
 
+    /// The value of the line when it is the field @p name, which ends with its colon: the rest of
+    /// the line, less one leading space.
+    [[nodiscard]] std::optional<std::string_view> field_value(std::string_view name) const {
+        std::string_view line = line_;
+        if (!line.starts_with(name)) {
+            return std::nullopt;
+        }
+        line.remove_prefix(name.size());
+        if (!line.empty() && line.front() == ' ') {
+            line.remove_prefix(1);
+        }
+        return line;
+    }
+
     /// Longest `retry` value read, in digits: past this the field is ignored.
     static constexpr std::size_t g_max_retry_digits = 9;
 
     std::string line_;
     std::string payload_;
     std::string last_id_;
+    /// The id named since the last blank line, which counts once that event ends.
+    std::string id_buffer_;
+    bool id_named_ = false;
+    bool after_carriage_return_ = false;
     bool carried_anything_ = false;
     std::optional<std::chrono::milliseconds> retry_;
 };
@@ -248,7 +253,8 @@ struct HttpClientTransport::Impl {
         std::string session_id;
         std::string last_event_id;
         std::string protocol_version{
-            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION)};
+            std::string(mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION),
+        };
         std::optional<std::string> initialize_request_key;
         /// The initialize request that started the session, repeated to start a new one when the
         /// server has forgotten it. Touched on the strand only.
@@ -299,7 +305,8 @@ struct HttpClientTransport::Impl {
                 detail::close_connection(*idle_connections.front().stream);
                 idle_connections.pop_front();
             }
-            idle_connections.push_back(IdleConnection{std::move(stream), std::move(plan), now});
+            idle_connections.push_back(
+                IdleConnection{.stream = std::move(stream), .plan = std::move(plan), .since = now});
         }
 
         /// The most recently used kept connection made the way @p plan says that the server has
@@ -358,11 +365,6 @@ struct HttpClientTransport::Impl {
         }
     };
 
-    struct ParsedSseEvent {
-        std::string data;
-        std::string id;
-    };
-
     struct CloseTarget {
         std::string path;
         std::string authority;
@@ -385,19 +387,15 @@ struct HttpClientTransport::Impl {
 
     static ParsedUrl parse_url(const std::string& url) {
         ParsedUrl parsed;
-        std::size_t prefix_length = 0;
-        if (url.starts_with(mcp::detail::constants::url::g_HTTP_PREFIX)) {
-            prefix_length = mcp::detail::constants::url::g_HTTP_PREFIX.size();
-        } else if (url.starts_with(mcp::detail::constants::url::g_HTTPS_PREFIX)) {
-            prefix_length = mcp::detail::constants::url::g_HTTPS_PREFIX.size();
-            parsed.https = true;
-        } else {
+        const auto scheme = detail::http_url_scheme(url);
+        if (!scheme) {
             throw std::invalid_argument("HttpClientTransport URL must start with http:// or https://");
         }
+        parsed.https = scheme->https;
 
         // The authority ends where the path, query or fragment begins. The fragment is never
         // sent, and a query needs the root path.
-        const auto rest = url.substr(prefix_length);
+        const auto rest = url.substr(scheme->prefix_length);
         const auto authority_end = rest.find_first_of("/?#");
         auto authority = rest.substr(0, authority_end);
         parsed.path = authority_end == std::string::npos ? "" : rest.substr(authority_end);
@@ -460,13 +458,13 @@ struct HttpClientTransport::Impl {
     }
 
     [[nodiscard]] std::string connection_server_name() const {
-        std::lock_guard lock(settings_mutex);
+        std::scoped_lock lock(settings_mutex);
         return server_name;
     }
 
     /// How a connection opened now is made.
     [[nodiscard]] std::shared_ptr<const detail::ConnectPlan> current_plan() const {
-        std::lock_guard lock(settings_mutex);
+        std::scoped_lock lock(settings_mutex);
         return plan;
     }
 
@@ -530,66 +528,7 @@ struct HttpClientTransport::Impl {
     }
 
     static bool starts_with(std::string_view value, std::string_view prefix) {
-        return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
-    }
-
-    static std::string strip_carriage_return(std::string_view line) {
-        if (!line.empty() && line.back() == '\r') {
-            return std::string(line.substr(0, line.size() - 1));
-        }
-        return std::string(line);
-    }
-
-    static std::queue<ParsedSseEvent> parse_sse_messages(std::string_view sse_body) {
-        std::queue<ParsedSseEvent> parsed_messages;
-        std::string current_event_payload;
-        std::string current_event_id;
-
-        std::size_t offset = 0;
-        while (offset <= sse_body.size()) {
-            const std::size_t line_end = sse_body.find('\n', offset);
-            const std::size_t extracted_length =
-                line_end == std::string_view::npos ? sse_body.size() - offset : line_end - offset;
-            const std::string normalized_line =
-                strip_carriage_return(sse_body.substr(offset, extracted_length));
-
-            if (normalized_line.empty()) {
-                if (!current_event_payload.empty()) {
-                    parsed_messages.push(
-                        ParsedSseEvent{std::move(current_event_payload), current_event_id});
-                    current_event_payload.clear();
-                    current_event_id.clear();
-                }
-            } else if (starts_with(normalized_line, "data:")) {
-                std::string_view data_value =
-                    std::string_view(normalized_line).substr(std::string_view("data:").size());
-                if (!data_value.empty() && data_value.front() == ' ') {
-                    data_value.remove_prefix(1);
-                }
-                if (!current_event_payload.empty()) {
-                    current_event_payload.push_back('\n');
-                }
-                current_event_payload.append(data_value.data(), data_value.size());
-            } else if (starts_with(normalized_line, "id:")) {
-                std::string_view id_value =
-                    std::string_view(normalized_line).substr(std::string_view("id:").size());
-                if (!id_value.empty() && id_value.front() == ' ') {
-                    id_value.remove_prefix(1);
-                }
-                current_event_id = std::string(id_value);
-            }
-
-            if (line_end == std::string_view::npos) {
-                break;
-            }
-            offset = line_end + 1;
-        }
-
-        if (!current_event_payload.empty()) {
-            parsed_messages.push(ParsedSseEvent{std::move(current_event_payload), current_event_id});
-        }
-
-        return parsed_messages;
+        return value.size() >= prefix.size() && value.starts_with(prefix);
     }
 
     void enqueue_message(std::string message_text) const {
@@ -600,7 +539,7 @@ struct HttpClientTransport::Impl {
     void capture_session_id(const StringResponse& response) {
         auto header_iter = response.find("MCP-Session-Id");
         if (header_iter != response.end()) {
-            std::lock_guard lock(state->metadata_mutex);
+            std::scoped_lock lock(state->metadata_mutex);
             state->session_id = std::string(header_iter->value());
         }
     }
@@ -668,8 +607,10 @@ struct HttpClientTransport::Impl {
 
     /// What of an initialize result the Client relies on: the protocol version and capabilities.
     static nlohmann::json terms_of(const nlohmann::json& result) {
-        return nlohmann::json{{"protocolVersion", result.value("protocolVersion", nlohmann::json())},
-                              {"capabilities", result.value("capabilities", nlohmann::json())}};
+        return nlohmann::json{
+            {"protocolVersion", result.value("protocolVersion", nlohmann::json())},
+            {"capabilities", result.value("capabilities", nlohmann::json())},
+        };
     }
 
     /// The terms of the initialize result @p response carries for the initialize @p sent, as
@@ -693,9 +634,9 @@ struct HttpClientTransport::Impl {
             return std::nullopt;
         }
         if (starts_with(std::string(content_type->value()), "text/event-stream")) {
-            auto events = parse_sse_messages(response.body());
-            for (; !events.empty(); events.pop()) {
-                if (auto terms = answers(events.front().data)) {
+            SseDecoder decoder;
+            for (const auto& event : decoder.feed(response.body())) {
+                if (auto terms = answers(event)) {
                     return terms;
                 }
             }
@@ -788,16 +729,12 @@ struct HttpClientTransport::Impl {
         }
 
         if (starts_with(content_type_header, "text/event-stream")) {
-            auto parsed_messages = parse_sse_messages(response.body());
-            while (!parsed_messages.empty()) {
-                auto& event = parsed_messages.front();
-                if (!event.id.empty()) {
-                    std::lock_guard lock(state->metadata_mutex);
-                    state->last_event_id = event.id;
-                }
-                capture_negotiated_protocol_version(event.data);
-                enqueue_message(std::move(event.data));
-                parsed_messages.pop();
+            SseDecoder decoder;
+            auto events = decoder.feed(response.body());
+            remember_last_event_id(decoder);
+            for (auto& event : events) {
+                capture_negotiated_protocol_version(event);
+                enqueue_message(std::move(event));
             }
         }
     }
@@ -858,7 +795,7 @@ struct HttpClientTransport::Impl {
     std::function<std::string()> pin_bearer_token_provider() const {
         std::function<std::string()> provider;
         {
-            std::lock_guard lock(provider_mutex);
+            std::scoped_lock lock(provider_mutex);
             provider = bearer_token_provider;
         }
         // A bearer token in clear text can be read and replayed by anyone on the path. A loopback
@@ -960,7 +897,7 @@ struct HttpClientTransport::Impl {
                                    std::function<std::string()> bearer_token_provider) {
         auto& state = *impl->state;
         {
-            std::lock_guard lock(state.metadata_mutex);
+            std::scoped_lock lock(state.metadata_mutex);
             state.session_id.clear();
             state.last_event_id.clear();
         }
@@ -1198,7 +1135,7 @@ struct HttpClientTransport::Impl {
         if (decoder.last_id().empty()) {
             return;
         }
-        std::lock_guard lock(state->metadata_mutex);
+        std::scoped_lock lock(state->metadata_mutex);
         state->last_event_id = decoder.last_id();
     }
 
@@ -1370,7 +1307,7 @@ struct HttpClientTransport::Impl {
     void warn(const std::string& text) const {
         std::function<void(const std::string&)> handler;
         {
-            std::lock_guard lock(provider_mutex);
+            std::scoped_lock lock(provider_mutex);
             handler = warning_handler;
         }
         if (handler) {
@@ -1472,7 +1409,7 @@ struct HttpClientTransport::Impl {
             const auto number = value.get<double>();
             constexpr auto limit =
                 static_cast<double>(mcp::detail::constants::param_headers::g_MAX_SAFE_HEADER_INTEGER);
-            if (!(number >= -limit && number <= limit) ||
+            if (number < -limit || number > limit ||
                 number != static_cast<double>(static_cast<std::int64_t>(number))) {
                 return std::nullopt;
             }
@@ -1757,7 +1694,7 @@ struct HttpClientTransport::Impl {
         auto& body = call->response_body;
         const bool event_stream = call->event_stream;
         const unsigned int status = call->status;
-        std::array<char, 8192> chunk{};
+        std::array<char, mcp::detail::constants::http_client::g_READ_CHUNK_BYTES> chunk{};
         while (!parser.is_done() && !(event_stream && call->final_message)) {
             parser.get().body().data = chunk.data();
             parser.get().body().size = chunk.size();
@@ -1788,11 +1725,6 @@ struct HttpClientTransport::Impl {
         }
 
         if (event_stream) {
-            if (!call->final_message) {
-                for (auto& text : decoder.finish()) {
-                    impl->accept_stream_message(*call, std::move(text));
-                }
-            }
             if (call->expects_response && !call->final_message) {
                 throw TransportError(TransportError::Kind::eProtocol,
                                      "The server's event stream ended without a response");
@@ -1858,10 +1790,12 @@ struct HttpClientTransport::Impl {
             if (*cursor) {
                 params["cursor"] = **cursor;
             }
-            refresh->message = nlohmann::json{{"jsonrpc", "2.0"},
-                                              {"id", refresh->id},
-                                              {"method", methods::g_TOOLS_LIST},
-                                              {"params", params}};
+            refresh->message = nlohmann::json{
+                {"jsonrpc", "2.0"},
+                {"id", refresh->id},
+                {"method", methods::g_TOOLS_LIST},
+                {"params", params},
+            };
             refresh->body = mcp::detail::dump_json(refresh->message);
             co_await run_exchange(impl, refresh, false);
             if (!refresh->final_message) {
@@ -1932,7 +1866,10 @@ struct HttpClientTransport::Impl {
 
     static std::string error_response(const ModernCall& call, int code, const std::string& message) {
         return mcp::detail::dump_json(nlohmann::json{
-            {"jsonrpc", "2.0"}, {"id", call.id}, {"error", {{"code", code}, {"message", message}}}});
+            {"jsonrpc", "2.0"},
+            {"id", call.id},
+            {"error", {{"code", code}, {"message", message}}},
+        });
     }
 
     /// Reads an event stream to its end after the request that opened it has been sent. Whatever
@@ -2041,7 +1978,7 @@ struct HttpClientTransport::Impl {
     std::shared_ptr<SharedState> state;
     /// Zero means no limit.
     std::atomic<std::chrono::milliseconds::rep> response_timeout_ms{
-        std::chrono::milliseconds(std::chrono::minutes(10)).count()};
+        mcp::detail::constants::http_client::g_DEFAULT_RESPONSE_TIMEOUT.count()};
     std::string host;
     std::string port;
     std::string path;
@@ -2079,12 +2016,12 @@ HttpClientTransport::~HttpClientTransport() {
 }
 
 std::string HttpClientTransport::session_id() const {
-    std::lock_guard lock(impl_->state->metadata_mutex);
+    std::scoped_lock lock(impl_->state->metadata_mutex);
     return impl_->state->session_id;
 }
 
 std::string HttpClientTransport::last_event_id() const {
-    std::lock_guard lock(impl_->state->metadata_mutex);
+    std::scoped_lock lock(impl_->state->metadata_mutex);
     return impl_->state->last_event_id;
 }
 
@@ -2104,12 +2041,12 @@ void HttpClientTransport::set_reinitialize_on_expired_session(bool enabled) {
 /// pinned, and the next one picks up the new value.
 
 void HttpClientTransport::set_bearer_token_provider(std::function<std::string()> provider) {
-    std::lock_guard lock(impl_->provider_mutex);
+    std::scoped_lock lock(impl_->provider_mutex);
     impl_->bearer_token_provider = std::move(provider);
 }
 
 void HttpClientTransport::set_warning_handler(std::function<void(const std::string&)> handler) {
-    std::lock_guard lock(impl_->provider_mutex);
+    std::scoped_lock lock(impl_->provider_mutex);
     impl_->warning_handler = std::move(handler);
 }
 
@@ -2121,7 +2058,7 @@ void HttpClientTransport::set_tls(std::shared_ptr<const TlsClientContext> contex
     if (!impl_->https) {
         throw std::invalid_argument("TLS settings need an https:// URL");
     }
-    std::lock_guard lock(impl_->settings_mutex);
+    std::scoped_lock lock(impl_->settings_mutex);
     impl_->tls_context = std::move(context);
     impl_->rebuild_plan();
 }
@@ -2134,14 +2071,14 @@ void HttpClientTransport::set_server_name(std::string name) {
     if (name.empty()) {
         throw std::invalid_argument("The TLS server name is empty");
     }
-    std::lock_guard lock(impl_->settings_mutex);
+    std::scoped_lock lock(impl_->settings_mutex);
     impl_->server_name = std::move(name);
     impl_->rebuild_plan();
 }
 
 void HttpClientTransport::set_proxy(ProxyOptions options) {
     detail::validate_proxy_options(options);
-    std::lock_guard lock(impl_->settings_mutex);
+    std::scoped_lock lock(impl_->settings_mutex);
     impl_->proxy = std::move(options);
     impl_->rebuild_plan();
 }
@@ -2167,10 +2104,14 @@ void HttpClientTransport::close() {
     }
 
     auto shared_state = impl_->state;
-    net::post(shared_state->timer.get_executor(), [shared_state]() { shared_state->timer.cancel(); });
+    net::post(shared_state->timer.get_executor(), [shared_state] { shared_state->timer.cancel(); });
 
     auto close_target = std::make_shared<Impl::CloseTarget>(Impl::CloseTarget{
-        impl_->path, impl_->authority, impl_->current_plan(), impl_->pin_bearer_token_provider()});
+        .path = impl_->path,
+        .authority = impl_->authority,
+        .plan = impl_->current_plan(),
+        .bearer_token_provider = impl_->pin_bearer_token_provider(),
+    });
     net::co_spawn(
         impl_->strand,
         [shared_state, close_target = std::move(close_target)]() -> boost::asio::awaitable<void> {
@@ -2257,7 +2198,7 @@ void HttpClientTransport::close() {
                 shared_state->stream_plan.reset();
             }
             {
-                std::lock_guard lock(shared_state->metadata_mutex);
+                std::scoped_lock lock(shared_state->metadata_mutex);
                 shared_state->session_id.clear();
             }
             co_return;

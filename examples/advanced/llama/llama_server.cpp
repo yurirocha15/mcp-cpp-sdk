@@ -20,7 +20,7 @@
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace asio = boost::asio;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 
 struct AppOptions {
     std::string transport = "stdio";
@@ -44,7 +44,7 @@ static void print_usage(const char* prog) {
 enum class ParseResult : std::uint8_t {
     eOk,
     eHelp,
-    eError
+    eError,
 };
 
 static ParseResult parse_args(int argc, char** argv, AppOptions& opts) {
@@ -162,12 +162,18 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
         // the server goes on reading and answering other requests on the same thread. A handler
         // that throws (llama-server unreachable, an error status, an unexpected reply) is answered
         // with an isError result carrying the exception's message.
-        nlohmann::json chat_schema = {{"type", "object"},
-                                      {"properties",
-                                       {{"messages", {{"type", "array"}}},
-                                        {"temperature", {{"type", "number"}}},
-                                        {"max_tokens", {{"type", "integer"}}}}},
-                                      {"required", nlohmann::json::array({"messages"})}};
+        nlohmann::json chat_schema = {
+            {"type", "object"},
+            {
+                "properties",
+                {
+                    {"messages", {{"type", "array"}}},
+                    {"temperature", {{"type", "number"}}},
+                    {"max_tokens", {{"type", "integer"}}},
+                },
+            },
+            {"required", nlohmann::json::array({"messages"})},
+        };
         server.add_tool<nlohmann::json, CallToolResult>(
             "chat", "Send chat messages to the llama-server model", chat_schema,
             [opts](nlohmann::json args) -> Task<CallToolResult> {
@@ -188,12 +194,18 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     resp_json.at("choices").at(0).at("message").at("content").get<std::string>());
             });
 
-        nlohmann::json complete_schema = {{"type", "object"},
-                                          {"properties",
-                                           {{"prompt", {{"type", "string"}}},
-                                            {"temperature", {{"type", "number"}}},
-                                            {"max_tokens", {{"type", "integer"}}}}},
-                                          {"required", nlohmann::json::array({"prompt"})}};
+        nlohmann::json complete_schema = {
+            {"type", "object"},
+            {
+                "properties",
+                {
+                    {"prompt", {{"type", "string"}}},
+                    {"temperature", {{"type", "number"}}},
+                    {"max_tokens", {{"type", "integer"}}},
+                },
+            },
+            {"required", nlohmann::json::array({"prompt"})},
+        };
         server.add_tool<nlohmann::json, CallToolResult>(
             "complete", "Generate text completion from the llama-server model", complete_schema,
             [opts](nlohmann::json args) -> Task<CallToolResult> {
@@ -214,9 +226,11 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                     resp_json.at("choices").at(0).at("text").get<std::string>());
             });
 
-        nlohmann::json embed_schema = {{"type", "object"},
-                                       {"properties", {{"input", {{"type", "string"}}}}},
-                                       {"required", nlohmann::json::array({"input"})}};
+        nlohmann::json embed_schema = {
+            {"type", "object"},
+            {"properties", {{"input", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"input"})},
+        };
         server.add_tool<nlohmann::json, CallToolResult>(
             "embed", "Generate embedding vector from the llama-server model", embed_schema,
             [opts](nlohmann::json args) -> Task<CallToolResult> {

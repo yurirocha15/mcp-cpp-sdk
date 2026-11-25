@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mcp/detail/constants.hpp"
 #include "mcp/detail/net/connection.hpp"
 #include "mcp/detail/transport/http_response_write.hpp"
 #include "mcp/detail/transport/incoming_request.hpp"
@@ -30,7 +31,7 @@
 #include <utility>
 #include <vector>
 
-#if !defined(_WIN32)
+#ifndef _WIN32
 #include <sys/resource.h>
 #endif
 
@@ -43,7 +44,7 @@ inline std::size_t resolved_max_connections(std::size_t configured) {
         return configured;
     }
     constexpr std::size_t fallback = 4096;
-#if !defined(_WIN32)
+#ifndef _WIN32
     rlimit descriptors{};
     if (::getrlimit(RLIMIT_NOFILE, &descriptors) == 0 && descriptors.rlim_cur != RLIM_INFINITY) {
         const auto limit = static_cast<std::size_t>(descriptors.rlim_cur);
@@ -128,7 +129,8 @@ struct ArrivingStringBody {
         reader(boost::beast::http::header<isRequest, Fields>& /*header*/, value_type& body)
             : body_(body) {}
 
-        void init(const boost::optional<std::uint64_t>& /*length*/, boost::beast::error_code& error) {
+        static void init(const boost::optional<std::uint64_t>& /*length*/,
+                         boost::beast::error_code& error) {
             error = {};
         }
 
@@ -148,7 +150,7 @@ struct ArrivingStringBody {
             return extra;
         }
 
-        void finish(boost::beast::error_code& error) { error = {}; }
+        static void finish(boost::beast::error_code& error) { error = {}; }
 
        private:
         value_type& body_;
@@ -320,7 +322,7 @@ inline Task<bool> read_request_within_limits(Connection& stream, boost::beast::f
     }
     // A client that sent "Expect: 100-continue" may wait for this before it sends the body.
     // HTTP/1.0 has no interim responses.
-    if (head.version() >= 11 && !parser.is_done() &&
+    if (head.version() >= mcp::detail::constants::http_client::g_VERSION_11 && !parser.is_done() &&
         boost::beast::iequals(head[http::field::expect], "100-continue")) {
         constexpr std::string_view continue_response = "HTTP/1.1 100 Continue\r\n\r\n";
         try {

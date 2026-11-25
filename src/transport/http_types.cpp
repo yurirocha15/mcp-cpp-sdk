@@ -3,11 +3,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/net/header_value.hpp"
 
 namespace url = mcp::detail::constants::url;
 
@@ -39,9 +41,12 @@ SplitResource split_resource(std::string_view resource) {
     }
 
     if (authority_end == std::string_view::npos) {
-        return SplitResource{trimmed, {}};
+        return SplitResource{.origin = trimmed, .path = {}};
     }
-    return SplitResource{trimmed.substr(0, authority_end), trimmed.substr(authority_end)};
+    return SplitResource{
+        .origin = trimmed.substr(0, authority_end),
+        .path = trimmed.substr(authority_end),
+    };
 }
 
 /// @brief Reject an explicit metadata path that cannot be appended to an origin as it stands.
@@ -70,17 +75,6 @@ void validate_metadata_path(std::string_view path) {
         }
         start = end + 1;
     }
-}
-
-/// @brief True when every byte may appear in an RFC 7235 quoted-string, escaped or not.
-bool is_quotable(std::string_view value) {
-    for (const auto character : value) {
-        const auto byte = static_cast<unsigned char>(character);
-        if (byte != '\t' && (byte < 0x20 || byte > 0x7E)) {
-            return false;
-        }
-    }
-    return true;
 }
 
 /// @brief Append `key="value"` with `\` and `"` escaped, separating it from any earlier parameter.
@@ -135,15 +129,16 @@ std::string format_www_authenticate(const BearerChallengeConfig& config) {
         std::string_view key;
         std::string_view value;
     };
-    const Parameter parameters[] = {
-        {"realm", config.realm},
-        {"error", config.error},
-        {"scope", config.scope},
-        {"resource_metadata", config.resource_metadata},
+    const std::array parameters{
+        Parameter{.key = "realm", .value = config.realm},
+        Parameter{.key = "error", .value = config.error},
+        Parameter{.key = "scope", .value = config.scope},
+        Parameter{.key = "resource_metadata", .value = config.resource_metadata},
     };
 
     for (const auto& [key, value] : parameters) {
-        if (!is_quotable(value)) {
+        // Every byte a header value may carry may appear in an RFC 7235 quoted-string, escaped or not.
+        if (!mcp::detail::is_valid_header_value(value)) {
             throw std::invalid_argument("WWW-Authenticate " + std::string(key) +
                                         " contains a character that cannot be quoted");
         }

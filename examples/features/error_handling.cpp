@@ -44,9 +44,11 @@ int main() {
 
         // ========== TOOL REGISTRATION ==========
         // Tool 1: Throws std::runtime_error
-        nlohmann::json throw_error_schema = {{"type", "object"},
-                                             {"properties", {{"message", {{"type", "string"}}}}},
-                                             {"required", nlohmann::json::array({"message"})}};
+        nlohmann::json throw_error_schema = {
+            {"type", "object"},
+            {"properties", {{"message", {{"type", "string"}}}}},
+            {"required", nlohmann::json::array({"message"})},
+        };
 
         server.add_tool("throw_error", "Throws a runtime error", throw_error_schema,
                         [](const nlohmann::json& args) -> nlohmann::json {
@@ -56,9 +58,11 @@ int main() {
                         });
 
         // Tool 2: Returns error JSON explicitly
-        nlohmann::json return_error_schema = {{"type", "object"},
-                                              {"properties", {{"code", {{"type", "integer"}}}}},
-                                              {"required", nlohmann::json::array({"code"})}};
+        nlohmann::json return_error_schema = {
+            {"type", "object"},
+            {"properties", {{"code", {{"type", "integer"}}}}},
+            {"required", nlohmann::json::array({"code"})},
+        };
 
         server.add_tool<nlohmann::json, mcp::CallToolResult>(
             "return_error", "Returns error JSON", return_error_schema,
@@ -77,7 +81,8 @@ int main() {
         nlohmann::json invalid_access_schema = {
             {"type", "object"},
             {"properties", {{"optional_field", {{"type", "string"}}}}},
-            {"required", nlohmann::json::array({})}};
+            {"required", nlohmann::json::array({})},
+        };
 
         server.add_tool<nlohmann::json, mcp::CallToolResult>(
             "invalid_access", "Accesses non-existent argument", invalid_access_schema,
@@ -92,9 +97,11 @@ int main() {
             });
 
         // Tool 4: Successful tool (for comparison)
-        nlohmann::json success_schema = {{"type", "object"},
-                                         {"properties", {{"value", {{"type", "integer"}}}}},
-                                         {"required", nlohmann::json::array({"value"})}};
+        nlohmann::json success_schema = {
+            {"type", "object"},
+            {"properties", {{"value", {{"type", "integer"}}}}},
+            {"required", nlohmann::json::array({"value"})},
+        };
 
         server.add_tool<nlohmann::json, mcp::CallToolResult>(
             "success", "Returns successfully", success_schema,

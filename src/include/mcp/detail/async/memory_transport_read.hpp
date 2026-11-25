@@ -17,7 +17,6 @@ namespace mcp::detail {
 /// loop meets that once per session, and the exception passes through every coroutine frame
 /// between the transport and the loop. These return std::nullopt instead.
 struct MemoryTransportAccess {
-    static Task<std::optional<std::string>> read_message_until_closed(MemoryTransport& transport);
     static Task<std::optional<nlohmann::json>> read_json_until_closed(MemoryTransport& transport);
 
     /// A message and the id, as JSON text, of the request it was written as related to (see

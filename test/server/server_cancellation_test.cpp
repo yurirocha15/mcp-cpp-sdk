@@ -9,10 +9,13 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <chrono>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace server_cancellation_test {
 
@@ -109,6 +112,75 @@ TEST_F(ServerCancellationTest, CancellationFlagSetOnNotification) {
     EXPECT_EQ(responses[1]["id"], "2");
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_TRUE(responses[1]["result"]["structuredContent"]["was_cancelled"].get<bool>());
+}
+
+// A cancellation the server cannot read -- one without params, without a requestId, or with a
+// requestId that is neither a string nor an integer -- or one naming a request that is not in
+// flight cancels nothing. The request in flight runs to its own end and the session goes on.
+TEST_F(ServerCancellationTest, UnreadableOrUnmatchedCancellationsCancelNothing) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"test-server", "1.0"}, std::move(caps));
+
+    server.add_tool<SlowParams, SlowResult>(
+        "slow_tool", "A tool that checks cancellation", nlohmann::json{{"type", "object"}},
+        [&](mcp::Context& ctx, SlowParams /*params*/) -> mcp::Task<SlowResult> {
+            // Yields long enough for the cancellations queued behind the call to be read.
+            auto timer =
+                boost::asio::steady_timer(io_ctx_.get_executor(), std::chrono::milliseconds(50));
+            co_await timer.async_wait(boost::asio::use_awaitable);
+            co_return SlowResult{ctx.is_cancelled()};
+        });
+
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view msg) {
+        responses.push_back(nlohmann::json::parse(msg));
+        // initialize, the tool call and the ping sent after the cancellations
+        if (responses.size() == 3) {
+            raw_transport->close();
+        }
+    });
+
+    raw_transport->enqueue_message(make_initialize_request("1").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "2"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "slow_tool"}, {"arguments", {{"value", 1}}}}}}
+            .dump());
+    const std::vector<nlohmann::json> cancellations = {
+        {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}},
+        {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"reason", "no id"}}}},
+        {{"jsonrpc", "2.0"},
+         {"method", "notifications/cancelled"},
+         {"params", {{"requestId", {{"id", "2"}}}}}},
+        {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", "99"}}}},
+        {{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 2}}}},
+    };
+    for (const auto& cancellation : cancellations) {
+        raw_transport->enqueue_message(cancellation.dump());
+    }
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "3"}, {"method", "ping"}}.dump());
+
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx_.get_executor()); });
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 3U);
+    std::map<std::string, nlohmann::json> by_id;
+    for (const auto& response : responses) {
+        by_id[response.at("id").get<std::string>()] = response;
+    }
+    ASSERT_TRUE(by_id["3"].contains("result")) << "the session did not survive the cancellations";
+    ASSERT_TRUE(by_id["2"].contains("result")) << by_id["2"];
+    EXPECT_FALSE(by_id["2"]["result"]["structuredContent"]["was_cancelled"].get<bool>())
+        << "a cancellation that does not name the request cancelled it";
 }
 
 TEST_F(ServerCancellationTest, NoCancellationWhenNotSent) {

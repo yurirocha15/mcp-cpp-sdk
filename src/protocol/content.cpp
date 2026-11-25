@@ -118,10 +118,10 @@ void from_json(const nlohmann::json& json_obj, ResourceLink& link) {
     if (detail::has_json_value(json_obj, "size")) {
         link.size = json_obj.at("size").get<int64_t>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         link.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         link.annotations = json_obj.at("annotations").get<Annotations>();
     }
     if (detail::has_json_value(json_obj, "title")) {
@@ -147,17 +147,21 @@ void from_json(const nlohmann::json& json_obj, EmbeddedResource& res) {
     json_obj.at("type").get_to(res.type);
     detail::validate_content_type(res.type, "resource");
     json_obj.at("resource").get_to(res.resource);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         res.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
-    if (json_obj.contains("annotations")) {
+    if (detail::has_json_value(json_obj, "annotations")) {
         res.annotations = json_obj.at("annotations").get<Annotations>();
     }
 }
 
 void to_json(nlohmann::json& json_obj, const ToolUseContent& content) {
     json_obj = nlohmann::json{
-        {"type", content.type}, {"id", content.id}, {"name", content.name}, {"input", content.input}};
+        {"type", content.type},
+        {"id", content.id},
+        {"name", content.name},
+        {"input", content.input},
+    };
     if (content.meta) {
         json_obj["_meta"] = *content.meta;
     }
@@ -170,14 +174,17 @@ void from_json(const nlohmann::json& json_obj, ToolUseContent& content) {
     json_obj.at("id").get_to(content.id);
     json_obj.at("name").get_to(content.name);
     json_obj.at("input").get_to(content.input);
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         content.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
 
 void to_json(nlohmann::json& json_obj, const ToolResultContent& content) {
     json_obj = nlohmann::json{
-        {"type", content.type}, {"toolUseId", content.toolUseId}, {"content", content.content}};
+        {"type", content.type},
+        {"toolUseId", content.toolUseId},
+        {"content", content.content},
+    };
     if (content.isError) {
         json_obj["isError"] = *content.isError;
     }

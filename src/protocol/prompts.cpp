@@ -62,7 +62,7 @@ void from_json(const nlohmann::json& json_obj, Prompt& prompt) {
     if (detail::has_json_value(json_obj, "arguments")) {
         prompt.arguments = json_obj.at("arguments").get<std::vector<PromptArgument>>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         prompt.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
     if (detail::has_json_value(json_obj, "title")) {
@@ -99,7 +99,7 @@ void from_json(const nlohmann::json& json_obj, GetPromptRequestParams& params) {
     if (detail::has_json_value(json_obj, "arguments")) {
         params.arguments = json_obj.at("arguments").get<std::map<std::string, std::string>>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         params.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -130,7 +130,7 @@ void from_json(const nlohmann::json& json_obj, GetPromptResult& result) {
     if (detail::has_json_value(json_obj, "description")) {
         result.description = json_obj.at("description").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
 }
@@ -145,7 +145,7 @@ void to_json(nlohmann::json& json_obj, const ListPromptsRequest& req) {
 void from_json(const nlohmann::json& json_obj, ListPromptsRequest& req) {
     req = ListPromptsRequest{};
     json_obj.at("method").get_to(req.method);
-    if (json_obj.contains("params")) {
+    if (detail::has_json_value(json_obj, "params")) {
         req.params = json_obj.at("params").get<PaginatedRequestParams>();
     }
 }
@@ -167,7 +167,7 @@ void from_json(const nlohmann::json& json_obj, ListPromptsResult& result) {
     if (detail::has_json_value(json_obj, "nextCursor")) {
         result.nextCursor = json_obj.at("nextCursor").get<std::string>();
     }
-    if (json_obj.contains("_meta")) {
+    if (detail::has_json_value(json_obj, "_meta")) {
         result.meta = json_obj.at("_meta").get<nlohmann::json>();
     }
     detail::read_cache_hints(json_obj, result.ttlMs, result.cacheScope);

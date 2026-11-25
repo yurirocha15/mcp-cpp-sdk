@@ -112,7 +112,7 @@ struct DependentType {
 template <JsonSerializable In, JsonSerializable Out, typename Fn>
     requires AsyncHandler<Fn, In, Out>
 TypeErasedHandler wrap_handler(Fn fn) {
-    using Result = typename DependentType<Fn, Task<nlohmann::json>>::type;
+    using Result = DependentType<Fn, Task<nlohmann::json>>::type;
     return [handler = std::move(fn)](Context& ctx, const nlohmann::json& params) -> Result {
         // [gcc11-sso: no-named-temporaries] DO NOT introduce a named `input` variable here.
         if constexpr (AsyncHandlerWithCtx<Fn, In, Out>) {

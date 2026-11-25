@@ -11,9 +11,8 @@
 namespace mcp::detail {
 
 inline bool is_modern_method(std::string_view method) {
-    return std::find(mcp::detail::constants::modern_methods::g_NAMES.begin(),
-                     mcp::detail::constants::modern_methods::g_NAMES.end(),
-                     method) != mcp::detail::constants::modern_methods::g_NAMES.end();
+    return std::ranges::find(mcp::detail::constants::modern_methods::g_NAMES, method) !=
+           mcp::detail::constants::modern_methods::g_NAMES.end();
 }
 
 /// The message of the mcp::constants::jsonrpc::g_METHOD_NOT_FOUND that answers an initialize no legacy

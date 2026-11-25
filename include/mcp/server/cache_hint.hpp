@@ -11,7 +11,7 @@ namespace mcp {
  *
  * @details Protocol revision 2026-07-28 requires `ttlMs` and `cacheScope` on each of these results.
  */
-enum class CacheTarget {
+enum class CacheTarget : std::uint8_t {
     eDiscover,               ///< server/discover.
     eToolsList,              ///< tools/list.
     ePromptsList,            ///< prompts/list.

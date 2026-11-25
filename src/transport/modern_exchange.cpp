@@ -52,7 +52,7 @@ void ModernExchange::wake_on_strand() {
 
 bool ModernExchange::push_notification(std::string message) {
     {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         if (queue_ended) {
             return true;
         }
@@ -70,7 +70,7 @@ bool ModernExchange::push_notification(std::string message) {
 }
 
 void ModernExchange::release_queued(std::size_t bytes) {
-    std::lock_guard lock(mutex);
+    std::scoped_lock lock(mutex);
     if (queue_ended) {
         return;
     }
@@ -83,7 +83,7 @@ void ModernExchange::release_queued(std::size_t bytes) {
 void ModernExchange::end_queue() {
     std::vector<std::string> discarded;
     {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         queue_ended = true;
         queued_bytes = 0;
         discarded.swap(notifications);
@@ -100,7 +100,7 @@ void ModernExchange::cancel() {
     cancelled->store(true, std::memory_order_relaxed);
     std::function<void()> hook;
     {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         hook = on_cancel;
     }
     if (hook) {
@@ -109,13 +109,13 @@ void ModernExchange::cancel() {
 }
 
 void ModernExchange::set_on_cancel(std::function<void()> hook) {
-    std::lock_guard lock(mutex);
+    std::scoped_lock lock(mutex);
     on_cancel = std::move(hook);
 }
 
 void ModernExchange::finish(std::string response_wire) {
     {
-        std::lock_guard lock(mutex);
+        std::scoped_lock lock(mutex);
         response = std::move(response_wire);
     }
     wake();
@@ -220,7 +220,8 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& req
                                                       ModernDispatchRef dispatch) {
     const auto accept_it = request.find(http::field::accept);
     const bool streams =
-        !start.json_only && request.version() >= 11 && accept_it != request.end() &&
+        !start.json_only && request.version() >= mcp::detail::constants::http_client::g_VERSION_11 &&
+        accept_it != request.end() &&
         to_std_string_view(accept_it->value()).find("text/event-stream") != std::string_view::npos;
     auto exchange = std::make_shared<ModernExchange>(start.strand, start.options, streams, start.budget,
                                                      start.budget_limit);
@@ -256,19 +257,24 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& req
     // client that goes away cancels the request.
     auto request_id = request_json.at("id");
     auto answering = dispatch(std::move(request_json), std::move(request_context));
-    boost::asio::co_spawn(
-        start.dispatch_executor, std::move(answering),
-        [exchange, request_id = std::move(request_id)](std::exception_ptr error, std::string wire) {
-            if (error) {
-                wire = mcp::detail::dump_json(
-                    nlohmann::json{{"jsonrpc", "2.0"},
-                                   {"id", request_id},
-                                   {"error",
-                                    {{"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
-                                     {"message", "Internal error"}}}});
-            }
-            exchange->finish(std::move(wire));
-        });
+    boost::asio::co_spawn(start.dispatch_executor, std::move(answering),
+                          [exchange, request_id = std::move(request_id)](
+                              const std::exception_ptr& error, std::string wire) {
+                              if (error) {
+                                  wire = mcp::detail::dump_json(nlohmann::json{
+                                      {"jsonrpc", "2.0"},
+                                      {"id", request_id},
+                                      {
+                                          "error",
+                                          {
+                                              {"code", mcp::constants::jsonrpc::g_INTERNAL_ERROR},
+                                              {"message", "Internal error"},
+                                          },
+                                      },
+                                  });
+                              }
+                              exchange->finish(std::move(wire));
+                          });
     return exchange;
 }
 
@@ -341,7 +347,7 @@ Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& 
         std::optional<std::string> response;
         std::size_t queued_bytes = 0;
         {
-            std::lock_guard lock(exchange->mutex);
+            std::scoped_lock lock(exchange->mutex);
             notifications.swap(exchange->notifications);
             response.swap(exchange->response);
             queued_bytes = exchange->queued_bytes;
