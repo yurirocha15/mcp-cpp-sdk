@@ -7,7 +7,6 @@ namespace mcp {
 Server::Server(const Implementation& server_info, const ServerCapabilities& capabilities)
     : Server(std::make_shared<Impl>()) {
     impl_->server_info = server_info;
-    impl_->server_info_json = server_info;
     impl_->capabilities = capabilities;
 }
 

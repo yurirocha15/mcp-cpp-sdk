@@ -185,6 +185,40 @@ TEST_F(ServerCoreTest, InitializeReturnsServerCapabilities) {
     EXPECT_FALSE(server.is_shutdown_requested());
 }
 
+// An initialize result names the server that answers it, with its capabilities as they are then,
+// whichever servers answered on the same thread before it.
+TEST_F(ServerCoreTest, InitializeResultFollowsTheServerAnsweringIt) {
+    mcp::Server first({"first-server", "1.0"}, mcp::ServerCapabilities{});
+    mcp::Server second({"second-server", "2.0"}, mcp::ServerCapabilities{});
+    std::vector<nlohmann::json> results;
+    const auto initialize = [this, &results](mcp::Server& server) {
+        mcp_test::spawn_then(io_ctx_, server.dispatch_request_direct(make_initialize_request("1")),
+                             [&results](std::exception_ptr error, std::string wire) {
+                                 EXPECT_EQ(error, nullptr);
+                                 if (!error) {
+                                     results.push_back(nlohmann::json::parse(wire).at("result"));
+                                 }
+                             });
+        io_ctx_.run();
+        io_ctx_.restart();
+    };
+
+    initialize(first);
+    initialize(first);
+    initialize(second);
+    first.capabilities().logging = nlohmann::json::object();
+    initialize(first);
+
+    ASSERT_EQ(results.size(), 4U);
+    EXPECT_EQ(results[0], results[1]);
+    EXPECT_EQ(results[0]["serverInfo"]["name"], "first-server");
+    EXPECT_FALSE(results[1]["capabilities"].contains("logging"));
+    EXPECT_EQ(results[2]["serverInfo"]["name"], "second-server");
+    EXPECT_EQ(results[2]["serverInfo"]["version"], "2.0");
+    EXPECT_EQ(results[3]["serverInfo"]["name"], "first-server");
+    EXPECT_TRUE(results[3]["capabilities"].contains("logging"));
+}
+
 TEST_F(ServerCoreTest, ShutdownSetsFlag) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();

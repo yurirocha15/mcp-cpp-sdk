@@ -770,6 +770,104 @@ TEST(HttpListenerLimits, DefaultConnectionLimitLeavesDescriptorsFree) {
 #endif
 }
 
+// The checks made before the body read only the parser's header, and the answers they build keep
+// the connection open exactly when the whole request would.
+TEST(RequestHead, KeepsAliveAsTheWholeRequestDecides) {
+    for (const unsigned version : {10U, 11U}) {
+        for (const std::string connection :
+             {"", "close", "keep-alive", "Keep-Alive, Upgrade", "upgrade, close", "upgrade"}) {
+            mcp::StringRequest request{http::verb::post, "/mcp", version};
+            if (!connection.empty()) {
+                request.set(http::field::connection, connection);
+            }
+            EXPECT_EQ(mcp::detail::keeps_alive(request.base()), request.keep_alive())
+                << "HTTP/" << version / 10 << "." << version % 10 << ", Connection: " << connection;
+        }
+    }
+}
+
+/// A request whose fields are allocated from @p arena.
+mcp::detail::IncomingRequest arena_request(mcp::detail::HeaderArena& arena) {
+    return mcp::detail::IncomingRequest(std::piecewise_construct, std::make_tuple(),
+                                        std::make_tuple(mcp::detail::ArenaAllocator<char>(arena)));
+}
+
+TEST(HeaderArena, ReleaseGivesTheBlockBackAndLargeAllocationsTakeTheHeap) {
+    constexpr std::size_t block = mcp::detail::constants::http_request::g_HEADER_ARENA_BYTES;
+    mcp::detail::HeaderArena arena;
+    void* const first = arena.allocate(64, alignof(std::max_align_t));
+    void* const second = arena.allocate(64, alignof(std::max_align_t));
+    EXPECT_NE(first, second);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(second) % alignof(std::max_align_t), 0U);
+    // Past the block, memory comes from the heap; writing all of it is what a sanitizer checks.
+    auto* const large = static_cast<char*>(arena.allocate(block * 2, alignof(std::max_align_t)));
+    std::fill(large, large + block * 2, 'x');
+    arena.release();
+    EXPECT_EQ(arena.allocate(64, alignof(std::max_align_t)), first);
+}
+
+// A copy of a request keeps its fields on the heap, so it outlives the arena's release; the
+// request itself keeps them in the arena.
+TEST(HeaderArena, CopyOfARequestOutlivesTheRelease) {
+    mcp::detail::HeaderArena arena;
+    std::optional<mcp::detail::IncomingRequest> copy;
+    {
+        auto request = arena_request(arena);
+        request.method(http::verb::post);
+        request.target("/mcp");
+        request.set("X-Name", "first");
+        copy = request;
+    }
+    arena.release();
+    auto next = arena_request(arena);
+    next.target("/overwritten-target");
+    next.set("X-Name", "a value that takes the memory the first request had");
+    EXPECT_EQ(copy->target(), "/mcp");
+    EXPECT_EQ((*copy)["X-Name"], "first");
+}
+
+TEST(HeaderArena, StringRequestCopiesEveryPartOfTheRequest) {
+    mcp::detail::HeaderArena arena;
+    auto request = arena_request(arena);
+    request.method_string("PROPFIND");
+    request.target("/mcp?x=1");
+    request.version(10);
+    request.set(http::field::host, "example.test");
+    request.insert("X-Repeated", "one");
+    request.insert("X-Repeated", "two");
+    request.body() = "body";
+
+    const auto copy = mcp::detail::to_string_request(request);
+
+    EXPECT_EQ(copy.method_string(), "PROPFIND");
+    EXPECT_EQ(copy.target(), "/mcp?x=1");
+    EXPECT_EQ(copy.version(), 10U);
+    EXPECT_EQ(copy[http::field::host], "example.test");
+    ASSERT_EQ(copy.count("X-Repeated"), 2U);
+    const auto [first, last] = copy.equal_range("X-Repeated");
+    EXPECT_EQ(first->value(), "one");
+    EXPECT_EQ(std::next(first)->value(), "two");
+    EXPECT_EQ(std::next(first, 2), last);
+    EXPECT_EQ(copy.body(), "body");
+}
+
+// Each request on a connection is read with its own fields, also one whose header is larger than
+// the memory the connection keeps for it.
+TEST_F(SessionLimitsTest, RequestsOnOneConnectionKeepTheirOwnHeaders) {
+    const std::string large = "X-Padding: " + std::string(5000, 'p') + "\r\n";
+    const auto pipelined = modern_call_post(1, "progress", large) +
+                           modern_call_post(2, "progress", "") +
+                           modern_call_post(3, "progress", large + "Connection: close\r\n");
+    std::string received;
+    run([&]() -> mcp::Task<void> {
+        received = co_await raw_exchange(io_.get_executor(), port_, pipelined, g_hang_guard);
+    });
+    EXPECT_NE(received.find("\"id\":1"), std::string::npos) << received;
+    EXPECT_NE(received.find("\"id\":2"), std::string::npos) << received;
+    EXPECT_NE(received.find("\"id\":3"), std::string::npos) << received;
+    EXPECT_EQ(received.find("[timed out]"), std::string::npos) << received;
+}
+
 TEST_F(SessionLimitsTest, ConnectionLimitsMustAllowARequest) {
     EXPECT_THROW(manager_.set_connection_limits({0, std::chrono::seconds(1), 0, 1}),
                  std::invalid_argument);

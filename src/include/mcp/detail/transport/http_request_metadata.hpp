@@ -4,6 +4,7 @@
 #include "mcp/detail/net/header_value.hpp"
 #include "mcp/detail/net/param_headers.hpp"
 #include "mcp/detail/protocol/request_meta.hpp"
+#include "mcp/detail/transport/incoming_request.hpp"
 
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/base.hpp>
@@ -26,8 +27,7 @@ namespace mcp::detail {
 
 /// The value of header @p name, or nullopt when the request does not carry it. Header names are
 /// matched case-insensitively.
-inline std::optional<std::string_view> http_header(const StringRequest& request,
-                                                   std::string_view name) {
+inline std::optional<std::string_view> http_header(const RequestHead& request, std::string_view name) {
     const auto header = request.find(boost::beast::string_view(name.data(), name.size()));
     if (header == request.end()) {
         return std::nullopt;
@@ -37,7 +37,7 @@ inline std::optional<std::string_view> http_header(const StringRequest& request,
 
 /// Whether a GET may open a server-sent event stream: the client must list text/event-stream in
 /// Accept. Like the TypeScript SDK, a GET that does not is answered 406.
-inline bool get_accepts_event_stream(const StringRequest& request) {
+inline bool get_accepts_event_stream(const RequestHead& request) {
     const auto accept = http_header(request, "Accept");
     return accept.has_value() && accept->find("text/event-stream") != std::string_view::npos;
 }
@@ -90,7 +90,7 @@ inline const nlohmann::json* mirrored_name(const nlohmann::json& body, std::stri
 /// and, for tools/call, prompts/get, resources/read and the tasks methods, Mcp-Name) and returns why
 /// they do not match, or nullopt when they do. A body value that is missing or malformed is left to the
 /// server, which answers it as invalid params.
-inline std::optional<std::string> modern_header_mismatch(const StringRequest& request,
+inline std::optional<std::string> modern_header_mismatch(const RequestHead& request,
                                                          const nlohmann::json& body) {
     const auto& method = body.at("method").get_ref<const std::string&>();
 
@@ -203,8 +203,7 @@ inline std::optional<int> serialized_response_error_code(const std::string& resp
 
 /// The `Mcp-Param-{Name}` headers of @p request as {Name, value} pairs, in the order received.
 /// The prefix is matched ignoring case, and every instance of a repeated header is kept.
-inline std::vector<std::pair<std::string, std::string>> mcp_param_headers(
-    const StringRequest& request) {
+inline std::vector<std::pair<std::string, std::string>> mcp_param_headers(const RequestHead& request) {
     constexpr std::string_view prefix = "mcp-param-";
     std::vector<std::pair<std::string, std::string>> headers;
     for (const auto& field : request) {

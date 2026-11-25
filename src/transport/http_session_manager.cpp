@@ -1,5 +1,4 @@
 #include "accept_retry.hpp"
-#include "mcp/detail/async/memory_transport_read.hpp"
 #include "mcp/detail/async/strand_executor.hpp"
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/json/jsonrpc_envelope.hpp"
@@ -13,6 +12,7 @@
 #include "mcp/detail/transport/http_limits.hpp"
 #include "mcp/detail/transport/http_request_metadata.hpp"
 #include "mcp/detail/transport/principal.hpp"
+#include "mcp/detail/transport/session_pipe.hpp"
 #include "modern_exchange.hpp"
 #include "scope_challenge.hpp"
 #include "tls_accept.hpp"
@@ -23,7 +23,6 @@
 #include <mcp/server/server.hpp>
 #include <mcp/transport/http_beast.hpp>
 #include <mcp/transport/http_session_manager.hpp>
-#include <mcp/transport/memory.hpp>
 #include <mcp/transport/tls.hpp>
 #include "mcp/detail/text/secure_random.hpp"
 
@@ -127,7 +126,8 @@ struct SessionRuntime {
     /// The principal of the request that created the session. Only it may use the session.
     std::string principal;
 
-    std::shared_ptr<MemoryTransport> client_transport;
+    /// What the session's Server reads the client's messages from and writes its own to.
+    std::shared_ptr<detail::SessionPipe> pipe;
 
     mutable std::mutex protocol_mutex;
     std::string negotiated_protocol_version{
@@ -215,7 +215,7 @@ inline std::optional<std::string> initialize_protocol_version(const nlohmann::js
     return params.at("protocolVersion").get<std::string>();
 }
 
-inline std::string_view protocol_header_value(const StringRequest::const_iterator& header_it) {
+inline std::string_view protocol_header_value(const detail::RequestHead::const_iterator& header_it) {
     return {header_it->value().data(), header_it->value().size()};
 }
 
@@ -226,25 +226,25 @@ inline bool session_accepts_version(std::string_view version, std::string_view n
     return version == negotiated || is_legacy_protocol_version(version);
 }
 
-inline StringResponse make_json_response(const StringRequest& request, http::status status_code,
+inline StringResponse make_json_response(const detail::RequestHead& request, http::status status_code,
                                          std::string body) {
     StringResponse response{status_code, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
     response.set(http::field::content_type, "application/json");
-    response.keep_alive(request.keep_alive());
+    response.keep_alive(detail::keeps_alive(request));
     response.body() = std::move(body);
     response.prepare_payload();
     return response;
 }
 
-inline StringResponse make_error_response(const StringRequest& request, http::status status_code,
+inline StringResponse make_error_response(const detail::RequestHead& request, http::status status_code,
                                           std::string_view error_message) {
     nlohmann::json error_body = nlohmann::json::object();
     error_body["error"] = std::string(error_message);
     return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
-inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
+inline StringResponse make_jsonrpc_error_response(const detail::IncomingRequest& request,
                                                   http::status status_code, int error_code,
                                                   std::string_view error_message) {
     // It names no request, so `id` is left out, as MCP's schema has it.
@@ -254,7 +254,7 @@ inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
 }
 
 /// A JSON-RPC error answering the request @p id.
-inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
+inline StringResponse make_jsonrpc_error_response(const detail::IncomingRequest& request,
                                                   http::status status_code, int error_code,
                                                   std::string_view error_message,
                                                   const nlohmann::json& id) {
@@ -263,13 +263,15 @@ inline StringResponse make_jsonrpc_error_response(const StringRequest& request,
     return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
 }
 
-inline StringResponse make_empty_json_response(const StringRequest& request, http::status status_code) {
+inline StringResponse make_empty_json_response(const detail::IncomingRequest& request,
+                                               http::status status_code) {
     auto response = make_json_response(request, status_code, "");
     response.content_length(0);
     return response;
 }
 
-inline StringResponse make_sse_response(const StringRequest& request, const SseEventList& events) {
+inline StringResponse make_sse_response(const detail::IncomingRequest& request,
+                                        const SseEventList& events) {
     std::string sse_body;
     for (const auto& [id, data] : events) {
         append_sse_event(sse_body, id, data);
@@ -525,16 +527,30 @@ struct StreamableHttpSessionManager::Impl {
         // loop also waits for a request in place, not through a coroutine spawned onto another
         // strand for every read.
         auto session_strand = detail::make_strand_executor(executor);
-        auto client_mem = std::make_shared<MemoryTransport>(conn_strand);
-        auto server_mem = std::make_shared<MemoryTransport>(session_strand);
-        client_mem->set_peer(server_mem);
-        server_mem->set_peer(client_mem);
         auto server = build_server(executor);
 
         auto runtime =
             std::make_shared<detail_session_mgr::SessionRuntime>(session_id, event_store_capacity);
-        runtime->client_transport = client_mem;
         runtime->principal = std::move(principal);
+        // What the server writes is routed as it is written; the pipe holds the session weakly,
+        // so a session the client ended routes nothing more.
+        const std::weak_ptr<detail_session_mgr::SessionRuntime> weak_runtime = runtime;
+        runtime->pipe = std::make_shared<detail::SessionPipe>(
+            session_strand,
+            [weak_runtime, json_only = json_only_mode_,
+             max_queued = stream_options_.max_queued_notifications,
+             counters = stream_counters_](std::string message, const std::string* related_request) {
+                if (auto session = weak_runtime.lock()) {
+                    dispatch_response_to_pending(session.get(), std::move(message),
+                                                 json_only->load(std::memory_order_acquire),
+                                                 related_request, max_queued, *counters);
+                }
+            },
+            [weak_runtime] {
+                if (auto session = weak_runtime.lock()) {
+                    end_streams(*session);
+                }
+            });
 
         std::size_t max_sessions = 0;
         {
@@ -544,33 +560,24 @@ struct StreamableHttpSessionManager::Impl {
         {
             std::unique_lock lock(sessions_mutex_);
             if (closed.load(std::memory_order_acquire)) {
-                client_mem->close();
+                runtime->pipe->close();
                 return nullptr;
             }
             // at_session_limit() checked before the session was built, without this lock, so
             // initializes that arrive together on several threads can all pass it.
             if (sessions.size() >= max_sessions) {
-                client_mem->close();
+                runtime->pipe->close();
                 return nullptr;
             }
             sessions.emplace(session_id, runtime);
         }
 
-        std::shared_ptr<ITransport> server_transport = server_mem;
-        auto server_exec = session_strand;
-
         boost::asio::co_spawn(
             conn_strand,
-            [srv = std::move(server), transport = std::move(server_transport),
-             exec = server_exec]() mutable -> boost::asio::awaitable<void> {
+            [srv = std::move(server), transport = std::shared_ptr<ITransport>(runtime->pipe),
+             exec = session_strand]() mutable -> boost::asio::awaitable<void> {
                 co_await srv->run(std::move(transport), exec);
             },
-            boost::asio::detached);
-
-        boost::asio::co_spawn(
-            conn_strand,
-            read_outbound_messages(runtime, json_only_mode_, stream_options_.max_queued_notifications,
-                                   stream_counters_),
             boost::asio::detached);
         return runtime;
     }
@@ -648,8 +655,8 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         end_streams(*session);
-        if (session->client_transport) {
-            session->client_transport->close();
+        if (session->pipe) {
+            session->pipe->close();
         }
     }
 
@@ -709,6 +716,8 @@ struct StreamableHttpSessionManager::Impl {
         const auto local_endpoint = stream.socket().local_endpoint(endpoint_error);
         const bool loopback_connection = endpoint_error || detail::is_loopback_endpoint(local_endpoint);
         beast::flat_buffer request_buffer;
+        // Holds the fields of the request being served, until the next request is read.
+        detail::HeaderArena header_arena;
         std::unique_ptr<Server> stateless_server;
         // Set once a watch has read the client's end of the stream. That end is consumed: a later
         // read on this connection would wait for an event that already happened.
@@ -720,8 +729,8 @@ struct StreamableHttpSessionManager::Impl {
         // The scopes the bearer token validator reported for the request being served.
         std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal_id, &token_scopes,
-             loopback_connection](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            [this, &principal_id, &token_scopes, loopback_connection](
+                const detail::RequestHead& head) -> Task<std::optional<StringResponse>> {
             co_return co_await refuse_before_body(head, principal_id, token_scopes,
                                                   loopback_connection);
         };
@@ -730,7 +739,7 @@ struct StreamableHttpSessionManager::Impl {
             const auto limits = current_connection_limits();
             principal_id.reset();
             token_scopes.reset();
-            detail::RequestParser parser;
+            auto parser = detail::make_request_parser(header_arena);
             parser.body_limit(max_request_body_bytes_);
             detail::BudgetLease bytes(budget_.bytes, limits.max_request_bytes);
             if (client_finished_sending) {
@@ -743,7 +752,7 @@ struct StreamableHttpSessionManager::Impl {
                                                                     bytes, refuse)) {
                 break;
             }
-            StringRequest request = detail::take_request(parser);
+            detail::IncomingRequest request = detail::take_request(parser);
 
             if (closed.load(std::memory_order_acquire)) {
                 break;
@@ -810,7 +819,7 @@ struct StreamableHttpSessionManager::Impl {
     /// The `403` that answers a request whose token lacks a scope it needs, the `500` for a provider
     /// that failed to decide, or nothing when the request may be served.
     std::optional<StringResponse> check_request_scopes(
-        const StringRequest& request, const nlohmann::json& request_json,
+        const detail::IncomingRequest& request, const nlohmann::json& request_json,
         const std::optional<std::vector<std::string>>& token_scopes) const {
         const auto check = detail::check_request_scopes(scope_requirements_, token_scopes, request_json,
                                                         bearer_challenge_);
@@ -827,7 +836,7 @@ struct StreamableHttpSessionManager::Impl {
         return response;
     }
 
-    bool is_unauthenticated_path(const StringRequest& request) const {
+    bool is_unauthenticated_path(const detail::RequestHead& request) const {
         if (unauthenticated_paths_.empty()) {
             return false;
         }
@@ -837,7 +846,7 @@ struct StreamableHttpSessionManager::Impl {
 
     /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
     std::optional<StringResponse> serve_protected_resource_metadata(
-        const StringRequest& request) const {
+        const detail::RequestHead& request) const {
         if (!protected_resource_metadata_.has_value() || request.method() != http::verb::get) {
             return std::nullopt;
         }
@@ -849,7 +858,7 @@ struct StreamableHttpSessionManager::Impl {
                                                       protected_resource_metadata_body_);
     }
 
-    static std::string_view request_authorization(const StringRequest& request) {
+    static std::string_view request_authorization(const detail::RequestHead& request) {
         const auto authorization_it = request.find(http::field::authorization);
         if (authorization_it == request.end()) {
             return {};
@@ -861,7 +870,7 @@ struct StreamableHttpSessionManager::Impl {
     /// has its body read. Sets @p principal_id to the principal the validator names, if it names
     /// one.
     Task<std::optional<StringResponse>> refuse_before_body(
-        const StringRequest& request, std::optional<std::string>& principal_id,
+        const detail::RequestHead& request, std::optional<std::string>& principal_id,
         std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (closed.load(std::memory_order_acquire)) {
@@ -920,7 +929,8 @@ struct StreamableHttpSessionManager::Impl {
         co_return std::nullopt;
     }
 
-    Task<Reply> handle_request(const StringRequest& request, boost::asio::any_io_executor conn_strand,
+    Task<Reply> handle_request(const detail::IncomingRequest& request,
+                               boost::asio::any_io_executor conn_strand,
                                std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
                                std::optional<std::string> principal_id,
                                const std::optional<std::vector<std::string>>& token_scopes) {
@@ -934,7 +944,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         if (custom_handler) {
-            auto custom_response = custom_handler(request);
+            auto custom_response = custom_handler(detail::to_string_request(request));
             if (custom_response.has_value()) {
                 co_return std::move(*custom_response);
             }
@@ -991,7 +1001,7 @@ struct StreamableHttpSessionManager::Impl {
         co_return response;
     }
 
-    StringResponse initialize_not_served_response(const StringRequest& request,
+    StringResponse initialize_not_served_response(const detail::IncomingRequest& request,
                                                   const nlohmann::json& request_json) const {
         auto served = served_protocol_versions(protocol_policy_.value_or(ServerProtocolPolicy{}));
         const auto id = request_json.value("id", nlohmann::json(nullptr));
@@ -1007,7 +1017,7 @@ struct StreamableHttpSessionManager::Impl {
                                                       mcp::detail::dump_json(error_body));
     }
 
-    bool has_valid_protocol_header(const StringRequest& request) const {
+    bool has_valid_protocol_header(const detail::IncomingRequest& request) const {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         return protocol_header_it == request.end() ||
                is_legacy_protocol_version(
@@ -1027,7 +1037,7 @@ struct StreamableHttpSessionManager::Impl {
                                                            std::move(request_context));
     }
 
-    Task<StringResponse> handle_stateless_post(const StringRequest& request,
+    Task<StringResponse> handle_stateless_post(const detail::IncomingRequest& request,
                                                nlohmann::json request_json,
                                                std::unique_ptr<Server>& stateless_server,
                                                std::string principal) {
@@ -1066,7 +1076,7 @@ struct StreamableHttpSessionManager::Impl {
     ///
     /// @p check_headers is false for a request that names no 2026-07-28 version and reaches here
     /// only because legacy clients are not served; the server refuses it.
-    Task<Reply> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
+    Task<Reply> handle_modern_post(const detail::IncomingRequest& request, nlohmann::json request_json,
                                    bool check_headers, boost::asio::any_io_executor conn_strand,
                                    std::string principal, detail::BudgetLease& bytes) {
         if (closed.load(std::memory_order_acquire)) {
@@ -1160,7 +1170,7 @@ struct StreamableHttpSessionManager::Impl {
     /// Last-Event-ID resumes it.
     ///
     /// @return Whether the connection may carry another request.
-    Task<bool> serve_legacy_stream(Connection& stream, const StringRequest& request,
+    Task<bool> serve_legacy_stream(Connection& stream, const detail::IncomingRequest& request,
                                    std::shared_ptr<detail_session_mgr::LegacyStream> legacy) {
         auto& session = *legacy->session;
         const bool get_stream = legacy->request_key.empty();
@@ -1288,7 +1298,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     std::variant<std::shared_ptr<detail_session_mgr::SessionRuntime>, StringResponse>
-    resolve_session_for_post(const StringRequest& request, const nlohmann::json& request_json,
+    resolve_session_for_post(const detail::IncomingRequest& request, const nlohmann::json& request_json,
                              boost::asio::any_io_executor conn_strand, std::string principal) {
         if (closed.load(std::memory_order_acquire)) {
             return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
@@ -1325,7 +1335,7 @@ struct StreamableHttpSessionManager::Impl {
     }
 
     Task<StringResponse> wait_for_response(
-        detail_session_mgr::SessionRuntime* session, const StringRequest& request,
+        detail_session_mgr::SessionRuntime* session, const detail::IncomingRequest& request,
         const std::string& request_id_key,
         std::shared_ptr<boost::asio::steady_timer> timer_signal) const {
         for (;;) {
@@ -1389,7 +1399,8 @@ struct StreamableHttpSessionManager::Impl {
     /// @p principal_id is the principal the bearer token validator named, if it named one. Requests
     /// are attributed to it, or else to a digest of their Authorization header. A request served
     /// without a session carries that principal; a session belongs to the principal that created it.
-    Task<Reply> handle_post(const StringRequest& request, boost::asio::any_io_executor conn_strand,
+    Task<Reply> handle_post(const detail::IncomingRequest& request,
+                            boost::asio::any_io_executor conn_strand,
                             std::unique_ptr<Server>& stateless_server, detail::BudgetLease& bytes,
                             std::optional<std::string> principal_id,
                             const std::optional<std::vector<std::string>>& token_scopes) {
@@ -1462,7 +1473,7 @@ struct StreamableHttpSessionManager::Impl {
             co_return std::get<StringResponse>(session_var);
         }
         auto session = std::get<std::shared_ptr<detail_session_mgr::SessionRuntime>>(session_var);
-        if (session == nullptr || session->client_transport == nullptr) {
+        if (session == nullptr || session->pipe == nullptr) {
             co_return detail_session_mgr::make_error_response(
                 request, http::status::service_unavailable, "Transport closed");
         }
@@ -1498,7 +1509,7 @@ struct StreamableHttpSessionManager::Impl {
                     request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
                     "initialize must be a request");
             }
-            co_await session->client_transport->write_json(std::move(request_json));
+            session->pipe->deliver(std::move(request_json));
             auto response =
                 detail_session_mgr::make_empty_json_response(request, http::status::accepted);
             response.set("Mcp-Session-Id", session->session_id);
@@ -1522,7 +1533,7 @@ struct StreamableHttpSessionManager::Impl {
                     timer_signal, std::nullopt, {}, false, std::to_string(++session->streams)});
         }
 
-        co_await session->client_transport->write_json(std::move(request_json));
+        session->pipe->deliver(std::move(request_json));
 
         // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
         // request of the server's own reaches it while the handler waits for the answer.
@@ -1546,7 +1557,7 @@ struct StreamableHttpSessionManager::Impl {
         co_return response;
     }
 
-    Task<StringResponse> handle_delete(const StringRequest& request, std::string principal) {
+    Task<StringResponse> handle_delete(const detail::IncomingRequest& request, std::string principal) {
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
             co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
@@ -1577,7 +1588,7 @@ struct StreamableHttpSessionManager::Impl {
     /// A GET opens the session's stream for messages that belong to no request, or with
     /// Last-Event-ID resumes a stream: one still going on is served live from there, and one that
     /// ended is replayed.
-    Task<Reply> handle_get(const StringRequest& request, std::string principal,
+    Task<Reply> handle_get(const detail::IncomingRequest& request, std::string principal,
                            detail::BudgetLease& bytes, boost::asio::any_io_executor conn_strand) {
         const auto session_header_it = request.find("Mcp-Session-Id");
         if (session_header_it == request.end()) {
@@ -1833,28 +1844,6 @@ struct StreamableHttpSessionManager::Impl {
         if (timer_to_signal) {
             signal_timer(timer_to_signal);
         }
-    }
-
-    static Task<void> read_outbound_messages(
-        std::shared_ptr<detail_session_mgr::SessionRuntime> session,
-        std::shared_ptr<std::atomic<bool>> json_only_mode, std::size_t max_queued,
-        std::shared_ptr<detail::StreamCounters> counters) {
-        try {
-            for (;;) {
-                auto message = co_await detail::MemoryTransportAccess::read_related_until_closed(
-                    *session->client_transport);
-                if (!message) {
-                    break;
-                }
-                dispatch_response_to_pending(session.get(), std::move(message->message),
-                                             json_only_mode->load(std::memory_order_acquire),
-                                             message->related_request.get(), max_queued, *counters);
-            }
-        } catch (...) {
-            // Any other failure ends the loop too, and releases the waiters below.
-            (void)0;
-        }
-        end_streams(*session);
     }
 
     static detail_session_mgr::PendingResult consume_pending_response(
@@ -2157,8 +2146,8 @@ void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl)
         for (const auto& timer : timers) {
             Impl::signal_timer(timer);
         }
-        if (session->client_transport) {
-            session->client_transport->close();
+        if (session->pipe) {
+            session->pipe->close();
         }
     }
 

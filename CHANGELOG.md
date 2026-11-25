@@ -35,6 +35,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The documentation lists which parts of the specification the SDK implements and marks the features protocol revision 2026-07-28 deprecates.
 - The built-in transports throw `TransportError` for their failures, network errors included; `kind()` tells closed, connect, I/O and protocol failures apart; `code()` holds a network error's code.
 - `mcp::constants::methods` names the JSON-RPC methods the SDK sends and handles, such as `g_TOOLS_CALL`.
+- `Icon`, `Implementation`, `ServerCapabilities` and `InitializeResult` compare with `==`.
 
 ### Changed
 
@@ -75,6 +76,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `RequestContext` is declared in `<mcp/transport/request_context.hpp>`, and the transport, auth and `Context` headers no longer include server or transport headers they do not use.
 - Each `Client` call and its `Client::sync()` twin take `RequestOptions` as a last parameter that defaults to none, in place of a second overload.
 - `create_memory_transport_pair()` is named `make_memory_transport_pair()`, like the other factory functions.
+- HTTP servers allocate less for each request, and `StreamableHttpSessionManager` sessions reach their `Server` without memory transports.
 
 ### Removed
 
@@ -119,6 +121,8 @@ These changes in behavior need no change to compile:
   the source location that Boost adds to it.
 - The LLDB example returns a command that LLDB fails as a tool error instead of
   as its output.
+- `run_stdio()` and `run_http()` no longer risk a crash in `pthread_detach()`
+  when they return at the shutdown deadline while handlers still run.
 
 ## [0.3.0] - 2026-11-17
 

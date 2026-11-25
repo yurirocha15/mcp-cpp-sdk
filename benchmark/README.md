@@ -113,6 +113,14 @@ transitive dependencies resolved by the alternatives' CMake builds are not all
 content-addressed; their resolved image identities are therefore captured with
 each run.
 
+Every C++ target, this SDK's included, is built on Ubuntu 26.04. On Ubuntu
+24.04, whose glibc is 2.39, cxxmcp and the TCP_NODELAY build of
+Neumann-Labs/mcp-cpp crashed under the capacity load model: both detach a thread
+they start for a request, and that glibc's `pthread_detach()` can read the
+thread's state after the thread has freed it ([glibc bug
+19951](https://sourceware.org/bugzilla/show_bug.cgi?id=19951)). The
+`pthread_detach()` of Ubuntu 26.04's glibc 2.43 does not.
+
 Gopher MCP remains recorded in the source manifest but excluded from this
 group. Its public server transport uses legacy HTTP+SSE rather than the single
 Streamable HTTP endpoint exercised here, so including it would test a different
@@ -264,11 +272,13 @@ timeout, and the coroutine workload sets neither; and the coroutine workload
 retries a request once on a fresh connection when a pooled one was closed by
 the peer while idle.
 
-Because the two builds run different application code, `ours-coroutines` is
-reported next to `ours-comparable` and is never ranked against the other SDKs'
-shared-workload adapters. The build is chosen with the `OURS_MODEL` build
-argument of `alternatives/Dockerfile.ours` (`threads`, the default, `coroutines`
-or `sync`).
+The other C++ SDKs take a tool handler as a function that returns its result, so
+each of their handlers holds a thread until its result is ready.
+`ours-coroutines` is listed with them in the C++ tables, labelled as this
+workload: a difference between its rows and another SDK's includes these clients
+and the two differences above as well as the SDK. The build is chosen with the
+`OURS_MODEL` build argument of `alternatives/Dockerfile.ours` (`threads`, the
+default, `coroutines` or `sync`).
 
 ## Sync mode workload
 

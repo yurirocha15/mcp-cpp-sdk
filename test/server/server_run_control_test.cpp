@@ -3,6 +3,7 @@
 
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/detail/server/run_control.hpp"
 #include "mcp/server/server.hpp"
 #include "mcp/transport/memory.hpp"
 
@@ -12,6 +13,7 @@
 #include <boost/asio/io_context.hpp>
 #include <chrono>
 #include <functional>
+#include <future>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <thread>
@@ -115,6 +117,19 @@ TEST(ServerRunControlTest, StopFromAHandlerEndsRun) {
 
     EXPECT_TRUE(eventually([&] { return run_ended.load(); }));
     client.close();
+}
+
+TEST(ServerRunControlTest, RunDetachedReturnsBeforeTheWorkRunsOnAnotherThread) {
+    std::promise<void> release;
+    std::promise<std::thread::id> ran;
+    auto ran_on = ran.get_future();
+    mcp::detail::run_detached([gate = release.get_future(), ran = std::move(ran)]() mutable {
+        gate.wait();
+        ran.set_value(std::this_thread::get_id());
+    });
+    EXPECT_EQ(ran_on.wait_for(std::chrono::seconds(0)), std::future_status::timeout);
+    release.set_value();
+    EXPECT_NE(ran_on.get(), std::this_thread::get_id());
 }
 
 }  // namespace server_run_control_test

@@ -203,7 +203,7 @@ struct HttpServerTransport::Impl {
                request_json.at("method").get<std::string>() == methods::g_INITIALIZE;
     }
 
-    static std::string_view header_value(const StringRequest::const_iterator& header_it) {
+    static std::string_view header_value(const detail::RequestHead::const_iterator& header_it) {
         return {header_it->value().data(), header_it->value().size()};
     }
 
@@ -254,7 +254,7 @@ struct HttpServerTransport::Impl {
         return format_www_authenticate(effective);
     }
 
-    bool is_unauthenticated_path(const StringRequest& request) const {
+    bool is_unauthenticated_path(const detail::RequestHead& request) const {
         if (unauthenticated_paths.empty()) {
             return false;
         }
@@ -281,31 +281,32 @@ struct HttpServerTransport::Impl {
         response.keep_alive(keep_alive);
     }
 
-    static StringResponse make_json_response(const StringRequest& request, http::status status_code,
-                                             std::string body) {
+    static StringResponse make_json_response(const detail::RequestHead& request,
+                                             http::status status_code, std::string body) {
         StringResponse response{status_code, request.version()};
-        set_common_headers(response, request.keep_alive());
+        set_common_headers(response, detail::keeps_alive(request));
         response.set(http::field::content_type, "application/json");
         response.body() = std::move(body);
         response.prepare_payload();
         return response;
     }
 
-    static StringResponse make_error_response(const StringRequest& request, http::status status_code,
+    static StringResponse make_error_response(const detail::RequestHead& request,
+                                              http::status status_code,
                                               std::string_view error_message) {
         nlohmann::json error_body = {{"error", std::string(error_message)}};
         return make_json_response(request, status_code, mcp::detail::dump_json(error_body));
     }
 
-    static StringResponse make_empty_json_response(const StringRequest& request,
+    static StringResponse make_empty_json_response(const detail::IncomingRequest& request,
                                                    http::status status_code) {
         auto response = make_json_response(request, status_code, "");
         response.content_length(0);
         return response;
     }
 
-    static StringResponse make_sse_response(const StringRequest& request, const std::string& event_id,
-                                            const std::string& data) {
+    static StringResponse make_sse_response(const detail::IncomingRequest& request,
+                                            const std::string& event_id, const std::string& data) {
         std::string sse_body = "id: " + event_id + "\ndata: " + data + "\n\n";
         StringResponse response{http::status::ok, request.version()};
         set_common_headers(response, request.keep_alive());
@@ -316,7 +317,7 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    static StringResponse make_sse_replay_response(const StringRequest& request,
+    static StringResponse make_sse_replay_response(const detail::IncomingRequest& request,
                                                    const SseEventList& events) {
         std::string sse_body;
         for (const auto& [id, data] : events) {
@@ -344,7 +345,7 @@ struct HttpServerTransport::Impl {
 
     /// Whether a client without the session's id may end it: nothing has used it for the idle
     /// timeout, and no request of it is waiting.
-    bool session_left_idle(const StringRequest& request) const {
+    bool session_left_idle(const detail::IncomingRequest& request) const {
         std::chrono::milliseconds timeout{};
         {
             std::lock_guard lock(configuration_mutex);
@@ -363,7 +364,7 @@ struct HttpServerTransport::Impl {
             [this](const auto& entry) { return !sessionless_request_ids.contains(entry.first); });
     }
 
-    Task<SessionCheckResult> validate_post_session(const StringRequest& request) {
+    Task<SessionCheckResult> validate_post_session(const detail::IncomingRequest& request) {
         const auto session_header_it = request.find("MCP-Session-Id");
         const bool session_header_present = session_header_it != request.end();
 
@@ -388,7 +389,7 @@ struct HttpServerTransport::Impl {
         co_return SessionCheckResult{true, {}};
     }
 
-    Task<SessionCheckResult> validate_delete_session(const StringRequest& request) {
+    Task<SessionCheckResult> validate_delete_session(const detail::IncomingRequest& request) {
         if (!session_id.has_value()) {
             co_return SessionCheckResult{true, {}};
         }
@@ -570,7 +571,7 @@ struct HttpServerTransport::Impl {
 
     // 2026-07-28 has no initialize; the error names the versions served, as an initialize error
     // should.
-    StringResponse initialize_not_served_response(const StringRequest& request,
+    StringResponse initialize_not_served_response(const detail::IncomingRequest& request,
                                                   const nlohmann::json& request_json) const {
         std::vector<std::string> served;
         {
@@ -598,7 +599,7 @@ struct HttpServerTransport::Impl {
             [](const std::string& version) { return is_legacy_protocol_version(version); });
     }
 
-    std::optional<StringResponse> check_protocol_version(const StringRequest& request,
+    std::optional<StringResponse> check_protocol_version(const detail::IncomingRequest& request,
                                                          const nlohmann::json& request_json) const {
         const auto protocol_header_it = request.find("MCP-Protocol-Version");
         const bool is_initialize = is_initialize_request(request_json);
@@ -633,7 +634,7 @@ struct HttpServerTransport::Impl {
     }
 
     /// The 403 for a request whose Host the policy refuses, checked on every request.
-    std::optional<StringResponse> check_host(const StringRequest& request,
+    std::optional<StringResponse> check_host(const detail::RequestHead& request,
                                              bool loopback_connection) const {
         std::optional<std::string_view> value;
         if (request.count(http::field::host) == 1) {
@@ -645,7 +646,7 @@ struct HttpServerTransport::Impl {
         return std::nullopt;
     }
 
-    std::optional<StringResponse> check_origin(const StringRequest& request) const {
+    std::optional<StringResponse> check_origin(const detail::RequestHead& request) const {
         const auto origin_header_it = request.find(http::field::origin);
         if (origin_header_it != request.end() &&
             !is_origin_allowed(detail::to_std_string_view(origin_header_it->value()))) {
@@ -656,7 +657,7 @@ struct HttpServerTransport::Impl {
 
     /// @brief Answer a GET for the configured RFC 9728 document, which needs no bearer token.
     std::optional<StringResponse> serve_protected_resource_metadata(
-        const StringRequest& request) const {
+        const detail::RequestHead& request) const {
         if (!protected_resource_metadata.has_value() || request.method() != http::verb::get) {
             return std::nullopt;
         }
@@ -673,7 +674,7 @@ struct HttpServerTransport::Impl {
     /// The `403` that answers a request whose token lacks a scope it needs, the `500` for a provider
     /// that failed to decide, or nothing when the request may be served.
     std::optional<StringResponse> check_request_scopes(
-        const StringRequest& request, const nlohmann::json& request_json,
+        const detail::IncomingRequest& request, const nlohmann::json& request_json,
         const std::optional<std::vector<std::string>>& token_scopes) const {
         const auto check = detail::check_request_scopes(scope_requirements, token_scopes, request_json,
                                                         bearer_challenge);
@@ -689,7 +690,7 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    StringResponse make_unauthorized_response(const StringRequest& request) const {
+    StringResponse make_unauthorized_response(const detail::RequestHead& request) const {
         auto response =
             make_error_response(request, http::status::unauthorized, "Invalid bearer token");
         response.set(http::field::www_authenticate, www_authenticate_value);
@@ -699,12 +700,12 @@ struct HttpServerTransport::Impl {
     /// A validator that throws has failed to decide. That is the server's failure, not the
     /// client's, so it is answered 500 rather than with a challenge that would send the client into
     /// re-authorization.
-    static StringResponse make_validator_failure_response(const StringRequest& request) {
+    static StringResponse make_validator_failure_response(const detail::RequestHead& request) {
         return make_error_response(request, http::status::internal_server_error,
                                    "Bearer token validation failed");
     }
 
-    static std::string_view request_authorization(const StringRequest& request) {
+    static std::string_view request_authorization(const detail::RequestHead& request) {
         const auto authorization_it = request.find(http::field::authorization);
         return authorization_it == request.end() ? std::string_view{} : header_value(authorization_it);
     }
@@ -723,7 +724,7 @@ struct HttpServerTransport::Impl {
     ///          header. With an async one, the decision belongs to check_authorization_async and
     ///          this returns no refusal and no principal; keeping the two apart leaves the far
     ///          more common synchronous path free of a coroutine frame and of copying the token.
-    Authorization check_authorization(const StringRequest& request) const {
+    Authorization check_authorization(const detail::RequestHead& request) const {
         const auto authorization = request_authorization(request);
         if (async_bearer_token_validator) {
             return {};
@@ -750,7 +751,7 @@ struct HttpServerTransport::Impl {
     }
 
     /// @brief Run the bearer check against an async validator. Only entered when one is installed.
-    Task<Authorization> check_authorization_async(const StringRequest& request) const {
+    Task<Authorization> check_authorization_async(const detail::RequestHead& request) const {
         const auto authorization = request_authorization(request);
         const auto token = http_bearer_token(authorization);
         if (token.empty()) {
@@ -770,7 +771,7 @@ struct HttpServerTransport::Impl {
                                 std::move(validation->scopes)};
     }
 
-    static StringResponse make_jsonrpc_error_response(const StringRequest& request,
+    static StringResponse make_jsonrpc_error_response(const detail::IncomingRequest& request,
                                                       http::status status_code, int code,
                                                       std::string message,
                                                       nlohmann::json id = nullptr) {
@@ -783,7 +784,7 @@ struct HttpServerTransport::Impl {
         return make_json_response(request, status_code, mcp::detail::dump_json(body));
     }
 
-    static StringResponse make_invalid_id_response(const StringRequest& request) {
+    static StringResponse make_invalid_id_response(const detail::IncomingRequest& request) {
         return make_jsonrpc_error_response(
             request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
             "JSON-RPC request id must be a string or an integer within int64_t");
@@ -792,7 +793,7 @@ struct HttpServerTransport::Impl {
     /// Waits until the server has answered @p request_id_key, or returns the response to send
     /// instead when the transport closes first.
     Task<std::optional<StringResponse>> wait_for_response(
-        const StringRequest& request, const std::string& request_id_key,
+        const detail::IncomingRequest& request, const std::string& request_id_key,
         const std::shared_ptr<boost::asio::steady_timer>& timer_signal, Connection* watched = nullptr) {
         for (;;) {
             if (state->closed.load(std::memory_order_acquire)) {
@@ -845,7 +846,7 @@ struct HttpServerTransport::Impl {
     /// the answer as it is produced. Otherwise the request is queued for whoever reads the
     /// transport under a transport-private sentinel id, so two clients may use the same id, and
     /// is answered with plain JSON and the status the specification gives its error.
-    Task<Reply> handle_modern_post(const StringRequest& request, nlohmann::json request_json,
+    Task<Reply> handle_modern_post(const detail::IncomingRequest& request, nlohmann::json request_json,
                                    std::string principal, std::shared_ptr<Connection> connection,
                                    detail::BudgetLease& bytes) {
         // 2026-07-28 defines no notification a client sends over HTTP, so one is accepted and
@@ -946,8 +947,9 @@ struct HttpServerTransport::Impl {
     }
 
     /// @p principal is what refuse_before_body() attributed the request to.
-    Task<Reply> handle_post(const StringRequest& request, std::shared_ptr<Connection> connection,
-                            detail::BudgetLease& bytes, std::string principal,
+    Task<Reply> handle_post(const detail::IncomingRequest& request,
+                            std::shared_ptr<Connection> connection, detail::BudgetLease& bytes,
+                            std::string principal,
                             const std::optional<std::vector<std::string>>& token_scopes) {
         auto request_json = detail::parse_peer_json(request.body());
         if (request_json.is_discarded() || !request_json.is_object()) {
@@ -1076,7 +1078,8 @@ struct HttpServerTransport::Impl {
 
     /// A GET or DELETE naming 2026-07-28 without a session asks for something that revision does
     /// not have: it opens no stream this way and has no session to end.
-    std::optional<StringResponse> refuse_sessionless_modern_stream(const StringRequest& request) const {
+    std::optional<StringResponse> refuse_sessionless_modern_stream(
+        const detail::IncomingRequest& request) const {
         const auto protocol_header = detail::http_header(request, "MCP-Protocol-Version");
         const bool asks_for_legacy = !protocol_header || is_legacy_protocol_version(*protocol_header) ||
                                      request.find("MCP-Session-Id") != request.end();
@@ -1089,7 +1092,8 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    Task<StringResponse> handle_delete(const StringRequest& request, const std::string& principal) {
+    Task<StringResponse> handle_delete(const detail::IncomingRequest& request,
+                                       const std::string& principal) {
         if (auto refusal = refuse_sessionless_modern_stream(request)) {
             co_return std::move(*refusal);
         }
@@ -1114,7 +1118,7 @@ struct HttpServerTransport::Impl {
     /// A GET opens the session's stream for messages that belong to no request, or with
     /// Last-Event-ID resumes a stream: one still going on is served live from there, and one that
     /// ended is replayed.
-    Task<Reply> handle_get(const StringRequest& request, const std::string& principal,
+    Task<Reply> handle_get(const detail::IncomingRequest& request, const std::string& principal,
                            detail::BudgetLease& bytes) {
         if (auto refusal = refuse_sessionless_modern_stream(request)) {
             co_return std::move(*refusal);
@@ -1230,7 +1234,7 @@ struct HttpServerTransport::Impl {
     /// stream's events wait in the event store, where a GET with Last-Event-ID resumes it.
     ///
     /// @return Whether the connection may carry another request.
-    Task<bool> serve_legacy_stream(Connection& stream, const StringRequest& request,
+    Task<bool> serve_legacy_stream(Connection& stream, const detail::IncomingRequest& request,
                                    std::shared_ptr<LegacyStream> legacy) {
         const bool get = legacy->request_key.empty();
         SseEventList events = std::move(legacy->replay);
@@ -1383,7 +1387,7 @@ struct HttpServerTransport::Impl {
     /// @p principal to what the request is attributed to. The metadata document and exempt paths
     /// need neither the Origin nor the bearer check.
     Task<std::optional<StringResponse>> refuse_before_body(
-        const StringRequest& request, std::string& principal,
+        const detail::RequestHead& request, std::string& principal,
         std::optional<std::vector<std::string>>& token_scopes, bool loopback_connection) const {
         // A closed transport answers nothing more, so a request is not worth a token check.
         if (state->closed.load(std::memory_order_acquire)) {
@@ -1411,8 +1415,9 @@ struct HttpServerTransport::Impl {
         co_return std::move(authorization.refusal);
     }
 
-    Task<Reply> handle_request(const StringRequest& request, std::shared_ptr<Connection> connection,
-                               detail::BudgetLease& bytes, std::string principal,
+    Task<Reply> handle_request(const detail::IncomingRequest& request,
+                               std::shared_ptr<Connection> connection, detail::BudgetLease& bytes,
+                               std::string principal,
                                const std::optional<std::vector<std::string>>& token_scopes) {
         if (state->closed.load(std::memory_order_acquire)) {
             co_return make_error_response(request, http::status::service_unavailable,
@@ -1460,6 +1465,8 @@ struct HttpServerTransport::Impl {
         const auto local_endpoint = stream.socket().local_endpoint(endpoint_error);
         const bool loopback_connection = endpoint_error || detail::is_loopback_endpoint(local_endpoint);
         beast::flat_buffer request_buffer;
+        // Holds the fields of the request being served, until the next request is read.
+        detail::HeaderArena header_arena;
         // The start line and fields of the answer being written, kept for the next answer.
         std::vector<char> response_head;
         // Set once a watch has read the client's end of the stream. That end is consumed: a later
@@ -1469,15 +1476,15 @@ struct HttpServerTransport::Impl {
         std::string principal;
         std::optional<std::vector<std::string>> token_scopes;
         const detail::RefuseBeforeBody refuse =
-            [this, &principal, &token_scopes,
-             loopback_connection](const StringRequest& head) -> Task<std::optional<StringResponse>> {
+            [this, &principal, &token_scopes, loopback_connection](
+                const detail::RequestHead& head) -> Task<std::optional<StringResponse>> {
             co_return co_await refuse_before_body(head, principal, token_scopes, loopback_connection);
         };
 
         for (;;) {
             principal.clear();
             token_scopes.reset();
-            detail::RequestParser parser;
+            auto parser = detail::make_request_parser(header_arena);
             parser.body_limit(max_request_body_bytes);
             detail::BudgetLease bytes(budget.bytes, connection_limits.max_request_bytes);
             if (client_finished_sending) {
@@ -1490,7 +1497,7 @@ struct HttpServerTransport::Impl {
                            bytes, refuse)) {
                 break;
             }
-            StringRequest request = detail::take_request(parser);
+            detail::IncomingRequest request = detail::take_request(parser);
 
             if (state->closed.load(std::memory_order_acquire)) {
                 break;

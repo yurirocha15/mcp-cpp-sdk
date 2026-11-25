@@ -125,7 +125,7 @@ namespace {
 
 Task<void> notification_queued() { co_return; }
 
-StringResponse json_response(const StringRequest& request, http::status status, std::string body) {
+StringResponse json_response(const IncomingRequest& request, http::status status, std::string body) {
     StringResponse response{status, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
     response.set(http::field::content_type, "application/json");
@@ -154,7 +154,7 @@ Task<bool> write_last_chunk(Connection& stream, const HttpConnectionLimits& limi
     co_return !error;
 }
 
-Task<bool> open_stream(Connection& stream, const StringRequest& request,
+Task<bool> open_stream(Connection& stream, const IncomingRequest& request,
                        const HttpConnectionLimits& limits) {
     http::response<http::empty_body> header{http::status::ok, request.version()};
     header.set(http::field::server, "mcp-cpp-sdk");
@@ -173,7 +173,7 @@ Task<bool> open_stream(Connection& stream, const StringRequest& request,
 }
 
 /// Opens the SSE stream unless it is open, and counts it; returns false when the client is gone.
-Task<bool> ensure_stream_open(Connection& stream, const StringRequest& request,
+Task<bool> ensure_stream_open(Connection& stream, const IncomingRequest& request,
                               const HttpConnectionLimits& limits, StreamCounters& counters,
                               bool& stream_open) {
     if (!stream_open) {
@@ -214,7 +214,7 @@ bool peer_reset(Connection& stream) { return probe_peer(stream.socket()) == Peer
 
 }  // namespace
 
-std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& request,
+std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& request,
                                                       nlohmann::json request_json,
                                                       std::string principal, const ModernStart& start,
                                                       ModernDispatchRef dispatch) {
@@ -273,7 +273,8 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const StringRequest& reque
 }
 
 Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& buffer,
-                                 const StringRequest& request, std::shared_ptr<ModernExchange> exchange,
+                                 const IncomingRequest& request,
+                                 std::shared_ptr<ModernExchange> exchange,
                                  bool& client_finished_sending, const ModernServing& serving,
                                  std::vector<char>& response_head) {
     const auto& options = serving.options;

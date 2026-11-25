@@ -10,11 +10,13 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <utility>
 
 namespace mcp::detail {
 
@@ -129,6 +131,24 @@ class ShutdownDeadline {
     bool finished_ = false;
     std::thread thread_;
 };
+
+/**
+ * @brief Runs @p work on a thread of its own that nothing joins.
+ *
+ * @details The thread begins @p work only once it is detached, so that it cannot end during
+ * pthread_detach(): some glibc versions' pthread_detach() reads the thread's state after marking it
+ * detached, and a detached thread that has ended has freed that state (glibc bug 19951).
+ */
+template <typename Work>
+void run_detached(Work work) {
+    std::promise<void> detached;
+    std::thread thread([work = std::move(work), ready = detached.get_future()]() mutable {
+        ready.wait();
+        work();
+    });
+    thread.detach();
+    detached.set_value();
+}
 
 /**
  * @brief Destroys @p io_ctx, whose run has ended, without waiting for handlers on another
