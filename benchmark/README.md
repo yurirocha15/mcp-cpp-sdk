@@ -272,11 +272,13 @@ timeout, and the coroutine workload sets neither; and the coroutine workload
 retries a request once on a fresh connection when a pooled one was closed by
 the peer while idle.
 
-Because the two builds run different application code, `ours-coroutines` is
-reported next to `ours-comparable` and is never ranked against the other SDKs'
-shared-workload adapters. The build is chosen with the `OURS_MODEL` build
-argument of `alternatives/Dockerfile.ours` (`threads`, the default, `coroutines`
-or `sync`).
+The other C++ SDKs take a tool handler as a function that returns its result, so
+each of their handlers holds a thread until its result is ready.
+`ours-coroutines` is listed with them in the C++ tables, labelled as this
+workload: a difference between its rows and another SDK's includes these clients
+and the two differences above as well as the SDK. The build is chosen with the
+`OURS_MODEL` build argument of `alternatives/Dockerfile.ours` (`threads`, the
+default, `coroutines` or `sync`).
 
 ## Sync mode workload
 

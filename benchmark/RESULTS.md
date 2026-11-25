@@ -7,7 +7,7 @@ Two runs put the same MCP/Redis/HTTP workload on every target, on one machine:
   of four operations, so the rate cannot exceed 4,000 operations per second. A
   target that keeps up shows how much latency, CPU and memory that load costs
   it.
-- The **capacity run** (`capacity-full`, 2026-11-23) removes the pause. Each
+- The **capacity run** (`capacity-full`, 2026-11-24) removes the pause. Each
   target then runs as fast as its 2-CPU limit allows, which shows its maximum
   throughput and its latency at that point.
 
@@ -29,7 +29,9 @@ hardware threads of those cores left idle (see [Concurrency and resource
 controls](README.md#concurrency-and-resource-controls)); in the paced run its
 2-CPU limit applied across all host CPUs. Every row used the shared
 `upstream-v2-strict-mcp-v1` measured contract, and every C++ target also had to
-pass the `adapter-exact-v1` adapter checks in preflight and postflight.
+pass the `adapter-exact-v1` adapter checks in preflight and postflight. The
+paced run built the C++ targets on Ubuntu 24.04 and the capacity run on Ubuntu
+26.04 (see [Comparable C++ scope](README.md#comparable-c-scope)).
 
 | | Paced run | Capacity run |
 |---|---|---|
@@ -40,8 +42,9 @@ pass the `adapter-exact-v1` adapter checks in preflight and postflight.
 | k6 limits | 4 CPUs, 2 GiB | 8 CPUs, 4 GiB |
 | API service CPU limit | 2 CPUs | 8 CPUs |
 | Redis CPU limit | 0.5 CPU | 1 CPU |
-| Order seed | 1794759633 | 1795448281 |
-| Commit | `a81d0b112052753f547c69f695121346a9be3739` | `ea807fcc2cf2a5e1e7d965d73fba062b58502f10` |
+| Order seed | 1794759633 | 1795534930 |
+| C++ target image base | Ubuntu 24.04 | Ubuntu 26.04 |
+| Commit | `a81d0b112052753f547c69f695121346a9be3739` | `2601793d051331274d25ee4f5a61ab08195f501d` |
 
 Every target, k6, Redis, and the API service ran on one machine: an AMD Ryzen 9
 9900X (12 cores, 24 threads) with 30.4 GiB of memory, on Ubuntu 24.04 with Linux
@@ -130,53 +133,54 @@ The measured operation rates for all rounds were:
 
 | SDK | Mode | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | CPU ms/op | Target p95 CPU | Target p95 memory | Errors |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| This SDK, coroutines | stateless | 2024-11-05 | 19,407.45 | 1.14% | 1.49 | 3.05 | 3.90 | 0.093 | 190.16% | 8.66 MiB | 0 |
-| This SDK, threads | stateless | 2024-11-05 | 16,717.41 | 1.87% | 1.28 | 3.57 | 4.99 | 0.110 | 192.14% | 40.84 MiB | 0 |
-| This SDK, sync mode | stateless | 2024-11-05 | 16,325.85 | 1.30% | 1.26 | 3.72 | 5.11 | 0.101 | 170.14% | 37.71 MiB | 0 |
-| Rust SDK | stateless | 2024-11-05 | 17,098.69 | 0.89% | 1.78 | 3.34 | 4.96 | 0.106 | 192.96% | 15.00 MiB | 0 |
-| Go SDK | stateless | 2024-11-05 | 3,684.24 | 1.05% | 7.14 | 17.24 | 22.90 | 0.508 | 191.51% | 16.70 MiB | 0 |
-| Python SDK | stateless | 2024-11-05 | 1,085.23 | 0.26% | 28.98 | 45.67 | 82.49 | 1.851 | 202.55% | 302.80 MiB | 0 |
-| This SDK, coroutines | stateful | 2024-11-05 | 13,654.14 | 0.69% | 2.28 | 3.47 | 4.41 | 0.142 | 202.46% | 9.62 MiB | 0 |
-| This SDK, threads | stateful | 2024-11-05 | 12,117.48 | 1.27% | 1.78 | 3.49 | 4.89 | 0.160 | 200.09% | 37.54 MiB | 0 |
-| This SDK, sync mode | stateful | 2024-11-05 | 12,219.74 | 0.48% | 1.78 | 3.73 | 5.36 | 0.128 | 162.56% | 36.92 MiB | 0 |
-| Rust SDK | stateful | 2024-11-05 | 12,851.85 | 0.20% | 1.91 | 3.45 | 4.99 | 0.146 | 197.45% | 23.47 MiB | 0 |
-| Go SDK | stateful | 2024-11-05 | 4,274.62 | 0.07% | 4.99 | 11.33 | 15.07 | 0.442 | 192.94% | 16.82 MiB | 0 |
-| This SDK, coroutines | sessionless | 2026-07-28 | 25,211.46 | 0.61% | 2.09 | 3.70 | 4.70 | 0.074 | 196.14% | 9.05 MiB | 0 |
-| This SDK, threads | sessionless | 2026-07-28 | 20,911.50 | 0.29% | 2.26 | 4.67 | 5.91 | 0.088 | 188.87% | 37.29 MiB | 0 |
-| This SDK, sync mode | sessionless | 2026-07-28 | 20,790.54 | 1.09% | 2.22 | 4.79 | 5.98 | 0.081 | 172.51% | 37.05 MiB | 0 |
-| Rust SDK | sessionless | 2026-07-28 | 22,239.54 | 1.01% | 2.35 | 4.14 | 6.03 | 0.083 | 196.34% | 15.20 MiB | 0 |
-| Go SDK | sessionless | 2026-07-28 | 5,058.76 | 0.15% | 10.69 | 21.72 | 28.05 | 0.375 | 192.57% | 28.08 MiB | 0 |
-| Python SDK | sessionless | 2026-07-28 | 1,948.21 | 1.14% | 29.10 | 66.41 | 97.99 | 1.029 | 201.99% | 270.80 MiB | 0 |
+| This SDK, coroutines | stateless | 2024-11-05 | 19,794.09 | 6.39% | 1.34 | 3.03 | 3.84 | 0.087 | 182.80% | 9.18 MiB | 0 |
+| This SDK, threads | stateless | 2024-11-05 | 18,349.61 | 0.13% | 1.11 | 3.24 | 4.50 | 0.101 | 192.90% | 32.05 MiB | 0 |
+| This SDK, sync mode | stateless | 2024-11-05 | 17,675.10 | 0.93% | 1.14 | 3.33 | 4.62 | 0.093 | 170.66% | 30.22 MiB | 0 |
+| Rust SDK | stateless | 2024-11-05 | 16,869.17 | 0.78% | 1.81 | 3.35 | 4.93 | 0.109 | 194.57% | 15.03 MiB | 0 |
+| Go SDK | stateless | 2024-11-05 | 3,695.13 | 0.33% | 7.12 | 17.21 | 22.84 | 0.507 | 191.27% | 25.71 MiB | 0 |
+| Python SDK | stateless | 2024-11-05 | 1,089.37 | 1.29% | 29.57 | 42.83 | 80.60 | 1.843 | 202.45% | 270.50 MiB | 0 |
+| This SDK, coroutines | stateful | 2024-11-05 | 14,407.06 | 0.70% | 2.06 | 3.33 | 4.37 | 0.133 | 200.65% | 10.29 MiB | 0 |
+| This SDK, threads | stateful | 2024-11-05 | 12,856.24 | 0.85% | 1.62 | 3.33 | 4.66 | 0.151 | 201.33% | 33.70 MiB | 0 |
+| This SDK, sync mode | stateful | 2024-11-05 | 13,304.01 | 0.22% | 1.59 | 3.36 | 4.70 | 0.118 | 162.33% | 29.65 MiB | 0 |
+| Rust SDK | stateful | 2024-11-05 | 12,895.22 | 0.24% | 1.91 | 3.46 | 5.05 | 0.145 | 197.41% | 23.55 MiB | 0 |
+| Go SDK | stateful | 2024-11-05 | 4,279.85 | 0.49% | 5.00 | 11.33 | 15.10 | 0.443 | 192.95% | 26.87 MiB | 0 |
+| This SDK, coroutines | sessionless | 2026-07-28 | 26,282.43 | 0.36% | 1.96 | 3.64 | 4.61 | 0.069 | 193.17% | 9.53 MiB | 0 |
+| This SDK, threads | sessionless | 2026-07-28 | 22,188.79 | 3.54% | 2.14 | 4.48 | 5.77 | 0.084 | 192.02% | 32.25 MiB | 0 |
+| This SDK, sync mode | sessionless | 2026-07-28 | 23,004.23 | 0.26% | 2.01 | 4.31 | 5.58 | 0.074 | 173.61% | 30.42 MiB | 0 |
+| Rust SDK | sessionless | 2026-07-28 | 22,564.93 | 1.23% | 2.32 | 4.08 | 5.89 | 0.082 | 195.61% | 15.66 MiB | 0 |
+| Go SDK | sessionless | 2026-07-28 | 5,062.42 | 0.17% | 10.66 | 21.76 | 28.14 | 0.375 | 192.76% | 17.79 MiB | 0 |
+| Python SDK | sessionless | 2026-07-28 | 1,985.07 | 1.20% | 21.93 | 96.06 | 164.41 | 1.010 | 202.14% | 288.00 MiB | 0 |
 
-The coroutines build reached 19,407.45 operations per second stateless (Rust:
-17,098.69), 25,211.46 sessionless (Rust: 22,239.54) and 13,654.14 stateful
-(Rust: 12,851.85). Its p99 stayed between 3.90 and 4.70 ms (Rust: 4.96 to
-6.03 ms), and its target p95 memory between 8.66 and 9.62 MiB (Rust: 15.00 to
-23.47 MiB). The threads and sync-mode builds reached 93.5% to 97.8% of Rust's
-rate in each mode. The sync-mode build's target p95 CPU was 162.56% to 172.51%;
-every other target in this group reached 188.87% or more.
+The coroutines build reached 19,794.09 operations per second stateless (Rust:
+16,869.17), 26,282.43 sessionless (Rust: 22,564.93) and 14,407.06 stateful
+(Rust: 12,895.22). Its p99 stayed between 3.84 and 4.61 ms (Rust: 4.93 to
+5.89 ms), and its target p95 memory between 9.18 and 10.29 MiB (Rust: 15.03 to
+23.55 MiB). The threads build reached 98.3% to 108.8% of Rust's rate in each
+mode, and the sync-mode build 101.9% to 104.8%. The sync-mode build's target
+p95 CPU was 162.33% to 173.61%; every other target in this group reached
+182.80% or more.
 
 The measured operation rates for all rounds were:
 
 | SDK | Mode | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---|---:|---:|---:|---:|
-| This SDK, coroutines | stateless | 19,407.45 | 19,604.12 | 19,161.09 | 1 |
-| This SDK, threads | stateless | 16,717.41 | 16,366.33 | 16,987.72 | 1 |
-| This SDK, sync mode | stateless | 16,000.48 | 16,398.14 | 16,325.85 | 3 |
-| Rust SDK | stateless | 17,098.69 | 17,148.63 | 16,863.45 | 1 |
-| Go SDK | stateless | 3,631.15 | 3,706.28 | 3,684.24 | 3 |
-| Python SDK | stateless | 1,085.23 | 1,084.81 | 1,089.99 | 1 |
-| This SDK, coroutines | stateful | 13,500.75 | 13,672.89 | 13,654.14 | 3 |
-| This SDK, threads | stateful | 12,139.74 | 12,117.48 | 11,863.94 | 2 |
-| This SDK, sync mode | stateful | 12,219.74 | 12,310.46 | 12,200.14 | 1 |
-| Rust SDK | stateful | 12,856.25 | 12,809.24 | 12,851.85 | 3 |
-| Go SDK | stateful | 4,274.62 | 4,272.43 | 4,278.08 | 1 |
-| This SDK, coroutines | sessionless | 24,956.17 | 25,211.46 | 25,231.74 | 2 |
-| This SDK, threads | sessionless | 20,900.62 | 20,911.50 | 21,011.57 | 2 |
-| This SDK, sync mode | sessionless | 20,480.27 | 20,790.54 | 20,919.48 | 2 |
-| Rust SDK | sessionless | 22,074.44 | 22,520.64 | 22,239.54 | 3 |
-| Go SDK | sessionless | 5,058.76 | 5,067.90 | 5,053.28 | 1 |
-| Python SDK | sessionless | 1,984.87 | 1,948.21 | 1,944.67 | 2 |
+| This SDK, coroutines | stateless | 17,780.93 | 19,997.91 | 19,794.09 | 3 |
+| This SDK, threads | stateless | 18,349.61 | 18,310.07 | 18,353.94 | 1 |
+| This SDK, sync mode | stateless | 17,913.09 | 17,675.10 | 17,596.17 | 2 |
+| Rust SDK | stateless | 16,869.17 | 17,087.87 | 16,851.49 | 1 |
+| Go SDK | stateless | 3,695.13 | 3,711.62 | 3,687.80 | 1 |
+| Python SDK | stateless | 1,066.50 | 1,089.37 | 1,091.82 | 2 |
+| This SDK, coroutines | stateful | 14,407.06 | 14,272.32 | 14,468.17 | 1 |
+| This SDK, threads | stateful | 12,813.86 | 13,020.34 | 12,856.24 | 3 |
+| This SDK, sync mode | stateful | 13,304.01 | 13,272.60 | 13,332.10 | 1 |
+| Rust SDK | stateful | 12,850.69 | 12,911.48 | 12,895.22 | 3 |
+| Go SDK | stateful | 4,279.85 | 4,257.11 | 4,298.63 | 1 |
+| This SDK, coroutines | sessionless | 26,282.43 | 26,245.72 | 26,423.75 | 1 |
+| This SDK, threads | sessionless | 23,192.91 | 21,632.52 | 22,188.79 | 3 |
+| This SDK, sync mode | sessionless | 22,913.27 | 23,026.24 | 23,004.23 | 3 |
+| Rust SDK | sessionless | 22,564.93 | 22,103.18 | 22,595.67 | 1 |
+| Go SDK | sessionless | 5,062.42 | 5,053.87 | 5,071.55 | 1 |
+| Python SDK | sessionless | 1,985.07 | 2,008.49 | 1,960.92 | 1 |
 
 
 ### Supplemental checks
@@ -192,7 +196,15 @@ matched the exact fixtures.
 
 These targets are adapters that call one shared, synchronous application
 workload through each SDK's public API (see [Comparable C++
-scope](README.md#comparable-c-scope)). This SDK runs it in its threads build.
+scope](README.md#comparable-c-scope)). This SDK runs it in its threads and
+sync-mode builds. The tables also list this SDK's coroutines build, whose
+handlers suspend while they wait for Redis and the API service instead of
+holding a thread (see [Coroutine workload](README.md#coroutine-workload)). The
+other four SDKs take a tool handler as a function that returns its result, so
+each of their handlers holds a thread until the result is ready. The
+coroutines build reaches the services through its own asio clients rather
+than libcurl and hiredis, so a difference between its rows and another SDK's
+includes those clients as well as the SDK.
 hkr04/cpp-mcp, FastMCPP and Neumann-Labs/mcp-cpp only serve sessions and answer
 `initialize` with the revision they choose, so the stateful rows do not share
 one revision. cxxmcp is the only other SDK here that serves `2026-07-28`.
@@ -206,11 +218,13 @@ builds](#tcp_nodelay-builds).
 | SDK | Mode | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | CPU ms/op | Target p95 CPU | Target p95 memory | Errors |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | This SDK, threads | stateful | 2024-11-05 | 3,595.64 | 0.89% | 0.43 | 1.63 | 2.44 | 0.284 | 105.96% | 32.23 MiB | 0 |
+| This SDK, coroutines (async workload) | stateful | 2024-11-05 | 3,548.51 | 0.70% | 0.51 | 2.09 | 3.00 | 0.230 | 87.93% | 9.07 MiB | 0 |
 | hkr04/cpp-mcp | stateful | 2025-03-26 | 678.77 | 0.01% | 40.77 | 41.82 | 41.92 | 0.281 | 20.65% | 29.63 MiB | 0 |
 | FastMCPP | stateful | 2024-11-05 | 1,122.04 | 0.04% | 0.40 | 41.78 | 42.04 | 0.336 | 40.25% | 24.42 MiB | 0 |
 | cxxmcp | stateful | 2024-11-05 | 3,628.96 | 0.07% | 0.37 | 1.69 | 2.50 | 0.308 | 116.25% | 29.61 MiB | 0 |
 | Neumann-Labs/mcp-cpp | stateful | 2025-11-25 | 675.99 | 0.00% | 40.81 | 41.85 | 42.02 | 0.507 | 36.63% | 48.57 MiB | 0 |
 | This SDK, threads | sessionless | 2026-07-28 | 3,739.82 | 0.05% | 0.51 | 2.43 | 3.48 | 0.191 | 75.75% | 32.95 MiB | 0 |
+| This SDK, coroutines (async workload) | sessionless | 2026-07-28 | 3,730.68 | 0.08% | 0.57 | 2.49 | 3.66 | 0.123 | 49.55% | 8.69 MiB | 0 |
 | cxxmcp | sessionless | 2026-07-28 | 3,751.46 | 0.06% | 0.48 | 2.14 | 3.11 | 0.266 | 106.32% | 34.71 MiB | 0 |
 
 The measured operation rates for all rounds were:
@@ -218,40 +232,54 @@ The measured operation rates for all rounds were:
 | SDK | Mode | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---|---:|---:|---:|---:|
 | This SDK, threads | stateful | 3,541.27 | 3,597.60 | 3,595.64 | 3 |
+| This SDK, coroutines (async workload) | stateful | 3,543.86 | 3,548.51 | 3,589.36 | 2 |
 | hkr04/cpp-mcp | stateful | 678.73 | 678.83 | 678.77 | 3 |
 | FastMCPP | stateful | 1,122.35 | 1,122.04 | 1,121.46 | 2 |
 | cxxmcp | stateful | 3,631.79 | 3,626.91 | 3,628.96 | 3 |
 | Neumann-Labs/mcp-cpp | stateful | 675.95 | 675.99 | 676.01 | 2 |
 | This SDK, threads | sessionless | 3,739.82 | 3,738.65 | 3,742.47 | 1 |
+| This SDK, coroutines (async workload) | sessionless | 3,730.68 | 3,727.83 | 3,733.98 | 1 |
 | cxxmcp | sessionless | 3,752.44 | 3,748.03 | 3,751.46 | 3 |
 
 ### Capacity run
 
 | SDK | Mode | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | CPU ms/op | Target p95 CPU | Target p95 memory | Errors |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| This SDK, threads | stateful | 2024-11-05 | 12,117.48 | 1.27% | 1.78 | 3.49 | 4.89 | 0.160 | 200.09% | 37.54 MiB | 0 |
-| hkr04/cpp-mcp | stateful | 2025-03-26 | 706.56 | 0.07% | 40.77 | 41.83 | 41.89 | 0.178 | 13.11% | 32.14 MiB | 0 |
-| FastMCPP | stateful | 2024-11-05 | 1,323.84 | 0.10% | 0.30 | 41.21 | 42.03 | 0.222 | 31.37% | 28.35 MiB | 0 |
-| cxxmcp | stateful | 2024-11-05 | failed | - | - | - | - | - | - | - | - |
-| Neumann-Labs/mcp-cpp | stateful | 2025-11-25 | 706.88 | 0.09% | 40.80 | 41.85 | 41.90 | 0.339 | 25.11% | 53.03 MiB | 0 |
-| This SDK, threads | sessionless | 2026-07-28 | 20,911.50 | 0.29% | 2.26 | 4.67 | 5.91 | 0.088 | 188.87% | 37.29 MiB | 0 |
-| cxxmcp | sessionless | 2026-07-28 | failed | - | - | - | - | - | - | - | - |
-cxxmcp's server exited on signal 11 (a segmentation fault) in round 2 of both
-of its cells, so the run records those cells as failed: it reports no median
-for them and skipped their third round. The rates of the rounds they completed
-are below.
+| This SDK, threads | stateful | 2024-11-05 | 12,856.24 | 0.85% | 1.62 | 3.33 | 4.66 | 0.151 | 201.33% | 33.70 MiB | 0 |
+| This SDK, coroutines (async workload) | stateful | 2024-11-05 | 14,407.06 | 0.70% | 2.06 | 3.33 | 4.37 | 0.133 | 200.65% | 10.29 MiB | 0 |
+| This SDK, sync mode | stateful | 2024-11-05 | 13,304.01 | 0.22% | 1.59 | 3.36 | 4.70 | 0.118 | 162.33% | 29.65 MiB | 0 |
+| hkr04/cpp-mcp | stateful | 2025-03-26 | 706.01 | 0.06% | 40.78 | 41.84 | 41.89 | 0.169 | 12.51% | 22.50 MiB | 0 |
+| FastMCPP | stateful | 2024-11-05 | 1,324.10 | 0.10% | 0.29 | 41.18 | 42.02 | 0.206 | 28.91% | 24.35 MiB | 0 |
+| cxxmcp | stateful | 2024-11-05 | 11,293.79 | 0.38% | 2.30 | 3.83 | 4.85 | 0.170 | 196.88% | 36.79 MiB | 0 |
+| Neumann-Labs/mcp-cpp | stateful | 2025-11-25 | 706.72 | 0.07% | 40.80 | 41.85 | 41.90 | 0.314 | 23.12% | 48.01 MiB | 0 |
+| This SDK, threads | sessionless | 2026-07-28 | 22,188.79 | 3.54% | 2.14 | 4.48 | 5.77 | 0.084 | 192.02% | 32.25 MiB | 0 |
+| This SDK, coroutines (async workload) | sessionless | 2026-07-28 | 26,282.43 | 0.36% | 1.96 | 3.64 | 4.61 | 0.069 | 193.17% | 9.53 MiB | 0 |
+| This SDK, sync mode | sessionless | 2026-07-28 | 23,004.23 | 0.26% | 2.01 | 4.31 | 5.58 | 0.074 | 173.61% | 30.42 MiB | 0 |
+| cxxmcp | sessionless | 2026-07-28 | 15,756.32 | 4.58% | 3.03 | 5.70 | 7.49 | 0.122 | 195.91% | 42.36 MiB | 0 |
+
+This SDK's threads build reached 12,856.24 operations per second stateful and
+22,188.79 sessionless, its coroutines build 14,407.06 and 26,282.43, and its
+sync-mode build 13,304.01 and 23,004.23. cxxmcp, the fastest of the other SDKs
+in their default builds, reached 11,293.79 and 15,756.32. The default builds
+of hkr04/cpp-mcp, FastMCPP and Neumann-Labs/mcp-cpp reached 706.01 to
+1,324.10; [TCP_NODELAY builds](#tcp_nodelay-builds) has their builds with
+`TCP_NODELAY` on.
 
 The measured operation rates for all rounds were:
 
 | SDK | Mode | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---|---:|---:|---:|---:|
-| This SDK, threads | stateful | 12,139.74 | 12,117.48 | 11,863.94 | 2 |
-| hkr04/cpp-mcp | stateful | 706.56 | 706.75 | 705.75 | 1 |
-| FastMCPP | stateful | 1,325.07 | 1,322.51 | 1,323.84 | 3 |
-| cxxmcp | stateful | 10,626.51 | failed (measurement) | skipped | - |
-| Neumann-Labs/mcp-cpp | stateful | 707.75 | 706.49 | 706.88 | 3 |
-| This SDK, threads | sessionless | 20,900.62 | 20,911.50 | 21,011.57 | 2 |
-| cxxmcp | sessionless | 14,385.05 | failed (warmup) | skipped | - |
+| This SDK, threads | stateful | 12,813.86 | 13,020.34 | 12,856.24 | 3 |
+| This SDK, coroutines (async workload) | stateful | 14,407.06 | 14,272.32 | 14,468.17 | 1 |
+| This SDK, sync mode | stateful | 13,304.01 | 13,272.60 | 13,332.10 | 1 |
+| hkr04/cpp-mcp | stateful | 705.98 | 706.72 | 706.01 | 3 |
+| FastMCPP | stateful | 1,324.81 | 1,324.10 | 1,322.24 | 2 |
+| cxxmcp | stateful | 11,249.86 | 11,335.77 | 11,293.79 | 3 |
+| Neumann-Labs/mcp-cpp | stateful | 706.61 | 706.72 | 707.47 | 2 |
+| This SDK, threads | sessionless | 23,192.91 | 21,632.52 | 22,188.79 | 3 |
+| This SDK, coroutines (async workload) | sessionless | 26,282.43 | 26,245.72 | 26,423.75 | 1 |
+| This SDK, sync mode | sessionless | 22,913.27 | 23,026.24 | 23,004.23 | 3 |
+| cxxmcp | sessionless | 14,562.89 | 15,807.23 | 15,756.32 | 3 |
 
 
 ## TCP_NODELAY builds
@@ -299,32 +327,35 @@ The measured operation rates for all rounds were:
 
 | SDK | Mode | Build | Protocol | Median ops/s | Sample CV | p50 ms | p95 ms | p99 ms | CPU ms/op | Target p95 CPU | Target p95 memory | Errors |
 |---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| This SDK, threads | stateful | default | 2024-11-05 | 12,117.48 | 1.27% | 1.78 | 3.49 | 4.89 | 0.160 | 200.09% | 37.54 MiB | 0 |
-| This SDK, threads | sessionless | default | 2026-07-28 | 20,911.50 | 0.29% | 2.26 | 4.67 | 5.91 | 0.088 | 188.87% | 37.29 MiB | 0 |
-| hkr04/cpp-mcp | stateful | default | 2025-03-26 | 706.56 | 0.07% | 40.77 | 41.83 | 41.89 | 0.178 | 13.11% | 32.14 MiB | 0 |
-| hkr04/cpp-mcp | stateful | TCP_NODELAY | 2025-03-26 | 13,526.16 | 0.56% | 1.40 | 3.78 | 6.73 | 0.145 | 204.68% | 37.51 MiB | 0 |
-| FastMCPP | stateful | default | 2024-11-05 | 1,323.84 | 0.10% | 0.30 | 41.21 | 42.03 | 0.222 | 31.37% | 28.35 MiB | 0 |
-| FastMCPP | stateful | TCP_NODELAY | 2024-11-05 | 10,554.36 | 2.10% | 0.74 | 1.55 | 2.12 | 0.184 | 201.28% | 35.38 MiB | 0 |
-| cxxmcp | stateful | default | 2024-11-05 | failed | - | - | - | - | - | - | - | - |
-| cxxmcp | stateful | TCP_NODELAY | 2024-11-05 | failed | - | - | - | - | - | - | - | - |
-| Neumann-Labs/mcp-cpp | stateful | default | 2025-11-25 | 706.88 | 0.09% | 40.80 | 41.85 | 41.90 | 0.339 | 25.11% | 53.03 MiB | 0 |
-| Neumann-Labs/mcp-cpp | stateful | TCP_NODELAY | 2025-11-25 | failed | - | - | - | - | - | - | - | - |
-| cxxmcp | sessionless | default | 2026-07-28 | failed | - | - | - | - | - | - | - | - |
-| cxxmcp | sessionless | TCP_NODELAY | 2026-07-28 | failed | - | - | - | - | - | - | - | - |
-The TCP_NODELAY builds of cxxmcp and of Neumann-Labs/mcp-cpp also exited on
-signal 11 in round 2, so those cells failed in the same way.
+| This SDK, threads | stateful | default | 2024-11-05 | 12,856.24 | 0.85% | 1.62 | 3.33 | 4.66 | 0.151 | 201.33% | 33.70 MiB | 0 |
+| This SDK, threads | sessionless | default | 2026-07-28 | 22,188.79 | 3.54% | 2.14 | 4.48 | 5.77 | 0.084 | 192.02% | 32.25 MiB | 0 |
+| hkr04/cpp-mcp | stateful | default | 2025-03-26 | 706.01 | 0.06% | 40.78 | 41.84 | 41.89 | 0.169 | 12.51% | 22.50 MiB | 0 |
+| hkr04/cpp-mcp | stateful | TCP_NODELAY | 2025-03-26 | failed | - | - | - | - | - | - | - | - |
+| FastMCPP | stateful | default | 2024-11-05 | 1,324.10 | 0.10% | 0.29 | 41.18 | 42.02 | 0.206 | 28.91% | 24.35 MiB | 0 |
+| FastMCPP | stateful | TCP_NODELAY | 2024-11-05 | 11,230.83 | 0.27% | 0.71 | 1.53 | 2.12 | 0.172 | 199.78% | 24.90 MiB | 0 |
+| cxxmcp | stateful | default | 2024-11-05 | 11,293.79 | 0.38% | 2.30 | 3.83 | 4.85 | 0.170 | 196.88% | 36.79 MiB | 0 |
+| cxxmcp | stateful | TCP_NODELAY | 2024-11-05 | 11,278.86 | 0.38% | 2.31 | 3.87 | 4.92 | 0.169 | 196.84% | 36.80 MiB | 0 |
+| Neumann-Labs/mcp-cpp | stateful | default | 2025-11-25 | 706.72 | 0.07% | 40.80 | 41.85 | 41.90 | 0.314 | 23.12% | 48.01 MiB | 0 |
+| Neumann-Labs/mcp-cpp | stateful | TCP_NODELAY | 2025-11-25 | 7,160.30 | 0.48% | 1.45 | 5.14 | 7.37 | 0.269 | 196.35% | 56.79 MiB | 0 |
+| cxxmcp | sessionless | default | 2026-07-28 | 15,756.32 | 4.58% | 3.03 | 5.70 | 7.49 | 0.122 | 195.91% | 42.36 MiB | 0 |
+| cxxmcp | sessionless | TCP_NODELAY | 2026-07-28 | 15,846.74 | 0.47% | 3.02 | 5.71 | 7.52 | 0.122 | 196.18% | 43.23 MiB | 0 |
+
+In round 3, hkr04/cpp-mcp's TCP_NODELAY build did not answer one session
+`DELETE` of 2,278,253 sessions with a 2xx or 405 status, so k6 stopped that
+round and the run records the cell as failed: it reports no median for it.
+The rates of its first two rounds are below.
 
 The measured operation rates for all rounds were:
 
 | SDK | Mode | Build | Round 1 | Round 2 | Round 3 | Selected round |
 |---|---|---|---:|---:|---:|---:|
-| This SDK, threads | stateful | default | 12,139.74 | 12,117.48 | 11,863.94 | 2 |
-| This SDK, threads | sessionless | default | 20,900.62 | 20,911.50 | 21,011.57 | 2 |
-| hkr04/cpp-mcp | stateful | TCP_NODELAY | 13,526.16 | 13,563.15 | 13,416.80 | 1 |
-| FastMCPP | stateful | TCP_NODELAY | 10,554.36 | 10,263.78 | 10,697.38 | 1 |
-| cxxmcp | stateful | TCP_NODELAY | 10,612.51 | failed (warmup) | skipped | - |
-| Neumann-Labs/mcp-cpp | stateful | TCP_NODELAY | 6,377.24 | failed (measurement) | skipped | - |
-| cxxmcp | sessionless | TCP_NODELAY | 14,262.71 | failed (measurement) | skipped | - |
+| This SDK, threads | stateful | default | 12,813.86 | 13,020.34 | 12,856.24 | 3 |
+| This SDK, threads | sessionless | default | 23,192.91 | 21,632.52 | 22,188.79 | 3 |
+| hkr04/cpp-mcp | stateful | TCP_NODELAY | 14,217.90 | 14,269.21 | failed (measurement) | - |
+| FastMCPP | stateful | TCP_NODELAY | 11,272.40 | 11,230.83 | 11,214.63 | 2 |
+| cxxmcp | stateful | TCP_NODELAY | 11,306.98 | 11,278.86 | 11,222.61 | 2 |
+| Neumann-Labs/mcp-cpp | stateful | TCP_NODELAY | 7,160.30 | 7,126.25 | 7,194.52 | 1 |
+| cxxmcp | sessionless | TCP_NODELAY | 15,856.44 | 15,846.74 | 15,722.45 | 2 |
 
 
 ## Audit evidence
@@ -338,16 +369,15 @@ passed:
 - 72/72 warmups and 72/72 measurements with zero MCP, HTTP, or check failures;
 - 360/360 collector audits and 72/72 per-round resource/headroom reports.
 
-The capacity run completed with `publishable_candidate` set and the five failed
-cells described above. It passed:
+The capacity run completed with `publishable_candidate` set and the one failed
+cell described above. It passed:
 
-- 147/147 protocol gates (76 preflight, 71 postflight) under the universal
-  contract, with the required `adapter-exact-v1` checks passing in all 99 gates
-  of the 19 C++ targets;
-- 74 of 76 warmups and 71 of 74 measurements with zero MCP, HTTP, or check
-  failures; the two other warmups and three other measurements are those of the
-  failed cells;
-- 370/370 collector audits and 71/71 per-round resource/headroom reports.
+- 161/161 protocol gates (81 preflight, 80 postflight) under the universal
+  contract, with the required `adapter-exact-v1` checks passing in all 113
+  gates of the 19 C++ targets;
+- 81/81 warmups and 80 of 81 measurements with zero MCP, HTTP, or check
+  failures; the other measurement is the failed round;
+- 405/405 collector audits and 80/80 per-round resource/headroom reports.
 
 Both runs used the `baseline-cohort-retire-v1` host network policy and measured
 a clean working tree.
