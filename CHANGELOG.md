@@ -6,6 +6,28 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Migrating from 0.3.0
+
+Code written for 0.3.0 needs these changes to compile with 0.4.0:
+
+- Write `mcp::Task<T>` for `boost::asio::awaitable<T>` in `ITransport` and `auth::Authenticator` overrides and in coroutine handlers given to the `add_*()` registrations.
+- Include `<mcp/core/async.hpp>` where a coroutine is defined or awaited; `<mcp/core/core.hpp>` is gone.
+- Include the Boost headers of the Asio and Beast types code uses, such as `<boost/asio/io_context.hpp>`; the SDK's headers no longer include them.
+- A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
+- `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
+- Construct transports with `Runtime::executor()` instead of `TransportFactory` or `make_*_transport()`.
+- Call `make_memory_transport_pair()` where code called `create_memory_transport_pair()`.
+- Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
+- Include `<mcp/server/server.hpp>` where code uses `Server` after including only `<mcp/transport/http_session_manager.hpp>` or `<mcp/auth/oauth.hpp>`.
+- Include `<mcp/transport/request_context.hpp>` where code included `<mcp/server/request_context.hpp>`.
+- Include `<mcp/transport/transport.hpp>` where code uses `ITransport` after including only `<mcp/core/context.hpp>`.
+
+These changes in behavior need no change to compile:
+
+- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows the transport's exception.
+- Catch `TransportError` where code caught `boost::system::system_error` from a built-in transport's read or write; `code()` holds the error code.
+- Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
+
 ### Added
 
 - Sync mode: `Server` and `Client` run their own event loop, take synchronous handlers and make blocking calls, with no Boost in the program; async mode uses the same objects.
@@ -86,27 +108,6 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `mcp::TransportFactory` and the deprecated `make_stdio_transport()` and `make_http_client_transport()`; transports are constructed with `Runtime::executor()`.
 - The `mcp::auth::net` alias of `boost::asio`.
 - The installed headers no longer declare the JSON parser, the regular expression engine, the serialized transport writer, the executor access, the secure random helpers or the OAuth encoders.
-
-### Migrating from 0.3.0
-
-Code written for 0.3.0 needs these changes to compile with this release:
-
-- Write `mcp::Task<T>` for `boost::asio::awaitable<T>` in `ITransport` and `auth::Authenticator` overrides and in coroutine handlers given to the `add_*()` registrations.
-- Include `<mcp/core/async.hpp>` where a coroutine is defined or awaited; `<mcp/core/core.hpp>` is gone.
-- A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
-- `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
-- Construct transports with `Runtime::executor()` instead of `TransportFactory` or `make_*_transport()`.
-- Call `make_memory_transport_pair()` where code called `create_memory_transport_pair()`.
-- Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
-- Include `<mcp/server/server.hpp>` where code uses `Server` after including only `<mcp/transport/http_session_manager.hpp>` or `<mcp/auth/oauth.hpp>`.
-- Include `<mcp/transport/request_context.hpp>` where code included `<mcp/server/request_context.hpp>`.
-- Include `<mcp/transport/transport.hpp>` where code uses `ITransport` after including only `<mcp/core/context.hpp>`.
-
-These changes in behavior need no change to compile:
-
-- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows the transport's exception.
-- Catch `TransportError` where code caught `boost::system::system_error` from a built-in transport's read or write; `code()` holds the error code.
-- Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
 
 ### Fixed
 
