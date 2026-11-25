@@ -126,10 +126,10 @@ event loop and is used through its coroutines; ``sync()`` and ``run()`` are for
 a client that runs a loop of its own (:doc:`sync-to-async`). The handlers for
 the server's requests are coroutines in both modes.
 
-.. _async-starting-the-session:
+.. _async-starting-the-coroutine:
 
-Starting the Session
-^^^^^^^^^^^^^^^^^^^^
+Starting the Coroutine
+^^^^^^^^^^^^^^^^^^^^^^
 
 .. literalinclude:: ../../examples/async/client.cpp
    :language: cpp
@@ -139,7 +139,7 @@ Starting the Session
 
 .. literalinclude:: ../../examples/async/client.cpp
    :language: cpp
-   :start-at: // The session: connect
+   :start-at: // The calls: connect
    :end-at: io.run();
    :dedent: 4
 
@@ -169,7 +169,7 @@ Calls in Flight Together
 .. literalinclude:: ../../examples/async/client.cpp
    :language: cpp
    :start-at: // Two calls in flight
-   :end-before: // The session: connect
+   :end-before: // The calls: connect
    :dedent: 4
 
 Each ``co_spawn`` starts a coroutine that runs on its own, so both calls wait

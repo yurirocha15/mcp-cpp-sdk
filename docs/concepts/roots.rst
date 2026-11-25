@@ -32,7 +32,7 @@ handler, which ``on_roots_list()`` registers:
 .. literalinclude:: ../../examples/sync/client.cpp
    :language: cpp
    :start-after: // Roots:
-   :end-before: // The session
+   :end-before: // The calls
    :dedent: 4
 
 Client-side Setup

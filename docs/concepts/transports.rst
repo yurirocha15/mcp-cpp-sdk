@@ -76,14 +76,14 @@ event loop:
    :language: cpp
    :caption: Sync mode
    :start-after: // The client launches the server
-   :end-before: // The session
+   :end-before: // The calls
    :dedent: 4
 
 .. literalinclude:: ../../examples/async/notes_client.cpp
    :language: cpp
    :caption: Async mode
    :start-after: // The client launches the server
-   :end-before: // The session
+   :end-before: // The calls
    :dedent: 4
 
 The options of the process, in either mode:

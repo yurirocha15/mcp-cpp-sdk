@@ -156,14 +156,14 @@ int main(int argc, char** argv) {
     mcp::Client client(std::make_shared<mcp::StdioClientTransport>(runtime.executor(), process),
                        runtime.executor());
 
-    const auto session = [&client]() -> mcp::Task<void> {
+    const auto greet = [&client]() -> mcp::Task<void> {
         co_await client.connect("greeter-client", "1.0.0");
         const nlohmann::json args{{"name", "Ada"}};
         const auto result = co_await client.call_tool("greet", args);
         std::cout << mcp::result_text(result) << "\n";
         client.close();
     };
-    runtime.spawn(session());
+    runtime.spawn(greet());
     runtime.run();
 }
 ```

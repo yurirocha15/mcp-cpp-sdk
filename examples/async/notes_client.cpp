@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
     mcp::Client client(std::make_shared<mcp::StdioClientTransport>(runtime.executor(), process),
                        runtime.executor());
 
-    // The session: a coroutine awaits each call, then closes the client.
-    const auto session = [&client]() -> mcp::Task<void> {
+    // The calls: a coroutine awaits each one, then closes the client.
+    const auto use_notes = [&client]() -> mcp::Task<void> {
         co_await client.connect("notes-client", "1.0.0");
 
         mcp::SubscriptionFilter filter;
@@ -43,6 +43,6 @@ int main(int argc, char** argv) {
 
         client.close();
     };
-    runtime.spawn(session());
+    runtime.spawn(use_notes());
     runtime.run();
 }

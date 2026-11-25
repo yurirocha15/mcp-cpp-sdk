@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
         }
     };
 
-    // The session: connect, use every feature, then make the two calls together.
+    // The calls: connect, use every feature, then make the two calls together.
     boost::asio::co_spawn(
         io,
         [&client, greet_together]() -> mcp::Task<void> {
