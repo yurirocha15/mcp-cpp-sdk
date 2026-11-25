@@ -43,8 +43,10 @@ SplitResource split_resource(std::string_view resource) {
     if (authority_end == std::string_view::npos) {
         return SplitResource{.origin = trimmed, .path = {}};
     }
-    return SplitResource{.origin = trimmed.substr(0, authority_end),
-                         .path = trimmed.substr(authority_end)};
+    return SplitResource{
+        .origin = trimmed.substr(0, authority_end),
+        .path = trimmed.substr(authority_end),
+    };
 }
 
 /// @brief Reject an explicit metadata path that cannot be appended to an origin as it stands.

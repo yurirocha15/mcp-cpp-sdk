@@ -340,8 +340,10 @@ Task<void> Client::cancel(const RequestId& request_id, const std::optional<std::
         const auto iter = impl_->pending_requests.find(request_id.correlation_key());
         if (iter != impl_->pending_requests.end() && !iter->second->completed) {
             iter->second->cancel_write_before_start->store(true, std::memory_order_release);
-            iter->second->error = Error{.code = mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
-                                        .message = "Request cancelled"};
+            iter->second->error = Error{
+                .code = mcp::constants::jsonrpc::g_REQUEST_CANCELLED,
+                .message = "Request cancelled",
+            };
             iter->second->completed = true;
             Impl::signal_pending_request(*iter->second);
         }

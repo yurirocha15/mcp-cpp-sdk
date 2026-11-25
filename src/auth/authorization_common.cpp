@@ -28,8 +28,7 @@ bool resource_identifies_server(const std::string& resource, const std::string& 
     }
     const auto server_path = server_url.substr(server_origin.size());
     return server_path == resource_path ||
-           (server_path.size() > resource_path.size() &&
-            server_path.compare(0, resource_path.size(), resource_path) == 0 &&
+           (server_path.size() > resource_path.size() && server_path.starts_with(resource_path) &&
             server_path[resource_path.size()] == '/');
 }
 

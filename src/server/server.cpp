@@ -115,7 +115,7 @@ void Server::Impl::append_listed_tool(std::string& text, const ListedTool& liste
         text += listed_schema_text(*splice.schema, held);
         copied = splice.at + splice.mark.size();
     }
-    text.append(shell_text, copied, std::string::npos);
+    text.append(std::string_view(shell_text).substr(copied));
 }
 
 std::shared_ptr<const std::string> Server::Impl::listed_tools_text() {
@@ -152,7 +152,10 @@ void Server::Impl::add_tool_registration(Tool&& tool, std::string name, Compiled
     tools.push_back(
         ListedTool{.tool = std::move(tool), .input = schemas.input, .output = schemas.output});
     ToolRegistration registration{
-        .handler = std::move(handler), .result_mode = result_mode, .schemas = std::move(schemas)};
+        .handler = std::move(handler),
+        .result_mode = result_mode,
+        .schemas = std::move(schemas),
+    };
     registration.sync_handler = std::move(sync_handler);
     tool_handlers.emplace(std::move(name), std::move(registration));
 }

@@ -23,7 +23,6 @@
 #include "mrtr.hpp"
 #include "task_run.hpp"
 
-#include <algorithm>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
@@ -261,9 +260,11 @@ inline CompiledToolSchemas compile_tool_schemas(const std::string& name,
     if (output_schema != nullptr) {
         output = compile(*output_schema, "outputSchema");
     }
-    return {.input = std::move(input),
-            .output = std::move(output),
-            .param_headers = std::move(param_headers)};
+    return {
+        .input = std::move(input),
+        .output = std::move(output),
+        .param_headers = std::move(param_headers),
+    };
 }
 
 /// One state of a URI template's matching automaton.
@@ -408,26 +409,32 @@ inline void append_regex_literal(std::string& pattern, char ch) {
 }
 
 inline void append_literal_state(std::vector<UriMatchState>& states, char ch) {
-    states.push_back({.kind = UriMatchState::Kind::eLiteral,
-                      .literal = ch,
-                      .excluded = {},
-                      .next = states.size() + 1,
-                      .alternative = 0});
+    states.push_back({
+        .kind = UriMatchState::Kind::eLiteral,
+        .literal = ch,
+        .excluded = {},
+        .next = states.size() + 1,
+        .alternative = 0,
+    });
 }
 
 /// `[^excluded]+`
 inline void append_run_states(std::vector<UriMatchState>& states, std::string_view excluded) {
     const auto first = states.size();
-    states.push_back({.kind = UriMatchState::Kind::eExcept,
-                      .literal = 0,
-                      .excluded = excluded,
-                      .next = first + 1,
-                      .alternative = 0});
-    states.push_back({.kind = UriMatchState::Kind::eSplit,
-                      .literal = 0,
-                      .excluded = {},
-                      .next = first,
-                      .alternative = first + 2});
+    states.push_back({
+        .kind = UriMatchState::Kind::eExcept,
+        .literal = 0,
+        .excluded = excluded,
+        .next = first + 1,
+        .alternative = 0,
+    });
+    states.push_back({
+        .kind = UriMatchState::Kind::eSplit,
+        .literal = 0,
+        .excluded = {},
+        .next = first,
+        .alternative = first + 2,
+    });
 }
 
 /// `(?:<prefix>[^excluded]+)?` when `non_empty`, else `(?:<prefix>[^excluded]*)?`.
@@ -435,64 +442,84 @@ inline void append_prefixed_run_states(std::vector<UriMatchState>& states, char 
                                        std::string_view excluded, bool non_empty) {
     const auto first = states.size();
     const auto end = first + 4;
-    states.push_back({.kind = UriMatchState::Kind::eSplit,
-                      .literal = 0,
-                      .excluded = {},
-                      .next = first + 1,
-                      .alternative = end});
-    states.push_back({.kind = UriMatchState::Kind::eLiteral,
-                      .literal = prefix,
-                      .excluded = {},
-                      .next = first + 2,
-                      .alternative = 0});
+    states.push_back({
+        .kind = UriMatchState::Kind::eSplit,
+        .literal = 0,
+        .excluded = {},
+        .next = first + 1,
+        .alternative = end,
+    });
+    states.push_back({
+        .kind = UriMatchState::Kind::eLiteral,
+        .literal = prefix,
+        .excluded = {},
+        .next = first + 2,
+        .alternative = 0,
+    });
     if (non_empty) {
-        states.push_back({.kind = UriMatchState::Kind::eExcept,
-                          .literal = 0,
-                          .excluded = excluded,
-                          .next = first + 3,
-                          .alternative = 0});
-        states.push_back({.kind = UriMatchState::Kind::eSplit,
-                          .literal = 0,
-                          .excluded = {},
-                          .next = first + 2,
-                          .alternative = end});
+        states.push_back({
+            .kind = UriMatchState::Kind::eExcept,
+            .literal = 0,
+            .excluded = excluded,
+            .next = first + 3,
+            .alternative = 0,
+        });
+        states.push_back({
+            .kind = UriMatchState::Kind::eSplit,
+            .literal = 0,
+            .excluded = {},
+            .next = first + 2,
+            .alternative = end,
+        });
     } else {
-        states.push_back({.kind = UriMatchState::Kind::eSplit,
-                          .literal = 0,
-                          .excluded = {},
-                          .next = first + 3,
-                          .alternative = end});
-        states.push_back({.kind = UriMatchState::Kind::eExcept,
-                          .literal = 0,
-                          .excluded = excluded,
-                          .next = first + 2,
-                          .alternative = 0});
+        states.push_back({
+            .kind = UriMatchState::Kind::eSplit,
+            .literal = 0,
+            .excluded = {},
+            .next = first + 3,
+            .alternative = end,
+        });
+        states.push_back({
+            .kind = UriMatchState::Kind::eExcept,
+            .literal = 0,
+            .excluded = excluded,
+            .next = first + 2,
+            .alternative = 0,
+        });
     }
 }
 
 /// `(?:\.[^/?#]+)*`, the label expansion's `(?:\.[^/?#]+(?:\.[^/?#]+)*)?`.
 inline void append_label_states(std::vector<UriMatchState>& states) {
     const auto first = states.size();
-    states.push_back({.kind = UriMatchState::Kind::eSplit,
-                      .literal = 0,
-                      .excluded = {},
-                      .next = first + 1,
-                      .alternative = first + 4});
-    states.push_back({.kind = UriMatchState::Kind::eLiteral,
-                      .literal = '.',
-                      .excluded = {},
-                      .next = first + 2,
-                      .alternative = 0});
-    states.push_back({.kind = UriMatchState::Kind::eExcept,
-                      .literal = 0,
-                      .excluded = "/?#",
-                      .next = first + 3,
-                      .alternative = 0});
-    states.push_back({.kind = UriMatchState::Kind::eSplit,
-                      .literal = 0,
-                      .excluded = {},
-                      .next = first + 2,
-                      .alternative = first});
+    states.push_back({
+        .kind = UriMatchState::Kind::eSplit,
+        .literal = 0,
+        .excluded = {},
+        .next = first + 1,
+        .alternative = first + 4,
+    });
+    states.push_back({
+        .kind = UriMatchState::Kind::eLiteral,
+        .literal = '.',
+        .excluded = {},
+        .next = first + 2,
+        .alternative = 0,
+    });
+    states.push_back({
+        .kind = UriMatchState::Kind::eExcept,
+        .literal = 0,
+        .excluded = "/?#",
+        .next = first + 3,
+        .alternative = 0,
+    });
+    states.push_back({
+        .kind = UriMatchState::Kind::eSplit,
+        .literal = 0,
+        .excluded = {},
+        .next = first + 2,
+        .alternative = first,
+    });
 }
 
 inline void append_uri_expression_pattern(std::string& pattern, std::vector<UriMatchState>& states,
@@ -582,11 +609,13 @@ inline UriTemplatePattern compile_uri_template(std::string_view uri_template) {
         index = close + 1;
     }
     pattern += '$';
-    states.push_back({.kind = UriMatchState::Kind::eMatch,
-                      .literal = 0,
-                      .excluded = {},
-                      .next = 0,
-                      .alternative = 0});
+    states.push_back({
+        .kind = UriMatchState::Kind::eMatch,
+        .literal = 0,
+        .excluded = {},
+        .next = 0,
+        .alternative = 0,
+    });
 
     return UriTemplatePattern{.source = std::move(pattern), .matcher = std::move(states)};
 }
@@ -640,12 +669,12 @@ inline nlohmann::json normalize_structured_tool_result(nlohmann::json result, bo
         if (is_serialized_call_tool_result(result, modern)) {
             return result;
         }
-        return {make_tool_structured_result(std::move(result))};
+        return nlohmann::json(make_tool_structured_result(std::move(result)));
     }
     if (result.is_string()) {
-        return {make_tool_text_result(result.get<std::string>())};
+        return nlohmann::json(make_tool_text_result(result.get<std::string>()));
     }
-    return {make_tool_text_result(mcp::detail::dump_json(result))};
+    return nlohmann::json(make_tool_text_result(mcp::detail::dump_json(result)));
 }
 
 /// The `_meta` of a message that belongs to the subscriptions/listen request with id @p listen_id.
@@ -1353,7 +1382,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     Task<void> answer_from_read_loop(Session& session, std::shared_ptr<const std::string> answer);
     static bool is_identified_request(const nlohmann::json& json_msg);
     Task<void> dispatch(nlohmann::json json_msg);
-    Task<void> notify_resource_updated(const std::string& uri);
+    Task<void> notify_resource_updated(const std::string& uri) const;
     Task<void> dispatch_on_strand(nlohmann::json json_msg,
                                   std::shared_ptr<const std::string> principal = nullptr);
     /// dispatch_request_wire() for a request that belongs to no session, refused past the
@@ -1396,9 +1425,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// send_notification() as part of a notification to every session sharing the registry: a
     /// session that cannot take it, such as one closing meanwhile, misses it without stopping the
     /// notification of the others.
-    Task<void> send_broadcast(const std::string& method);
+    Task<void> send_broadcast(const std::string& method) const;
     /// notify_resource_updated() in the same way.
-    Task<void> broadcast_resource_updated(const std::string& uri);
+    Task<void> broadcast_resource_updated(const std::string& uri) const;
     static Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
                                                         std::shared_ptr<const std::string> uri);
 

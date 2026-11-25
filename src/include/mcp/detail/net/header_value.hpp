@@ -3,6 +3,7 @@
 #include "mcp/detail/constants.hpp"
 #include "mcp/detail/text/encoding.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -12,14 +13,11 @@ namespace mcp::detail {
 
 /// RFC 9110 field-value characters: visible ASCII, space and horizontal tab.
 inline bool is_valid_header_value(std::string_view value) {
-    for (const char raw : value) {
+    return std::ranges::all_of(value, [](char raw) {
         const auto byte = static_cast<unsigned char>(raw);
-        if (byte != '\t' &&
-            (byte < constants::unicode::g_C0_CONTROLS_END || byte >= constants::unicode::g_DELETE)) {
-            return false;
-        }
-    }
-    return true;
+        return byte == '\t' ||
+               (byte >= constants::unicode::g_C0_CONTROLS_END && byte < constants::unicode::g_DELETE);
+    });
 }
 
 /// The header text that carries @p value as an Mcp-Name or Mcp-Param value: the value itself when

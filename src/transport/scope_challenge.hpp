@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <cstdint>
 #include <mcp/transport/http_types.hpp>
 

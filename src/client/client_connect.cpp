@@ -408,7 +408,9 @@ ClientCapabilities Client::Impl::effective_capabilities() const {
     }
     if (request_handlers.contains(methods::g_ELICITATION_CREATE) && !capabilities.elicitation) {
         capabilities.elicitation = ClientCapabilities::ElicitationCapability{
-            .form = nlohmann::json::object(), .url = std::nullopt};
+            .form = nlohmann::json::object(),
+            .url = std::nullopt,
+        };
     }
     return capabilities;
 }

@@ -1,4 +1,6 @@
 ---
+# modernize-return-braced-init-list is off: it turns `return nlohmann::json(x)` into `return {x}`,
+# which builds a one-element array.
 Checks: 'bugprone-*,performance-*,readability-*,modernize-*,
         -bugprone-easily-swappable-parameters,
         -bugprone-unused-return-value,
@@ -8,9 +10,13 @@ Checks: 'bugprone-*,performance-*,readability-*,modernize-*,
         -performance-noexcept-move-constructor,
         -readability-function-cognitive-complexity,
         -bugprone-unchecked-optional-access,
-        -bugprone-empty-catch'
+        -bugprone-empty-catch,
+        -modernize-return-braced-init-list'
 WarningsAsErrors: ''
 CheckOptions:
+  # Remove takes the comma after a `= {}` default argument for a trailing comma and deletes it.
+  - key:             readability-trailing-comma.SingleLineCommaPolicy
+    value:           'Ignore'
   - key:             llvm-namespace-comment.ShortNamespaceLines
     value:           '10'
   - key:             llvm-namespace-comment.SpacesBeforeComments

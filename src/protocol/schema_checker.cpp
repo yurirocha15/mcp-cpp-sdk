@@ -39,8 +39,9 @@ bool has_no_fragment(std::string_view id) {
 }
 
 bool is_simple_type(std::string_view type) {
-    static constexpr std::array<std::string_view, 7> s_types = {"array",  "boolean", "integer", "null",
-                                                                "number", "object",  "string"};
+    static constexpr std::array<std::string_view, 7> s_types = {
+        "array", "boolean", "integer", "null", "number", "object", "string",
+    };
     return std::ranges::find(s_types, type) != s_types.end();
 }
 

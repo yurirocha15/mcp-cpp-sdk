@@ -679,7 +679,7 @@ Task<void> Server::Impl::send_notification(const std::string& method,
     co_await session->writer->write_message(wire);
 }
 
-Task<void> Server::Impl::send_broadcast(const std::string& method) {
+Task<void> Server::Impl::send_broadcast(const std::string& method) const {
     try {
         co_await send_notification(method, std::nullopt);
     } catch (const std::exception&) {
@@ -687,7 +687,7 @@ Task<void> Server::Impl::send_broadcast(const std::string& method) {
     }
 }
 
-Task<void> Server::Impl::broadcast_resource_updated(const std::string& uri) {
+Task<void> Server::Impl::broadcast_resource_updated(const std::string& uri) const {
     try {
         co_await notify_resource_updated(uri);
     } catch (const std::exception&) {
@@ -695,7 +695,7 @@ Task<void> Server::Impl::broadcast_resource_updated(const std::string& uri) {
     }
 }
 
-Task<void> Server::Impl::notify_resource_updated(const std::string& uri) {
+Task<void> Server::Impl::notify_resource_updated(const std::string& uri) const {
     auto session = session_snapshot();
     if (!session || session->stopping.load(std::memory_order_acquire)) {
         co_return;

@@ -39,11 +39,12 @@ struct OAuthAuthenticator::Impl {
             return return_false();
         }
 
-        auto operation =
-            std::make_shared<RefreshOperation>(RefreshOperation{.owner = std::move(owner),
-                                                                .stored_token = std::move(*stored),
-                                                                .new_token = std::nullopt,
-                                                                .scope = std::nullopt});
+        auto operation = std::make_shared<RefreshOperation>(RefreshOperation{
+            .owner = std::move(owner),
+            .stored_token = std::move(*stored),
+            .new_token = std::nullopt,
+            .scope = std::nullopt,
+        });
         {
             std::scoped_lock lock(operation->owner->scope_mutex);
             operation->scope = operation->owner->scope;

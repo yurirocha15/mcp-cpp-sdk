@@ -414,8 +414,10 @@ CheckedDocument check_document(const nlohmann::json& schema, const SchemaOptions
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           where + "JSON Schema must be an object or a boolean");
     }
-    CheckedDocument checked{.shape = measure(schema, mcp::detail::constants::schema::g_MAX_DEPTH),
-                            .dialect = dialect};
+    CheckedDocument checked{
+        .shape = measure(schema, mcp::detail::constants::schema::g_MAX_DEPTH),
+        .dialect = dialect,
+    };
     if (checked.shape.too_deep) {
         throw SchemaError(SchemaError::Category::eInvalidSchema,
                           where + "JSON Schema nests deeper than " +
@@ -552,11 +554,12 @@ CompiledSchema CompiledSchema::compile(const nlohmann::json& schema, const Schem
     if (patterns.problem()) {
         throw pattern_error(*patterns.problem());
     }
-    auto result = std::make_shared<const CompiledSchemaImpl>(
-        CompiledSchemaImpl{.source = schema,
-                           .options = options,
-                           .schema_nodes = schema_shape.nodes,
-                           .native = std::move(native)});
+    auto result = std::make_shared<const CompiledSchemaImpl>(CompiledSchemaImpl{
+        .source = schema,
+        .options = options,
+        .schema_nodes = schema_shape.nodes,
+        .native = std::move(native),
+    });
     if (use_cache && hash) {
         compiled_schema_cache().insert(*hash, result);
     }
@@ -569,10 +572,11 @@ ValidationResult CompiledSchema::validate(const nlohmann::json& instance) const 
     const auto shape = measure(instance, options.max_instance_depth);
     if (shape.too_deep) {
         result.valid = false;
-        result.violations.push_back(
-            {.instance_path = "",
-             .message =
-                 "value nests deeper than " + std::to_string(options.max_instance_depth) + " levels"});
+        result.violations.push_back({
+            .instance_path = "",
+            .message =
+                "value nests deeper than " + std::to_string(options.max_instance_depth) + " levels",
+        });
         return result;
     }
 

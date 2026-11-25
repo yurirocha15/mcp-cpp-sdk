@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mcp/core/constants.hpp>
 #include <mcp/protocol/skills.hpp>
 
@@ -230,7 +229,8 @@ std::vector<std::string> validate_skill(const Skill& skill) {
         } else if (root) {
             const auto problem = path_problem(std::string_view(resource.uri).substr(root->size() + 1));
             if (!problem.empty()) {
-                problems.push_back("lists a file whose path " + problem + ": " + resource.uri);
+                problems.push_back("lists a file whose path " + std::string(problem) + ": " +
+                                   resource.uri);
             }
         }
         const bool well_formed =

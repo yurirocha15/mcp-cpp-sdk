@@ -657,10 +657,9 @@ Task<nlohmann::json> Server::Impl::invoke_tool_direct(
     if (iter == tool_handlers.end()) {
         throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(name));
     }
-    auto ctx =
-        make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                     session_request, std::move(notifications), std::move(principal), std::move(mrtr),
-                     std::move(related_request), std::move(inline_input), std::move(task_run));
+    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                            session_request, std::move(notifications), std::move(principal), mrtr,
+                            related_request, inline_input, task_run);
     const bool modern = ctx.request_meta() != nullptr;
     nlohmann::json handler_result = co_await call_tool_handler(iter->second, ctx, arguments);
     finish_tool_result(iter->second, name, handler_result, modern);
@@ -688,10 +687,9 @@ Task<nlohmann::json> Server::Impl::invoke_tool_impl(
         throw std::runtime_error("Unknown tool: " + detail::sanitize_for_diagnostics(params.name));
     }
 
-    auto ctx =
-        make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
-                     session_request, std::move(notifications), std::move(principal), std::move(mrtr),
-                     std::move(related_request), std::move(inline_input), std::move(task_run));
+    auto ctx = make_context(std::move(cancelled), std::move(progress_token), std::move(request_meta),
+                            session_request, std::move(notifications), std::move(principal), mrtr,
+                            related_request, inline_input, task_run);
     const bool modern = ctx.request_meta() != nullptr;
     nlohmann::json handler_result;
 
@@ -1079,7 +1077,7 @@ Task<std::string> Server::Impl::handle_subscribe_wire(const nlohmann::json& json
         });
     auto ctx = make_context();
     nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), handler_result);
 }
 
 Task<std::string> Server::Impl::handle_unsubscribe_wire(const nlohmann::json& json_msg) {
@@ -1098,7 +1096,7 @@ Task<std::string> Server::Impl::handle_unsubscribe_wire(const nlohmann::json& js
         });
     auto ctx = make_context();
     nlohmann::json handler_result = co_await handler(ctx, json_msg.at("params"));
-    co_return make_result_wire(json_msg.at("id").get<RequestId>(), std::move(handler_result));
+    co_return make_result_wire(json_msg.at("id").get<RequestId>(), handler_result);
 }
 
 Task<std::string> Server::Impl::handle_prompts_list_wire(const nlohmann::json& json_msg,
@@ -1211,7 +1209,7 @@ std::string Server::Impl::make_result_wire(const RequestId& id,
                                            nlohmann::json result,
                                            std::optional<CacheTarget> target) const {
     if (request_meta == nullptr || !result.is_object()) {
-        return make_result_wire(id, std::move(result));
+        return make_result_wire(id, result);
     }
     if (!report_server_info || (!server_info_meta().empty() && !result.contains("_meta"))) {
         // The members this revision adds are written around the result rather than inserted
@@ -1256,7 +1254,7 @@ std::string Server::Impl::make_result_wire(const RequestId& id,
         result.emplace("ttlMs", hint.ttlMs);
         result.emplace("cacheScope", hint.scope);
     }
-    return make_result_wire(id, std::move(result));
+    return make_result_wire(id, result);
 }
 
 std::string Server::Impl::make_error_wire(const RequestId& id, int code, std::string message) {

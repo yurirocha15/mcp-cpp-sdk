@@ -2,7 +2,6 @@
 
 #include "mcp/detail/text/encoding.hpp"
 
-#include <algorithm>
 #include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/network_v4.hpp>
 #include <boost/asio/ip/network_v6.hpp>

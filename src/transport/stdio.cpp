@@ -224,8 +224,10 @@ class DescriptorLines {
     bool fill() {
 #ifndef _WIN32
         for (;;) {
-            std::array<pollfd, 2> watched{pollfd{.fd = descriptor_, .events = POLLIN, .revents = 0},
-                                          pollfd{.fd = wake_, .events = POLLIN, .revents = 0}};
+            std::array<pollfd, 2> watched{
+                pollfd{.fd = descriptor_, .events = POLLIN, .revents = 0},
+                pollfd{.fd = wake_, .events = POLLIN, .revents = 0},
+            };
             const nfds_t count = wake_ >= 0 ? 2 : 1;
             if (::poll(watched.data(), count, -1) < 0) {
                 if (errno == EINTR) {

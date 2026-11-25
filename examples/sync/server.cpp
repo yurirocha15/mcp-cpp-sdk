@@ -114,8 +114,10 @@ int main(int argc, char** argv) {
             request.maxTokens = 100;
             request.messages.push_back({
                 .role = mcp::Role::eUser,
-                .content = mcp::TextContent{.text = "Write a greeting for " +
-                                                    args.at("name").get<std::string>()},
+                .content =
+                    mcp::TextContent{
+                        .text = "Write a greeting for " + args.at("name").get<std::string>(),
+                    },
                 .meta = std::nullopt,
             });
             const auto reply = co_await ctx.sample_llm(request);

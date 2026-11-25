@@ -130,8 +130,10 @@ inline TitledEnumSchema to_titled(const EnumSchema& schema) {
     titled.defaultValue = schema.defaultValue;
     for (std::size_t i = 0; i < schema.enumValues.size(); ++i) {
         const bool named = schema.enumNames && i < schema.enumNames->size();
-        titled.options.push_back({.value = schema.enumValues[i],
-                                  .title = named ? (*schema.enumNames)[i] : schema.enumValues[i]});
+        titled.options.push_back({
+            .value = schema.enumValues[i],
+            .title = named ? (*schema.enumNames)[i] : schema.enumValues[i],
+        });
     }
     return titled;
 }

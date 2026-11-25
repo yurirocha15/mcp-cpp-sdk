@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -52,7 +53,7 @@ struct SchemaOptions {
 class MCP_API SchemaError : public std::invalid_argument {
    public:
     /// Why the schema was refused.
-    enum class Category {
+    enum class Category : std::uint8_t {
         eInvalidSchema,       ///< The schema is not valid under its dialect's metaschema, holds
                               ///< NaN or Infinity, has a pattern that is not a regular
                               ///< expression, or evaluating it exceeds the evaluation limits on
@@ -148,9 +149,8 @@ class MCP_API CompiledSchema {
      * @throws SchemaError when the schema or one of @p documents cannot be compiled, or when more
      * than 64 documents or a key that is not an absolute URI without a fragment is given.
      */
-    static CompiledSchema compile(
-        const nlohmann::json& schema,
-        const SchemaOptions& options = {} const SchemaDocuments& documents = {});
+    static CompiledSchema compile(const nlohmann::json& schema, const SchemaOptions& options = {},
+                                  const SchemaDocuments& documents = {});
 
     /// Validate @p instance against the schema.
     [[nodiscard]] ValidationResult validate(const nlohmann::json& instance) const;

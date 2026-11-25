@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mcp/client/skills.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>

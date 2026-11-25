@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>

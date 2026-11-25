@@ -227,8 +227,12 @@ Task<nlohmann::json> Client::Impl::request_wire(std::shared_ptr<Impl> state, std
 
 void Client::Impl::reject_removed_method(const std::string& version, std::string_view method) {
     static constexpr std::array<std::string_view, 5> s_removed = {
-        methods::g_INITIALIZE, methods::g_PING, methods::g_LOGGING_SET_LEVEL,
-        methods::g_RESOURCES_SUBSCRIBE, methods::g_RESOURCES_UNSUBSCRIBE};
+        methods::g_INITIALIZE,
+        methods::g_PING,
+        methods::g_LOGGING_SET_LEVEL,
+        methods::g_RESOURCES_SUBSCRIBE,
+        methods::g_RESOURCES_UNSUBSCRIBE,
+    };
     if (std::ranges::find(s_removed, method) != s_removed.end()) {
         throw McpError(
             mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
@@ -849,8 +853,10 @@ void Client::Impl::complete_request_write(const std::shared_ptr<Impl>& state, co
     }
 
     if (state->closed.load(std::memory_order_acquire)) {
-        iter->second->error = Error{.code = mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
-                                    .message = "Client transport is closed"};
+        iter->second->error = Error{
+            .code = mcp::constants::jsonrpc::g_CONNECTION_CLOSED,
+            .message = "Client transport is closed",
+        };
     } else {
         iter->second->write_error = std::move(write_error);
     }

@@ -40,7 +40,7 @@ ALLOWED_USES: dict[tuple[str, str], int] = {
     # The definitions, in include/mcp/core/constants.hpp (namespace mcp::constants::protocol).
     ("include/mcp/core/constants.hpp", "g_LATEST_PROTOCOL_VERSION"): 1,
     ("include/mcp/core/constants.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 1,
-    ("include/mcp/protocol/capabilities.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 3,
+    ("include/mcp/protocol/capabilities.hpp", "g_SUPPORTED_PROTOCOL_VERSIONS"): 2,
     ("include/mcp/protocol/capabilities.hpp", "is_supported_protocol_version"): 1,
     # Every version the SDK knows is a valid pin.
     ("src/client/client_protocol.cpp", "is_supported_protocol_version"): 1,

@@ -133,10 +133,12 @@ Task<bool> GrantFlow::run(std::shared_ptr<Operation> operation) {
 
     // Awaited first: GCC 11 mishandles a co_await inside a braced initializer.
     auto identity = co_await owner.identity();
-    operation->target = GrantTarget{.resource = *operation->resource,
-                                    .server = *operation->server,
-                                    .scope = scope,
-                                    .identity = std::move(identity)};
+    operation->target = GrantTarget{
+        .resource = *operation->resource,
+        .server = *operation->server,
+        .scope = scope,
+        .identity = std::move(identity),
+    };
 
     if (operation->reuse_cache) {
         std::scoped_lock lock(owner.mutex_);

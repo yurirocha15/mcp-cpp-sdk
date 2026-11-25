@@ -366,8 +366,10 @@ net::ssl::context& TlsContextAccess::native(const TlsServerContext& context) {
 }
 
 TlsContextAccess::ServerLimits TlsContextAccess::limits(const TlsServerContext& context) {
-    return {.handshake_timeout = context.impl_->handshake_timeout,
-            .max_pending_handshakes = context.impl_->max_pending_handshakes};
+    return {
+        .handshake_timeout = context.impl_->handshake_timeout,
+        .max_pending_handshakes = context.impl_->max_pending_handshakes,
+    };
 }
 
 std::shared_ptr<const TlsClientContext> default_client_context() {

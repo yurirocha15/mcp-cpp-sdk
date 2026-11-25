@@ -2,7 +2,6 @@
 
 #include "mcp/detail/net/proxy.hpp"
 
-#include <algorithm>
 #include <boost/asio/ip/address_v4.hpp>
 #include <boost/asio/ip/tcp.hpp>
 

@@ -224,8 +224,8 @@ struct StreamOptions {
     /// StreamStats::dropped_notifications; the request carries on and its answer is unchanged.
     /// A subscriptions/listen stream instead ends when a notification is dropped, so that the
     /// client reconnects and lists again.
-    std::size_t max_queued_notifications{
-        mcp::constants::http_server::g_DEFAULT_MAX_QUEUED_NOTIFICATIONS};
+    std::size_t max_queued_notifications =
+        mcp::constants::http_server::g_DEFAULT_MAX_QUEUED_NOTIFICATIONS;
     /// Bytes of notifications a request may have waiting to be written or being written, counted
     /// as the size of each serialized message. Notifications are dropped over this limit as over
     /// max_queued_notifications. The bytes are also charged to the connection memory budget

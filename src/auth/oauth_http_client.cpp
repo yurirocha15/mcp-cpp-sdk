@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mcp/auth/oauth_http_client.hpp>
 #include <mcp/core/async.hpp>
 

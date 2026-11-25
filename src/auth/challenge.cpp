@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mcp/auth/challenge.hpp>
 
 #include <mcp/auth/metadata_policy.hpp>

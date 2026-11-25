@@ -95,10 +95,12 @@ std::vector<Range> complement(const std::vector<Range>& ranges) {
 std::vector<Range> digit_ranges() { return {{.first = '0', .last = '9'}}; }
 
 std::vector<Range> word_ranges() {
-    return {{.first = '0', .last = '9'},
-            {.first = 'A', .last = 'Z'},
-            {.first = '_', .last = '_'},
-            {.first = 'a', .last = 'z'}};
+    return {
+        {.first = '0', .last = '9'},
+        {.first = 'A', .last = 'Z'},
+        {.first = '_', .last = '_'},
+        {.first = 'a', .last = 'z'},
+    };
 }
 
 /// ECMAScript WhiteSpace and LineTerminator.
@@ -512,9 +514,11 @@ class Parser {
                     fail(RegexError::Kind::eUnsupported, "invalid \\c escape");
                 }
                 ++pos_;
-                return {.code_point =
-                            static_cast<char32_t>(letter % constants::regex::g_CONTROL_LETTER_MODULUS),
-                        .set = {}};
+                return {
+                    .code_point =
+                        static_cast<char32_t>(letter % constants::regex::g_CONTROL_LETTER_MODULUS),
+                    .set = {},
+                };
             }
             case 'x':
                 return {.code_point = static_cast<char32_t>(parse_hex(2)), .set = {}};
@@ -952,10 +956,12 @@ std::optional<bool> Regex::search(std::string_view input, std::size_t& steps_lef
     if (offset < input.size()) {
         current_char = decode_utf8(input, offset);
     }
-    Position where{.at_start = true,
-                   .at_end = !current_char,
-                   .previous_is_word = false,
-                   .next_is_word = current_char && is_word_character(*current_char)};
+    Position where{
+        .at_start = true,
+        .at_end = !current_char,
+        .previous_is_word = false,
+        .next_is_word = current_char && is_word_character(*current_char),
+    };
 
     if (add_thread(current, 0, where)) {
         return true;

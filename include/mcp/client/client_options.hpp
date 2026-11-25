@@ -100,8 +100,8 @@ struct ClientOptions {
      * A request is counted as its parsed JSON takes memory, which can be far more than its text.
      * The client also stops reading while it answers 1024 requests of the server.
      */
-    std::size_t max_incoming_request_bytes{
-        mcp::constants::client::g_DEFAULT_MAX_INCOMING_REQUEST_BYTES};
+    std::size_t max_incoming_request_bytes =
+        mcp::constants::client::g_DEFAULT_MAX_INCOMING_REQUEST_BYTES;
     /** @brief Reject malformed JSON-RPC envelopes received from the peer. */
     bool strict_protocol_validation{true};
     /**

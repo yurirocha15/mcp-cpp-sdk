@@ -553,10 +553,11 @@ class Compiler {
             } else if (keyword == "$dynamicRef") {
                 kind = ReferenceKind::eDynamic;
             }
-            pending_.push_back(
-                {.node = &node,
-                 .target = resolve_uri(resource.uri, value.get_ref<const std::string&>()),
-                 .kind = kind});
+            pending_.push_back({
+                .node = &node,
+                .target = resolve_uri(resource.uri, value.get_ref<const std::string&>()),
+                .kind = kind,
+            });
             return true;
         }
         if (keyword == "$anchor" || keyword == "$dynamicAnchor") {
@@ -1109,7 +1110,7 @@ class Evaluation {
             if (!check_array(node, value)) {
                 return false;
             }
-        } else if ((value.is_object()) && (!check_object(node, value))) {
+        } else if (value.is_object() && !check_object(node, value)) {
             return false;
         }
 
@@ -1761,7 +1762,7 @@ class Evaluation {
         for (std::size_t i = 1; i < node.any_of.size() && (!matched || annotations_ != nullptr); ++i) {
             matched = passes_annotated(*node.any_of[i], value) || matched;
         }
-        return !(!matched && !report_with("Value does not match any of the anyOf schemas", first));
+        return matched || report_with("Value does not match any of the anyOf schemas", first);
     }
 
     /// `oneOf`, kept out of check_applicators() like check_any_of().
@@ -1885,8 +1886,10 @@ class Evaluation {
             return false;
         }
         if (sink_->violations->size() < sink_->limit) {
-            sink_->violations->push_back({.instance_path = sanitize_for_diagnostics(path()),
-                                          .message = sanitize_for_diagnostics(message)});
+            sink_->violations->push_back({
+                .instance_path = sanitize_for_diagnostics(path()),
+                .message = sanitize_for_diagnostics(message),
+            });
         }
         return sink_->violations->size() < sink_->limit;
     }

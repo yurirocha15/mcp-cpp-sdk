@@ -5,8 +5,8 @@
 #include <lldb/API/LLDB.h>
 #include <lldb/API/SBHostOS.h>
 #else
-// Stand-ins for the LLDB API this example uses, named as LLDB names them.
-// NOLINTBEGIN(readability-identifier-naming)
+// Stand-ins for the LLDB API this example uses, declared as LLDB declares them.
+// NOLINTBEGIN
 namespace lldb {
 using pid_t = unsigned long long;
 enum StateType {
@@ -193,7 +193,7 @@ class SBDebugger {
     SBTarget GetTargetAtIndex(unsigned int) const { return {}; }
 };
 }  // namespace lldb
-// NOLINTEND(readability-identifier-naming)
+// NOLINTEND
 #endif  // __has_include(<lldb/API/LLDB.h>)
 
 #include <boost/asio/co_spawn.hpp>

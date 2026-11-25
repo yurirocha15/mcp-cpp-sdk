@@ -17,7 +17,6 @@
 #include "socket_probe.hpp"
 #include "tls_accept.hpp"
 
-#include <algorithm>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
@@ -147,7 +146,10 @@ struct HttpServerTransport::Impl {
     /// Like a terminated session, it is not found, so a client starts a new one.
     static SessionCheckResult session_not_found() {
         return SessionCheckResult{
-            .ok = false, .error_message = "Session not found", .status = http::status::not_found};
+            .ok = false,
+            .error_message = "Session not found",
+            .status = http::status::not_found,
+        };
     }
 
     Impl(const boost::asio::any_io_executor& executor, std::string host, unsigned short port,
@@ -581,7 +583,7 @@ struct HttpServerTransport::Impl {
 
     /// Whether any version the Server serves is one that initialize negotiates.
     bool serves_legacy() const {
-        std::lock_guard lock(configuration_mutex);
+        std::scoped_lock lock(configuration_mutex);
         return std::ranges::any_of(served_versions, [](const std::string& version) {
             return is_legacy_protocol_version(version);
         });
@@ -714,8 +716,10 @@ struct HttpServerTransport::Impl {
             return {};
         }
         if (!bearer_token_validator) {
-            return {.refusal = std::nullopt,
-                    .principal = detail::request_principal(std::nullopt, authorization)};
+            return {
+                .refusal = std::nullopt,
+                .principal = detail::request_principal(std::nullopt, authorization),
+            };
         }
 
         const auto token = http_bearer_token(authorization);
@@ -749,8 +753,10 @@ struct HttpServerTransport::Impl {
         try {
             validation = co_await async_bearer_token_validator(std::string(token));
         } catch (...) {
-            co_return Authorization{.refusal = make_validator_failure_response(request),
-                                    .principal = {}};
+            co_return Authorization{
+                .refusal = make_validator_failure_response(request),
+                .principal = {},
+            };
         }
         if (!validation->accepted) {
             co_return Authorization{.refusal = make_unauthorized_response(request), .principal = {}};

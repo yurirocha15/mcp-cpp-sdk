@@ -54,8 +54,8 @@ struct MrtrOptions {
     /// Memory the requests of one principal's waiting handlers may take, counted as for
     /// max_parked_bytes; past this that principal's handlers that have waited longest are given
     /// up, so one principal's large requests do not give up the handlers of others.
-    std::size_t max_parked_bytes_per_principal{
-        mcp::constants::mrtr::g_DEFAULT_MAX_PARKED_BYTES_PER_PRINCIPAL};
+    std::size_t max_parked_bytes_per_principal =
+        mcp::constants::mrtr::g_DEFAULT_MAX_PARKED_BYTES_PER_PRINCIPAL;
     /// Called, on no particular thread, each time a waiting handler is given up.
     std::function<void(MrtrEvictionReason)> on_eviction;
 

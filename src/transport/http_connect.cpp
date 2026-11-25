@@ -39,7 +39,10 @@ struct Tunnel {
 std::optional<HttpUrlScheme> http_url_scheme(std::string_view url) {
     for (const auto prefix : {constants::url::g_HTTP_PREFIX, constants::url::g_HTTPS_PREFIX}) {
         if (url.size() >= prefix.size() && equals_ignoring_case(url.substr(0, prefix.size()), prefix)) {
-            return HttpUrlScheme{prefix.size(), prefix == constants::url::g_HTTPS_PREFIX};
+            return HttpUrlScheme{
+                .prefix_length = prefix.size(),
+                .https = prefix == constants::url::g_HTTPS_PREFIX,
+            };
         }
     }
     return std::nullopt;

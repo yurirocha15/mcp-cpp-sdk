@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mcp/auth/oauth_authorization_manager.hpp>
 #include <mcp/auth/oauth_discovery.hpp>
 #include <mcp/auth/pkce.hpp>

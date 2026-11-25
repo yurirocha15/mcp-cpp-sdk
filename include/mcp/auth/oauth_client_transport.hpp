@@ -23,11 +23,11 @@ namespace mcp::auth {
  * and retry does not depend on this cache.
  */
 struct OAuthClientTransportOptions {
-    std::size_t max_pending_requests{
-        mcp::constants::oauth::g_DEFAULT_MAX_PENDING_REQUESTS};  ///< Maximum retained request count.
-    std::size_t max_pending_request_bytes{
-        mcp::constants::oauth::g_DEFAULT_MAX_PENDING_REQUEST_BYTES};  ///< Approximate retained wire/key
-                                                                      ///< bytes.
+    std::size_t max_pending_requests =
+        mcp::constants::oauth::g_DEFAULT_MAX_PENDING_REQUESTS;  ///< Maximum retained request count.
+    std::size_t max_pending_request_bytes =
+        mcp::constants::oauth::g_DEFAULT_MAX_PENDING_REQUEST_BYTES;  ///< Approximate retained wire/key
+                                                                     ///< bytes.
     std::chrono::milliseconds pending_request_ttl{
         mcp::constants::oauth::g_DEFAULT_PENDING_REQUEST_TTL};  ///< Replay eligibility.
     /// Step-up authorizations per request: each answers a 403 whose challenge says

@@ -60,29 +60,29 @@ inline constexpr std::uint32_t g_BASE64_DIGIT_MASK = 0x3F;
 
 /// The value of each byte as a digit of @p digits, or -1 for a byte that is not one.
 /// @p same_values, when given, spells the same values with other characters, as uppercase
-/// hexadecimal does.
-constexpr std::array<std::int8_t, g_BYTE_VALUES> digit_values(std::string_view digits,
-                                                              std::string_view same_values = {}) {
-    std::array<std::int8_t, g_BYTE_VALUES> values{};
+/// hexadecimal does. The entries are std::int16_t, not signed char, so that they read as numbers.
+constexpr std::array<std::int16_t, g_BYTE_VALUES> digit_values(std::string_view digits,
+                                                               std::string_view same_values = {}) {
+    std::array<std::int16_t, g_BYTE_VALUES> values{};
     values.fill(-1);
     for (const auto spelling : {digits, same_values}) {
         for (std::size_t value = 0; value < spelling.size(); ++value) {
-            values[static_cast<unsigned char>(spelling[value])] = static_cast<std::int8_t>(value);
+            values[static_cast<unsigned char>(spelling[value])] = static_cast<std::int16_t>(value);
         }
     }
     return values;
 }
 
 /// The value of each byte as a hexadecimal digit of either case, or -1.
-inline constexpr std::array<std::int8_t, g_BYTE_VALUES> g_HEX_VALUES =
+inline constexpr std::array<std::int16_t, g_BYTE_VALUES> g_HEX_VALUES =
     digit_values(g_HEX_DIGITS, g_HEX_DIGITS_UPPER);
 
 /// The value of each byte as a standard base64 digit, or -1.
-inline constexpr std::array<std::int8_t, g_BYTE_VALUES> g_BASE64_VALUES =
+inline constexpr std::array<std::int16_t, g_BYTE_VALUES> g_BASE64_VALUES =
     digit_values(g_BASE64_ALPHABET);
 
 /// The value of each byte as a base64url digit, or -1.
-inline constexpr std::array<std::int8_t, g_BYTE_VALUES> g_BASE64URL_VALUES =
+inline constexpr std::array<std::int16_t, g_BYTE_VALUES> g_BASE64URL_VALUES =
     digit_values(g_BASE64URL_ALPHABET);
 
 }  // namespace encoding
@@ -182,30 +182,46 @@ inline constexpr std::array<Utf8Lead, encoding::g_BYTE_VALUES> g_UTF8_LEADS = []
         Utf8Lead lead;
     };
     constexpr std::array rows{
-        Row{.first_lead = 0xC2,
+        Row{
+            .first_lead = 0xC2,
             .last_lead = 0xDF,
-            .lead = {.length = 2, .second_first = 0x80, .second_last = 0xBF}},
-        Row{.first_lead = 0xE0,
+            .lead = {.length = 2, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xE0,
             .last_lead = 0xE0,
-            .lead = {.length = 3, .second_first = 0xA0, .second_last = 0xBF}},
-        Row{.first_lead = 0xE1,
+            .lead = {.length = 3, .second_first = 0xA0, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xE1,
             .last_lead = 0xEC,
-            .lead = {.length = 3, .second_first = 0x80, .second_last = 0xBF}},
-        Row{.first_lead = 0xED,
+            .lead = {.length = 3, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xED,
             .last_lead = 0xED,
-            .lead = {.length = 3, .second_first = 0x80, .second_last = 0x9F}},
-        Row{.first_lead = 0xEE,
+            .lead = {.length = 3, .second_first = 0x80, .second_last = 0x9F},
+        },
+        Row{
+            .first_lead = 0xEE,
             .last_lead = 0xEF,
-            .lead = {.length = 3, .second_first = 0x80, .second_last = 0xBF}},
-        Row{.first_lead = 0xF0,
+            .lead = {.length = 3, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xF0,
             .last_lead = 0xF0,
-            .lead = {.length = 4, .second_first = 0x90, .second_last = 0xBF}},
-        Row{.first_lead = 0xF1,
+            .lead = {.length = 4, .second_first = 0x90, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xF1,
             .last_lead = 0xF3,
-            .lead = {.length = 4, .second_first = 0x80, .second_last = 0xBF}},
-        Row{.first_lead = 0xF4,
+            .lead = {.length = 4, .second_first = 0x80, .second_last = 0xBF},
+        },
+        Row{
+            .first_lead = 0xF4,
             .last_lead = 0xF4,
-            .lead = {.length = 4, .second_first = 0x80, .second_last = 0x8F}},
+            .lead = {.length = 4, .second_first = 0x80, .second_last = 0x8F},
+        },
     };
     std::array<Utf8Lead, encoding::g_BYTE_VALUES> leads{};
     for (const auto& row : rows) {
@@ -761,8 +777,9 @@ inline constexpr std::array g_RESERVED{
 namespace ipv6 {
 
 /// The NAT64 well-known prefix, 64:ff9b::/96 (RFC 6052). An IPv4 address follows it.
-inline constexpr std::array<unsigned char, 12> g_NAT64_PREFIX{0x00, 0x64, 0xFF, 0x9B, 0, 0,
-                                                              0,    0,    0,    0,    0, 0};
+inline constexpr std::array<unsigned char, 12> g_NAT64_PREFIX{
+    0x00, 0x64, 0xFF, 0x9B, 0, 0, 0, 0, 0, 0, 0, 0,
+};
 
 /// The 6to4 prefix, 2002::/16 (RFC 3056). An IPv4 address follows it.
 inline constexpr std::array<unsigned char, 2> g_SIX_TO_FOUR_PREFIX{0x20, 0x02};

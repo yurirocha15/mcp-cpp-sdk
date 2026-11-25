@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <mcp/client/client.hpp>
 #include <mcp/core/constants.hpp>
 

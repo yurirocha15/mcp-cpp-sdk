@@ -327,7 +327,7 @@ Launched launch_process(const StdioProcessOptions& options, ProcessState& state)
         ::pthread_sigmask(SIG_SETMASK, &none, nullptr);
         // Each step runs only when the ones before it succeeded, and execve() returns only when it
         // fails, so errno holds the failure of the step that stopped the child.
-        const bool prepared = !(own_tree && ::setpgid(0, 0) != 0) &&
+        const bool prepared = (!own_tree || ::setpgid(0, 0) == 0) &&
                               ::dup2(stdin_read.get(), STDIN_FILENO) >= 0 &&
                               ::dup2(stdout_write.get(), STDOUT_FILENO) >= 0 &&
                               (stderr_target < 0 || ::dup2(stderr_target, STDERR_FILENO) >= 0) &&

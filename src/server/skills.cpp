@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
 #include <mcp/server/skills.hpp>
@@ -292,7 +291,11 @@ void SkillsExtension::add_skill(SkillDefinition skill) {
                 ReadResourceResult result;
                 if (is_text_type(mime_type)) {
                     result.contents.emplace_back(TextResourceContents{
-                        .uri = uri, .text = bytes, .mimeType = mime_type, .meta = std::nullopt});
+                        .uri = uri,
+                        .text = bytes,
+                        .mimeType = mime_type,
+                        .meta = std::nullopt,
+                    });
                 } else {
                     result.contents.emplace_back(BlobResourceContents{
                         .uri = uri,
