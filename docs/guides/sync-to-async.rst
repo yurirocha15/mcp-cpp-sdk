@@ -142,21 +142,21 @@ Make the Transport on the Program's Event Loop
 ``Endpoint::stdio()`` gives the client an event loop of its own. In async mode
 the program makes a ``StdioClientTransport`` from ``StdioProcessOptions`` on its
 event loop, and constructs the client with the transport and the loop's
-executor. The code that defines the session's coroutine includes
+executor. The code that defines the coroutine includes
 ``<mcp/core/async.hpp>`` and ``<mcp/transport/stdio_client.hpp>``.
 
 .. literalinclude:: ../../examples/sync/notes_client.cpp
    :language: cpp
    :caption: Sync mode
    :start-after: // The client launches the server
-   :end-before: // The session
+   :end-before: // The calls
    :dedent: 4
 
 .. literalinclude:: ../../examples/async/notes_client.cpp
    :language: cpp
    :caption: Async mode
    :start-after: // The client launches the server
-   :end-before: // The session
+   :end-before: // The calls
    :dedent: 4
 
 Await the Calls in a Coroutine
@@ -173,14 +173,14 @@ arguments of each ``co_await`` are built in named variables first, as GCC 11 to
 .. literalinclude:: ../../examples/sync/notes_client.cpp
    :language: cpp
    :caption: Sync mode
-   :start-after: // The session:
+   :start-after: // The calls:
    :end-at: prompt.messages.at(0)
    :dedent: 4
 
 .. literalinclude:: ../../examples/async/notes_client.cpp
    :language: cpp
    :caption: Async mode
-   :start-after: // The session:
+   :start-after: // The calls:
    :end-at: runtime.run();
    :dedent: 4
 

@@ -14,7 +14,7 @@ int main(int argc, char** argv) {
     const std::string command = argc > 1 ? argv[1] : "./notes_server";
     mcp::Client client(mcp::Endpoint::stdio({command}));
 
-    // The session: each call blocks until it is answered.
+    // The calls: each one blocks until it is answered.
     client.sync().connect("notes-client", "1.0.0");
 
     mcp::SubscriptionFilter filter;

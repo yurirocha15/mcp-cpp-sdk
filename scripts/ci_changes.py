@@ -3,8 +3,9 @@
 Decide which jobs in ci.yml a change needs.
 
 JOB_INPUTS lists the paths each job reads, so a job runs only when something it
-reads changed. The exception is the C++ that the code jobs compile from the
-documentation: a change to README.md counts for them when its C++ blocks differ.
+reads changed. The exception is the C++ in README.md: a change to its C++ blocks
+runs the readme job, which compiles them once. The build job of the code jobs compiles
+them on each of its compilers, so a change to the library checks them there.
 
 The package builds take most of a run's runner time, so a pull request runs one
 only when it changes that package's own inputs, such as its packaging files,
@@ -139,6 +140,13 @@ JOB_INPUTS = {
         "scripts/run_examples.py",
         "scripts/test_check_json_matrix.py",
     ),
+    # The README's C++ blocks count for it as well (needed_jobs()). It also checks that the
+    # README holds the minimal examples verbatim.
+    "readme": (
+        "examples/sync/minimal_client.cpp",
+        "examples/sync/minimal_server.cpp",
+        "scripts/check_readme_snippets.py",
+    ),
     "conan": LIBRARY + ("LICENSE", "scripts/init.py", "test_package/*"),
     "release": (
         ".github/actionlint.yaml",
@@ -196,9 +204,9 @@ PACKAGED_SOURCE = LIBRARY + TESTS + (
     "scripts/init.py",
     "scripts/run_examples.py",
 )
-# Same block syntax as scripts/check_readme_snippets.py.
 # The release checks read it, though no job reads the other Markdown files.
 CHANGELOG = "CHANGELOG.md"
+# Same block syntax as scripts/check_readme_snippets.py.
 CPP_FENCE_RE = re.compile(r"^```cpp\s*$(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 ZERO_SHA = "0" * 40
 
@@ -269,7 +277,7 @@ def needed_jobs(event, base, head):
     else:
         jobs = set().union(*(jobs_reading(path, event) for path in changed))
         if "README.md" in changed and readme_cpp_blocks(base) != readme_cpp_blocks(head):
-            jobs.add("code")
+            jobs.add("readme")
         if any(version_pins(base, path) != version_pins(head, path)
                for path in changed if path in {pin.path for pin in PINS}):
             jobs.add("release")

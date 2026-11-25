@@ -120,9 +120,12 @@ class ClassifierTests(unittest.TestCase):
         self.write("README.md", README.replace("Prose.", "Better prose."))
         self.assertEqual(self.jobs("pull_request", self.commit()), set())
 
-    def test_readme_cpp_block_runs_code_jobs(self) -> None:
+    def test_readme_cpp_block_runs_only_the_readme_job(self) -> None:
         self.write("README.md", README.replace("return 0;", "return 1;"))
-        self.assertEqual(self.jobs("pull_request", self.commit()), {"code"})
+        head = self.commit()
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                self.assertEqual(self.jobs(event, head), {"readme"})
 
     def test_version_pin_text_runs_the_release_checks(self) -> None:
         self.write("README.md", README.replace("Prose.", "Prose.\n\n    GIT_TAG v9.9.9\n"))
@@ -159,6 +162,8 @@ class ClassifierTests(unittest.TestCase):
             "test/perf/schema_workload.cpp": {"code"},
             "scripts/schema_ir_gate.py": {"release"},
             "examples/features/pagination.cpp": {"code", "lint"},
+            "examples/sync/minimal_server.cpp": {"code", "lint", "readme"},
+            "scripts/check_readme_snippets.py": {"code", "readme", "release"},
             "scripts/run_examples.py": {"code", "release"},
             "test_package/conanfile.py": {"conan"} | PACKAGES,
             "LICENSE": {"conan"},

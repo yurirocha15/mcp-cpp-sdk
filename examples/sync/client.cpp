@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
         co_return roots;
     });
 
-    // The session: connect, then use every feature.
+    // The calls: connect, then use every feature.
     client.sync().connect("greeter-client", "1.0.0");
     use_every_feature(client);
 
