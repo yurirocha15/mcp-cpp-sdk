@@ -14,10 +14,11 @@ Versioning; a `0.x` version is a stable release unless its version has an
   synchronous handlers and make blocking calls, such as
   `client.sync().call_tool()`, with no Boost in the program. Async mode uses
   the same objects with coroutines.
-- **Headers without Boost.** `<mcp/mcp.hpp>` and the server, client, auth and
-  transport headers include no Boost header, except the WebSocket and Beast
-  transport headers. Code that defines or awaits a coroutine includes
-  `<mcp/core/async.hpp>`, which does.
+- **Headers without Boost.** Only `<mcp/core/async.hpp>`,
+  `<mcp/core/signal.hpp>`, `<mcp/transport/websocket.hpp>` and
+  `<mcp/transport/http_beast.hpp>` include Boost; `<mcp/mcp.hpp>` and the other
+  server, client, auth and transport headers do not. Code that defines or
+  awaits a coroutine includes `<mcp/core/async.hpp>`.
 - **Endpoints.** `mcp::Endpoint` connects a `Client` to a command it launches,
   to a Streamable HTTP URL or through the application's own transport, and a
   `StdioRestartPolicy` starts a launched server again when its process ends.
@@ -95,7 +96,7 @@ These changes in behavior need no change to compile:
 
 ### Changed
 
-- `<mcp/mcp.hpp>` and the server, client and transport headers, but for the WebSocket and Beast ones, include no Boost header; coroutine code includes `<mcp/core/async.hpp>`.
+- `<mcp/mcp.hpp>` includes no Boost header; only `async.hpp`, `signal.hpp`, `websocket.hpp` and `http_beast.hpp` do, and coroutine code includes `<mcp/core/async.hpp>`.
 - `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>`, declared without Boost in `<mcp/core/async_fwd.hpp>`; `co_spawn` takes a callable that returns one.
 - Public APIs take `mcp::Executor`, which needs no Boost, instead of `boost::asio::any_io_executor`; an Asio executor converts to it.
 - `Server::run_http()` serves any number of clients of 2025-11-25 and earlier, each in its own session, where it served one at a time.
