@@ -397,6 +397,7 @@ void Client::on_elicitation(std::function<Task<ElicitResult>(const ElicitRequest
 
 void Client::on_sampling(
     std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler) {
+    impl_->deprecations.report(DeprecatedFeature::eSampling);
     on_request(std::string(methods::g_SAMPLING_CREATE_MESSAGE),
                [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
                    auto result = co_await handler(params.get<CreateMessageRequestParams>());
@@ -405,6 +406,7 @@ void Client::on_sampling(
 }
 
 void Client::set_roots(const std::vector<Root>& roots, bool notify) {
+    impl_->deprecations.report(DeprecatedFeature::eRoots);
     auto state = impl_;
     bool should_notify = false;
     {
@@ -443,6 +445,7 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
 }
 
 void Client::on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler) {
+    impl_->deprecations.report(DeprecatedFeature::eRoots);
     on_request(std::string(methods::g_ROOTS_LIST),
                [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
                    auto result = co_await handler(params);

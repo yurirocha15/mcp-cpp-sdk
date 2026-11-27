@@ -7,6 +7,7 @@
 #include <mcp/auth/oauth_http_client.hpp>
 #include <mcp/auth/token_store.hpp>
 #include <mcp/core/async_fwd.hpp>
+#include <mcp/core/deprecation.hpp>
 #include <mcp/core/executor.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/proxy.hpp>
@@ -66,6 +67,10 @@ struct OAuthAuthorizationConfig {
     /// TLS settings for authorization servers; null uses the system's certificate authorities.
     std::shared_ptr<const TlsClientContext> tls;
     ProxyOptions proxy;  ///< Proxy for discovery and token requests; none by default.
+    /// Receives the notice the first time this manager registers a client dynamically, instead of
+    /// standard error; see DeprecationNotice. Without a handler the notice goes to standard error,
+    /// unless the environment variable MCP_SILENCE_DEPRECATION_NOTICES is set to a non-empty value.
+    DeprecationHandler deprecation_handler;
 };
 
 /**

@@ -12,3 +12,9 @@ foreach(fixture IN ITEMS mcp-conformance-everything-server
     ${fixture}
     PRIVATE MCP_CONFORMANCE_SDK_VERSION="${MCP_CPP_SDK_VERSION_FULL}")
 endforeach()
+
+# The server fixture serves the deprecated features the conformance scenarios
+# still cover; the client fixture must not use one.
+target_compile_definitions(mcp-conformance-everything-server
+                           PRIVATE MCP_DISABLE_DEPRECATION_ATTRIBUTES)
+mcp_cpp_sdk_deprecations_as_errors(mcp-conformance-everything-client)

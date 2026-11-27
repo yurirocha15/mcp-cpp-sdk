@@ -10,6 +10,7 @@
 #include "mcp/detail/async/spawn_awaitable.hpp"
 #include "mcp/detail/async/strand_executor.hpp"
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/deprecation_reporter.hpp"
 #include "mcp/detail/json/peer_json.hpp"
 #include "mcp/detail/net/param_headers.hpp"
 #include "mcp/detail/protocol/middleware_rejection.hpp"
@@ -1103,6 +1104,20 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// session sends it.
     mutable std::mutex client_capabilities_mutex;
     nlohmann::json client_capabilities = nlohmann::json::object();
+    /// The protocol version the session's initialize request negotiated, guarded by
+    /// client_capabilities_mutex. Empty before an initialize, so a server answering 2026-07-28
+    /// requests, which have none, keeps it empty.
+    std::string negotiated_version;
+    [[nodiscard]] std::string negotiated_protocol_version() const {
+        std::scoped_lock lock(client_capabilities_mutex);
+        return negotiated_version;
+    }
+    /// Whether an initialize negotiated @p version or a later one. Versions are dates, so they
+    /// compare as text.
+    [[nodiscard]] bool negotiated_at_least(std::string_view version) const {
+        std::scoped_lock lock(client_capabilities_mutex);
+        return !negotiated_version.empty() && std::string_view{negotiated_version} >= version;
+    }
     std::size_t& page_size = registry->page_size;
     std::atomic_size_t& max_in_flight_requests = registry->max_in_flight_requests;
     std::atomic_size_t& max_in_flight_bytes = registry->max_in_flight_bytes;
@@ -1261,6 +1276,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         /// identity cannot be serialized.
         std::string server_info_meta_text;  // written once, under server_info_meta_once
         std::once_flag server_info_meta_once;
+        /// Reports each deprecated feature the servers sharing this registry use, once for all of
+        /// them.
+        std::shared_ptr<detail::DeprecationReporter> deprecations =
+            std::make_shared<detail::DeprecationReporter>();
         std::size_t page_size{0};
         std::atomic_size_t max_in_flight_requests{
             mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_REQUESTS};

@@ -175,10 +175,10 @@ class ClassifierTests(unittest.TestCase):
         expected = {
             "src/main.cpp": SOURCE_JOBS,
             "include/mcp/sdk.hpp": SOURCE_JOBS,
-            "test/core/protocol_test.cpp": {"code"},
+            "test/core/protocol_test.cpp": {"code"} | GUARDS,
             "test/data/json-schema/suite.json": {"code", "release"},
             "test/include/support/pipe_stream.hpp": {"code"},
-            "test/perf/schema_workload.cpp": {"code"},
+            "test/perf/schema_workload.cpp": {"code"} | GUARDS,
             "scripts/schema_ir_gate.py": {"release"} | GUARDS,
             "examples/features/pagination.cpp": {"code", "lint"},
             "examples/sync/minimal_server.cpp": {"code", "lint", "readme"},
@@ -243,7 +243,7 @@ class ClassifierTests(unittest.TestCase):
                 self.assertEqual(self.jobs_for_change(path, "push"), jobs)
 
     def test_other_events_also_package_source(self) -> None:
-        for path, jobs in (("src/main.cpp", SOURCE_JOBS), ("test/core/protocol_test.cpp", {"code"}),
+        for path, jobs in (("src/main.cpp", SOURCE_JOBS), ("test/core/protocol_test.cpp", {"code"} | GUARDS),
                            ("examples/features/pagination.cpp", {"code", "lint"}),
                            ("LICENSE", {"conan"})):
             with self.subTest(path=path):

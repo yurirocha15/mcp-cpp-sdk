@@ -403,6 +403,12 @@ struct ContextRouting {
         context.budget_ = std::move(budget);
     }
 
+    /// Reports @p context's use of a deprecated feature to @p reporter.
+    static void set_deprecation_reporter(Context& context,
+                                         std::shared_ptr<DeprecationReporter> reporter) {
+        context.deprecations_ = std::move(reporter);
+    }
+
     /**
      * @brief Sends @p context's notifications and requests to the client from @p loop, the
      *        executor the server serves the request on, while that loop's context exists.

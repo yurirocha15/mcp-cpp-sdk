@@ -1328,6 +1328,31 @@ TEST(ClientEra, PerRequestLogLevelInMeta) {
     EXPECT_FALSE(Harness::meta_of(listings[1]).contains(std::string(g_level_key)));
 }
 
+// RequestOptions::log_level uses deprecated logging (SEP-2577), so the client reports it once.
+TEST(ClientEra, PerRequestLogLevelReportsTheLoggingDeprecationOnce) {
+    std::vector<mcp::DeprecatedFeature> notices;
+    auto options = auto_options();
+    options.deprecation_handler = [&notices](const mcp::DeprecationNotice& notice) {
+        notices.push_back(notice.feature);
+    };
+    Harness harness(std::move(options));
+    harness.peer.reply = modern_peer;
+
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("test-client", "1.0");
+        co_await harness.client->list_tools();
+        EXPECT_TRUE(notices.empty());
+        mcp::RequestOptions request_options;
+        request_options.log_level = mcp::LoggingLevel::eWarning;
+        for (int round = 0; round < 2; ++round) {
+            auto pending = harness.client->send_request("tools/list", std::nullopt, request_options);
+            co_await std::move(pending);
+        }
+    });
+
+    EXPECT_EQ(notices, std::vector<mcp::DeprecatedFeature>{mcp::DeprecatedFeature::eLogging});
+}
+
 // basic_index.md: `traceparent`, `tracestate` and `baggage` live in `_meta` too; the client adds
 // its own keys and leaves the caller's alone.
 TEST(ClientEra, CallerMetaTraceparentPreserved) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <mcp/core/export.hpp>
+
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -231,6 +233,26 @@ inline constexpr std::string_view g_SKILLS_GET = "skills/get";
 inline constexpr std::string_view g_RESOURCES_DIRECTORY_READ = "resources/directory/read";
 
 }  // namespace methods
+
+/// The values of a sampling request's `includeContext` (CreateMessageRequestParams::includeContext).
+namespace include_context {
+
+/// Include no context; the only value that is not deprecated.
+inline constexpr std::string_view g_NONE = "none";
+/// Include context from the requesting server.
+MCP_DEPRECATED(
+    "SEP-2596: includeContext values other than \"none\" are deprecated since protocol "
+    "revision 2025-11-25; earliest removal: with Sampling (SEP-2577); omit includeContext "
+    "or use \"none\"")
+inline constexpr std::string_view g_THIS_SERVER = "thisServer";
+/// Include context from every server the client is connected to.
+MCP_DEPRECATED(
+    "SEP-2596: includeContext values other than \"none\" are deprecated since protocol "
+    "revision 2025-11-25; earliest removal: with Sampling (SEP-2577); omit includeContext "
+    "or use \"none\"")
+inline constexpr std::string_view g_ALL_SERVERS = "allServers";
+
+}  // namespace include_context
 
 /// Protocol revisions the SDK speaks and the lists that group them.
 namespace protocol {

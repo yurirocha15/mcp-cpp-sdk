@@ -176,15 +176,18 @@ and a handler whose input and output are serializable protocol types. See the
 [stdio server example](examples/servers/stdio/server_stdio.cpp) for complete,
 compiled registrations.
 
-### Server Context (Logging & Progress)
+### Server Context (Progress & Cancellation)
 
-A handler that takes the request's `Context` logs to the client and reports progress:
+A handler that takes the request's `Context` reports progress and sees when the client cancels
+the request:
 
 ```cpp
 server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progress", schema,
     [](mcp::Context& ctx, const nlohmann::json& args) -> mcp::Task<nlohmann::json> {
-        co_await ctx.log_info("Starting work...");
         co_await ctx.report_progress(50, 100);
+        if (ctx.is_cancelled()) {
+            co_return nlohmann::json{{"status", "cancelled"}};
+        }
         co_return nlohmann::json{{"status", "done"}};
     });
 ```

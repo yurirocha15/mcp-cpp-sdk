@@ -96,6 +96,7 @@ configure_file(
 set(MCP_CPP_SDK_SOURCES
     src/core/version.cpp
     src/core/context.cpp
+    src/core/deprecation.cpp
     src/core/runtime.cpp
     src/core/regex.cpp
     src/core/encoding.cpp
@@ -210,9 +211,28 @@ foreach(header IN LISTS MCP_CPP_SDK_PRIVATE_HEADERS)
   endif()
 endforeach()
 
+# Turns the use of a deprecated declaration into an error in ${target}, for the
+# targets that must not use one. MSVC reports the C runtime's and the standard
+# library's own deprecations as C4996 too, so those are turned off there.
+function(mcp_cpp_sdk_deprecations_as_errors target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /we4996)
+    target_compile_definitions(
+      ${target}
+      PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS
+              _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
+              _SILENCE_ALL_CXX20_DEPRECATION_WARNINGS)
+  else()
+    target_compile_options(${target} PRIVATE -Werror=deprecated-declarations)
+  endif()
+endfunction()
+
 # Configure one installed SDK linkage variant.
 function(mcp_cpp_sdk_configure_library target)
   target_sources(${target} PRIVATE ${MCP_CPP_SDK_SOURCES})
+  # The SDK implements the features it marks deprecated.
+  target_compile_definitions(${target}
+                             PRIVATE MCP_DISABLE_DEPRECATION_ATTRIBUTES)
   target_compile_features(${target} PUBLIC cxx_std_20)
   target_include_directories(
     ${target}
@@ -466,6 +486,7 @@ if(BUILD_TESTING)
       test/client/client_sync_test.cpp
       test/core/capabilities_extensions_test.cpp
       test/core/concepts_test.cpp
+      test/core/deprecation_test.cpp
       test/core/elicitation_schema_test.cpp
       test/core/executor_test.cpp
       test/core/core_test.cpp
@@ -558,6 +579,9 @@ if(BUILD_TESTING)
     src/transport/proxy.cpp src/transport/session_pipe.cpp
     test/support/schema_corpus.cpp)
   target_link_libraries(mcp-sdk-tests PRIVATE mcp-cpp-sdk GTest::gtest_main)
+  # The tests cover the deprecated features as well.
+  target_compile_definitions(mcp-sdk-tests
+                             PRIVATE MCP_DISABLE_DEPRECATION_ATTRIBUTES)
   # The tests reach the library's private headers and their own shared ones.
   target_include_directories(
     mcp-sdk-tests PRIVATE ${MCP_CPP_SDK_PRIVATE_INCLUDE_DIR}
@@ -568,6 +592,51 @@ if(BUILD_TESTING)
   add_library(mcp-sync-mode-headers OBJECT test/headers/sync_server_tu.cpp)
   target_link_libraries(mcp-sync-mode-headers PRIVATE mcp-cpp-sdk)
   add_dependencies(mcp-sdk-tests mcp-sync-mode-headers)
+  # Every public header, with the deprecation attributes on and their use an
+  # error: a header must not use what the SDK marks deprecated.
+  file(
+    GLOB_RECURSE MCP_CPP_SDK_PUBLIC_HEADERS
+    RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/mcp/*.hpp")
+  list(SORT MCP_CPP_SDK_PUBLIC_HEADERS)
+  set(MCP_CPP_SDK_PUBLIC_HEADERS_TU_TEXT "")
+  foreach(header IN LISTS MCP_CPP_SDK_PUBLIC_HEADERS)
+    string(APPEND MCP_CPP_SDK_PUBLIC_HEADERS_TU_TEXT "#include <${header}>\n")
+  endforeach()
+  file(
+    GENERATE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/deprecation_headers_tu.cpp"
+    CONTENT "${MCP_CPP_SDK_PUBLIC_HEADERS_TU_TEXT}")
+  add_library(mcp-deprecation-headers OBJECT
+              "${CMAKE_CURRENT_BINARY_DIR}/deprecation_headers_tu.cpp")
+  target_link_libraries(mcp-deprecation-headers PRIVATE mcp-cpp-sdk)
+  mcp_cpp_sdk_deprecations_as_errors(mcp-deprecation-headers)
+  add_dependencies(mcp-sdk-tests mcp-deprecation-headers)
+  # A call to a deprecated function fails to compile with the message the
+  # attribute carries, and compiles with MCP_DISABLE_DEPRECATION_ATTRIBUTES. The
+  # tests build these targets; RESOURCE_LOCK keeps the two builds of the tree
+  # apart.
+  add_library(mcp-deprecated-call OBJECT EXCLUDE_FROM_ALL
+                                         test/headers/deprecated_call.cpp)
+  target_link_libraries(mcp-deprecated-call PRIVATE mcp-cpp-sdk)
+  mcp_cpp_sdk_deprecations_as_errors(mcp-deprecated-call)
+  add_library(mcp-deprecated-call-opted-out OBJECT
+              EXCLUDE_FROM_ALL test/headers/deprecated_call.cpp)
+  target_link_libraries(mcp-deprecated-call-opted-out PRIVATE mcp-cpp-sdk)
+  target_compile_definitions(mcp-deprecated-call-opted-out
+                             PRIVATE MCP_DISABLE_DEPRECATION_ATTRIBUTES)
+  mcp_cpp_sdk_deprecations_as_errors(mcp-deprecated-call-opted-out)
+  foreach(probe IN ITEMS mcp-deprecated-call mcp-deprecated-call-opted-out)
+    add_test(NAME ${probe}
+             COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}" --target
+                     ${probe} --config $<CONFIG>)
+    set_tests_properties(${probe} PROPERTIES RESOURCE_LOCK
+                                             mcp-cpp-sdk-build-tree)
+  endforeach()
+  set_tests_properties(
+    mcp-deprecated-call
+    PROPERTIES PASS_REGULAR_EXPRESSION
+               "error[^\r\n]*SEP-2577: Logging is deprecated since protocol")
   # The workload scripts/schema_ir_gate.py counts the instructions of.
   add_executable(mcp-schema-workload test/perf/schema_workload.cpp)
   target_link_libraries(mcp-schema-workload PRIVATE mcp-cpp-sdk)
@@ -1019,4 +1088,30 @@ if(BUILD_EXAMPLES)
   else()
     target_link_libraries(example-debugger-server PRIVATE mcp-cpp-sdk)
   endif()
+
+  # The examples that show a deprecated feature opt out of its attribute; the
+  # others must not use one. The debugger example, which may build against
+  # LLDB's headers, is left as it is.
+  set(MCP_CPP_SDK_DEPRECATED_FEATURE_EXAMPLES
+      example-sync-server
+      example-sync-client
+      example-async-server
+      example-async-client
+      example-server-stdio
+      example-server-sampling
+      example-feature-progress-cancellation
+      example-feature-middleware
+      example-feature-roots
+      example-feature-modern-client)
+  get_directory_property(MCP_CPP_SDK_EXAMPLE_TARGETS BUILDSYSTEM_TARGETS)
+  list(FILTER MCP_CPP_SDK_EXAMPLE_TARGETS INCLUDE REGEX "^example-")
+  list(REMOVE_ITEM MCP_CPP_SDK_EXAMPLE_TARGETS example-debugger-server)
+  foreach(example_target IN LISTS MCP_CPP_SDK_EXAMPLE_TARGETS)
+    if(example_target IN_LIST MCP_CPP_SDK_DEPRECATED_FEATURE_EXAMPLES)
+      target_compile_definitions(${example_target}
+                                 PRIVATE MCP_DISABLE_DEPRECATION_ATTRIBUTES)
+    else()
+      mcp_cpp_sdk_deprecations_as_errors(${example_target})
+    endif()
+  endforeach()
 endif()

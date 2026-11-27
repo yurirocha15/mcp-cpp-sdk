@@ -70,8 +70,9 @@ jobs:
         with:
           python-version: '3.12'
 
-      # A documented deprecation without MCP_DEPRECATED warns nobody who builds against it.
-      - name: Check @deprecated tags against declaration attributes
+      # Every deprecation in the registry is marked, every marker and every public name of a
+      # deprecated feature is in the registry, and every @deprecated tag has the attribute.
+      - name: Check the public headers against the deprecation registry
         run: |
           python3 scripts/check_deprecations.py
           PYTHONPATH=scripts python3 -m unittest -v scripts.test_check_deprecations

@@ -918,6 +918,7 @@ std::optional<nlohmann::json> Client::Impl::with_request_meta(
         meta[std::string(mcp::constants::meta::g_META_CLIENT_INFO)] = client_info;
     }
     if (level) {
+        deprecations.report(DeprecatedFeature::eLogging);
         meta[std::string(mcp::constants::meta::g_META_LOG_LEVEL)] = *level;
     }
     merged["_meta"] = std::move(meta);

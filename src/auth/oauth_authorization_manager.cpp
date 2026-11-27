@@ -4,6 +4,7 @@
 #include <mcp/core/async.hpp>
 
 #include "authorization_common.hpp"
+#include "mcp/detail/deprecation_reporter.hpp"
 #include "mcp/detail/text/encoding.hpp"
 #include "mcp/detail/text/secure_random.hpp"
 
@@ -400,6 +401,7 @@ struct OAuthAuthorizationManager::Impl {
             }
         }
 
+        owner.deprecations.report(DeprecatedFeature::eDynamicClientRegistration);
         operation->registration_response = co_await operation->http_client->post_json(
             *operation->facts.registration_endpoint,
             build_registration_request(owner.config.client_identity.metadata, operation->facts));
@@ -898,6 +900,7 @@ struct OAuthAuthorizationManager::Impl {
     net::strand<net::any_io_executor> flight_strand;
     net::any_io_executor executor;
     OAuthAuthorizationConfig config;
+    mcp::detail::DeprecationReporter deprecations{config.deprecation_handler};
     AuthorizationCallback callback;
     mutable std::mutex state_mutex;
     std::optional<AuthorizationRequest> last_request;

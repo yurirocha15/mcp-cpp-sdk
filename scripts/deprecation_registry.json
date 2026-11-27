@@ -1,0 +1,215 @@
+{
+    "stems": [
+        "roots",
+        "sampl",
+        "logging",
+        "log_level",
+        "loglevel",
+        "setlevel",
+        "registration",
+        "includecontext",
+        "include_context",
+        "thisserver",
+        "this_server",
+        "allservers",
+        "all_servers"
+    ],
+    "unrelated": [
+        {
+            "pattern": "use_system_roots",
+            "reason": "TLS certificate authorities, not the Roots feature."
+        }
+    ],
+    "rows": [
+        {
+            "kind": "spec",
+            "id": "logging",
+            "proposal": "SEP-2577",
+            "since": "2026-07-28",
+            "earliest_removal": "first revision released on or after 2027-07-28",
+            "declarations": [
+                "include/mcp/core/context.hpp:log_info",
+                "include/mcp/core/context.hpp:log",
+                "include/mcp/server/server.hpp:get_log_level"
+            ],
+            "runtime_only": [
+                {
+                    "declaration": "include/mcp/client/request_options.hpp:log_level",
+                    "reason":
+                        "A data member: a deprecated member warns wherever its struct is built, even by its implicit constructor. The client reports a request that sets it."
+                }
+            ],
+            "exemptions": [
+                {
+                    "pattern":
+                        "LoggingLevel|SetLevelRequest(Params)?|LoggingMessageNotification(Params)?",
+                    "reason":
+                        "A protocol type the SDK still sends and reads for peers that use the feature; marking it would warn in the SDK's own headers that name it."
+                },
+                {
+                    "pattern": "logging|logLevel",
+                    "reason":
+                        "A data member: a deprecated member warns wherever its struct is built, even by its implicit constructor."
+                },
+                {
+                    "pattern": "g_LOGGING_SET_LEVEL|g_META_LOG_LEVEL",
+                    "reason":
+                        "A method or _meta name the SDK still sends and reads for peers that use the feature."
+                },
+                {
+                    "pattern": "log_level_",
+                    "reason": "A private member of Context."
+                },
+                {
+                    "pattern": "eLogging",
+                    "reason": "Names the feature in a DeprecationNotice."
+                }
+            ],
+            "notice_test": "DeprecationNoticeTest.ServerHandlersReportTheDeprecatedFeaturesTheyUse"
+        },
+        {
+            "kind": "spec",
+            "id": "sampling",
+            "proposal": "SEP-2577",
+            "since": "2026-07-28",
+            "earliest_removal": "first revision released on or after 2027-07-28",
+            "declarations": [
+                "include/mcp/core/context.hpp:sample_llm",
+                "include/mcp/client/client.hpp:on_sampling"
+            ],
+            "runtime_only": [],
+            "exemptions": [
+                {
+                    "pattern": "SamplingCapability|SamplingMessage(Content(Block)?)?",
+                    "reason":
+                        "A protocol type the SDK still sends and reads for peers that use the feature; marking it would warn in the SDK's own headers that name it."
+                },
+                {
+                    "pattern": "sampling",
+                    "reason":
+                        "A data member: a deprecated member warns wherever its struct is built, even by its implicit constructor."
+                },
+                {
+                    "pattern": "g_SAMPLING_CREATE_MESSAGE",
+                    "reason":
+                        "A method or _meta name the SDK still sends and reads for peers that use the feature."
+                },
+                {
+                    "pattern": "eSampling",
+                    "reason": "Names the feature in a DeprecationNotice."
+                }
+            ],
+            "notice_test": "DeprecationNoticeTest.ClientRegistrationsReportSamplingAndRootsOnce"
+        },
+        {
+            "kind": "spec",
+            "id": "roots",
+            "proposal": "SEP-2577",
+            "since": "2026-07-28",
+            "earliest_removal": "first revision released on or after 2027-07-28",
+            "declarations": [
+                "include/mcp/core/context.hpp:request_roots",
+                "include/mcp/client/client.hpp:set_roots",
+                "include/mcp/client/client.hpp:on_roots_list"
+            ],
+            "runtime_only": [],
+            "exemptions": [
+                {
+                    "pattern":
+                        "RootsCapability|ListRootsRequest|ListRootsResult|RootsListChangedNotification",
+                    "reason":
+                        "A protocol type the SDK still sends and reads for peers that use the feature; marking it would warn in the SDK's own headers that name it."
+                },
+                {
+                    "pattern": "roots",
+                    "reason":
+                        "A data member: a deprecated member warns wherever its struct is built, even by its implicit constructor. Also the name of set_roots()'s parameter."
+                },
+                {
+                    "pattern": "g_ROOTS_LIST|g_NOTIFICATIONS_ROOTS_LIST_CHANGED",
+                    "reason":
+                        "A method or _meta name the SDK still sends and reads for peers that use the feature."
+                },
+                {
+                    "pattern": "eRoots",
+                    "reason": "Names the feature in a DeprecationNotice."
+                }
+            ],
+            "notice_test": "DeprecationNoticeTest.ClientRegistrationsReportSamplingAndRootsOnce"
+        },
+        {
+            "kind": "spec",
+            "id": "dynamic-client-registration",
+            "proposal": "PR #2858",
+            "since": "2026-07-28",
+            "earliest_removal": "first revision released on or after 2027-07-28",
+            "declarations": [
+                "include/mcp/auth/client_identity.hpp:build_registration_request",
+                "include/mcp/auth/client_identity.hpp:eRegisterDynamically"
+            ],
+            "runtime_only": [
+                {
+                    "declaration": "include/mcp/auth/client_identity.hpp:eDynamicRegistration",
+                    "reason":
+                        "The default of OAuthClientInformation::source in the same header: a deprecated enumerator named there warns in every file that includes the header. OAuthAuthorizationManager reports a registration at run time."
+                }
+            ],
+            "exemptions": [
+                {
+                    "pattern": "eReuseStoredRegistration",
+                    "reason":
+                        "The application's ClientCredentialStore can also hold credentials registered outside the SDK."
+                },
+                {
+                    "pattern": "registration_endpoint",
+                    "reason": "Authorization server metadata the SDK reads from peers."
+                },
+                {
+                    "pattern": "eDynamicClientRegistration",
+                    "reason": "Names the feature in a DeprecationNotice."
+                }
+            ],
+            "notice_test":
+                "AuthClientIdentityLoopbackTest.FallsBackToDynamicRegistrationAndSendsApplicationType"
+        },
+        {
+            "kind": "spec",
+            "id": "include-context",
+            "proposal": "SEP-2596",
+            "since": "2025-11-25",
+            "earliest_removal": "with Sampling (SEP-2577)",
+            "declarations": [
+                "include/mcp/core/constants.hpp:g_THIS_SERVER",
+                "include/mcp/core/constants.hpp:g_ALL_SERVERS"
+            ],
+            "runtime_only": [],
+            "exemptions": [
+                {
+                    "pattern": "includeContext",
+                    "reason":
+                        "A free-form string member that also takes the value that is not deprecated, \"none\"; the deprecated values are marked through g_THIS_SERVER and g_ALL_SERVERS and reported at run time."
+                },
+                {
+                    "pattern": "include_context",
+                    "reason": "The namespace of the includeContext constants."
+                },
+                {
+                    "pattern": "eIncludeContext",
+                    "reason": "Names the feature in a DeprecationNotice."
+                }
+            ],
+            "notice_test": "DeprecationNoticeTest.ServerHandlersReportTheDeprecatedFeaturesTheyUse"
+        },
+        {
+            "kind": "spec",
+            "id": "http-sse",
+            "proposal": "SEP-2596",
+            "since": "2025-03-26",
+            "earliest_removal": "three months after SEP-2596 reaches Final",
+            "declarations": [],
+            "runtime_only": [],
+            "exemptions": [],
+            "notice_test": null
+        }
+    ]
+}

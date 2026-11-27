@@ -446,6 +446,20 @@ class MCP_API Server {
     [[nodiscard]] std::uint64_t dropped_notifications() const;
 
     /**
+     * @brief Receive the notice of each deprecated feature this server's handlers use, instead of
+     *        standard error.
+     *
+     * @details The first call to Context::log(), Context::log_info(), Context::sample_llm(),
+     * Context::request_roots() or get_log_level() reports its feature once, for this server and
+     * the servers built for its other sessions; see DeprecationNotice. Without a handler the
+     * notice goes to standard error, unless the environment variable
+     * MCP_SILENCE_DEPRECATION_NOTICES is set to a non-empty value. Must be called before run().
+     *
+     * @param handler Receives each notice; an empty handler restores standard error.
+     */
+    void set_deprecation_handler(DeprecationHandler handler);
+
+    /**
      * @brief Run tool, resource, prompt and extension method handlers on @p executor instead of
      *        the executor the server runs on.
      *
@@ -1022,9 +1036,16 @@ class MCP_API Server {
     /**
      * @brief Get the currently active server log level.
      *
+     * @deprecated Protocol revision 2026-07-28 deprecates logging (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
+     *
      * @return The log level used when filtering context log messages of requests of 2025-11-25
      * and earlier. A 2026-07-28 request is filtered by its own io.modelcontextprotocol/logLevel.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Logging is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; log to stderr on stdio "
+        "and use OpenTelemetry for observability")
     [[nodiscard]] LoggingLevel get_log_level() const;
 
    private:

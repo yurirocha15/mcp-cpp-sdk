@@ -12,6 +12,17 @@
 
 namespace mcp::detail::constants {
 
+/// Deprecation notices (DeprecationReporter).
+namespace deprecation {
+
+/// Set to a non-empty value, it stops the notices that have no handler from going to standard error.
+inline constexpr std::string_view g_SILENCE_ENV = "MCP_SILENCE_DEPRECATION_NOTICES";
+/// The earliest removal of the features protocol revision 2026-07-28 deprecates.
+inline constexpr std::string_view g_REVISION_ON_OR_AFTER_2027_07_28 =
+    "first revision released on or after 2027-07-28";
+
+}  // namespace deprecation
+
 /// Alphabets and bit arithmetic for hexadecimal, base64, base64url and percent encoding.
 namespace encoding {
 

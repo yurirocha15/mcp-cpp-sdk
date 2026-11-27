@@ -97,6 +97,7 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                     std::move(request_meta),
                     std::move(principal),
                     mrtr ? mrtr->replaying : nullptr};
+    detail::ContextRouting::set_deprecation_reporter(context, registry->deprecations);
     if (notification_rate_limit.burst > 0) {
         detail::ContextRouting::set_notification_budget(
             context, std::make_shared<detail::NotificationBudget>(notification_rate_limit,
@@ -499,6 +500,7 @@ Task<std::string> Server::Impl::handle_initialize_wire(const nlohmann::json& jso
             client_capabilities = declared != params.end() && declared->is_object()
                                       ? *declared
                                       : nlohmann::json::object();
+            negotiated_version = init_result.protocolVersion;
         }
         if (auto current = session_snapshot(); current && current->http_transport != nullptr) {
             const auto epoch = session_epoch(*current);

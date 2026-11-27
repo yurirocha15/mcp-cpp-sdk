@@ -435,6 +435,10 @@ std::uint64_t Server::dropped_notifications() const {
     return impl_->dropped_notifications->load(std::memory_order_relaxed);
 }
 
+void Server::set_deprecation_handler(DeprecationHandler handler) {
+    impl_->registry->deprecations->set_handler(std::move(handler));
+}
+
 ToolValidationStats Server::tool_validation_stats() const {
     return {
         .argument_rejections = impl_->argument_rejections.load(std::memory_order_relaxed),
@@ -543,7 +547,10 @@ bool Server::is_shutdown_requested() const {
     return impl_->shutdown_requested.load(std::memory_order_relaxed);
 }
 
-LoggingLevel Server::get_log_level() const { return impl_->log_level.load(std::memory_order_relaxed); }
+LoggingLevel Server::get_log_level() const {
+    impl_->registry->deprecations->report(DeprecatedFeature::eLogging);
+    return impl_->log_level.load(std::memory_order_relaxed);
+}
 
 // These three await rather than returning the task, and that is load-bearing. The argument is a
 // temporary bound to a reference parameter of a lazy coroutine: under co_await it lives to the end

@@ -3,6 +3,7 @@
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>
+#include <mcp/detail/deprecation_reporter.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <memory>
@@ -19,10 +20,17 @@ namespace methods = mcp::constants::methods;
 
 namespace mcp {
 
+void Context::report_deprecated(DeprecatedFeature feature) const {
+    if (deprecations_) {
+        deprecations_->report(feature);
+    }
+}
+
 Task<void> Context::log_info(std::string_view msg) { co_await log(LoggingLevel::eInfo, msg); }
 
 Task<void> Context::log(LoggingLevel level, std::string_view msg,
                         const std::optional<std::string>& logger) {
+    report_deprecated(DeprecatedFeature::eLogging);
     if (request_meta_) {
         if (!request_meta_->logLevel ||
             static_cast<uint8_t>(level) > static_cast<uint8_t>(*request_meta_->logLevel)) {
@@ -96,6 +104,10 @@ Task<void> Context::report_progress(double progress, std::optional<double> total
 
 Task<CreateMessageResult> Context::sample_llm(const CreateMessageRequestParams& request,
                                               InputOptions options) {
+    report_deprecated(DeprecatedFeature::eSampling);
+    if (request.includeContext && *request.includeContext != constants::include_context::g_NONE) {
+        report_deprecated(DeprecatedFeature::eIncludeContext);
+    }
     if (!sender_) {
         throw std::runtime_error("Context has no request sender for reverse RPC");
     }
@@ -126,6 +138,7 @@ Task<ElicitResult> Context::elicit(const ElicitRequestParams& params, InputOptio
 }
 
 Task<ListRootsResult> Context::request_roots(InputOptions options) {
+    report_deprecated(DeprecatedFeature::eRoots);
     if (!sender_) {
         throw std::runtime_error("Context has no request sender for reverse RPC");
     }

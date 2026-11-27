@@ -8,6 +8,7 @@
 #include "mcp/detail/async/spawn_awaitable.hpp"
 #include "mcp/detail/client/response_cache.hpp"
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/deprecation_reporter.hpp"
 #include "mcp/detail/json/peer_json.hpp"
 #include "mcp/detail/protocol/notification_budget.hpp"
 #include "mcp/detail/text/diagnostic_text.hpp"
@@ -986,6 +987,8 @@ struct Client::Impl {
     /// the strand only.
     std::vector<std::weak_ptr<boost::asio::steady_timer>> poll_pauses;
     ClientOptions options;
+    /// See ClientOptions::deprecation_handler; reporting from const members is no change of state.
+    mutable detail::DeprecationReporter deprecations{options.deprecation_handler};
     detail::ResponseCache response_cache{options.response_cache};
     /// See ClientOptions::notification_rate_limit.
     detail::TokenBucket progress_bucket{options.notification_rate_limit};

@@ -474,8 +474,8 @@ class MCP_API Client {
     /**
      * @brief Register a handler for sampling requests from the server.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates sampling (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Registers a request handler for "sampling/createMessage": the handler receives the
      * request's CreateMessageRequestParams and returns the CreateMessageResult sent back. A
@@ -485,14 +485,18 @@ class MCP_API Client {
      * @param handler Async handler: receives CreateMessageRequestParams, returns
      *        CreateMessageResult.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Sampling is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; integrate directly with "
+        "LLM provider APIs")
     void on_sampling(
         std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler);
 
     /**
      * @brief Set static roots and auto-register the roots/list handler.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates roots (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Stores the given roots and registers a request handler for
      * "roots/list" that returns them. If notify is true, sends a
@@ -502,16 +506,24 @@ class MCP_API Client {
      * @param roots The list of roots to provide.
      * @param notify Whether to send a roots-changed notification.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Roots is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; pass directories or files "
+        "through tool parameters, resource URIs or server configuration")
     void set_roots(const std::vector<Root>& roots, bool notify = false);
 
     /**
      * @brief Register a dynamic handler for roots/list requests.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates roots (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @param handler Async handler that returns a ListRootsResult.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Roots is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; pass directories or files "
+        "through tool parameters, resource URIs or server configuration")
     void on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler);
 
    private:

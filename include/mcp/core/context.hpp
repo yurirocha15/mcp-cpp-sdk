@@ -7,6 +7,7 @@
 
 #include <mcp/core/async_fwd.hpp>
 #include <mcp/core/constants.hpp>
+#include <mcp/core/deprecation.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/protocol/protocol.hpp>
@@ -58,6 +59,7 @@ class ITransport;
 
 namespace detail {
 struct ContextRouting;
+class DeprecationReporter;
 class NotificationBudget;
 }  // namespace detail
 
@@ -167,19 +169,23 @@ class Context {
     /**
      * @brief Sends an informational log message to the client.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates logging (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @param msg The log message to send.
      * @return A task that completes when the message is sent.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Logging is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; log to stderr on stdio "
+        "and use OpenTelemetry for observability")
     MCP_API Task<void> log_info(std::string_view msg);
 
     /**
      * @brief Send a log message at a specific level.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates logging (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Respects the server's current log level. Messages with a level
      * higher (less severe) than the current threshold are silently dropped.
@@ -195,6 +201,10 @@ class Context {
      * @param logger Optional logger name.
      * @return A task that completes when the message is sent (or immediately if filtered).
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Logging is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; log to stderr on stdio "
+        "and use OpenTelemetry for observability")
     MCP_API Task<void> log(LoggingLevel level, std::string_view msg,
                            const std::optional<std::string>& logger = std::nullopt);
 
@@ -264,8 +274,8 @@ class Context {
     /**
      * @brief Request the client to sample an LLM (reverse RPC).
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates sampling (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Sends a "sampling/createMessage" request to the client
      * and awaits the response. Requires the Context to be constructed
@@ -289,6 +299,10 @@ class Context {
      * when the client never retries in time; the handler's own answer then goes nowhere. Any other
      * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Sampling is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; integrate directly with "
+        "LLM provider APIs")
     MCP_API Task<CreateMessageResult> sample_llm(const CreateMessageRequestParams& request,
                                                  InputOptions options = {});
 
@@ -329,8 +343,8 @@ class Context {
     /**
      * @brief Request the list of roots from the client (reverse RPC).
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates roots (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Sends a "roots/list" request to the client and awaits
      * the response. The client provides its configured root URIs.
@@ -349,6 +363,10 @@ class Context {
      * when the client never retries in time; the handler's own answer then goes nowhere. Any other
      * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Roots is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; pass directories or files "
+        "through tool parameters, resource URIs or server configuration")
     MCP_API Task<ListRootsResult> request_roots(InputOptions options = {});
 
    private:
@@ -391,6 +409,10 @@ class Context {
     ProgressSink progress_sink_;
     /// The progress and log notifications this request may still send; null for no limit.
     std::shared_ptr<detail::NotificationBudget> budget_;
+    /// Reports this context's use of a deprecated feature for its server; null reports nothing.
+    std::shared_ptr<detail::DeprecationReporter> deprecations_;
+
+    void report_deprecated(DeprecatedFeature feature) const;
 };
 
 }  // namespace mcp

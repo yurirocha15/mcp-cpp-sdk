@@ -184,6 +184,8 @@ JOB_INPUTS = {
         "include/*",
         "scripts/*",
         "src/*",
+        # check_deprecations.py reads the test names of the deprecation registry.
+        "test/*.cpp",
     ),
     "powershell": ("scripts/release/*.ps1",),
     "package_core": PACKAGE_CORE + (

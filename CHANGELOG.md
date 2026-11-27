@@ -9,11 +9,30 @@ Versioning; a `0.x` version is a stable release unless its version has an
 ### Added
 
 - The Chocolatey package has an icon.
+- `Server::set_deprecation_handler()`, `ClientOptions::deprecation_handler` and
+  `OAuthAuthorizationConfig::deprecation_handler` receive a notice when the
+  object first uses a deprecated feature.
+- `mcp::constants::include_context` names the values of `includeContext`;
+  `g_THIS_SERVER` and `g_ALL_SERVERS` are deprecated.
 
 ### Changed
 
 - The documentation moved to [mcp-cpp-sdk.yurirocha.com](https://mcp-cpp-sdk.yurirocha.com/), and links to the old address redirect there.
 - The installation guide has a page for each platform, each with its install, upgrade and uninstall steps.
+- Without a handler, the first use of a deprecated protocol feature prints one
+  line on standard error; setting `MCP_SILENCE_DEPRECATION_NOTICES` stops it.
+
+### Deprecated
+
+- The APIs of Roots, Sampling, Logging, dynamic client registration and
+  `includeContext` other than `"none"` carry `[[deprecated]]`, citing the
+  proposal and earliest removal.
+
+### Migrating from 0.4.0
+
+- A build that treats warnings as errors and uses a deprecated feature defines
+  `MCP_DISABLE_DEPRECATION_ATTRIBUTES`, or moves to the migration path the
+  warning names.
 
 ## [0.4.0] - 2026-11-26
 
