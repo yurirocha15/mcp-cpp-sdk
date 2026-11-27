@@ -6,6 +6,62 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-26
+
+### Highlights
+
+- **Sync mode.** `Server` and `Client` run their own event loop, take
+  synchronous handlers and make blocking calls, such as
+  `client.sync().call_tool()`, with no Boost in the program. Async mode uses
+  the same objects with coroutines.
+- **Headers without Boost.** Only `<mcp/core/async.hpp>`,
+  `<mcp/core/signal.hpp>`, `<mcp/transport/websocket.hpp>` and
+  `<mcp/transport/http_beast.hpp>` include Boost; `<mcp/mcp.hpp>` and the other
+  server, client, auth and transport headers do not. Code that defines or
+  awaits a coroutine includes `<mcp/core/async.hpp>`.
+- **Endpoints.** `mcp::Endpoint` connects a `Client` to a command it launches,
+  to a Streamable HTTP URL or through the application's own transport, and a
+  `StdioRestartPolicy` starts a launched server again when its process ends.
+- **TLS and proxies.** Clients connect to `https://` servers, checked against
+  the system's certificate authorities, and through HTTP proxies. Servers
+  serve TLS and can require client certificates, and the WebSocket transports
+  speak wss.
+- **One HTTP server, many clients.** `Server::run_http()` serves any number of
+  clients of 2025-11-25 and earlier, each in its own session.
+- **JSON Schema without jsoncons.** The SDK's own engine validates every
+  dialect it supports, and jsoncons is no longer compiled into the library.
+- **Specification recommendations.** An opt-in client response cache,
+  opt-in notification rate limits, tool name checks and `Host` checks on
+  loopback connections; the documentation lists which parts of the
+  specification the SDK implements.
+- **HTTP performance.** `HttpClientTransport` sends requests on connections
+  that earlier answers left open, instead of a new connection and TLS
+  handshake per call, and HTTP servers allocate less for each request.
+- **Typed transport errors.** The built-in transports throw `TransportError`,
+  whose `kind()` tells closed, connect, I/O and protocol failures apart.
+
+### Migrating from 0.3.0
+
+Code written for 0.3.0 needs these changes to compile with 0.4.0:
+
+- Write `mcp::Task<T>` for `boost::asio::awaitable<T>` in `ITransport` and `auth::Authenticator` overrides and in coroutine handlers given to the `add_*()` registrations.
+- Include `<mcp/core/async.hpp>` where a coroutine is defined or awaited; `<mcp/core/core.hpp>` is gone.
+- Include the Boost headers of the Asio and Beast types code uses, such as `<boost/asio/io_context.hpp>`; the SDK's headers no longer include them.
+- A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
+- `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
+- Construct transports with `Runtime::executor()` instead of `TransportFactory` or `make_*_transport()`.
+- Call `make_memory_transport_pair()` where code called `create_memory_transport_pair()`.
+- Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
+- Include `<mcp/server/server.hpp>` where code uses `Server` after including only `<mcp/transport/http_session_manager.hpp>` or `<mcp/auth/oauth.hpp>`.
+- Include `<mcp/transport/request_context.hpp>` where code included `<mcp/server/request_context.hpp>`.
+- Include `<mcp/transport/transport.hpp>` where code uses `ITransport` after including only `<mcp/core/context.hpp>`.
+
+These changes in behavior need no change to compile:
+
+- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows the transport's exception.
+- Catch `TransportError` where code caught `boost::system::system_error` from a built-in transport's read or write; `code()` holds the error code.
+- Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
+
 ### Added
 
 - Sync mode: `Server` and `Client` run their own event loop, take synchronous handlers and make blocking calls, with no Boost in the program; async mode uses the same objects.
@@ -40,7 +96,7 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ### Changed
 
-- `<mcp/mcp.hpp>` and the server, client and transport headers include no Boost header; code that defines or awaits a coroutine includes `<mcp/core/async.hpp>`.
+- `<mcp/mcp.hpp>` includes no Boost header; only `async.hpp`, `signal.hpp`, `websocket.hpp` and `http_beast.hpp` do, and coroutine code includes `<mcp/core/async.hpp>`.
 - `mcp::Task<T>` is a class derived from `boost::asio::awaitable<T>`, declared without Boost in `<mcp/core/async_fwd.hpp>`; `co_spawn` takes a callable that returns one.
 - Public APIs take `mcp::Executor`, which needs no Boost, instead of `boost::asio::any_io_executor`; an Asio executor converts to it.
 - `Server::run_http()` serves any number of clients of 2025-11-25 and earlier, each in its own session, where it served one at a time.
@@ -87,27 +143,6 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The `mcp::auth::net` alias of `boost::asio`.
 - The installed headers no longer declare the JSON parser, the regular expression engine, the serialized transport writer, the executor access, the secure random helpers or the OAuth encoders.
 
-### Migrating from 0.3.0
-
-Code written for 0.3.0 needs these changes to compile with this release:
-
-- Write `mcp::Task<T>` for `boost::asio::awaitable<T>` in `ITransport` and `auth::Authenticator` overrides and in coroutine handlers given to the `add_*()` registrations.
-- Include `<mcp/core/async.hpp>` where a coroutine is defined or awaited; `<mcp/core/core.hpp>` is gone.
-- A `StreamableHttpSessionManager::ServerFactory` takes a `const mcp::Executor&`; call `Executor::get()` for the `any_io_executor`.
-- `mcp::set_custom_request_handler(manager, handler)` and `StringRequest`/`StringResponse` are in `<mcp/transport/http_beast.hpp>`.
-- Construct transports with `Runtime::executor()` instead of `TransportFactory` or `make_*_transport()`.
-- Call `make_memory_transport_pair()` where code called `create_memory_transport_pair()`.
-- Pass the arguments of `get_prompt()` as a `std::map` instead of a `std::optional`; an empty map sends none.
-- Include `<mcp/server/server.hpp>` where code uses `Server` after including only `<mcp/transport/http_session_manager.hpp>` or `<mcp/auth/oauth.hpp>`.
-- Include `<mcp/transport/request_context.hpp>` where code included `<mcp/server/request_context.hpp>`.
-- Include `<mcp/transport/transport.hpp>` where code uses `ITransport` after including only `<mcp/core/context.hpp>`.
-
-These changes in behavior need no change to compile:
-
-- Around `Client` calls, catch `McpError` where code caught `HttpStatusError` or `boost::system::system_error`; `std::rethrow_if_nested()` rethrows the transport's exception.
-- Catch `TransportError` where code caught `boost::system::system_error` from a built-in transport's read or write; `code()` holds the error code.
-- Under `run_http()`, reach a client through the handler's `Context`: the `Server`'s `send_request()`, `is_initialized()` and `get_log_level()` belong to no session.
-
 ### Fixed
 
 - The documentation site fits phone and tablet screens: pages no longer grow wider
@@ -125,9 +160,6 @@ These changes in behavior need no change to compile:
   comment.
 - A client's request no longer fails when the server cancels a request of its
   own that has the same id, as it does for an elicitation it stops waiting for.
-- A client trusts no authority when `SSL_CERT_FILE` or `SSL_CERT_DIR` is set but
-  names none, instead of OpenSSL's defaults; with OpenSSL 3.0, a missing
-  `SSL_CERT_DIR` failed handshakes.
 - A `completion/complete` request whose reference type is neither `ref/prompt`
   nor `ref/resource` is answered with -32602 instead of being read as a resource
   reference.
@@ -160,8 +192,6 @@ These changes in behavior need no change to compile:
   the source location that Boost adds to it.
 - The LLDB example returns a command that LLDB fails as a tool error instead of
   as its output.
-- `run_stdio()` and `run_http()` no longer risk a crash in `pthread_detach()`
-  when they return at the shutdown deadline while handlers still run.
 
 ## [0.3.0] - 2026-11-17
 
