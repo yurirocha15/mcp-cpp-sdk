@@ -24,6 +24,9 @@ PACKAGES = {"package_core", "native_package", "homebrew_package", "windows_packa
 PACKAGE_BUILDS = PACKAGES - {"package_core"}
 PULL_REQUEST_JOBS = ALL_JOBS - PACKAGE_BUILDS
 LIBRARY_JOBS = {"code", "conan", "lint"}
+# src/ and include/ are also read by the conformance fixtures and the guard scripts.
+SOURCE_JOBS = LIBRARY_JOBS | {"conformance", "conformance_guards"}
+GUARDS = {"conformance_guards"}
 # Release modules each job starts, directly or through a script in scripts/release/.
 ENTRY_MODULES = {
     "package_core": ("release/construct_core.py",),
@@ -111,10 +114,26 @@ class ClassifierTests(unittest.TestCase):
     def test_files_no_job_reads_run_nothing(self) -> None:
         for path in ("docs/index.rst", "examples/README.md", "release/README.md",
                      ".github/ISSUE_TEMPLATE/bug.yml", ".clang-format", "Makefile",
-                     "conformance/run.sh"):
+                     "conformance/README.md"):
             for event in ("pull_request", "push"):
                 with self.subTest(path=path, event=event):
                     self.assertEqual(self.jobs_for_change(path, event), set())
+
+    def test_conformance_paths_run_the_conformance_jobs(self) -> None:
+        for path, jobs in (("conformance/everything_server.cpp", {"conformance"}),
+                           ("conformance/expected-failures.yml", {"conformance"}),
+                           ("conformance/run.sh", {"conformance", "conformance_guards"}),
+                           ("conformance/runner/package.json", {"conformance", "conformance_guards"})):
+            for event in ("pull_request", "push"):
+                with self.subTest(path=path, event=event):
+                    self.assertEqual(self.jobs_for_change(path, event), jobs)
+
+    def test_docs_only_change_runs_no_conformance_job(self) -> None:
+        self.write("docs/index.rst", "Index, edited\n")
+        self.write("docs/guide.rst", GUIDE + "\nMore prose.\n")
+        jobs = self.jobs("pull_request", self.commit())
+        self.assertNotIn("conformance", jobs)
+        self.assertNotIn("conformance_guards", jobs)
 
     def test_readme_prose_runs_nothing(self) -> None:
         self.write("README.md", README.replace("Prose.", "Better prose."))
@@ -154,42 +173,42 @@ class ClassifierTests(unittest.TestCase):
 
     def test_pull_request_runs_only_the_jobs_reading_the_path(self) -> None:
         expected = {
-            "src/main.cpp": LIBRARY_JOBS,
-            "include/mcp/sdk.hpp": LIBRARY_JOBS,
+            "src/main.cpp": SOURCE_JOBS,
+            "include/mcp/sdk.hpp": SOURCE_JOBS,
             "test/core/protocol_test.cpp": {"code"},
             "test/data/json-schema/suite.json": {"code", "release"},
             "test/include/support/pipe_stream.hpp": {"code"},
             "test/perf/schema_workload.cpp": {"code"},
-            "scripts/schema_ir_gate.py": {"release"},
+            "scripts/schema_ir_gate.py": {"release"} | GUARDS,
             "examples/features/pagination.cpp": {"code", "lint"},
             "examples/sync/minimal_server.cpp": {"code", "lint", "readme"},
-            "scripts/check_readme_snippets.py": {"code", "readme", "release"},
-            "scripts/run_examples.py": {"code", "release"},
+            "scripts/check_readme_snippets.py": {"code", "readme", "release"} | GUARDS,
+            "scripts/run_examples.py": {"code", "release"} | GUARDS,
             "test_package/conanfile.py": {"conan"} | PACKAGES,
             "LICENSE": {"conan"},
             "benchmark/run.sh": {"benchmark"},
             "test/release/test_signing.py": {"release"},
             "release/github_anchor.py": {"release"},
-            "scripts/ci_changes.py": {"release", "lint"},
+            "scripts/ci_changes.py": {"release", "lint"} | GUARDS,
             ".clang-tidy": {"lint"},
-            ".github/workflows/release.yml": {"release"},
-            ".github/workflows/release-candidate.yml": {"release"},
-            ".github/workflows/conformance.yml": {"release"},
+            ".github/workflows/release.yml": {"release"} | GUARDS,
+            ".github/workflows/release-candidate.yml": {"release"} | GUARDS,
+            ".github/workflows/conformance.yml": {"release", "conformance"} | GUARDS,
             "packaging/aur/PKGBUILD.in": {"release", "package_core"},
             "packaging/debian/control.in": {"release", "package_core", "native_package"},
             "release/native-builders/lock.json": {"release", "package_core", "native_package"},
             "packaging/homebrew/mcp-cpp-sdk.rb.in": {"release", "package_core", "homebrew_package"},
-            "scripts/release/validate_homebrew_candidate.sh": {"release", "package_core", "homebrew_package"},
+            "scripts/release/validate_homebrew_candidate.sh": {"release", "package_core", "homebrew_package"} | GUARDS,
             "packaging/chocolatey/mcp-cpp-sdk.nuspec.in": {"release", "package_core", "windows_package"},
-            "scripts/release/build_windows.ps1": {"release", "powershell", "package_core", "windows_package"},
-            "scripts/release/check_powershell_syntax.ps1": {"release", "powershell"},
+            "scripts/release/build_windows.ps1": {"release", "powershell", "package_core", "windows_package"} | GUARDS,
+            "scripts/release/check_powershell_syntax.ps1": {"release", "powershell"} | GUARDS,
             "packaging/targets.json": {"release"} | PACKAGES,
             "release/construct_core.py": {"release"} | PACKAGES,
-            "scripts/package_build.py": {"release"} | PACKAGES,
-            "CMakeLists.txt": LIBRARY_JOBS | {"release", "package_core"},
-            "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core"},
-            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release", "package_core"},
-            "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
+            "scripts/package_build.py": {"release"} | PACKAGES | GUARDS,
+            "CMakeLists.txt": LIBRARY_JOBS | {"release", "package_core", "conformance"},
+            "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core", "conformance"},
+            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release", "package_core", "conformance"},
+            "VERSION": LIBRARY_JOBS | {"release", "conformance"} | PACKAGES,
             ".github/workflows/ci.yml": PULL_REQUEST_JOBS,
         }
         for path, jobs in expected.items():
@@ -205,18 +224,18 @@ class ClassifierTests(unittest.TestCase):
             "packaging/homebrew/mcp-cpp-sdk.rb.in":
                 {"release", "package_core", "homebrew_package"},
             "scripts/release/validate_homebrew_candidate.sh":
-                {"release", "package_core", "homebrew_package"},
+                {"release", "package_core", "homebrew_package"} | GUARDS,
             "packaging/chocolatey/mcp-cpp-sdk.nuspec.in":
                 {"release", "package_core", "windows_package"},
             "scripts/release/build_windows.ps1":
-                {"release", "powershell", "package_core", "windows_package"},
+                {"release", "powershell", "package_core", "windows_package"} | GUARDS,
             "packaging/targets.json": {"release"} | PACKAGES,
             "release/construct_core.py": {"release"} | PACKAGES,
-            "scripts/package_build.py": {"release"} | PACKAGES,
-            "CMakeLists.txt": LIBRARY_JOBS | {"release"} | PACKAGES,
-            "cmake/config.cmake.in": LIBRARY_JOBS | PACKAGES,
-            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release"} | PACKAGES,
-            "VERSION": LIBRARY_JOBS | {"release"} | PACKAGES,
+            "scripts/package_build.py": {"release"} | PACKAGES | GUARDS,
+            "CMakeLists.txt": LIBRARY_JOBS | {"release", "conformance"} | PACKAGES,
+            "cmake/config.cmake.in": LIBRARY_JOBS | {"conformance"} | PACKAGES,
+            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release", "conformance"} | PACKAGES,
+            "VERSION": LIBRARY_JOBS | {"release", "conformance"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
         }
         for path, jobs in expected.items():
@@ -224,14 +243,14 @@ class ClassifierTests(unittest.TestCase):
                 self.assertEqual(self.jobs_for_change(path, "push"), jobs)
 
     def test_other_events_also_package_source(self) -> None:
-        for path, jobs in (("src/main.cpp", LIBRARY_JOBS), ("test/core/protocol_test.cpp", {"code"}),
+        for path, jobs in (("src/main.cpp", SOURCE_JOBS), ("test/core/protocol_test.cpp", {"code"}),
                            ("examples/features/pagination.cpp", {"code", "lint"}),
                            ("LICENSE", {"conan"})):
             with self.subTest(path=path):
                 self.assertEqual(self.jobs_for_change(path, "push"), jobs | PACKAGES)
 
     def test_push_runs_the_same_jobs_outside_source(self) -> None:
-        for path, jobs in ((".github/workflows/release.yml", {"release"}),
+        for path, jobs in ((".github/workflows/release.yml", {"release"} | GUARDS),
                            ("benchmark/run.sh", {"benchmark"}),
                            ("packaging/rpm/mcp-cpp-sdk.spec.in",
                             {"release", "package_core", "native_package"})):
@@ -242,7 +261,7 @@ class ClassifierTests(unittest.TestCase):
         self.write("docs/index.rst", "Index, edited\n")
         self.write("benchmark/run.sh", "true\n")
         self.write("src/main.cpp", "int y;\n")
-        self.assertEqual(self.jobs("pull_request", self.commit()), LIBRARY_JOBS | {"benchmark"})
+        self.assertEqual(self.jobs("pull_request", self.commit()), SOURCE_JOBS | {"benchmark"})
 
     def test_a_file_no_list_names_runs_every_job(self) -> None:
         self.assertEqual(self.jobs_for_change("new-directory/file.txt", "push"), ALL_JOBS)
@@ -338,8 +357,25 @@ class RepositoryTests(unittest.TestCase):
         needed = set(re.findall(r"^      - ([\w-]+)$", result.group(1), re.MULTILINE))
         self.assertEqual(needed, declared - {"result"})
 
+    def test_called_workflows_have_no_triggers_of_their_own(self) -> None:
+        for workflow in ("conformance.yml", "conformance-guards.yml"):
+            text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+            with self.subTest(workflow=workflow):
+                self.assertIn("\n  workflow_call:\n", text)
+                self.assertEqual(self.workflow_paths(workflow), [])
+                self.assertNotRegex(text, r"(?m)^  (push|pull_request):")
+                self.assertNotRegex(text, r"(?m)^concurrency:")
+
+    def test_alpha_workflow_reads_what_the_conformance_job_reads(self) -> None:
+        blocks = self.workflow_paths("conformance-alpha.yml")
+        alpha = {pattern.replace("**", "*") for pattern in blocks[0] if not pattern.startswith("!")}
+        alpha.discard(".github/workflows/conformance-alpha.yml")
+        conformance = set(ci_changes.JOB_INPUTS["conformance"])
+        conformance.discard(".github/workflows/conformance.yml")
+        self.assertEqual(alpha, conformance)
+
     def test_workflow_path_filters_name_tracked_files(self) -> None:
-        for workflow in ("conformance.yml", "conformance-guards.yml", "docs.yml"):
+        for workflow in ("conformance-alpha.yml", "docs.yml"):
             blocks = self.workflow_paths(workflow)
             self.assertEqual(len(blocks), 2, workflow)
             self.assertEqual(blocks[0], blocks[1], workflow)

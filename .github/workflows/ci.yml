@@ -35,6 +35,8 @@ jobs:
       native_package: ${{ steps.classify.outputs.native_package }}
       homebrew_package: ${{ steps.classify.outputs.homebrew_package }}
       windows_package: ${{ steps.classify.outputs.windows_package }}
+      conformance: ${{ steps.classify.outputs.conformance }}
+      conformance_guards: ${{ steps.classify.outputs.conformance_guards }}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -813,6 +815,21 @@ jobs:
           -ExpectedVCToolsVersion $env:WINDOWS_RELEASE_VCTOOLS_VERSION `
           -ExpectedMscVer ([int]$env:WINDOWS_RELEASE_MSC_VER)
 
+  conformance:
+    # The pinned conformance suites (conformance.yml), called here so that a failure fails the CI
+    # result. The alpha runner reports from a workflow of its own, which nothing here calls.
+    name: Conformance
+    needs: changes
+    if: needs.changes.outputs.conformance == 'true'
+    uses: ./.github/workflows/conformance.yml
+
+  conformance-guards:
+    # The repository guard scripts (conformance-guards.yml), called here for the same reason.
+    name: Conformance guardrails
+    needs: changes
+    if: needs.changes.outputs.conformance_guards == 'true'
+    uses: ./.github/workflows/conformance-guards.yml
+
   result:
     # The one check main requires. A job skipped because nothing it reads changed passes; a failed
     # or cancelled job fails this one.
@@ -835,6 +852,8 @@ jobs:
       - package
       - homebrew-package
       - windows-package
+      - conformance
+      - conformance-guards
     runs-on: ubuntu-slim
     permissions: {}
 

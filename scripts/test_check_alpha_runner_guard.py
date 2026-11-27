@@ -113,25 +113,25 @@ class AlphaJobTest(unittest.TestCase):
             "    needs: [conformance-2026-07-28-alpha]\n    steps:\n"
             "      - run: bash conformance/run_alpha.sh\n"
         )
-        self.write("conformance.yml", text)
+        self.write("conformance-alpha.yml", text)
         with self.assertRaises(guard.GuardError):
             self.check()
 
     def test_no_alpha_job_passes(self) -> None:
-        self.write("conformance.yml", workflow(GATE_JOB))
+        self.write("conformance-alpha.yml", workflow(GATE_JOB))
         self.check()
 
     def test_non_gating_alpha_job_passes(self) -> None:
-        self.write("conformance.yml", workflow(GATE_JOB, ALPHA_JOB_TEXT))
+        self.write("conformance-alpha.yml", workflow(GATE_JOB, ALPHA_JOB_TEXT))
         self.check()
 
     def test_alpha_job_first_in_the_file_passes(self) -> None:
-        self.write("conformance.yml", workflow(ALPHA_JOB_TEXT, GATE_JOB))
+        self.write("conformance-alpha.yml", workflow(ALPHA_JOB_TEXT, GATE_JOB))
         self.check()
 
     def test_alpha_job_without_continue_on_error_fails(self) -> None:
         job = ALPHA_JOB_TEXT.replace("    continue-on-error: true\n", "")
-        self.write("conformance.yml", workflow(GATE_JOB, job))
+        self.write("conformance-alpha.yml", workflow(GATE_JOB, job))
         with self.assertRaisesRegex(guard.GuardError, "continue-on-error"):
             self.check()
 
@@ -139,30 +139,49 @@ class AlphaJobTest(unittest.TestCase):
         job = ALPHA_JOB_TEXT.replace("    continue-on-error: true\n", "").replace(
             "      - run:", "      - continue-on-error: true\n        run:"
         )
-        self.write("conformance.yml", workflow(GATE_JOB, job))
+        self.write("conformance-alpha.yml", workflow(GATE_JOB, job))
         with self.assertRaises(guard.GuardError):
             self.check()
 
     def test_alpha_runner_in_another_job_fails(self) -> None:
         gate = GATE_JOB + "      - run: bash conformance/run_alpha.sh\n"
-        self.write("conformance.yml", workflow(gate, ALPHA_JOB_TEXT))
+        self.write("conformance-alpha.yml", workflow(gate, ALPHA_JOB_TEXT))
         with self.assertRaises(guard.GuardError):
             self.check()
 
     def test_job_needing_the_alpha_job_fails(self) -> None:
         gate = GATE_JOB + "    needs: conformance-2026-07-28-alpha\n"
-        self.write("conformance.yml", workflow(gate, ALPHA_JOB_TEXT))
+        self.write("conformance-alpha.yml", workflow(gate, ALPHA_JOB_TEXT))
         with self.assertRaisesRegex(guard.GuardError, "outside it"):
             self.check()
 
     def test_alpha_runner_in_another_workflow_fails(self) -> None:
-        self.write("conformance.yml", workflow(GATE_JOB, ALPHA_JOB_TEXT))
+        self.write("conformance-alpha.yml", workflow(GATE_JOB, ALPHA_JOB_TEXT))
         self.write("ci.yml", workflow(ALPHA_JOB_TEXT))
         with self.assertRaises(guard.GuardError):
             self.check()
 
+    def test_alpha_runner_in_the_old_workflow_fails(self) -> None:
+        self.write("conformance.yml", workflow(GATE_JOB, ALPHA_JOB_TEXT))
+        with self.assertRaises(guard.GuardError):
+            self.check()
+
+    def test_workflow_calling_the_alpha_workflow_fails(self) -> None:
+        self.write("conformance-alpha.yml", workflow(GATE_JOB, ALPHA_JOB_TEXT))
+        caller = "  alpha:\n    uses: ./.github/workflows/conformance-alpha.yml\n"
+        self.write("ci.yml", workflow(GATE_JOB, caller))
+        with self.assertRaisesRegex(guard.GuardError, "only it may do"):
+            self.check()
+
+    def test_alpha_workflow_naming_itself_in_its_triggers_passes(self) -> None:
+        text = workflow(GATE_JOB, ALPHA_JOB_TEXT).replace(
+            "on: push\n", "on:\n  push:\n    paths:\n      - '.github/workflows/conformance-alpha.yml'\n"
+        )
+        self.write("conformance-alpha.yml", text)
+        self.check()
+
     def test_alpha_results_in_a_script_fails(self) -> None:
-        self.write("conformance.yml", workflow(GATE_JOB))
+        self.write("conformance-alpha.yml", workflow(GATE_JOB))
         self.write("phase_exit.py", "RESULTS = 'build/conformance-results-alpha'\n", self.scripts)
         with self.assertRaises(guard.GuardError):
             self.check()

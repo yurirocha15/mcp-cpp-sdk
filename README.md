@@ -8,7 +8,6 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/yurirocha15/mcp-cpp-sdk/graph/badge.svg)](https://app.codecov.io/gh/yurirocha15/mcp-cpp-sdk)
-[![Conformance baseline](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/conformance.yml/badge.svg)](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/conformance.yml)
 
 ## Why mcp-cpp-sdk?
 

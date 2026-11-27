@@ -1,35 +1,16 @@
 name: Conformance guardrails
 
 on:
-  # A manual run checks any branch. Pull requests are checked whatever branch they target,
-  # so a pull request stacked on another one gets the same checks; pushes only on main.
+  # ci.yml calls this workflow when a file it reads changed (scripts/ci_changes.py), so a failure
+  # fails the CI result. A manual run checks any branch.
+  workflow_call:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/**'
-      - 'conformance/run.sh'
-      - 'conformance/runner/package.json'
-      - 'include/**'
-      - 'scripts/**'
-      - 'src/**'
-  pull_request:
-    branches: ['**']
-    paths:
-      - '.github/workflows/**'
-      - 'conformance/run.sh'
-      - 'conformance/runner/package.json'
-      - 'include/**'
-      - 'scripts/**'
-      - 'src/**'
 
 permissions:
   contents: read
 
-concurrency:
-  # A new push to a pull request replaces its older run. Pushes to main each keep their own run.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# No concurrency group: in a called workflow github.workflow is the caller's name, so a group
+# here would equal ci.yml's own and queue or cancel this run behind it.
 
 jobs:
   alpha-runner-non-gating:

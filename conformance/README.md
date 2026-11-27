@@ -57,9 +57,10 @@ bash conformance/run_alpha.sh build/release build/conformance-results-alpha
 ```
 
 It never gates anything. The script exits `0` once the runner has run, and the
-`conformance-2026-07-28-alpha` job of `.github/workflows/conformance.yml` sets
-`continue-on-error: true` and uploads the results as the
-`mcp-conformance-2026-07-28-alpha` artifact. The alpha runner has no baseline
+`conformance-2026-07-28-alpha` job of `.github/workflows/conformance-alpha.yml`
+sets `continue-on-error: true` and uploads the results as the
+`mcp-conformance-2026-07-28-alpha` artifact. No other workflow calls that one, so
+the CI result never waits for it. The alpha runner has no baseline
 file, so every failing scenario shows in the report; the 2025-11-25 gate above
 is the only evidence this directory claims.
 `scripts/check_alpha_runner_guard.py` keeps the alpha runner out of every other

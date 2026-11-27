@@ -20,8 +20,10 @@ release version (release/version_bump.py PINS), so a change to that text counts
 for them, and CHANGELOG.md, whose entries they check and from which the release
 notes are written.
 
-conformance.yml, conformance-guards.yml and docs.yml filter their own triggers
-with `paths:`, and CodeQL is GitHub's default setup, which has no path filter.
+ci.yml calls conformance.yml and conformance-guards.yml as its conformance and
+conformance_guards jobs, so they count for the CI result. conformance-alpha.yml and
+docs.yml filter their own triggers with `paths:`, and CodeQL is GitHub's default
+setup, which has no path filter.
 
 Prints one ``job=true|false`` line per job for ``$GITHUB_OUTPUT``. Any doubt (no
 base commit, a git failure, a file no list names) answers ``true`` for every job
@@ -40,7 +42,7 @@ from release.version_bump import PINS  # noqa: E402
 
 # ci.yml defines every job, so a change to it needs them all.
 CI_WORKFLOW = ".github/workflows/ci.yml"
-# Paths that no job in ci.yml reads. conformance.yml and docs.yml read conformance/ and docs/.
+# Paths that no job in ci.yml reads. docs.yml reads docs/; conformance/ is read by the conformance job.
 NO_JOB_PATTERNS = (
     "*.md",
     ".clang-format",
@@ -52,7 +54,6 @@ NO_JOB_PATTERNS = (
     ".gitignore",
     ".pre-commit-config.yaml",
     "Makefile",
-    "conformance/*",
     "docs/*",
 )
 LIBRARY = (
@@ -162,6 +163,28 @@ JOB_INPUTS = {
         "test/release/*",
     ),
     "benchmark": ("benchmark/*",),
+    # conformance.yml. Its fixtures build the library, so the library's build files count.
+    "conformance": (
+        ".github/workflows/conformance.yml",
+        "CMakeLists.txt",
+        "VERSION",
+        "cmake/*",
+        "conanfile.py",
+        "conformance/*",
+        "include/*",
+        "scripts/build.py",
+        "scripts/init.py",
+        "src/*",
+    ),
+    # conformance-guards.yml: guard scripts over the workflows, the runner pin and the SDK sources.
+    "conformance_guards": (
+        ".github/workflows/*",
+        "conformance/run.sh",
+        "conformance/runner/package.json",
+        "include/*",
+        "scripts/*",
+        "src/*",
+    ),
     "powershell": ("scripts/release/*.ps1",),
     "package_core": PACKAGE_CORE + (
         "packaging/aur/*",
