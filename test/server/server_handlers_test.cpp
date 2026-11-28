@@ -899,13 +899,11 @@ TEST_F(ServerHandlersTest, ToolWithContextLogsMessage) {
 
     ASSERT_EQ(responses.size(), 3);
 
-    // Second message is the log notification
     auto& log_notification = responses[1];
     EXPECT_EQ(log_notification["method"], "notifications/message");
     EXPECT_EQ(log_notification["params"]["data"], "computing sum");
     EXPECT_FALSE(log_notification.contains("id"));
 
-    // Third message is the tool result
     auto& tool_response = responses[2];
     EXPECT_EQ(tool_response["id"], "2");
     ASSERT_TRUE(tool_response.contains("result"));
@@ -1890,8 +1888,6 @@ TEST_F(ServerHandlersTest, UnknownToolReturnsError) {
                 std::string::npos);
 }
 
-// --- Pagination Tests ---
-
 TEST_F(ServerHandlersTest, ToolsListPagesThroughTheToolsByCursor) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::ToolsCapability tools_cap;
@@ -2178,8 +2174,6 @@ TEST_F(ServerHandlersTest, ResourcesListPagination) {
     EXPECT_EQ(result["nextCursor"], "1");
 }
 
-// --- OutputSchema Tests ---
-
 TEST_F(ServerHandlersTest, ToolWithOutputSchemaIncludesStructuredContent) {
     mcp::ServerCapabilities caps;
     mcp::ServerCapabilities::ToolsCapability tools_cap;
@@ -2298,8 +2292,6 @@ TEST_F(ServerHandlersTest, ToolWithoutOutputSchemaStillReturnsStructuredContent)
     EXPECT_EQ(result["structuredContent"]["sum"], 8);
     EXPECT_EQ(result["content"][0]["type"], "text");
 }
-
-// --- Completion Tests ---
 
 TEST_F(ServerHandlersTest, CompletionReturnsResults) {
     mcp::ServerCapabilities caps;
@@ -2451,8 +2443,7 @@ TEST_F(ServerHandlersTest, CompletionWithoutHandlerReturnsError) {
 // A tool name is chosen entirely by the client, and an unknown one is the ordinary error path of
 // any `tools/call`. The name reaches a diagnostic that the server operator reads, so a name
 // carrying CR/LF forges a line in whatever that diagnostic lands in, and a bidi override reorders
-// the rest of it. Same defect as the peer-controlled text in the auth diagnostics, opposite
-// direction: here the untrusted side is the client.
+// the rest of it. Here the untrusted side is the client.
 TEST_F(ServerHandlersTest, UnknownToolDiagnosticFlattensClientChosenName) {
     mcp::ServerCapabilities caps;
     caps.tools = mcp::ServerCapabilities::ToolsCapability{};
@@ -2560,8 +2551,6 @@ TEST_F(ServerHandlersTest, InvokeToolUnknownNameDiagnosticIsFlattened) {
     EXPECT_EQ(message.find("\xe2\x80\xae"), std::string::npos) << "actual message: " << message;
 }
 
-// --- Explicit-null request members ---
-//
 // An absent JSON member and one serialized as explicit `null` are the same statement on the
 // wire. Both requests below are messages a conforming peer may send; neither may be rejected.
 

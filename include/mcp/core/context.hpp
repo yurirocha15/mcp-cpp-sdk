@@ -1,6 +1,6 @@
 #pragma once
 
-// GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
+// GCC 11 SSO Coroutine Safety: see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
 // Pattern used here:
 //   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.

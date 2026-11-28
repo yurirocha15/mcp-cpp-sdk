@@ -101,7 +101,7 @@ Task<CallToolResult> Client::Impl::call_tool_following(std::shared_ptr<Impl> sta
             throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
                            "Invalid task: " + detail::sanitize_for_diagnostics(error.what()));
         }
-        // Nobody else holds this task, so a call that gives up on it asks the server to stop it.
+        // No other caller holds this task, so a call that gives up on it asks the server to stop it.
         std::exception_ptr gave_up;
         nlohmann::json finished;
         try {

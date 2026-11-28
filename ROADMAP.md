@@ -5,7 +5,7 @@ makes the project tier-ready; official Tier assignment and inclusion in the MCP
 SDK roster require approval from MCP governance.
 
 The [specification support](https://mcp-cpp-sdk.yurirocha.com/spec-support.html)
-page lists what the SDK implements today. This page lists the work that remains
+page lists what the SDK implements today. The work that remains is measured
 against the [SDK tier requirements](https://modelcontextprotocol.io/community/sdk-tiers)
 and the non-experimental features of the tier assessment.
 

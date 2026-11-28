@@ -529,7 +529,7 @@ class EndlessLines final : public std::streambuf {
 
 }  // namespace
 
-// Nobody calls read_message() here, as when a server stops reading at its in-flight limit.
+// read_message() is not called here, as when a server stops reading at its in-flight limit.
 TEST_F(StdioTransportTest, ReadAheadStopsWhenNothingTakesTheLines) {
     EndlessLines lines;
     std::istream input(&lines);
@@ -594,16 +594,14 @@ TEST_F(StdioTransportTest, LinesTakenLeaveRoomForMore) {
     transport.close();
 }
 
-// The protocol channel on this transport is a real process stream, so the tests
-// that distinguish a shared stdout from an owned one have to work at the file
-// descriptor level. POSIX only; the Windows implementation of
-// create_owning_stdout() uses the CRT equivalents and is not exercised here.
+// The tests that distinguish a shared stdout from an owned one work at the file descriptor level.
+// POSIX only; the Windows create_owning_stdout() uses the CRT equivalents and is not exercised here.
 #if !defined(_WIN32)
 
 namespace {
 
-// Points the process's stdout and stderr at files the test can read back, and
-// puts them back where it found them however the test leaves.
+// Points the process's stdout and stderr at files the test can read back, and restores them however
+// the test leaves.
 class CapturedProcessStreams {
    public:
     CapturedProcessStreams(const std::filesystem::path& out, const std::filesystem::path& err)
@@ -670,8 +668,7 @@ constexpr const char* kFramedMessage = R"({"jsonrpc":"2.0","id":1,"result":{}})"
 constexpr const char* kStrayPrintf = "libfoo: connected to database";
 constexpr const char* kStrayCout = "cache warmed in 12ms";
 
-// Everything an application might innocently put on stdout while the session is
-// running.
+// Everything an application might put on stdout while the session is running.
 void emit_stray_application_output() {
     std::printf("%s\n", kStrayPrintf);
     std::fflush(stdout);
@@ -685,8 +682,7 @@ std::filesystem::path scratch_file(const char* name) {
 
 }  // namespace
 
-// The footgun itself: the default std::cout output shares the protocol
-// channel with the rest of the process.
+// The default std::cout output shares the protocol channel with the rest of the process.
 TEST_F(StdioTransportTest, DefaultOutputSharesTheProtocolChannelWithTheApplication) {
     const auto out = scratch_file("mcp_stdio_shared_out.txt");
     const auto err = scratch_file("mcp_stdio_shared_err.txt");
@@ -716,7 +712,7 @@ TEST_F(StdioTransportTest, DefaultOutputSharesTheProtocolChannelWithTheApplicati
     std::filesystem::remove(err);
 }
 
-// The regression test: an owning transport keeps the channel to itself.
+// An owning transport keeps the channel to itself.
 TEST_F(StdioTransportTest, OwnedStdoutKeepsStrayApplicationOutputOffTheProtocolChannel) {
     const auto out = scratch_file("mcp_stdio_owned_out.txt");
     const auto err = scratch_file("mcp_stdio_owned_err.txt");
@@ -771,14 +767,13 @@ TEST_F(StdioTransportTest, OwnedStdoutIsRestoredWhenTheTransportIsDestroyed) {
     std::filesystem::remove(err);
 }
 
-// A second owner would duplicate the already-redirected stdout and publish the
-// protocol onto stderr, so the attempt has to fail loudly instead.
+// A second owner would duplicate the already-redirected stdout and publish the protocol onto
+// stderr, so the attempt must fail.
 TEST_F(StdioTransportTest, OnlyOneTransportMayOwnStdoutAtATime) {
     const auto out = scratch_file("mcp_stdio_single_out.txt");
     const auto err = scratch_file("mcp_stdio_single_err.txt");
 
-    // Assertions live outside the capture, otherwise their diagnostics are
-    // written to the captured file and thrown away with it.
+    // Assertions live outside the capture: their diagnostics would go to the captured file.
     bool second_owner_rejected = false;
     std::string rejection;
     {
@@ -990,7 +985,7 @@ TEST_F(StdioTransportTest, ReplacedStdoutBufferIsWritten) {
 #if defined(__linux__)
 namespace {
 
-/// Points standard output at a one-page pipe that nobody reads, until release() puts the
+/// Points standard output at a one-page pipe that is not read, until release() puts the
 /// descriptor back and closes the pipe, which fails a write still waiting on it.
 class StalledStdout {
    public:

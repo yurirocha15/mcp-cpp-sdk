@@ -1,8 +1,8 @@
 # MCP benchmark
 
-This directory contains a reproducible, end-to-end benchmark for MCP servers.
-The workload sends MCP requests over HTTP and exercises the same Redis and HTTP
-application operations for every comparable C++ SDK.
+A reproducible, end-to-end benchmark for MCP servers. The workload sends MCP
+requests over HTTP and exercises the same Redis and HTTP application operations
+for every comparable C++ SDK.
 
 The application workload is based on
 [TM Dev Lab v2](https://github.com/thiagomendes/benchmark-mcp-servers-v2), pinned

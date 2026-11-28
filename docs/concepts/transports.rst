@@ -2,17 +2,14 @@ Transports
 ==========
 
 Transports define how the MCP server and client communicate. The `mcp-cpp-sdk`
-provides multiple transport layers out of the box, with a consistent API. Every
-transport implements the `ITransport` interface, ensuring that your server or
-client logic remains independent of the underlying communication protocol.
-
-This guide explores the various transport options available in the SDK, from
-standard local process communication to remote network-based protocols.
+provides several transports with a consistent API. Every transport implements
+the `ITransport` interface, so server and client logic does not depend on the
+underlying communication protocol.
 
 Standard Transports
 -------------------
 
-The SDK includes several built-in transport types to cover different use cases:
+The SDK includes these transport types:
 
 1. **StdioTransport**: For local process communication via standard input/output.
    This is the most common choice for local clients such as coding agents, IDEs and desktop apps.
@@ -29,8 +26,8 @@ Stdio Transport (Local)
 -----------------------
 
 The Stdio transport is the default and recommended way to integrate with local tools.
-It leverages the standard input and output streams of the process, making it
-extremely easy to deploy as a subprocess.
+It uses the standard input and output streams of the process, so the server
+runs as a subprocess.
 
 Server Side
 ~~~~~~~~~~~
@@ -289,9 +286,6 @@ installed before ``listen()`` or ``run()``.
 HTTP Server Convenience
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-For developers who want a quick way to host an MCP server over HTTP without
-worrying about the underlying networking boilerplate, the SDK provides `run_http()`.
-
 ``Server::run_http()`` owns its ``StreamableHttpSessionManager`` internally,
 which gives each client of protocol revision 2025-11-25 or earlier a session of
 its own. Its optional third argument is a callback that receives the manager
@@ -338,9 +332,8 @@ token:
 Manual HTTP Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you need to integrate the MCP transport into an existing HTTP server (like
-one built with Boost.Beast), you can manage the `HttpServerTransport` lifecycle
-yourself.
+To integrate the MCP transport into an existing HTTP server (such as one built
+with Boost.Beast), manage the `HttpServerTransport` lifecycle yourself.
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp
@@ -392,16 +385,14 @@ effect when set before that first read or write:
 MemoryTransport for Testing
 ---------------------------
 
-Testing is a critical part of developing MCP integrations. The `MemoryTransport`
-allows you to run both a server and a client in the same process, communicating
-entirely in memory. This eliminates the need for network configuration or local
-process management during testing.
+The `MemoryTransport` runs a server and a client in the same process,
+communicating entirely in memory, with no network configuration or local
+process management.
 
 Creating Transport Pairs
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-You should always use the `make_memory_transport_pair` helper to ensure that
-both ends of the transport are correctly linked.
+The `make_memory_transport_pair` helper links both ends of the transport.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
@@ -440,15 +431,12 @@ its work is done, and ``start(threads)`` runs it on threads of its own until
 Choosing the Right Transport
 ----------------------------
 
-Selecting the appropriate transport is essential for the success of your MCP
-integration. Use the table below as a guide:
-
 +----------------------+--------------------------+------------------------------------------------+
 | Transport            | Primary Use Case         | Key Advantages                                 |
 +======================+==========================+================================================+
 | **Stdio**            | Local IDE/Agent Plugins  | - Zero network configuration                   |
 |                      |                          | - Secure by default (local only)               |
-|                      |                          | - Easiest to deploy                            |
+|                      |                          | - Runs as a subprocess                         |
 +----------------------+--------------------------+------------------------------------------------+
 | **HTTP**             | MCP remote endpoints     | - Standard Streamable HTTP request model       |
 |                      |                          | - Managed sessions and bounded event replay    |
@@ -470,7 +458,7 @@ If none of the built-in transports meet your needs, you can implement a custom
 one. This might be useful for IPC mechanisms like Unix Domain Sockets or
 proprietary messaging protocols.
 
-All you need to do is inherit from `mcp::ITransport` and implement three methods:
+Inherit from `mcp::ITransport` and implement three methods:
 
 .. code-block:: cpp
 

@@ -1466,8 +1466,6 @@ TEST(CompiledSchema, ConcurrentValidateMatchesSequential) {
     }
 }
 
-// --- JSON-Schema-Test-Suite (test/data/json-schema, see scripts/vendor_json_schema_test_suite.py).
-
 /// Why a suite group is left out of the run. A by-design exclusion is a refusal the SDK keeps. An
 /// engine-gap exclusion is a case the validator gets wrong today: the run fails once the group
 /// passes, so the change that fixes it removes the exclusion.
@@ -1497,7 +1495,7 @@ struct SuiteOutcome {
     std::size_t excluded = 0;
     std::vector<std::string> failures;
     std::set<std::string> unused_exclusions;
-    /// Engine-gap exclusions whose group now passes.
+    /// Engine-gap exclusions whose group passes.
     std::vector<std::string> fixed_engine_gaps;
     /// File name -> {cases run, cases excluded}.
     std::map<std::string, std::pair<std::size_t, std::size_t>> per_file;

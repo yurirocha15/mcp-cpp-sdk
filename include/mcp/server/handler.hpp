@@ -1,6 +1,6 @@
 #pragma once
 
-// GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
+// GCC 11 SSO Coroutine Safety: see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
 // Named patterns referenced at each call site below:
 //   [no-named-temporaries] Pass params.get<In>() directly; don't store it in a named local.

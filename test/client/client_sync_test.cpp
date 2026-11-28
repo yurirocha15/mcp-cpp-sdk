@@ -275,7 +275,7 @@ TEST(ClientSyncTest, AProgressTokenTheParamsNameIsKept) {
     EXPECT_EQ(routed, (std::vector<std::string>(2, mcp::ProgressToken{"mine"}.correlation_key())));
     EXPECT_TRUE(unrouted.empty());
 
-    // Without a callback the same notifications go to Client::on_progress, as before.
+    // Without a callback the same notifications go to Client::on_progress.
     static_cast<void>(client.sync().send_request("tools/call", call));
     EXPECT_EQ(unrouted, (std::vector<std::string>(2, mcp::ProgressToken{"mine"}.correlation_key())));
     EXPECT_EQ(routed.size(), 2U);

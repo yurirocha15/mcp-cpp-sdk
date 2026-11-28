@@ -740,10 +740,6 @@ TEST(ClientListen, ListenBeforeConnectFails) {
         mcp::McpError);
 }
 
-// ---------------------------------------------------------------------------
-// The SDK client against the SDK server
-// ---------------------------------------------------------------------------
-
 namespace {
 
 constexpr std::string_view g_uri = "file:///project/config.json";

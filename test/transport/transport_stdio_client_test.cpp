@@ -804,10 +804,6 @@ TEST(StdioClientTransport, DestroyingTheTransportWhileTheExecutorIsBusyLeavesNoP
 
 #endif
 
-// ---------------------------------------------------------------------------
-// StdioClientSession
-// ---------------------------------------------------------------------------
-
 namespace {
 
 mcp::StdioSessionOptions session_options() {

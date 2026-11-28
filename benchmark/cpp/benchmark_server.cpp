@@ -49,10 +49,6 @@ std::string short_error(std::string message) {
     return message;
 }
 
-// ============================================================================
-// Data structures and JSON serialization
-// ============================================================================
-
 struct SearchProductsArgs {
     std::string category = "Electronics";
     double min_price = 50.0;
@@ -128,10 +124,6 @@ void from_json(const nlohmann::json& j, CheckoutArgs& a) {
 void to_json(nlohmann::json& j, const CheckoutArgs& a) {
     j = {{"user_id", a.user_id}, {"items", a.items}};
 }
-
-// ============================================================================
-// RESP protocol types and parser
-// ============================================================================
 
 struct RespValue;
 using RespArray = std::vector<RespValue>;
@@ -221,10 +213,6 @@ mcp::Task<RespValue> resp_parse(
             co_return RespValue{std::string(line)};
     }
 }
-
-// ============================================================================
-// Async Redis client with connection pooling
-// ============================================================================
 
 class RedisPool {
    public:
@@ -414,10 +402,6 @@ class RedisPool {
     std::deque<std::unique_ptr<asio::ip::tcp::socket>> pool_;
 };
 
-// ============================================================================
-// HTTP client (Boost.Beast)
-// ============================================================================
-
 class HttpClient {
    public:
     HttpClient(asio::any_io_executor executor, std::string host, std::string port,
@@ -530,26 +514,14 @@ class HttpClient {
     std::deque<std::unique_ptr<Connection>> pool_;
 };
 
-// ============================================================================
-// Zero-pad helper
-// ============================================================================
-
 static std::string zero_pad(int num, int width) {
     std::ostringstream oss;
     oss << std::setfill('0') << std::setw(width) << num;
     return oss.str();
 }
 
-// ============================================================================
-// Global I/O clients
-// ============================================================================
-
 static std::unique_ptr<HttpClient> g_http_client;
 static std::unique_ptr<RedisPool> g_redis_pool;
-
-// ============================================================================
-// Tool handlers
-// ============================================================================
 
 mcp::CallToolResult make_tool_result(nlohmann::json payload, bool is_error = false) {
     mcp::CallToolResult result;
@@ -830,7 +802,6 @@ int main() {
 
     std::cout << "C++ MCP Benchmark Server starting (multi-session)..." << std::endl;
 
-    // Create work guard to keep io_context alive
     auto work_guard = asio::make_work_guard(io_ctx);
 
     asio::co_spawn(io_ctx, manager.listen(), asio::detached);
@@ -841,7 +812,6 @@ int main() {
 
     std::cout << "C++ MCP server starting with 2 threads..." << std::endl;
 
-    // Run io_context on 2 threads
     std::vector<std::thread> threads;
     for (int i = 0; i < 2; ++i) {
         threads.emplace_back([&io_ctx]() { io_ctx.run(); });

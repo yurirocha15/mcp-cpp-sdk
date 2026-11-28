@@ -138,11 +138,9 @@ void OAuthAuthenticator::store_token(TokenResponse token) {
     impl_->token_store->store(impl_->server_url, std::move(token));
 }
 
-/// Ends only this authenticator's requests. Do not reach for abort_pending() here: it latches the
-/// whole client irreversibly, which is correct for a client its owner created and wrong for one the
-/// application supplied and may share. Two authenticators for two servers on one client would then
-/// silently disable each other -- run_refresh() reports a failed refresh as a plain `false`, so the
-/// survivor gets no error, only tokens that quietly stop renewing.
+/// Ends only this authenticator's requests. abort_pending() is not used: it latches the whole
+/// client irreversibly, which is wrong for a client the application supplied and may share with
+/// other authenticators, whose refreshes would then fail as a plain `false` from run_refresh().
 void OAuthAuthenticator::close() { impl_->close(); }
 
 void OAuthAuthenticator::cancel_pending() { impl_->cancel_pending(); }

@@ -46,11 +46,10 @@ int main() {
                 return out;
             });
 
-        // Bind a TCP acceptor on an ephemeral port
         tcp::acceptor acceptor(io_ctx, tcp::endpoint(tcp::v4(), 0));
         auto port = acceptor.local_endpoint().port();
 
-        // Server side: accept TCP socket → WebSocketServerTransport handles WS upgrade
+        // Server side: accept TCP socket -> WebSocketServerTransport handles WS upgrade
         asio::co_spawn(
             io_ctx,
             [&]() -> Task<void> {

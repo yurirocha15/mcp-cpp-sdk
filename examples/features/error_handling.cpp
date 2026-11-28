@@ -32,7 +32,6 @@ int main() {
         asio::io_context io_ctx;
         bool client_ok = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
 
@@ -120,10 +119,8 @@ int main() {
         client_info.name = "error-handling-client";
         client_info.version = "1.0.0";
 
-        // Create bidirectional memory transport pair
         auto [server_transport, client_transport] = make_memory_transport_pair(io_ctx.get_executor());
 
-        // ========== SERVER COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&, transport = server_transport]() mutable -> Task<void> {
@@ -132,7 +129,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== CLIENT COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&, transport = client_transport]() -> Task<void> {
@@ -194,7 +190,6 @@ int main() {
                     }
                     std::cout << "\n";
 
-                    // ========== TEST 4: Successful call after errors ==========
                     std::cout << "=== TEST 4: Successful call after errors (graceful recovery) ===\n";
                     try {
                         std::cout << "[Client] Calling success tool...\n";
@@ -228,7 +223,6 @@ int main() {
             }
         });
 
-        // ========== RUN IO CONTEXT ==========
         io_ctx.run();
 
         if (!client_ok) {

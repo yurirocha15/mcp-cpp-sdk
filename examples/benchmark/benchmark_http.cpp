@@ -43,7 +43,6 @@ int main() {
         asio::io_context io_ctx;
         bool completed = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
 
@@ -53,7 +52,6 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        // Register a simple echo tool
         nlohmann::json echo_schema = {
             {"type", "object"},
             {"properties", {{"message", {{"type", "string"}}}}},
@@ -72,7 +70,6 @@ int main() {
                 };
             });
 
-        // ========== SERVER COROUTINE ==========
         auto http_server_transport =
             std::make_shared<HttpServerTransport>(io_ctx.get_executor(), host, 0);
         auto* http_transport_ptr = http_server_transport.get();
@@ -94,7 +91,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== CLIENT COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&]() -> Task<void> {
@@ -116,7 +112,6 @@ int main() {
                     }
                     std::cout.flush();
 
-                    // Warmup
                     std::cout << "[Client] Warmup phase (10 calls)...\n";
                     std::cout.flush();
                     for (int i = 0; i < 10; ++i) {
@@ -126,7 +121,6 @@ int main() {
                     std::cout << "[Client] Warmup complete\n\n";
                     std::cout.flush();
 
-                    // Benchmark
                     std::cout << "[Client] Starting benchmark (" << num_iterations
                               << " iterations)...\n";
                     std::cout.flush();
@@ -145,7 +139,6 @@ int main() {
                     auto end = std::chrono::steady_clock::now();
                     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-                    // Calculate metrics
                     const double total_ms = std::chrono::duration<double, std::milli>(duration).count();
                     double avg_latency_ms = total_ms / num_iterations;
                     double calls_per_sec = (num_iterations * 1000.0) / total_ms;
@@ -173,7 +166,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== AUTO-EXIT TIMER ==========
         asio::steady_timer exit_timer(io_ctx.get_executor());
         exit_timer.expires_after(std::chrono::seconds(15));
 
@@ -185,7 +177,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== RUN IO CONTEXT ==========
         io_ctx.run();
 
         if (!completed) {

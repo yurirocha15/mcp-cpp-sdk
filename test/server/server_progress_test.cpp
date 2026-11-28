@@ -91,7 +91,6 @@ TEST_F(ServerProgressTest, ProgressNotificationSentWithToken) {
 
     ASSERT_EQ(responses.size(), 3);
 
-    // Second message is the progress notification
     auto& progress = responses[1];
     EXPECT_EQ(progress["method"], "notifications/progress");
     EXPECT_FALSE(progress.contains("id"));
@@ -101,7 +100,6 @@ TEST_F(ServerProgressTest, ProgressNotificationSentWithToken) {
     EXPECT_DOUBLE_EQ(progress["params"]["total"].get<double>(), 1.0);
     EXPECT_EQ(progress["params"]["message"], "halfway there");
 
-    // Third is the tool result
     EXPECT_EQ(responses[2]["id"], "2");
     ASSERT_TRUE(responses[2].contains("result"));
 }
@@ -210,7 +208,6 @@ TEST_F(ServerProgressTest, MultipleProgressNotifications) {
 
     ASSERT_EQ(responses.size(), 5);
 
-    // Verify 3 progress notifications
     for (int i = 1; i <= 3; ++i) {
         auto& p = responses[i];
         EXPECT_EQ(p["method"], "notifications/progress");
@@ -219,7 +216,6 @@ TEST_F(ServerProgressTest, MultipleProgressNotifications) {
         EXPECT_DOUBLE_EQ(p["params"]["total"].get<double>(), 3.0);
     }
 
-    // Final tool result
     EXPECT_EQ(responses[4]["id"], "2");
     ASSERT_TRUE(responses[4].contains("result"));
 }

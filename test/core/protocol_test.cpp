@@ -235,7 +235,6 @@ TEST(ProtocolTest, MixedContentBlockSerialization) {
     EXPECT_EQ(json_obj["content"][1]["mimeType"], "image/jpeg");
     EXPECT_EQ(json_obj["isError"], false);
 
-    // Round-trip
     mcp::CallToolResult deserialized = json_obj.get<mcp::CallToolResult>();
     EXPECT_EQ(deserialized.content.size(), 2);
     EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(deserialized.content[0]));
@@ -424,7 +423,6 @@ TEST(ProtocolTest, ResourceTemplateSerialization) {
 }
 
 TEST(ProtocolTest, OptionalFieldsSerialization) {
-    // Test Icon
     mcp::Icon icon;
     icon.source = "https://example.com/icon.png";
     icon.mimeType = "image/png";
@@ -444,7 +442,6 @@ TEST(ProtocolTest, OptionalFieldsSerialization) {
     EXPECT_EQ(deserialized_icon.sizes.value_or(std::vector<std::string>{})[0], "32x32");
     EXPECT_EQ(deserialized_icon.theme.value_or(""), "light");
 
-    // Test Annotations
     mcp::Annotations annotations;
     annotations.audience = std::vector<mcp::Role>{mcp::Role::eUser, mcp::Role::eAssistant};
     annotations.lastModified = "2023-10-27T10:00:00Z";
@@ -462,7 +459,6 @@ TEST(ProtocolTest, OptionalFieldsSerialization) {
     EXPECT_EQ(deserialized_annotations.lastModified.value_or(""), "2023-10-27T10:00:00Z");
     EXPECT_EQ(deserialized_annotations.priority.value_or(0.0), priority_val);
 
-    // Test Tool with new fields
     mcp::Tool tool;
     tool.name = "complex-tool";
     tool.inputSchema = nlohmann::json::object();
@@ -489,7 +485,6 @@ TEST(ProtocolTest, OptionalFieldsSerialization) {
     EXPECT_EQ(deserialized_tool.icons.value_or(std::vector<mcp::Icon>{})[0].source,
               "https://example.com/icon.png");
 
-    // Test Resource with new fields
     mcp::Resource resource;
     resource.uri = "file:///test";
     resource.name = "test";
@@ -508,7 +503,6 @@ TEST(ProtocolTest, OptionalFieldsSerialization) {
 }
 
 TEST(ProtocolTest, CompletionSerialization) {
-    // Test CompleteReference
     mcp::PromptReference pref;
     pref.type = "ref/prompt";
     pref.name = "my_prompt";
@@ -532,7 +526,6 @@ TEST(ProtocolTest, CompletionSerialization) {
             json::parse(R"({"type":"ref/tool","uri":"file:///{path}"})").get<mcp::CompleteReference>()),
         std::invalid_argument);
 
-    // Test CompleteParams
     mcp::CompleteParams params;
     params.ref = ref;
     params.argument = mcp::CompleteParamsArgument{.name = "arg", .value = "val"};
@@ -552,13 +545,11 @@ TEST(ProtocolTest, CompletionSerialization) {
     ASSERT_TRUE(deserialized_params.context->arguments.has_value());
     EXPECT_EQ((*deserialized_params.context->arguments)["key"], "value");
 
-    // Test CompletionResultDetails
     mcp::CompletionResultDetails details;
     details.values = {"val1", "val2"};
     details.total = 10;
     details.hasMore = false;
 
-    // Test CompleteResult
     mcp::CompleteResult res;
     res.completion = details;
     res.meta = json{{"requestId", "req123"}};
@@ -661,7 +652,6 @@ TEST(ProtocolTest, ToolChoiceSerialization) {
     ASSERT_TRUE(deserialized.mode.has_value());
     EXPECT_EQ(*deserialized.mode, "required");
 
-    // Empty ToolChoice
     mcp::ToolChoice empty;
     nlohmann::json j_empty = empty;
     EXPECT_TRUE(j_empty.is_object());
@@ -691,7 +681,6 @@ TEST(ProtocolTest, ToolUseContentSerialization) {
     EXPECT_EQ(deserialized.input["location"], "San Francisco");
     EXPECT_FALSE(deserialized.meta.has_value());
 
-    // With meta
     content.meta = nlohmann::json{{"cacheId", "abc"}};
     nlohmann::json j_meta = content;
     EXPECT_EQ(j_meta["_meta"]["cacheId"], "abc");
@@ -720,7 +709,6 @@ TEST(ProtocolTest, ToolResultContentSerialization) {
 }
 
 TEST(ProtocolTest, SamplingMessageContentBlockSerialization) {
-    // Single text block
     mcp::SamplingMessageContentBlock text_block = mcp::TextContent{.text = "Hello"};
     nlohmann::json j_text = text_block;
     EXPECT_EQ(j_text["type"], "text");
@@ -728,7 +716,6 @@ TEST(ProtocolTest, SamplingMessageContentBlockSerialization) {
     auto deserialized_text = j_text.get<mcp::SamplingMessageContentBlock>();
     EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(deserialized_text));
 
-    // ToolUseContent block
     mcp::ToolUseContent tool_use;
     tool_use.id = "call_1";
     tool_use.name = "calc";
@@ -743,7 +730,6 @@ TEST(ProtocolTest, SamplingMessageContentBlockSerialization) {
     EXPECT_TRUE(std::holds_alternative<mcp::ToolUseContent>(deserialized_tool));
     EXPECT_EQ(std::get<mcp::ToolUseContent>(deserialized_tool).name, "calc");
 
-    // ToolResultContent block
     mcp::ToolResultContent tool_result;
     tool_result.toolUseId = "call_1";
     tool_result.content.push_back(nlohmann::json(mcp::TextContent{.text = "42"}));
@@ -758,7 +744,6 @@ TEST(ProtocolTest, SamplingMessageContentBlockSerialization) {
 }
 
 TEST(ProtocolTest, SamplingMessageSerialization) {
-    // Single content block
     mcp::SamplingMessage msg;
     msg.role = mcp::Role::eUser;
     msg.content = mcp::SamplingMessageContentBlock{mcp::TextContent{.text = "What is 2+2?"}};
@@ -774,7 +759,6 @@ TEST(ProtocolTest, SamplingMessageSerialization) {
     auto& block = std::get<mcp::SamplingMessageContentBlock>(deserialized.content);
     EXPECT_TRUE(std::holds_alternative<mcp::TextContent>(block));
 
-    // Array content
     mcp::SamplingMessage msg_array;
     msg_array.role = mcp::Role::eAssistant;
     std::vector<mcp::SamplingMessageContentBlock> blocks;
@@ -808,7 +792,6 @@ TEST(ProtocolTest, ModelHintSerialization) {
     ASSERT_TRUE(deserialized.name.has_value());
     EXPECT_EQ(*deserialized.name, "claude-3-5-sonnet");
 
-    // Empty hint
     mcp::ModelHint empty;
     nlohmann::json j_empty = empty;
     EXPECT_FALSE(j_empty.contains("name"));
@@ -912,7 +895,6 @@ TEST(ProtocolTest, RootSerialization) {
     ASSERT_TRUE(deserialized.name.has_value());
     EXPECT_EQ(*deserialized.name, "My Project");
 
-    // Minimal root (uri only)
     mcp::Root minimal;
     minimal.uri = "file:///tmp";
     nlohmann::json j_min = minimal;
@@ -955,10 +937,6 @@ TEST(ProtocolTest, ListRootsResultSerialization) {
     EXPECT_EQ(deserialized.roots[1].uri, "file:///home/user/project2");
     EXPECT_FALSE(deserialized.roots[1].name.has_value());
 }
-
-// ============================================================================
-// C-09: Task & Elicitation Primitives
-// ============================================================================
 
 TEST(ProtocolTest, TaskStatusSerialization) {
     // Verify all enum values round-trip correctly
@@ -1006,7 +984,6 @@ TEST(ProtocolTest, ElicitRequestURLParamsSerialization) {
     EXPECT_EQ(deserialized.elicitationId, "elicit-url-1");
     ASSERT_TRUE(deserialized.meta.has_value());
 
-    // Minimal (no _meta)
     mcp::ElicitRequestURLParams minimal;
     minimal.message = "Go here";
     minimal.url = "https://example.com";
@@ -1045,7 +1022,6 @@ TEST(ProtocolTest, ElicitRequestFormParamsSerialization) {
 }
 
 TEST(ProtocolTest, ElicitRequestParamsVariantDispatch) {
-    // URL mode round-trip via variant
     mcp::ElicitRequestURLParams url_params;
     url_params.message = "Click here";
     url_params.url = "https://example.com/auth";
@@ -1063,7 +1039,6 @@ TEST(ProtocolTest, ElicitRequestParamsVariantDispatch) {
     EXPECT_EQ(got_url.url, "https://example.com/auth");
     EXPECT_EQ(got_url.elicitationId, "elicit-v-1");
 
-    // Form mode round-trip via variant
     mcp::ElicitRequestFormParams form_params;
     form_params.message = "Fill this";
     form_params.requestedSchema = nlohmann::json{{"type", "object"}};
@@ -1078,7 +1053,6 @@ TEST(ProtocolTest, ElicitRequestParamsVariantDispatch) {
     auto& got_form = std::get<mcp::ElicitRequestFormParams>(deserialized_form);
     EXPECT_EQ(got_form.message, "Fill this");
 
-    // Unknown mode throws
     nlohmann::json j_bad = {{"mode", "unknown"}, {"message", "x"}};
     EXPECT_THROW(j_bad.get<mcp::ElicitRequestParams>(), std::invalid_argument);
 }
@@ -1121,7 +1095,6 @@ TEST(ProtocolTest, ElicitActionSerialization) {
 }
 
 TEST(ProtocolTest, ElicitResultSerialization) {
-    // Accept with content
     mcp::ElicitResult result;
     result.action = mcp::ElicitAction::eAccept;
     result.content = nlohmann::json{{"name", "Alice"}, {"age", 30}};
@@ -1140,7 +1113,6 @@ TEST(ProtocolTest, ElicitResultSerialization) {
     EXPECT_EQ((*deserialized.content)["age"], 30);
     ASSERT_TRUE(deserialized.meta.has_value());
 
-    // Decline without content
     mcp::ElicitResult decline;
     decline.action = mcp::ElicitAction::eDecline;
 
@@ -1154,7 +1126,6 @@ TEST(ProtocolTest, ElicitResultSerialization) {
     EXPECT_FALSE(deserialized2.content.has_value());
     EXPECT_FALSE(deserialized2.meta.has_value());
 
-    // Cancel without content
     mcp::ElicitResult cancel;
     cancel.action = mcp::ElicitAction::eCancel;
 
@@ -1166,10 +1137,6 @@ TEST(ProtocolTest, ElicitResultSerialization) {
     EXPECT_EQ(deserialized3.action, mcp::ElicitAction::eCancel);
     EXPECT_FALSE(deserialized3.content.has_value());
 }
-
-// ============================================================================
-// C-10: JSON-RPC Base Types
-// ============================================================================
 
 TEST(ProtocolTest, RequestIdStringSerialization) {
     mcp::RequestId id = std::string("req-42");
@@ -1300,7 +1267,6 @@ TEST(ProtocolTest, JSONRPCRequestSerialization) {
     ASSERT_TRUE(deserialized.params.has_value());
     EXPECT_EQ((*deserialized.params)["cursor"], "abc");
 
-    // Integer id, no params
     mcp::JSONRPCRequest int_req;
     int_req.id = int64_t{42};
     int_req.method = "ping";
@@ -1330,7 +1296,6 @@ TEST(ProtocolTest, JSONRPCNotificationSerialization) {
     EXPECT_EQ(deserialized.method, "notifications/progress");
     ASSERT_TRUE(deserialized.params.has_value());
 
-    // No params
     mcp::JSONRPCNotification minimal;
     minimal.method = "notifications/cancelled";
 
@@ -1357,7 +1322,6 @@ TEST(ProtocolTest, JSONRPCResultResponseSerialization) {
     EXPECT_EQ(std::get<std::string>(deserialized.id.value), "resp-1");
     EXPECT_TRUE(deserialized.result.contains("tools"));
 
-    // Integer id
     mcp::JSONRPCResultResponse int_resp;
     int_resp.id = int64_t{10};
     int_resp.result = nlohmann::json::object();
@@ -1416,14 +1380,12 @@ TEST(ProtocolTest, CallToolArgumentsDefaultToObjectAndRejectOtherJsonTypes) {
 }
 
 TEST(ProtocolTest, JSONRPCResponseVariantDispatch) {
-    // Success response
     nlohmann::json j_ok = {{"jsonrpc", "2.0"}, {"id", "r1"}, {"result", {{"status", "ok"}}}};
     auto resp_ok = j_ok.get<mcp::JSONRPCResponse>();
     ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCResultResponse>(resp_ok));
     auto& ok = std::get<mcp::JSONRPCResultResponse>(resp_ok);
     EXPECT_EQ(ok.result["status"], "ok");
 
-    // Error response
     nlohmann::json j_err = {
         {"jsonrpc", "2.0"},
         {"id", 5},
@@ -1433,30 +1395,25 @@ TEST(ProtocolTest, JSONRPCResponseVariantDispatch) {
     auto& err = std::get<mcp::JSONRPCErrorResponse>(resp_err);
     EXPECT_EQ(err.error.code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
 
-    // Round-trip
     nlohmann::json j_rt = resp_ok;
     EXPECT_EQ(j_rt["result"]["status"], "ok");
 }
 
 TEST(ProtocolTest, JSONRPCMessageVariantDispatch) {
-    // Request
     nlohmann::json j_req = {{"jsonrpc", "2.0"}, {"id", "m1"}, {"method", "tools/call"}};
     auto msg_req = j_req.get<mcp::JSONRPCMessage>();
     ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCRequest>(msg_req));
     EXPECT_EQ(std::get<mcp::JSONRPCRequest>(msg_req).method, "tools/call");
 
-    // Notification (no id)
     nlohmann::json j_notif = {{"jsonrpc", "2.0"}, {"method", "notifications/progress"}};
     auto msg_notif = j_notif.get<mcp::JSONRPCMessage>();
     ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCNotification>(msg_notif));
     EXPECT_EQ(std::get<mcp::JSONRPCNotification>(msg_notif).method, "notifications/progress");
 
-    // Result response
     nlohmann::json j_result = {{"jsonrpc", "2.0"}, {"id", 1}, {"result", nlohmann::json::object()}};
     auto msg_result = j_result.get<mcp::JSONRPCMessage>();
     ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCResultResponse>(msg_result));
 
-    // Error response
     nlohmann::json j_error = {
         {"jsonrpc", "2.0"},
         {"error",
@@ -1464,7 +1421,6 @@ TEST(ProtocolTest, JSONRPCMessageVariantDispatch) {
     auto msg_error = j_error.get<mcp::JSONRPCMessage>();
     ASSERT_TRUE(std::holds_alternative<mcp::JSONRPCErrorResponse>(msg_error));
 
-    // Round-trip each
     nlohmann::json rt_req = msg_req;
     EXPECT_EQ(rt_req["method"], "tools/call");
 
@@ -1523,7 +1479,6 @@ TEST(ProtocolTest, SetLevelRequestSerialization) {
     EXPECT_EQ(deserialized.params.level, mcp::LoggingLevel::eWarning);
     ASSERT_TRUE(deserialized.params.meta.has_value());
 
-    // Without _meta
     mcp::SetLevelRequest minimal;
     minimal.params.level = mcp::LoggingLevel::eDebug;
 
@@ -1861,7 +1816,7 @@ TEST(ProtocolTest, PingRequestSerialization) {
 }
 
 // server/discover, like ping, is a pre-gate method whose handler does not deserialize its
-// params (see Server::handle_discover_wire); DiscoverRequest exists solely for round-trip
+// params (see Server::Impl::handle_discover_wire); DiscoverRequest exists solely for round-trip
 // (de)serialization fidelity, mirroring PingRequestSerialization above.
 TEST(ProtocolTest, DiscoverRequestSerializationRoundTrip) {
     mcp::DiscoverRequest req;
@@ -1991,7 +1946,7 @@ TEST(ProtocolTest, ListAndReadResultsRoundTripCacheHints) {
     EXPECT_EQ(read_json, (json{{"contents", json::array()}, {"ttlMs", 7}, {"cacheScope", "private"}}));
     EXPECT_EQ(json(read_json.get<mcp::ReadResourceResult>()), read_json);
 
-    // Without hints, a result serializes as before.
+    // Without hints, only the required member is written.
     EXPECT_EQ(json(mcp::ListToolsResult{}), (json{{"tools", json::array()}}));
     EXPECT_EQ(json(mcp::ReadResourceResult{}), (json{{"contents", json::array()}}));
 }
@@ -2012,7 +1967,6 @@ TEST(ProtocolTest, CancelledNotificationSerialization) {
     ASSERT_TRUE(deserialized.params.reason.has_value());
     EXPECT_EQ(*deserialized.params.reason, "Timeout");
 
-    // Without reason
     mcp::CancelledNotification minimal;
     minimal.params.requestId = int64_t(42);
 
@@ -2048,7 +2002,6 @@ TEST(ProtocolTest, ProgressNotificationSerialization) {
     ASSERT_TRUE(deserialized.params.message.has_value());
     EXPECT_EQ(*deserialized.params.message, "Halfway there");
 
-    // Minimal
     mcp::ProgressNotification minimal;
     minimal.params.progressToken = int64_t(1);
     minimal.params.progress = 10.0;
@@ -2083,7 +2036,6 @@ TEST(ProtocolTest, LoggingMessageNotificationSerialization) {
     EXPECT_EQ(*deserialized.params.logger, "sys-logger");
     EXPECT_EQ(deserialized.params.data["error_code"], 500);
 
-    // Minimal
     mcp::LoggingMessageNotification minimal;
     minimal.params.level = mcp::LoggingLevel::eInfo;
     minimal.params.data = "Just a string message";
@@ -2318,8 +2270,6 @@ TEST(ProtocolVersions, InitializeNegotiatesOnlyLegacyVersions) {
     EXPECT_EQ(mcp::negotiate_protocol_version(""), "2025-11-25");
 }
 
-// --- Explicit-null optional members ---
-//
 // A JSON member serialized as explicit `null` says the same thing as an absent one: "no
 // value". nlohmann 3.12.0 has no std::optional support, so a `contains(key)` guard lets the
 // null through and `get<T>()` then throws type_error.302. Each case below decodes a payload
@@ -2430,11 +2380,10 @@ TEST(ProtocolTest, ToolResultContentDecodesExplicitNullIsError) {
     EXPECT_FALSE(content.isError.has_value());
 }
 
-// An explicitly null member must round-trip as an ABSENT one. Deciding this by "does it
-// throw" is the wrong test: _meta and annotations do not throw, they decode into an ENGAGED
-// optional, so re-encoding fabricates a member the peer never sent -- annotations: null
-// becomes annotations: {}, which a consumer reads as "annotations supplied, none set" rather
-// than "no annotations". Each case below compares against the absent-input control.
+// An explicitly null member must round-trip as an absent one. _meta and annotations do not throw
+// on null: they decode into an engaged optional, so re-encoding would add a member the peer never
+// sent (annotations: null becoming annotations: {}, which a consumer reads as "annotations
+// supplied, none set"). Each case below compares against the absent-input control.
 
 TEST(ProtocolTest, ResourceTreatsExplicitNullMetaAndAnnotationsAsAbsent) {
     const json control = {{"uri", "file:///a.txt"}, {"name", "a.txt"}};
@@ -2599,8 +2548,8 @@ TEST(ProtocolTest, CallToolParamsTreatsExplicitNullMetaAsAbsent) {
 }
 
 TEST(ProtocolTest, CallToolParamsStillRejectsNonObjectArguments) {
-    // Pins the deliberate rejection: arguments is emitted unconditionally, so absence is not
-    // representable and a null there can only be malformed. This must NOT become acceptance.
+    // arguments is emitted unconditionally, so absence is not representable and a null there is
+    // malformed.
     EXPECT_THROW((void)(json{{"name", "add"}, {"arguments", nullptr}}).get<mcp::CallToolParams>(),
                  std::invalid_argument);
 }

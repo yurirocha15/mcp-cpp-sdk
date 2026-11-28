@@ -34,7 +34,7 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 | Any platform | CMake `FetchContent`, below |
 
 The [installation guide](https://mcp-cpp-sdk.yurirocha.com/installation.html)
-has the full commands and the CMake and package names.
+has the full commands.
 
 Before 1.0, releases are not binary compatible with each other, so rebuild your
 project when you change versions.
@@ -258,11 +258,11 @@ server.use([](mcp::Context& ctx, const nlohmann::json& params,
 
 ## Documentation
 
-Guides, API reference and integration details are on the **[documentation site](https://mcp-cpp-sdk.yurirocha.com/)**.
+Guides, API reference and integration details are on the [documentation site](https://mcp-cpp-sdk.yurirocha.com/).
 
 - **[Getting Started](https://mcp-cpp-sdk.yurirocha.com/getting-started.html)**: A first server and client.
 - **[Installation](https://mcp-cpp-sdk.yurirocha.com/installation.html)**: Packages for each platform, and builds from source.
-- **[Core Concepts](https://mcp-cpp-sdk.yurirocha.com/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
+- **[Core Concepts](https://mcp-cpp-sdk.yurirocha.com/concepts/index.html)**: Tools, Resources, and Transports.
 - **[Guides](https://mcp-cpp-sdk.yurirocha.com/guides/index.html)**: Async servers and clients, converting sync programs, testing, error handling and deployment.
 - **[Client App Integrations](https://mcp-cpp-sdk.yurirocha.com/integrations/client-apps.html)**: How to connect your server to MCP clients and test it with the MCP Inspector.
 - **[Examples](https://mcp-cpp-sdk.yurirocha.com/examples.html)**: Walkthrough of included example applications.
@@ -273,8 +273,8 @@ Guides, API reference and integration details are on the **[documentation site](
 
 GCC 12 and GCC 13 crash with an internal compiler error when a `co_await`
 expression contains an initializer list with non-trivial elements. GCC 13 is the
-default compiler on Ubuntu 24.04, so this is easy to hit. Build the value into a
-named variable first:
+default compiler on Ubuntu 24.04, so the default toolchain there is affected.
+Build the value into a named variable first:
 
 ```cpp
 // Crashes GCC 12 and GCC 13
@@ -313,8 +313,6 @@ section has the full list of affected code for both compiler bugs.
 
 ## For Developers
 
-This section is for contributors and developers wanting to build, test, and contribute to `mcp-cpp-sdk` itself.
-
 ### Building from Source
 
 To build the library, tests, and examples locally:
@@ -349,7 +347,7 @@ python scripts/build.py --examples --test
 
 ### Contributing
 
-Please see the [CONTRIBUTING guide](docs/contributing.rst) for the full process.
+See the [CONTRIBUTING guide](docs/contributing.rst) for the full process.
 
 Project policies: [maintenance](MAINTENANCE.md), [dependencies](DEPENDENCY_POLICY.md),
 [versioning](VERSIONING.md), [security](SECURITY.md) and the [roadmap](ROADMAP.md).
@@ -362,10 +360,7 @@ Apache License 2.0 - see [LICENSE](LICENSE) for details.
 
 [![OSS hosting by Cloudsmith](https://img.shields.io/badge/OSS%20hosting%20by-cloudsmith-blue?logo=cloudsmith&style=flat-square)](https://cloudsmith.com)
 
-Package repository hosting is graciously provided by [Cloudsmith](https://cloudsmith.com).
-Cloudsmith is the only fully hosted, cloud-native, universal package management solution that
-enables your organization to create, store and share packages in any format, to any place, with total
-confidence.
+[Cloudsmith](https://cloudsmith.com) hosts the package repositories.
 
 ## Acknowledgements
 

@@ -72,10 +72,6 @@ namespace http = boost::beast::http;
 
 namespace detail_session_mgr {
 
-// ============================================================================
-// Per-session runtime state
-// ============================================================================
-
 struct PendingResponse {
     std::shared_ptr<boost::asio::steady_timer> ready_timer;
     std::optional<std::string> response_body;
@@ -191,10 +187,6 @@ struct SessionRuntime {
     }
 };
 
-// ============================================================================
-// Helpers
-// ============================================================================
-
 inline std::string generate_session_id() { return detail::generate_secure_session_id(); }
 
 inline bool is_initialize_request(const nlohmann::json& request_json) {
@@ -294,10 +286,6 @@ inline StringResponse make_sse_response(const detail::IncomingRequest& request,
 }
 
 }  // namespace detail_session_mgr
-
-// ============================================================================
-// Impl
-// ============================================================================
 
 struct StreamableHttpSessionManager::Impl {
     using Connection = detail::Connection;
@@ -463,8 +451,6 @@ struct StreamableHttpSessionManager::Impl {
             request_connection_close(connection);
         }
     }
-
-    // Session lifecycle
 
     /// A Server from the factory, with the protocol policy applied when one is set.
     std::unique_ptr<Server> build_server(const boost::asio::any_io_executor& server_executor) const {
@@ -660,8 +646,6 @@ struct StreamableHttpSessionManager::Impl {
             signal_timer(timer);
         }
     }
-
-    // HTTP connection / request handling
 
     /// A session belongs to the principal that created it, when a validator checks the tokens.
     /// Without one the Authorization header is not checked here, and a client may change it.
@@ -1501,7 +1485,7 @@ struct StreamableHttpSessionManager::Impl {
         }
 
         // A session exists to serve the client that initialized it, so one whose initialize did
-        // not succeed is not kept: nobody will come back for it.
+        // not succeed is not kept.
         const bool created_here = is_initialize && request.find("Mcp-Session-Id") == request.end();
         if (!request_json.contains("id") || !request_json.contains("method")) {
             if (created_here) {
@@ -1836,7 +1820,7 @@ struct StreamableHttpSessionManager::Impl {
                 }
 
                 if (pending_it->second.detached) {
-                    // Nobody waits for it: a resume finds the response in the event store.
+                    // No request waits for it: a resume finds the response in the event store.
                     session->pending_responses.erase(pending_it);
                     return;
                 }
@@ -1867,10 +1851,6 @@ struct StreamableHttpSessionManager::Impl {
     }
 };  // namespace mcp
 
-// ============================================================================
-// StreamableHttpSessionManager public methods
-// ============================================================================
-
 StreamableHttpSessionManager::StreamableHttpSessionManager(const Executor& executor, std::string host,
                                                            unsigned short port, ServerFactory factory,
                                                            std::size_t event_store_capacity)
@@ -1895,7 +1875,6 @@ StreamableHttpSessionManager::~StreamableHttpSessionManager() {
     try {
         close();
     } catch (...) {
-        // Ignore exceptions in destructor
         (void)0;
     }
 }

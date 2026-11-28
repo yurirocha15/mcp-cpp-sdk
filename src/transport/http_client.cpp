@@ -1832,7 +1832,7 @@ struct HttpClientTransport::Impl {
         if (keep) {
             shared.keep_connection(std::move(call.stream), call.plan);
         } else if (call.stream) {
-            // Nothing runs on the connection any more, so a TLS one says goodbye.
+            // Nothing runs on the connection any more, so a TLS one sends its close_notify.
             detail::close_connection(*call.stream);
         }
         call.stream.reset();
@@ -1873,8 +1873,8 @@ struct HttpClientTransport::Impl {
     }
 
     /// Reads an event stream to its end after the request that opened it has been sent. Whatever
-    /// goes wrong is reported to the reader as a JSON-RPC error for the request, because nobody is
-    /// waiting on the write any more.
+    /// goes wrong is reported to the reader as a JSON-RPC error for the request, because no caller is
+    /// left waiting on the write to receive an exception.
     static Task<void> stream_to_end(std::shared_ptr<Impl> impl, std::shared_ptr<ModernCall> call) {
         auto& shared = *impl->state;
         std::exception_ptr failure;

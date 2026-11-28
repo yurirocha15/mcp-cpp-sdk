@@ -57,8 +57,9 @@ using detail::union_scopes;
 /// Throws unless `endpoint` is fit to hand the application as the authorization URL, which it opens
 /// in a browser. The server names it, so it must be an absolute `https` URL (`http` only on loopback,
 /// when the policy allows plain HTTP there), outside the policy's denied origins, without a fragment
-/// (RFC 6749 §3.1), and made only of characters a URI may contain (RFC 3986 §2). A different origin
-/// from the other endpoints is allowed: the SDK never connects to this one, the browser does.
+/// (RFC 6749 section 3.1), and made only of characters a URI may contain (RFC 3986 section 2). A
+/// different origin from the other endpoints is allowed: the SDK never connects to this one, the
+/// browser does.
 void require_browser_safe_authorization_endpoint(const MetadataFetchPolicy& policy,
                                                  const std::string& endpoint) {
     const auto uri_character = [](unsigned char character) {
@@ -95,7 +96,7 @@ void require_browser_safe_authorization_endpoint(const MetadataFetchPolicy& poli
 /// server metadata, register a client with it, or persist those credentials.
 void require_resource_identifies_server(const std::string& resource, const std::string& server_url) {
     if (resource.empty()) {
-        // RFC 9728 §2 makes `resource` a required member; a PRM that omits it (or ships it
+        // RFC 9728 section 2 makes `resource` a required member; a PRM that omits it (or ships it
         // empty) does not meet the spec and must not be trusted silently.
         throw std::runtime_error("Protected resource metadata for server '" +
                                  sanitize_for_diagnostics(server_url) +
@@ -526,8 +527,8 @@ struct OAuthAuthorizationManager::Impl {
             }
             throw;
         }
-        // RFC 8414 §3.3: the issuer a metadata document claims MUST be the location it was fetched
-        // from, compared byte-exact. Normalizing here would re-open the AS mix-up this closes.
+        // RFC 8414 section 3.3: the issuer a metadata document claims MUST be the location it was
+        // fetched from, compared byte-exact. Normalizing here would re-open the AS mix-up this closes.
         if (operation->auth_metadata->issuer.empty() ||
             operation->auth_metadata->issuer !=
                 operation->resource_metadata->authorization_servers.front()) {
@@ -594,7 +595,7 @@ struct OAuthAuthorizationManager::Impl {
             // that fails at consent or at the exchange must not point it at the new server.
             owner.token_config = operation->token_config;
             // What the server actually granted, falling back to what was asked for when the token
-            // response stays silent (RFC 6749 §5.1 makes `scope` optional in that case).
+            // response stays silent (RFC 6749 section 5.1 makes `scope` optional in that case).
             const auto& granted_scope =
                 operation->token.scope ? operation->token.scope : operation->request.scope;
             owner.granted = GrantedScope{.issuer = operation->request.issuer, .scope = granted_scope};

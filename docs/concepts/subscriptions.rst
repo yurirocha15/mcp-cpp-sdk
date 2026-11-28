@@ -1,7 +1,7 @@
 Notifications and Subscriptions
 ===============================
 
-Notifications and subscriptions enable real-time communication between MCP servers and clients. While the standard request-response cycle is suitable for most interactions, notifications allow either side to push updates asynchronously, and subscriptions specifically allow clients to stay informed about changes to resources.
+Notifications let either side push updates asynchronously. Subscriptions let a client stay informed about changes to resources.
 
 Subscriptions Overview
 ----------------------
@@ -9,11 +9,6 @@ Subscriptions Overview
 A client can ask a server to push two kinds of notification: that a list of
 tools, prompts or resources changed, and that a resource it is interested in
 changed.
-
-Key benefits include:
-- Reduced latency for data updates.
-- Lower overhead compared to polling.
-- Real-time synchronization for telemetry, logs, or shared state.
 
 How a client asks depends on the protocol revision of the session:
 
@@ -226,7 +221,7 @@ a notification method name to a callback function.
 Architecture of Notifications
 -----------------------------
 
-Notifications in MCP are one-way messages that do not expect a response. This makes them ideal for high-frequency updates or background events where the overhead of a full request-response cycle would be prohibitive.
+Notifications in MCP are one-way messages that do not expect a response.
 
 - **Methods**: Notification methods are prefixed with ``notifications/``.
 - **Parameters**: Notifications can carry arbitrary JSON parameters.
@@ -238,7 +233,7 @@ Subscription State Management
 While the `mcp-cpp-sdk` handles the underlying message routing, the server application is responsible for managing the logic associated with subscriptions.
 
 - **Persistence**: Subscriptions are typically session-based and do not persist across reconnections unless re-established by the client.
-- **Scalability**: When notifying thousands of clients, consider the performance impact of JSON serialization. The SDK optimizes this where possible by reusing serialized buffers.
+- **Scalability**: When notifying thousands of clients, consider the performance impact of JSON serialization.
 
 Example Walkthrough
 -------------------
@@ -275,11 +270,9 @@ Throttling and Debouncing
 
 For rapidly changing resources, it is recommended to throttle or debounce notifications on the server side to avoid overwhelming the client. For example, if a log file is being updated multiple times per millisecond, sending a single notification every 100ms is often more efficient.
 
-For a complete working example, see ``examples/features/notifications_subscriptions.cpp`` in the source tree.
-
 See Also
 --------
 
-- :doc:`resources`: Deep dive into how resources work.
+- :doc:`resources`: Registering, reading and updating resources.
 - :doc:`context`: Using the request context for logging and progress.
 - :doc:`transports`: How notifications are carried over different transport layers.

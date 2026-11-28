@@ -7,9 +7,9 @@ applications, such as IDEs or chat interfaces, by providing real-time suggestion
 
 .. note::
 
-   The MCP ``completion/complete`` protocol supports completions for **prompts** (via
-   ``PromptReference``) and **resource templates** (via ``ResourceTemplateReference``). The
-   ``CompleteReference`` variant in this SDK reflects the spec exactly — it does **not** include
+   The MCP ``completion/complete`` protocol supports completions for prompts (via
+   ``PromptReference``) and resource templates (via ``ResourceTemplateReference``). The
+   ``CompleteReference`` variant in this SDK reflects the spec exactly: it does not include
    a tool reference type. Clients use a ``PromptReference`` or ``ResourceTemplateReference`` to
    identify what is being completed.
 
@@ -70,7 +70,7 @@ CompleteParams
 
 The ``CompleteParams`` structure provides the context for the completion request:
 
-- ``ref``: A ``CompleteReference`` variant — either a ``PromptReference`` (``type: "ref/prompt"``) or a ``ResourceTemplateReference`` (``type: "ref/resource"``). This identifies which prompt or resource template the argument belongs to.
+- ``ref``: A ``CompleteReference`` variant, either a ``PromptReference`` (``type: "ref/prompt"``) or a ``ResourceTemplateReference`` (``type: "ref/resource"``). This identifies which prompt or resource template the argument belongs to.
 - ``argument``: The specific argument name and its current partial value.
 - ``context``: Optional additional context, such as values of other arguments already filled by the user.
 
@@ -103,5 +103,3 @@ The completions example (``examples/features/completions.cpp``) demonstrates a f
 2. **Client Request**: The client simulates a user typing "C" for the "language" argument of that prompt, using a ``PromptReference``.
 3. **Server Response**: The server filters its internal list and returns "C++" and "C" as suggestions.
 4. **Result Handling**: The client receives and prints the suggestions.
-
-This flow allows clients to provide interactive, type-ahead style interfaces for MCP prompts and resource templates.

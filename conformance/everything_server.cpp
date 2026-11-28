@@ -290,8 +290,6 @@ void register_schema_tools(mcp::Server& server) {
         [](const nlohmann::json&) { return mcp::make_tool_text_result("Schema preserved"); });
 }
 
-// --- Tools the 2026-07-28 scenarios call ------------------------------------------------------
-//
 // Under 2026-07-28 a handler's question (Context::elicit(), sample_llm(), request_roots()) reaches the
 // client in an input_required result and the handler resumes when the client retries, so these tools
 // are ordinary handlers.
@@ -647,8 +645,6 @@ mcp::Task<void> sleep_unless_cancelled(mcp::Context& context, double seconds) {
     }
 }
 
-// --- Tools the tasks scenarios call -------------------------------------------------------------
-//
 // Under 2026-07-28 a client that declares the tasks extension gets a task handle for most of these
 // tools; the others, and every other client, get the result in the call.
 

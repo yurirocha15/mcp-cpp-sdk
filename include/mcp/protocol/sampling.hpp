@@ -83,7 +83,7 @@ MCP_API void from_json(const nlohmann::json& json_obj, ModelPreferences& prefs);
 using SamplingMessageContentBlock = ContentBlock;
 
 /**
- * @brief Content for sampling messages — either a single block or an array of blocks.
+ * @brief Content for sampling messages: either a single block or an array of blocks.
  */
 using SamplingMessageContent =
     std::variant<SamplingMessageContentBlock, std::vector<SamplingMessageContentBlock>>;

@@ -1,6 +1,6 @@
 /**
  * @file auth_oauth_test.cpp
- * @brief Tests for OAuth 2.1 core (Task 17) and discovery (Task 18)
+ * @brief Tests for OAuth 2.1 core and discovery
  */
 
 #include <gtest/gtest.h>
@@ -900,7 +900,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServerFallsBackToOIDC) {
     int request_count = 0;
 
     mcp_test::spawn_detached(io_ctx_, [&]() -> asio::awaitable<void> {
-        // First request: oauth-authorization-server → 404
+        // First request: oauth-authorization-server -> 404
         {
             auto socket = co_await acceptor.async_accept(asio::use_awaitable);
             beast::tcp_stream stream(std::move(socket));
@@ -918,7 +918,7 @@ TEST_F(DiscoveryTest, DiscoverAuthServerFallsBackToOIDC) {
             stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
         }
 
-        // Second request: openid-configuration → 200
+        // Second request: openid-configuration -> 200
         {
             auto socket = co_await acceptor.async_accept(asio::use_awaitable);
             beast::tcp_stream stream(std::move(socket));
@@ -1352,14 +1352,10 @@ TEST(AuthOAuthHttpClientScopeTest, AnAbortedScopeStopsOnlyItsOwnRequests) {
     EXPECT_EQ(server.authorizations()[3], "Basic c2NvcGVk");
 }
 
-// -------------------------------------------------------------------------------------------
-// The metadata policy and the host resolver must be installable as ONE change.
-//
-// The fixture is two HTTP servers sharing a port on two loopback addresses, each naming itself
-// in its body. Every request targets `http://localhost:<port>/doc`, so the installed resolver
-// alone decides which server answers, and the body IS the classification: a body of "new" can
-// only be produced by the NEW resolver under the OLD, wider allow list -- the defect, on the wire.
-// -------------------------------------------------------------------------------------------
+// The metadata policy and the host resolver must be installable as one change. Two HTTP servers
+// share a port on two loopback addresses and each names itself in its body. Every request targets
+// `http://localhost:<port>/doc`, so the installed resolver alone decides which server answers: a
+// body of "new" under the old, wider allow list means the two were not installed together.
 namespace {
 
 /// One loopback HTTP server that answers every request with its own name.
@@ -1411,14 +1407,11 @@ class NamedLoopbackServer {
     std::string name_;
 };
 
-/// Whether this environment has promised a second loopback address.
+/// Whether MCP_REQUIRE_TWIN_LOOPBACK=1 declares that a second loopback address exists.
 ///
 /// Every OAuthSetterPairAtomicity test needs a port free on both 127.0.0.1 and 127.0.0.2, and skips
-/// when there is none. On a host or container without 127.0.0.2 that silently skips every one of them
-/// while the suite still reports green. Where the second address is known to exist (Linux, where
-/// 127.0.0.0/8 is bound whole), set MCP_REQUIRE_TWIN_LOOPBACK=1 and a missing port fails the run
-/// instead of skipping it. CI sets it on Linux; the default stays a skip so the suite remains
-/// runnable anywhere.
+/// when there is none. Where the second address exists (Linux binds 127.0.0.0/8 whole), the variable
+/// makes a missing port fail the run instead. CI sets it on Linux.
 [[nodiscard]] bool twin_loopback_is_required() {
     const char* const flag = std::getenv("MCP_REQUIRE_TWIN_LOOPBACK");
     return flag != nullptr && std::string_view(flag) == "1";
@@ -1510,7 +1503,7 @@ struct TwinFixture {
 ///
 /// The fixture binds the port itself and keeps it. Probing for a free port and binding it
 /// afterwards leaves a gap, and ctest runs these tests as parallel processes that all search the
-/// same range: two of them found the same port free and the slower one failed to bind it.
+/// same range.
 std::unique_ptr<TwinFixture> open_twin_fixture() {
     for (unsigned short port = 18140; port < 18200; ++port) {
         try {
@@ -1538,13 +1531,13 @@ std::unique_ptr<TwinFixture> open_twin_fixture() {
 
 }  // namespace
 
-// The hazard itself, with the race taken out of it: the exchange is started at a point the test
-// chooses, inside the gap between the two setter calls. It sees the new resolver under the old,
-// wider allow list every time, because that is simply what the client's state is at that instant.
+// The mixed state with the race taken out: the exchange starts at a point the test chooses, inside
+// the gap between the two setter calls, and sees the new resolver under the old, wider allow list
+// every time.
 //
-// This is the positive control for the test below: it shows the fixture tells the two servers
-// apart and that the mixed state is reachable at all. It does not pin a defect that a later change
-// could fix. Two separate calls always have a moment between them, which is why configure() exists.
+// This is the positive control for the test below: the fixture tells the two servers apart and the
+// mixed state is reachable. Two separate calls always have a moment between them, which is why
+// configure() exists.
 TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallInto) {
     MCP_TWIN_FIXTURE_OR_SKIP(fixture);
 
@@ -1583,7 +1576,7 @@ TEST(OAuthSetterPairAtomicity, TheTwoSingleSettersLeaveAWindowAnExchangeCanFallI
     EXPECT_EQ(classify_exchange(failure, body), Observed::new_server) << "body was " << body.dump();
 }
 
-// The regression. An application that moves between two whole configurations with a millisecond
+// An application that moves between two whole configurations with a millisecond
 // of its own work between the two calls admits, on nearly every narrowing, an exchange directed
 // by the new resolver and validated against the old allow list. Applied as one unit there is no
 // instant at which that state exists, so the count is zero rather than small.
@@ -1684,7 +1677,7 @@ TEST(OAuthSetterPairAtomicity, ReconfiguringAsOnePairNeverExposesTheNewResolverU
         << transitions.load() << " narrowings";
 }
 
-// Guards the regression above from passing for the wrong reason: a configure() that quietly
+// Guards the test above from passing for the wrong reason: a configure() that quietly
 // dropped its resolver argument would also never produce a "new" body. Each call here installs a
 // configuration and the exchange that follows must show BOTH halves of it.
 TEST(OAuthSetterPairAtomicity, ConfigureInstallsBothOfItsArguments) {

@@ -7,10 +7,10 @@ challenge. Applications remain responsible for browser interaction, redirect
 handling, consent UX, secure persistent storage, and naming the origins their
 deployment may contact.
 
-Lower-level pieces are also exported — PKCE generation, metadata discovery,
+Lower-level pieces are also exported (PKCE generation, metadata discovery,
 authorization-code exchange, refresh, volatile token storage, and
-transport-level bearer authentication — but they are **components of the
-manager, not an alternative to it**. See
+transport-level bearer authentication), but they are components of the
+manager, not an alternative to it. See
 :ref:`oauth-low-level-building-blocks` for what using them directly costs you.
 
 Challenge-driven authorization
@@ -121,8 +121,8 @@ Auditing an attempt
 ~~~~~~~~~~~~~~~~~~~
 
 :cpp:func:`mcp::auth::OAuthAuthorizationManager::last_authorization_request`
-returns the record the attempt was validated against — the state, the recorded
-issuer, the resource indicator and the PKCE verifier — so an application can
+returns the record the attempt was validated against (the state, the recorded
+issuer, the resource indicator and the PKCE verifier), so an application can
 audit the binding rather than take it on trust.
 :cpp:func:`mcp::auth::OAuthAuthorizationManager::last_client_identity` reports
 which path produced the client identity: an injected credential, a client ID
@@ -146,7 +146,7 @@ relationship between it and ``scopes_supported``.
 A ``403`` whose challenge carries ``error="insufficient_scope"`` names only the
 scopes the refused operation needs. When the scope came from the challenge or
 from ``scopes_supported``, the manager sends the union of that scope and the
-scope the previous authorization **granted**, so a step-up does not drop what
+scope the previous authorization granted, so a step-up does not drop what
 the user already approved. The union is built from what the authorization
 server granted, not from what the client asked for: the ``scope`` of the token
 response, or the requested scope when the response omits it. Scopes the server
@@ -386,9 +386,9 @@ Protecting a server
 -------------------
 
 The other half of the flow above is a server that tells an unauthorized client
-where to get a token. Both HTTP server transports —
+where to get a token. Both HTTP server transports,
 :cpp:class:`mcp::StreamableHttpSessionManager` and
-:cpp:class:`mcp::HttpServerTransport` — take the same three settings, and one
+:cpp:class:`mcp::HttpServerTransport`, take the same three settings, and one
 call is enough to make the flow work end to end:
 
 .. code-block:: cpp
@@ -428,8 +428,8 @@ is not an absolute URL with an authority.
 .. important::
 
    The advertised URL is never inferred from the address the transport is bound
-   to. Behind a TLS terminator, a reverse proxy, or a container port mapping —
-   which is to say in most deployments — the listener's own origin is not the one
+   to. Behind a TLS terminator, a reverse proxy, or a container port mapping
+   (in most deployments), the listener's own origin is not the one
    clients can reach, so a URL built from it would send clients somewhere they
    cannot fetch. ``resource`` is what the outside world calls this server, and it
    is required for exactly that reason.
@@ -460,7 +460,7 @@ Validating tokens
 
 ``set_bearer_token_validator`` takes a synchronous predicate, which suits a
 locally-verifiable token such as a signed JWT whose key is already in memory.
-When the decision needs I/O — token introspection, a JWKS fetch — use
+When the decision needs I/O (token introspection, a JWKS fetch), use
 ``set_async_bearer_token_validator`` instead, so the wait suspends rather than
 blocking the executor that is concurrently serving MCP traffic:
 
@@ -604,10 +604,10 @@ its custom request handler.
 
 .. warning::
 
-   An exempt path is excused from the bearer check **and** excluded from MCP
+   An exempt path is excused from the bearer check and excluded from MCP
    dispatch. MCP is otherwise served on every path the custom handler declines,
    so exempting a path without also excluding it would serve MCP there with no
-   authentication at all — and naming the path MCP runs on would silently
+   authentication at all, and naming the path MCP runs on would silently
    disable authentication for the whole server. An exempt request that the
    metadata route and the custom request handler both decline is therefore
    answered ``404 Not Found``, which makes that misconfiguration fail loudly
@@ -616,14 +616,13 @@ its custom request handler.
 The request pipeline runs the protected-resource metadata route first, then the
 unauthenticated path list, then the bearer check, then the custom request
 handler on ``StreamableHttpSessionManager``, then MCP dispatch. Every one of
-these settings is opt-in: a server that sets none of them behaves exactly as
-before, down to the bare ``Bearer`` challenge on a 401. All of them must be
+these settings is opt-in; a server that sets none of them answers a 401 with
+the bare ``Bearer`` challenge. All of them must be
 configured before ``listen()`` starts, and a setter called afterwards throws
 ``std::logic_error``.
 
 ``examples/features/oauth_flow.cpp`` builds its challenge and its metadata route
-from one ``ProtectedResourceMetadataConfig`` through these same functions, so it
-shows the derivation running rather than restating its result.
+from one ``ProtectedResourceMetadataConfig`` through these same functions.
 
 Request body size
 ~~~~~~~~~~~~~~~~~
@@ -657,9 +656,9 @@ raise the soft limit, up to the hard limit with ``setrlimit()`` or in the unit
 with ``LimitNOFILE=``, or set ``max_connections``.
 
 The default is deliberately well above Boost.Beast's own 1 MB. Binary content
-reaches an MCP server as base64 inside the JSON body — ``ImageContent::data``,
+reaches an MCP server as base64 inside the JSON body (``ImageContent::data``,
 ``BlobResourceContents::blob`` and ``AudioContent`` have no out-of-band or
-streaming path — and base64 inflates by 4/3, so a 1 MB cap admits only about
+streaming path), and base64 inflates by 4/3, so a 1 MB cap admits only about
 750 KB of raw bytes, which ordinary phone photos and screenshots already exceed.
 
 .. warning::

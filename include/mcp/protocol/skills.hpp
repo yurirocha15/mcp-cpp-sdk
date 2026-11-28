@@ -150,7 +150,9 @@ namespace mcp::skills {
  * @details Checks that the URI ends in `/SKILL.md` and that the last segment of the skill path equals
  * `frontmatter.name` and is a valid name; that `description` is 1 to 1024 characters; and, unless the
  * skill is dynamic, that `resources` lists `SKILL.md` and every other file once, each inside the
- * skill directory, with a well-formed digest and a non-negative size, within 512 files and 16 MiB.
+ * skill directory, with a well-formed digest and a non-negative size, within
+ * mcp::constants::skills::g_MAX_RESOURCES_PER_SKILL files and
+ * mcp::constants::skills::g_MAX_SKILL_BYTES bytes.
  *
  * @return The problems found, empty when the entry is valid. A host does not load an entry with
  *         problems.

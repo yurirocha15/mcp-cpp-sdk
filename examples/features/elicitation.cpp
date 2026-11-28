@@ -78,7 +78,6 @@ int main() {
         asio::io_context io_ctx;
         bool succeeded = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
 

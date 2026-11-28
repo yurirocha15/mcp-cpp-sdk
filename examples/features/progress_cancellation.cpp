@@ -42,7 +42,6 @@ int main() {
         bool client_ok = false;
         bool tool_saw_cancel = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
         server_caps.logging = nlohmann::json::object();
@@ -160,7 +159,6 @@ int main() {
                     std::cout << "Client: Calling long_task\n";
                     nlohmann::json call_args = {{"duration_ms", 1000}};
 
-                    // Create CallToolParams with progress token in _meta
                     mcp::CallToolParams call_params;
                     call_params.name = "long_task";
                     call_params.arguments = call_args;

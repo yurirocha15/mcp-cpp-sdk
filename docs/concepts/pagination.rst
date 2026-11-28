@@ -1,7 +1,7 @@
 Pagination
 ==========
 
-Pagination allows servers to return large lists of items (tools, resources, or prompts) in smaller, manageable chunks called pages. This is critical for performance and stability when dealing with hundreds or thousands of items.
+Pagination lets a server return a large list of items (tools, resources or prompts) in smaller chunks called pages.
 
 The `mcp-cpp-sdk` implements cursor-based pagination as defined in the Model Context Protocol.
 
@@ -45,8 +45,6 @@ Servers can control the maximum number of items returned in a single list respon
 
 When ``set_page_size`` is set to a non-zero value, any list request (e.g., ``tools/list``, ``resources/list``) that exceeds this limit will automatically be paginated. The server will return a ``nextCursor`` in the result, which the client can use to fetch the next page.
 
-The following example demonstrates setting a page size of 3:
-
 .. literalinclude:: ../../examples/features/pagination.cpp
    :language: cpp
    :start-after: // ========== TOOL REGISTRATION ==========
@@ -56,7 +54,7 @@ The following example demonstrates setting a page size of 3:
 Cursor-based Pagination
 -----------------------
 
-Unlike offset-based pagination, cursor-based pagination uses an opaque string (the "cursor") to mark the position in the list. This pattern is more robust against changes to the underlying data during traversal.
+Cursor-based pagination uses an opaque string (the "cursor") to mark the position in the list.
 
 1. **First Request**: The client sends a list request without a cursor.
 2. **Paginated Response**: If the server has more items, it returns a page of results along with a ``nextCursor``.
@@ -66,22 +64,13 @@ Unlike offset-based pagination, cursor-based pagination uses an opaque string (t
 Client-side Handling
 --------------------
 
-Clients should check for the presence of ``nextCursor`` in list results and loop until all items are retrieved.
-
-The following example shows how a client can paginate through a list of tools:
+Clients check for ``nextCursor`` in list results and loop until all items are retrieved:
 
 .. literalinclude:: ../../examples/features/pagination.cpp
    :language: cpp
    :start-after: int total_tools = 0;
    :end-before: std::cout << "\n[Client] Pagination complete!
    :dedent: 20
-
-Key components of the client-side loop:
-
-- **Cursor Storage**: Keep track of the current cursor (initially empty).
-- **Request with Cursor**: Pass the ``cursor`` to the ``list_tools()``, ``list_resources()``, or ``list_prompts()`` method.
-- **Result Processing**: Process the items returned in the current page.
-- **Cursor Update**: If ``list_result.nextCursor`` is present, update the cursor and continue the loop. If not, the traversal is complete.
 
 Automatic Pagination
 --------------------
@@ -95,15 +84,14 @@ The SDK handles the complexity of slicing the data and generating cursors automa
 Implementation Details
 ----------------------
 
-Internal pagination logic validates the cursor, calculates the current slice,
-and returns an opaque next cursor only when another page remains.
-
-The process of pagination is fully transparent to the server developer once ``set_page_size()`` is called. The SDK internal dispatch logic detects when a list request arrives, calculates the appropriate slice of items based on the provided cursor (or lack thereof), and constructs the response with the ``nextCursor`` if more items remain. This ensures that even as the number of tools or resources grows, the memory footprint and network payload per request remain stable.
+The SDK validates the cursor, calculates the current slice, and returns an
+opaque next cursor only when another page remains. Once ``set_page_size()`` is
+called, this is transparent to the server developer.
 
 Client-side Example
 -------------------
 
-The following example demonstrates a complete client-side loop that retrieves all tools from a server, regardless of the page size:
+This client-side loop retrieves all tools from a server, regardless of the page size:
 
 .. literalinclude:: ../../examples/features/pagination.cpp
    :language: cpp
@@ -113,12 +101,11 @@ The following example demonstrates a complete client-side loop that retrieves al
 Pagination Best Practices
 -------------------------
 
-When implementing or consuming paginated APIs, consider the following best practices:
+When implementing or consuming paginated APIs:
 
 - **Consistent Page Size**: While the server determines the page size, clients should be prepared to handle any number of items up to the requested limit.
 - **Opaque Cursors**: Clients must treat cursors as opaque strings. Never attempt to parse or construct cursors manually, as their format is internal to the server implementation.
 - **Graceful Termination**: Always check for the absence of ``nextCursor`` as the definitive signal that the list is exhausted.
-- **Resource Efficiency**: Use pagination to avoid blocking the server's event loop with massive JSON serialization tasks for very large lists.
 
 See Also
 --------

@@ -92,7 +92,6 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedSendsToSubscribers) {
 
     mcp::Server server(std::move(info), std::move(caps));
 
-    // Register a tool that triggers resource update notification
     struct TriggerParams {
         std::string uri;
     };
@@ -120,7 +119,6 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedSendsToSubscribers) {
     raw_transport->enqueue_message(make_initialize_request("1").dump());
     raw_transport->enqueue_message(make_initialized_notification().dump());
 
-    // Subscribe to a resource
     nlohmann::json sub_req;
     sub_req["jsonrpc"] = "2.0";
     sub_req["id"] = "2";
@@ -128,7 +126,6 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedSendsToSubscribers) {
     sub_req["params"] = nlohmann::json{{"uri", "file:///watched.txt"}};
     raw_transport->enqueue_message(sub_req.dump());
 
-    // Call tool that triggers notification
     nlohmann::json call_req;
     call_req["jsonrpc"] = "2.0";
     call_req["id"] = "3";
@@ -144,17 +141,14 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedSendsToSubscribers) {
 
     ASSERT_EQ(responses.size(), 4);
 
-    // Subscribe result
     EXPECT_EQ(responses[1]["id"], "2");
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 
-    // Resource updated notification
     auto& notif = responses[2];
     EXPECT_EQ(notif["method"], "notifications/resources/updated");
     EXPECT_FALSE(notif.contains("id"));
     EXPECT_EQ(notif["params"]["uri"], "file:///watched.txt");
 
-    // Tool result
     EXPECT_EQ(responses[3]["id"], "3");
     ASSERT_TRUE(responses[3].contains("result"));
 }
@@ -209,7 +203,6 @@ TEST_F(ServerSubscriptionsTest, NotifyResourceUpdatedNotSentForUnsubscribedUri) 
     ASSERT_EQ(responses.size(), 2);
     EXPECT_EQ(responses[0]["id"], "1");
     EXPECT_EQ(responses[1]["id"], "2");
-    // No notification was sent
 }
 
 }  // namespace server_subscriptions_test

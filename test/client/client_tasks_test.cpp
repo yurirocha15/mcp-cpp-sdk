@@ -154,8 +154,6 @@ class ClientTasks : public ::testing::Test {
     }
 };
 
-// ---- following ---------------------------------------------------------------------------------
-
 TEST_F(ClientTasks, CallToolFollowsATaskToItsResult) {
     mcp::ClientOptions options;
     options.tasks = mcp::ClientTaskMode::eAuto;
@@ -239,8 +237,6 @@ TEST_F(ClientTasks, ALegacySessionIgnoresTheOption) {
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(store_->size(), 0u);
 }
-
-// ---- handles -----------------------------------------------------------------------------------
 
 TEST_F(ClientTasks, StartToolReturnsAHandleTheApplicationDrives) {
     connect(mcp::ClientOptions{});
@@ -414,8 +410,6 @@ TEST(ClientTasksOptions, PollAndTimeoutMustBePositive) {
     timeout.task_timeout = std::chrono::milliseconds(-1);
     EXPECT_THROW(mcp::Client(client_transport, io.get_executor(), timeout), std::invalid_argument);
 }
-
-// ---- against a scripted server -----------------------------------------------------------------
 
 json response_to(const json& request, json result) {
     return {{"jsonrpc", "2.0"}, {"id", request.at("id")}, {"result", std::move(result)}};

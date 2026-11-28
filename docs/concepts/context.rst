@@ -1,7 +1,7 @@
 Server Context
 ==============
 
-The ``mcp::Context`` object is a fundamental construct in the MCP C++ SDK. It is passed as a reference to every handler for tools, resources, and prompts that takes one. Think of the ``Context`` as the per-request interface between your server's logic and the connected client.
+The ``mcp::Context`` object is passed as a reference to every handler for tools, resources, and prompts that takes one. It is the per-request interface between the handler and the connected client.
 
 Core Responsibilities
 ---------------------
@@ -62,12 +62,12 @@ Available log levels (from most to least severe):
                        co_return nlohmann::json{{"status", "ok"}};
                    });
 
-Logging is an asynchronous operation but generally returns quickly as it just pushes to the transport buffer. It's a non-blocking way to provide visibility into server-side operations without affecting the final tool output.
+Logging is asynchronous and does not change the tool's result.
 
 Progress Reporting
 ------------------
 
-For long-running tasks, you can report progress to the client. This is essential for providing feedback during operations like heavy computation, large file transfers, or multi-step API interactions.
+For long-running tasks, you can report progress to the client.
 
 Prerequisites
 ~~~~~~~~~~~~~
@@ -90,8 +90,6 @@ The ``report_progress`` method accepts:
    :start-after: // ========== TOOL REGISTRATION ==========
    :end-before: // ========== TRANSPORT & RUN ==========
    :dedent: 8
-
-The example above demonstrates a typical pattern where a tool loops through several steps, reporting the percentage completion and a descriptive message at each stage.
 
 Using Logging and Progress
 --------------------------
@@ -147,7 +145,7 @@ server's log messages. It is the same in both modes:
 Cancellation
 ------------
 
-MCP supports cooperative cancellation, allowing clients to stop execution of requests that are no longer needed. This is particularly important for expensive LLM operations or long-running background tasks.
+MCP supports cooperative cancellation, allowing clients to stop execution of requests that are no longer needed.
 
 How it works
 ~~~~~~~~~~~~
@@ -221,7 +219,7 @@ Sampling (Reverse RPC)
    Protocol revision 2026-07-28 deprecates sampling; the SDK keeps it for peers
    that use it. See :ref:`spec-deprecated`.
 
-Sampling allows the server to request a completion from the LLM via the client. This "Reverse RPC" capability enables servers to build complex, multi-step workflows where the server uses the client's LLM to process data or make decisions.
+Sampling allows the server to request a completion from the LLM via the client.
 
 Usage Example
 ~~~~~~~~~~~~~
@@ -303,7 +301,7 @@ The elicitation result contains an ``action`` (accept, decline, or cancel) and t
 Roots
 -----
 
-Roots discovery allows a server to discover the files and directories the client has made available. This is crucial for servers that need to operate on local files while maintaining a security sandbox defined by the client.
+Roots discovery allows a server to discover the files and directories the client has made available.
 
 The ``request_roots()`` method returns a list of roots that the client has explicitly shared. This might include:
 *   Local project directories.
@@ -316,12 +314,10 @@ The ``request_roots()`` method returns a list of roots that the client has expli
    :end-before: // ========== TRANSPORT & RUN ==========
    :dedent: 8
 
-The server calls ``ctx.request_roots()`` to get a list of ``Root`` objects, each containing a URI and an optional name. This is particularly useful for tools like "file_search" or "code_indexer" that need to know where they are allowed to look.
+The server calls ``ctx.request_roots()`` to get a list of ``Root`` objects, each containing a URI and an optional name.
 
 Advanced: Context Internal Architecture
 ---------------------------------------
-
-While most developers will only use the public API of ``Context``, understanding its internal structure can help when debugging or extending the SDK.
 
 The ``Context`` holds, among other things:
 
@@ -330,8 +326,6 @@ The ``Context`` holds, among other things:
 *   A shared atomic flag for cancellation.
 *   A ``ProgressToken`` extracted from the request's metadata.
 *   The request's ``_meta`` fields and its principal.
-
-This architecture ensures that ``Context`` is lightweight and efficient to pass around, while providing a rich set of capabilities.
 
 Request Metadata and Principal
 ------------------------------
@@ -358,17 +352,10 @@ Best Practices
 Cross-References
 ----------------
 
-To further explore the MCP C++ SDK and how it integrates with other features, consider these resources:
-
-*   :doc:`tools`: Comprehensive guide to tool registration and schemas.
-*   :doc:`resources`: Learn how to expose read-only data via MCP URIs.
-*   :doc:`prompts`: Guide to creating dynamic prompt templates for LLMs.
-*   :doc:`transports`: Understand the underlying communication layers (Stdio, WebSocket, HTTP).
-*   :doc:`elicitation`: Advanced patterns for user interaction.
-*   :doc:`roots`: Deep dive into the roots discovery protocol.
+*   :doc:`tools`: Tool registration and schemas.
+*   :doc:`resources`: Exposing read-only data via MCP URIs.
+*   :doc:`prompts`: Dynamic prompt templates for LLMs.
+*   :doc:`transports`: The communication layers (Stdio, WebSocket, HTTP).
+*   :doc:`elicitation`: User interaction.
+*   :doc:`roots`: The roots discovery protocol.
 *   **Examples**: The ``examples/features/`` directory in the source tree contains self-contained code for all features discussed here.
-
-Summary
--------
-
-The ``mcp::Context`` is the bridge between your tool logic and the external world. By effectively using logging, progress reporting, and reverse RPC, you can create highly interactive and intelligent MCP servers that provide a superior user experience.

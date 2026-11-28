@@ -177,11 +177,10 @@ Task<nlohmann::json> Server::Impl::await_reverse_response_on_strand(
     }
 
     if (error) {
-        // Same defect as the peer-controlled text in the client's McpError, opposite direction:
-        // this is the error a CLIENT returned for a server-initiated request (sampling,
-        // elicitation, roots/list), stored verbatim by dispatch_response(). `message` is the
-        // client's text and this diagnostic is what the server operator logs, with no
-        // authorization step in the way, so it is flattened and bounded before it goes in.
+        // The error a CLIENT returned for a server-initiated request (sampling, elicitation,
+        // roots/list), stored verbatim by dispatch_response(). `message` is the client's text
+        // and the operator logs this diagnostic with no authorization step in between, so it is
+        // flattened and bounded first.
         throw std::runtime_error("JSON-RPC error " + std::to_string(error->code) + ": " +
                                  detail::sanitize_for_diagnostics(error->message));
     }
@@ -388,7 +387,7 @@ Task<void> Server::Impl::handle_past_limit(Session& session, nlohmann::json json
 }
 
 Task<void> Server::Impl::end_session(std::shared_ptr<Session> session) {
-    // Teardown below can fail — a transport may throw from close, and the drain wait rethrows any
+    // Teardown below can fail: a transport may throw from close, and the drain wait rethrows any
     // error that is not cancellation. Whichever way it ends, the session must be unregistered, or
     // every later run() is refused for the lifetime of this Server.
     try {

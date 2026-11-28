@@ -33,14 +33,12 @@ int main() {
         asio::io_context io_ctx;
         bool client_ok = false;
 
-        // ========== SERVER SETUP ==========
         Implementation server_info;
         server_info.name = "completions-server";
         server_info.version = "1.0.0";
 
         Server server(server_info, ServerCapabilities{});
 
-        // ========== PROMPT REGISTRATION ==========
         // Completions suggest values for the arguments of a prompt or a resource template.
         server.add_text_prompt(
             "code_analyzer", "Analyzes code in a specific language and framework",
@@ -68,32 +66,27 @@ int main() {
                 co_return result;
             }
 
-            // Provide completions based on argument name
             if (params.argument.name == "language") {
-                // Language completions
                 std::vector<std::string> languages = {
                     "C++",  "C",  "Python", "JavaScript", "TypeScript",
                     "Java", "Go", "Rust",   "Ruby",       "PHP",
                 };
 
-                // Filter by partial match
                 std::string partial = params.argument.value;
                 for (const auto& lang : languages) {
-                    if (lang.starts_with(partial)) {  // Starts with partial
+                    if (lang.starts_with(partial)) {
                         result.completion.values.push_back(lang);
                     }
                 }
             } else if (params.argument.name == "framework") {
-                // Framework completions
                 std::vector<std::string> frameworks = {
                     "React",  "Vue",     "Angular", "Django", "Flask",
                     "Spring", "Express", "FastAPI", "Rails",  "Laravel",
                 };
 
-                // Filter by partial match
                 std::string partial = params.argument.value;
                 for (const auto& fw : frameworks) {
-                    if (fw.starts_with(partial)) {  // Starts with partial
+                    if (fw.starts_with(partial)) {
                         result.completion.values.push_back(fw);
                     }
                 }
@@ -106,7 +99,6 @@ int main() {
         // ========== TRANSPORT & RUN ==========
         auto [client_transport, server_transport] = make_memory_transport_pair(io_ctx.get_executor());
 
-        // Spawn server coroutine
         asio::co_spawn(
             io_ctx,
             [&]() -> Task<void> {
@@ -118,12 +110,10 @@ int main() {
             },
             asio::detached);
 
-        // Spawn client coroutine
         asio::co_spawn(
             io_ctx,
             [&]() -> Task<void> {
                 try {
-                    // Create client
                     std::cout << "Client: Creating client\n";
                     Client client(client_transport, io_ctx.get_executor());
 
@@ -131,7 +121,6 @@ int main() {
                     client_info.name = "completions-client";
                     client_info.version = "1.0.0";
 
-                    // Connect to server
                     std::cout << "Client: Connecting to server\n";
                     {
                         auto init_result = co_await client.connect(client_info, ClientCapabilities{});

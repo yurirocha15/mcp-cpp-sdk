@@ -35,7 +35,7 @@
 #include "mcp/detail/async/serialized_transport_writer.hpp"
 #include "mcp/detail/text/secure_random.hpp"
 
-// GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
+// GCC 11 SSO Coroutine Safety - see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
 // Patterns used here:
 //   [int64-id]           Keep request IDs as int64_t across suspensions; rebuild string after.

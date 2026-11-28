@@ -1,6 +1,6 @@
 # LLDB Debugger MCP Server
 
-This is an MCP server that exposes LLDB (Low Level Debugger) capabilities through MCP tools, resources, and prompts. It provides programmatic access to debug sessions, breakpoints, threads, stack frames, and expression evaluation. It supports both stdio and HTTP transports, selectable at runtime via a `--transport` CLI flag.
+This MCP server exposes LLDB (Low Level Debugger) capabilities through MCP tools, resources, and prompts. It gives access to debug sessions, breakpoints, threads, stack frames, and expression evaluation. It supports both stdio and HTTP transports, selectable at runtime with a `--transport` CLI flag.
 
 ### Prerequisites
 
@@ -21,7 +21,7 @@ The `example-debugger-server` binary is placed in `./build/release/`.
 
 ### Usage
 
-**Stdio transport** (default — use with MCP clients that communicate over stdin/stdout):
+**Stdio transport** (default; use with MCP clients that communicate over stdin/stdout):
 
 ```bash
 ./build/release/example-debugger-server
@@ -42,48 +42,48 @@ The `example-debugger-server` binary is placed in `./build/release/`.
 | `--transport=<stdio|http>` | `stdio` | Transport to use |
 | `--host=<addr>` | `127.0.0.1` | HTTP listen address (HTTP mode only) |
 | `--port=<n>` | `9695` | HTTP listen port (HTTP mode only) |
-| `--help` | — | Show usage information |
+| `--help` | none | Show usage information |
 
 ### Available Tools
 
-- **`lldb_command`** — Run raw LLDB command
+- **`lldb_command`**: Run raw LLDB command
   Input: `command` (string, required)
 
-- **`launch`** — Launch program under LLDB
+- **`launch`**: Launch program under LLDB
   Input: `program` (string, required), `args` (array of strings, optional), `stop_at_entry` (boolean, optional)
 
-- **`attach`** — Attach to existing process
+- **`attach`**: Attach to existing process
   Input: `pid` (integer, optional), `name` (string, optional)
 
-- **`set_breakpoint`** — Set file/line or function breakpoint
+- **`set_breakpoint`**: Set file/line or function breakpoint
   Input: `file` (string, optional), `line` (integer, optional), `function_name` (string, optional), `condition` (string, optional)
 
-- **`continue_process`** — Continue current process
+- **`continue_process`**: Continue current process
   Input: (no parameters)
 
-- **`step`** — Step selected thread
+- **`step`**: Step selected thread
   Input: `thread_index` (integer, optional), `type` (string `over|into|out`, optional)
 
-- **`evaluate`** — Evaluate expression
+- **`evaluate`**: Evaluate expression
   Input: `expression` (string, required), `thread_index` (integer, optional), `frame_index` (integer, optional)
 
-- **`backtrace`** — Collect thread backtrace
+- **`backtrace`**: Collect thread backtrace
   Input: `thread_index` (integer, optional), `count` (integer, optional)
 
 ### Available Resources
 
-- **`lldb://targets`** — All debugger targets
-- **`lldb://threads`** — Threads in current process
-- **`lldb://breakpoints`** — Breakpoints in current target
+- **`lldb://targets`**: All debugger targets
+- **`lldb://threads`**: Threads in current process
+- **`lldb://breakpoints`**: Breakpoints in current target
 
 ### Available Resource Templates
 
-- **`lldb://thread/{id}`** — Thread Details (discovery only)
-- **`lldb://frame/{thread_id}/{frame_index}`** — Stack Frame (discovery only)
+- **`lldb://thread/{id}`**: Thread Details (discovery only)
+- **`lldb://frame/{thread_id}/{frame_index}`**: Stack Frame (discovery only)
 
 ### Available Prompts
 
-- **`debug_session`** — Generate a debugging session prompt
+- **`debug_session`**: Generate a debugging session prompt
   Arguments: `program` (required, string), `issue` (optional, string)
 
 ### Example — HTTP Mode with curl

@@ -4,9 +4,7 @@ Older Protocol Revisions
 The SDK serves protocol revision 2026-07-28 and the revisions 2025-11-25,
 2025-06-18, 2025-03-26 and 2024-11-05. A session of the older revisions starts
 with an ``initialize`` request, so the SDK calls them the legacy era; 2026-07-28
-is the modern era (see :doc:`/concepts/protocol`). This guide shows how to keep
-speaking a legacy revision from a client, how to limit what a server serves,
-and what differs in a legacy session.
+is the modern era (see :doc:`/concepts/protocol`).
 
 By default nothing needs to change. A ``Server`` serves both eras on the same
 transport, and a ``Client`` detects the era of the server it connects to.

@@ -467,7 +467,7 @@ struct HttpServerTransport::Impl {
                     continue;  // a 2026-07-28 request belongs to no session
                 }
                 if (pending.detached) {
-                    // Nobody waits for it, and nobody can resume its stream now.
+                    // No request waits for it, and its stream cannot be resumed.
                     it = pending_responses.erase(it);
                     continue;
                 }
@@ -830,7 +830,7 @@ struct HttpServerTransport::Impl {
         co_return std::nullopt;
     }
 
-    /// Tells the Server that nobody waits for the request any more, as the session manager does
+    /// Tells the Server that the request is abandoned, as the session manager does
     /// when its stream closes. 2026-07-28 has no other way to say so over HTTP.
     void cancel_abandoned_request(const std::string& sentinel_id, std::string principal) const {
         nlohmann::json notification = {
@@ -988,7 +988,7 @@ struct HttpServerTransport::Impl {
         const bool has_request_id = request_json.contains("id");
         const bool has_method = request_json.contains("method");
         // An answer to a request of the server belongs to the session that was asked. Without an
-        // established one, the sender of this message is nobody the server asked anything.
+        // established one, this message answers no request of the server.
         if (!has_method && !session_active) {
             co_return make_error_response(request, http::status::bad_request, "No active session");
         }
@@ -1623,7 +1623,7 @@ struct HttpServerTransport::Impl {
         const auto& request_id_key = *response_id_key;
         const auto pending_it = impl->pending_responses.find(request_id_key);
 
-        // Between a DELETE and the next client's initialize result nobody holds a session, and
+        // Between a DELETE and the next client's initialize result no session is held, and
         // anything recorded then would become part of the next client's replay history. A
         // response ends the stream of its POST; one that did not stream is stored as a stream of
         // its own, so a resume never replays another.
@@ -1642,7 +1642,7 @@ struct HttpServerTransport::Impl {
         }
         if (pending_it->second.streams) {
             if (pending_it->second.detached) {
-                // Nobody waits for it: a resume finds the response in the event store.
+                // No request waits for it: a resume finds the response in the event store.
                 impl->pending_responses.erase(pending_it);
                 co_return;
             }
@@ -1771,7 +1771,6 @@ HttpServerTransport::~HttpServerTransport() {
     try {
         close();
     } catch (...) {
-        // Ignore exceptions in destructor
         (void)0;
     }
 }

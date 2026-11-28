@@ -226,9 +226,8 @@ static void set_env(const char* key, const std::string& value) {
 }
 
 static void setup_lldb_server_path() {
-    // Check if LLDB_DEBUGSERVER_PATH is already set
     if (std::getenv("LLDB_DEBUGSERVER_PATH") != nullptr) {
-        return;  // Already set, skip auto-detection
+        return;
     }
 
     // Extract version from lldb::SBDebugger::GetVersionString()
@@ -237,7 +236,6 @@ static void setup_lldb_server_path() {
     std::string version;
     if (version_str != nullptr) {
         std::string full_str(version_str);
-        // Find the last space and take everything after it
         size_t last_space = full_str.rfind(' ');
         if (last_space != std::string::npos && last_space + 1 < full_str.size()) {
             version = full_str.substr(last_space + 1);

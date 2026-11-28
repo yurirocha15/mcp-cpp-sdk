@@ -1,6 +1,6 @@
 # llama.cpp MCP Server Adapter
 
-This is an MCP server that acts as an adapter for llama.cpp's `llama-server` HTTP API. It exposes language model capabilities (chat, text completion, and embedding generation) as MCP tools, and the list of loaded models as an MCP resource. It supports both stdio and HTTP transports, selectable at runtime via a `--transport` CLI flag.
+This MCP server is an adapter for llama.cpp's `llama-server` HTTP API. It exposes language model capabilities (chat, text completion, and embedding generation) as MCP tools, and the list of loaded models as an MCP resource. It supports both stdio and HTTP transports, selectable at runtime with a `--transport` CLI flag.
 
 ### Prerequisites
 
@@ -18,7 +18,7 @@ The `example-llama-mcp` binary is placed in `./build/release/`.
 
 ### Usage
 
-**Stdio transport** (default — use with MCP clients that communicate over stdin/stdout):
+**Stdio transport** (default; use with MCP clients that communicate over stdin/stdout):
 
 ```bash
 ./build/release/example-llama-mcp
@@ -41,26 +41,26 @@ The `example-llama-mcp` binary is placed in `./build/release/`.
 | `--port=<n>` | `8808` | HTTP listen port (HTTP mode only) |
 | `--llama-host=<addr>` | `127.0.0.1` | llama-server address |
 | `--llama-port=<n>` | `8080` | llama-server port |
-| `--help` | — | Show usage information |
+| `--help` | none | Show usage information |
 
 ### Available Tools
 
-- **`chat`** — Send a chat message to the model. Posts to `/v1/chat/completions`.
+- **`chat`**: Send a chat message to the model. Posts to `/v1/chat/completions`.
   Input: `messages` (array of `{role, content}`, required), `temperature` (number, optional), `max_tokens` (integer, optional)
 
-- **`complete`** — Generate a text completion. Posts to `/v1/completions`.
+- **`complete`**: Generate a text completion. Posts to `/v1/completions`.
   Input: `prompt` (string, required), `temperature` (number, optional), `max_tokens` (integer, optional)
 
-- **`embed`** — Generate an embedding vector. Posts to `/v1/embeddings`.
+- **`embed`**: Generate an embedding vector. Posts to `/v1/embeddings`.
   Input: `input` (string, required)
 
 ### Available Resources
 
-- **`llama://models`** — List the models currently loaded in llama-server. Fetches `/v1/models`.
+- **`llama://models`**: List the models currently loaded in llama-server. Fetches `/v1/models`.
 
 ### Available Prompts
 
-- **`summarize`** — Returns a summarization prompt for the given text.
+- **`summarize`**: Returns a summarization prompt for the given text.
   Argument: `text` (string, required)
 
 ### Example — HTTP Mode with curl

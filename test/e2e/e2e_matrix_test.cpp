@@ -426,10 +426,6 @@ INSTANTIATE_TEST_SUITE_P(Eras, E2eMatrix,
                                             ::testing::ValuesIn(g_transports)),
                          cell_name);
 
-// ---------------------------------------------------------------------------
-// 2026-07-28 features on every transport
-// ---------------------------------------------------------------------------
-
 enum class FeatureTransport {
     eMemory,
     eStdio,

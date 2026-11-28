@@ -1,6 +1,6 @@
 #pragma once
 
-// GCC 11 SSO Coroutine Safety — see docs/contributing.rst "Known Issues" for full details.
+// GCC 11 SSO Coroutine Safety; see docs/contributing.rst "Known Issues" for full details.
 // Do NOT store std::string in a coroutine frame across co_await (GCC bugs #107288/#100611).
 // Named patterns referenced at each call site below:
 //   [not-a-coroutine]    Public methods with std::string params are plain functions; they
@@ -8,8 +8,6 @@
 //   [string_view]        Use std::string_view (trivially copyable) for coroutine method params.
 //   [int64-id]           Keep request IDs as int64_t across suspensions; rebuild string after.
 //   [scope-before-await] Build SSO-risky objects in {}, serialise to wire string, then co_await.
-//   [wire-builders]      make_result_wire/make_error_wire are synchronous helpers;
-//                        do NOT convert them to Task<T> coroutines.
 
 #include <mcp/client/cancellation_token.hpp>
 #include <mcp/client/client_options.hpp>

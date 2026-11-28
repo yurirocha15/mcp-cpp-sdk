@@ -342,7 +342,7 @@ MCP_API void from_json(const nlohmann::json& json_obj, InitializeResult& res);
  * contents.
  */
 struct DiscoverRequest {
-    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use; contents not interpreted yet.
+    std::optional<nlohmann::json> meta;  ///< Reserved for protocol use; contents not interpreted.
 };
 
 MCP_API void to_json(nlohmann::json& json_obj, const DiscoverRequest& req);

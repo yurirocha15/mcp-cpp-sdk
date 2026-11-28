@@ -72,7 +72,7 @@ std::vector<Item> tools() {
     };
 }
 
-/// Schemas the native evaluation implements today.
+/// Schemas the native evaluation implements.
 std::vector<Item> native() {
     json flat = {{"type", "object"}, {"additionalProperties", false}, {"properties", json::object()}};
     json flat_value = json::object();

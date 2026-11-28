@@ -52,10 +52,6 @@ namespace http = beast::http;
 
 using json = nlohmann::json;
 
-// ---------------------------------------------------------------------------
-// Helper: raw HTTP request/response over TCP
-// ---------------------------------------------------------------------------
-
 struct RawResponse {
     unsigned int status{0};
     std::string body;
@@ -234,10 +230,6 @@ std::vector<std::pair<std::string, json>> parse_sse_events(const std::string& bo
     return events;
 }
 
-// ---------------------------------------------------------------------------
-// Helper: create a ServerFactory for the session manager
-// ---------------------------------------------------------------------------
-
 mcp::StreamableHttpSessionManager::ServerFactory make_echo_server_factory() {
     return [](const mcp::Executor&) -> std::unique_ptr<mcp::Server> {
         mcp::ServerCapabilities caps;
@@ -371,10 +363,6 @@ json make_echo_request(int id, const std::string& message) {
 }
 
 }  // namespace
-
-// ===========================================================================
-// Test fixture
-// ===========================================================================
 
 class SessionManagerTest : public ::testing::Test {
    protected:
@@ -738,10 +726,6 @@ TEST_F(SessionManagerTest, SecurityChecksRunBeforeCustomHttpHandlers) {
     EXPECT_EQ(valid_response.body, "healthy");
 }
 
-// ---------------------------------------------------------------------------
-// 1. Create session on initialize (no session header)
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, InitializeCreatesSession) {
     const unsigned short port = 19080;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -931,10 +915,6 @@ TEST_F(SessionManagerTest, SubsequentRequestsAllowMissingNegotiatedProtocolHeade
     EXPECT_EQ(delete_response.status, 200);
 }
 
-// ---------------------------------------------------------------------------
-// 2. Route subsequent requests by Mcp-Session-Id header
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, RouteBySessionId) {
     const unsigned short port = 19081;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -950,7 +930,6 @@ TEST_F(SessionManagerTest, RouteBySessionId) {
         auto initialized = co_await send_initialized(io_ctx_.get_executor(), port, session_id);
         EXPECT_EQ(initialized.status, 202);
 
-        // Call a tool using the session ID
         json tool_call = {{"jsonrpc", "2.0"},
                           {"method", "tools/call"},
                           {"params", {{"name", "echo"}, {"arguments", {{"message", "hello"}}}}},
@@ -968,10 +947,6 @@ TEST_F(SessionManagerTest, RouteBySessionId) {
     EXPECT_TRUE(body.contains("result"));
     EXPECT_EQ(body["result"]["content"][0]["text"], "hello");
 }
-
-// ---------------------------------------------------------------------------
-// 3. Unknown session ID returns 404
-// ---------------------------------------------------------------------------
 
 TEST_F(SessionManagerTest, UnknownSessionReturns404) {
     const unsigned short port = 19082;
@@ -996,10 +971,6 @@ TEST_F(SessionManagerTest, UnknownSessionReturns404) {
     EXPECT_EQ(body["error"]["message"], "Session not found");
 }
 
-// ---------------------------------------------------------------------------
-// 4. DELETE destroys session; subsequent requests return 404
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, DeleteDestroysSession) {
     const unsigned short port = 19083;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1014,11 +985,9 @@ TEST_F(SessionManagerTest, DeleteDestroysSession) {
         auto session_id = init.session_id;
         EXPECT_EQ(manager.session_count(), 1);
 
-        // DELETE the session
         delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_,
                                                "/mcp", {}, session_id);
 
-        // Try to use the session after deletion
         json request = {{"jsonrpc", "2.0"}, {"method", "ping"}, {"id", 2}};
         after_delete_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
                                                      "/mcp", request.dump(), session_id);
@@ -1031,10 +1000,6 @@ TEST_F(SessionManagerTest, DeleteDestroysSession) {
     EXPECT_EQ(after_delete_response.status, 404);
 }
 
-// ---------------------------------------------------------------------------
-// 5. Multiple concurrent sessions with same JSON-RPC IDs (the key use case)
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, MultipleConcurrentSessionsSameIds) {
     const unsigned short port = 19084;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1045,13 +1010,11 @@ TEST_F(SessionManagerTest, MultipleConcurrentSessionsSameIds) {
     RawResponse resp_a;
     RawResponse resp_b;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
-        // Create session A
         auto init_a = co_await do_initialize(io_ctx_.get_executor(), port, 1);
         auto session_a = init_a.session_id;
         auto initialized_a = co_await send_initialized(io_ctx_.get_executor(), port, session_a);
         EXPECT_EQ(initialized_a.status, 202);
 
-        // Create session B
         auto init_b = co_await do_initialize(io_ctx_.get_executor(), port, 1);
         auto session_b = init_b.session_id;
         auto initialized_b = co_await send_initialized(io_ctx_.get_executor(), port, session_b);
@@ -1060,7 +1023,7 @@ TEST_F(SessionManagerTest, MultipleConcurrentSessionsSameIds) {
         EXPECT_NE(session_a, session_b);
         EXPECT_EQ(manager.session_count(), 2);
 
-        // Both sessions use the SAME JSON-RPC id (2) — must not collide
+        // Both sessions use the same JSON-RPC id (2); the ids must not collide.
         json call_a = {{"jsonrpc", "2.0"},
                        {"method", "tools/call"},
                        {"params", {{"name", "echo"}, {"arguments", {{"message", "from-A"}}}}},
@@ -1203,10 +1166,6 @@ TEST_F(SessionManagerTest, ManySessionsAreAnsweredCorrectlyOnManyThreads) {
     EXPECT_EQ(correct.load(), session_count * calls_per_session);
 }
 
-// ---------------------------------------------------------------------------
-// 6. Custom request handler intercepts non-MCP requests
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, CustomRequestHandler) {
     const unsigned short port = 19085;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1230,7 +1189,7 @@ TEST_F(SessionManagerTest, CustomRequestHandler) {
 
     RawResponse health_response;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
-        // Hit the /health endpoint — custom handler should intercept
+        // The custom handler intercepts /health.
         beast::tcp_stream stream(io_ctx_.get_executor());
         auto resolver = asio::ip::tcp::resolver(io_ctx_.get_executor());
         auto endpoints =
@@ -1262,10 +1221,6 @@ TEST_F(SessionManagerTest, CustomRequestHandler) {
     EXPECT_EQ(body["status"], "healthy");
 }
 
-// ---------------------------------------------------------------------------
-// 7. Notification (no id) returns 202 Accepted
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, NotificationReturns202) {
     const unsigned short port = 19086;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1278,7 +1233,6 @@ TEST_F(SessionManagerTest, NotificationReturns202) {
         auto init = co_await do_initialize(io_ctx_.get_executor(), port);
         auto session_id = init.session_id;
 
-        // Send a notification (has method, no id)
         json notification = {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}};
         notification_response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post,
                                                      "/mcp", notification.dump(), session_id);
@@ -1290,10 +1244,6 @@ TEST_F(SessionManagerTest, NotificationReturns202) {
 
     EXPECT_EQ(notification_response.status, 202);
 }
-
-// ---------------------------------------------------------------------------
-// 8. Bad protocol version returns 400
-// ---------------------------------------------------------------------------
 
 TEST_F(SessionManagerTest, BadProtocolVersionReturns400) {
     const unsigned short port = 19087;
@@ -1318,10 +1268,6 @@ TEST_F(SessionManagerTest, BadProtocolVersionReturns400) {
     EXPECT_EQ(response.status, 400);
 }
 
-// ---------------------------------------------------------------------------
-// 9. Non-initialize request without session header returns 400
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
     const unsigned short port = 19088;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1331,13 +1277,12 @@ TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
 
     RawResponse response;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
-        // Send a tools/call without session header (not initialize)
         json request = {{"jsonrpc", "2.0"},
                         {"method", "tools/call"},
                         {"id", 1},
                         {"params", {{"name", "echo"}, {"arguments", {{"message", "test"}}}}}};
         response = co_await raw_request(io_ctx_.get_executor(), port, http::verb::post, "/mcp",
-                                        request.dump());  // no session_id
+                                        request.dump());
         manager.close();
     });
 
@@ -1348,14 +1293,11 @@ TEST_F(SessionManagerTest, NonInitializeWithoutSessionReturns400) {
     EXPECT_TRUE(body.contains("error"));
 }
 
-// ---------------------------------------------------------------------------
 // server/discover is reachable with zero prior state in stateful mode: no session is
 // created and no Mcp-Session-Id is issued, unlike every other sessionless non-initialize
 // method (pinned above by NonInitializeWithoutSessionReturns400). As a 2026-07-28 request it is
 // served with its own MCP-Protocol-Version header, which the legacy check reserved for
 // initialize-negotiated versions would refuse.
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, SessionlessDiscoverReturns200WithoutCreatingSession) {
     const unsigned short port = 19118;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1419,12 +1361,9 @@ TEST_F(SessionManagerTest, SessionlessDiscoversShareOneServer) {
     EXPECT_EQ(factory_calls.load(), 1);
 }
 
-// This transport's immunity to the HttpServerTransport defect (sessionless discover rejected
-// once a session exists) is NOT structural. It holds only because handle_post intercepts
-// sessionless discover BEFORE calling resolve_session_for_post, which is two adjacent
-// statements in a particular order. Any refactor that hoists session resolution earlier
-// reintroduces that bug silently, so pin the after-a-session case, not just the zero-state
-// case covered above.
+// A sessionless discover is served once a session exists only because handle_post sends a
+// 2026-07-28 request to handle_modern_post before resolve_session_for_post runs. This pins the
+// after-a-session case as well as the zero-state case above.
 TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablished) {
     const unsigned short port = 19121;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1459,11 +1398,8 @@ TEST_F(SessionManagerTest, SessionlessDiscoverStaysReachableAfterSessionEstablis
     EXPECT_EQ(body["result"]["resultType"], "complete");
 }
 
-// ---------------------------------------------------------------------------
 // Stateless mode: server/discover is served as a 2026-07-28 request, while a tools/list that
 // sends the 2026-07-28 header without the rest of that protocol (Mcp-Method, _meta) is refused.
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, StatelessDiscoverServedAndIncompleteModernToolsListRefused) {
     const unsigned short port = 19120;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1497,10 +1433,6 @@ TEST_F(SessionManagerTest, StatelessDiscoverServedAndIncompleteModernToolsListRe
               mcp::constants::jsonrpc::g_HEADER_MISMATCH);
 }
 
-// ---------------------------------------------------------------------------
-// 10. DELETE on unknown session returns 404
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, DeleteUnknownSessionReturns404) {
     const unsigned short port = 19089;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1520,10 +1452,6 @@ TEST_F(SessionManagerTest, DeleteUnknownSessionReturns404) {
     EXPECT_EQ(response.status, 404);
 }
 
-// ---------------------------------------------------------------------------
-// 11. Session count tracks sessions correctly
-// ---------------------------------------------------------------------------
-
 TEST_F(SessionManagerTest, SessionCountTracksCorrectly) {
     const unsigned short port = 19090;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -1542,7 +1470,6 @@ TEST_F(SessionManagerTest, SessionCountTracksCorrectly) {
         auto init_b = co_await do_initialize(io_ctx_.get_executor(), port, 1);
         count_after_second = manager.session_count();
 
-        // Delete the first session
         co_await raw_request(io_ctx_.get_executor(), port, http::verb::delete_, "/mcp", {},
                              init_a.session_id);
         count_after_delete = manager.session_count();
@@ -1556,10 +1483,6 @@ TEST_F(SessionManagerTest, SessionCountTracksCorrectly) {
     EXPECT_EQ(count_after_second, 2);
     EXPECT_EQ(count_after_delete, 1);
 }
-
-// ---------------------------------------------------------------------------
-// 12. Method not allowed returns 405
-// ---------------------------------------------------------------------------
 
 TEST_F(SessionManagerTest, UnsupportedMethodReturns405) {
     const unsigned short port = 19091;
@@ -2440,10 +2363,6 @@ TEST_F(SessionManagerTest, HandlerBranchesNeverOverlapOnAToolPool) {
     EXPECT_EQ(probe.overlaps.load(), 0);
 }
 
-// ===========================================================================
-// Server-side OAuth challenge, metadata route and unauthenticated paths
-// ===========================================================================
-
 TEST_F(SessionManagerTest, UnconfiguredManagerSendsBareBearerChallenge) {
     const unsigned short port = 19130;
     mcp::StreamableHttpSessionManager manager(io_ctx_.get_executor(), "127.0.0.1", port,
@@ -2638,9 +2557,8 @@ TEST_F(SessionManagerTest, RequestBodyBeyondTheLimitIsRejected) {
     EXPECT_EQ(status, 413);
 }
 
-// The two setters are order-independent: each renders from the whole current configuration, so
-// neither call can strand the other's contribution. Both orders are exercised against real
-// listeners and the resulting headers compared to each other.
+// The two setters are order-independent: each renders from the whole current configuration. Both
+// orders run against real listeners and the resulting headers are compared.
 TEST_F(SessionManagerTest, TheTwoChallengeSettersAreOrderIndependent) {
     const auto run = [this](unsigned short port, bool metadata_first,
                             const std::string& named_metadata = {}) -> std::string {
@@ -2874,15 +2792,10 @@ TEST_F(SessionManagerTest, RequestBodyLimitIsConfigurable) {
     EXPECT_EQ(status, 413);
 }
 
-// ===========================================================================
-// End to end: the SDK's own client completes discovery against the SDK's own server
-// ===========================================================================
-
-// Without a metadata location in the challenge the SDK's client cannot be driven by the SDK's server:
-// discovery has nothing to start from. This exercises the whole path on real sockets -- an
-// unauthenticated request draws a 401, the challenge is parsed by the SDK's own parser, the URL it
-// names is fetched by the SDK's own discovery client, and the document that comes back is the one the
-// server was configured with. Nothing here is a string comparison against a hand-written header.
+// Without a metadata location in the challenge, the SDK's client has nothing to start discovery
+// from. On real sockets: an unauthenticated request draws a 401, the SDK's parser reads the
+// challenge, the SDK's discovery client fetches the URL it names, and the document that comes back
+// is the one the server was configured with.
 TEST_F(SessionManagerTest, SdkClientDiscoversAuthorizationFromTheSdkServersOwnChallenge) {
     const unsigned short port = 19142;
     const auto origin = "http://127.0.0.1:" + std::to_string(port);
@@ -2906,17 +2819,14 @@ TEST_F(SessionManagerTest, SdkClientDiscoversAuthorizationFromTheSdkServersOwnCh
     std::string advertised_metadata_url;
 
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
-        // 1. An unauthenticated request draws the challenge.
         challenge_response =
             co_await raw_request(io_ctx_.get_executor(), port, http::verb::get, "/mcp");
 
-        // 2. The SDK's own parser reads it, exactly as OAuthAuthorizationManager would.
         const auto challenges = mcp::auth::parse_www_authenticate(challenge_response.www_authenticate);
         const auto bearer = mcp::auth::select_bearer_challenge(challenges);
         if (bearer.has_value() && bearer->resource_metadata.has_value()) {
             advertised_metadata_url = *bearer->resource_metadata;
 
-            // 3. The SDK's own discovery client fetches the URL the challenge named.
             mcp::auth::MetadataFetchPolicy policy;
             policy.allowed_origins.push_back(origin);
             policy.allow_plain_http_loopback = true;

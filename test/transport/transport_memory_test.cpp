@@ -378,8 +378,8 @@ TEST_F(MemoryTransportTest, MultiplePendingReadersReceiveDistinctMessages) {
             });
     }
 
-    // Install every pending read before any message is delivered. This specifically
-    // exercises independent waiters rather than the already-queued fast path.
+    // Install every pending read before any message is delivered, to exercise independent waiters
+    // rather than the already-queued fast path.
     io_context.poll();
     io_context.restart();
 

@@ -59,10 +59,10 @@ in-memory loopback and others exercise local network transports.
 5. **pagination** - Handling large lists via cursor-based pagination
 6. **elicitation** - Server-initiated information requests (input forms)
 7. **roots** - Declaring and discovering client-side root URIs
-8. **error_handling** - Robust error patterns and exception management
+8. **error_handling** - Error patterns and exception management
 9. **transport_memory** - Using in-memory transports for testing and modularity
 10. **graceful_shutdown** - Clean exit patterns and signal handling
-11. **http_server_convenience** - Simplified HTTP server setup via ``Server::run_http()``
+11. **http_server_convenience** - HTTP server setup via ``Server::run_http()``
 12. **oauth_flow** - Loopback OAuth building blocks (discovery, PKCE, exchange, refresh)
 13. **schema_validation** - Tool schema checks on the server and the client
 14. **modern_client** - Protocol revision 2026-07-28: era detection, ``ConnectResult``,
@@ -114,8 +114,6 @@ A complete MCP server implementation demonstrating:
 * **Prompts**: Example prompt with arguments
 * **Context logging**: Using ``Context::log_info()`` and other log levels
 
-This example combines the main server registration patterns in one program.
-
 **Key patterns demonstrated**:
 
 * Type-safe tool handlers with custom input/output types
@@ -165,15 +163,12 @@ server_with_sampling
 
 **Location**: ``examples/advanced/server_with_sampling.cpp``
 
-Demonstrates **reverse RPC** (server-to-client calls) via ``Context::sample_llm()``:
+Demonstrates reverse RPC (server-to-client calls) via ``Context::sample_llm()``:
 
 * **Server capabilities**: Declares tool support with change notifications, and logging
   because the tool logs to the client
 * **Sampling tool**: Tool handler that calls back to the client via ``ctx.sample_llm()``
 * **Async context handlers**: Using ``Context&`` parameter for reverse RPC
-
-This example shows how a server can request LLM sampling from a connected client,
-enabling bidirectional communication patterns.
 
 **Key patterns demonstrated**:
 
@@ -194,16 +189,13 @@ echo_websocket
 
 **Location**: ``examples/advanced/echo_websocket.cpp``
 
-In-process loopback demonstration using **WebSocket transport** over TCP:
+In-process loopback demonstration using the WebSocket transport over TCP:
 
 * **WebSocket transport**: Using ``WebSocketServerTransport`` and
   ``WebSocketClientTransport`` instead of stdio
 * **Server + Client**: Both running in the same process
 * **TCP acceptor**: Server listens on localhost port
 * **Echo tool**: Simple echo tool that returns its input
-
-This example shows how to use the WebSocket transport layer for network-based
-MCP communication.
 
 **Key patterns demonstrated**:
 
@@ -224,14 +216,11 @@ http_loopback
 
 **Location**: ``examples/advanced/http_loopback.cpp``
 
-In-process loopback demonstration using **Streamable HTTP transport**:
+In-process loopback demonstration using the Streamable HTTP transport:
 
 * **HttpServerTransport + HttpClientTransport**: Full HTTP stack for MCP communication
 * **Anti-hang co_spawn pattern**: Safe concurrent server/client execution
 * **MCP-Protocol-Version header**: Sent with every request (``2026-07-28`` here)
-
-This example shows how to use the HTTP transport layer for network-based
-MCP communication with standard headers.
 
 **Key patterns demonstrated**:
 
@@ -255,10 +244,7 @@ MCP adapter for llama.cpp's ``llama-server`` (chat, completion, embedding):
 
 * **External HTTP API integration**: Communicating with llama.cpp via Boost.Beast
 * **Dual transport support**: Runtime selection between stdio and HTTP transports
-* **CLI argument parsing**: Comprehensive configuration via command line flags
-
-This example demonstrates how to wrap an existing external service in an MCP
-server with stdio and HTTP deployment options.
+* **CLI argument parsing**: Configuration via command line flags
 
 **Key patterns demonstrated**:
 
@@ -288,9 +274,6 @@ MCP server wrapping LLDB's SB API for programmatic debugging:
 * **LLDB SB API integration**: Tools for launching, attaching, stepping, and evaluation
 * **Resource templates**: Dynamic discovery of threads and stack frames
 * **RAII lifecycle management**: Safe initialization and termination of LLDB
-
-This example shows how to build a complex MCP server that provides deep
-integration with system-level debugging tools.
 
 **Key patterns demonstrated**:
 

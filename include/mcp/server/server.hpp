@@ -212,7 +212,7 @@ class MCP_API Server {
     /**
      * @brief Register a low-level tool whose handler returns a complete CallToolResult JSON object.
      *
-     * Unlike add_tool(), this escape hatch never normalizes arbitrary output.
+     * Unlike add_tool(), the handler's output is never normalized.
      * Every returned value is validated as a complete CallToolResult before it
      * is sent to the client.
      *

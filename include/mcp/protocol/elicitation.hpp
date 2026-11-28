@@ -372,7 +372,7 @@ MCP_API void to_json(nlohmann::json& json_obj, const ElicitRequestFormParams& pa
 MCP_API void from_json(const nlohmann::json& json_obj, ElicitRequestFormParams& params);
 
 /**
- * @brief Parameters for an elicitation request — either URL or form mode.
+ * @brief Parameters for an elicitation request: either URL or form mode.
  */
 using ElicitRequestParams = std::variant<ElicitRequestURLParams, ElicitRequestFormParams>;
 

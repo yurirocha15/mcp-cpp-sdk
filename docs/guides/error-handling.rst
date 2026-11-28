@@ -1,12 +1,10 @@
 Error Handling
 ==============
 
-This guide covers error handling patterns in the MCP C++ SDK, focusing on both server-side and client-side strategies. Proper error handling ensures that your MCP applications are resilient, informative, and provide a smooth user experience even when things go wrong.
-
 Overview
 --------
 
-The MCP C++ SDK leverages a combination of JSON-RPC error codes, C++ exceptions, and structured result flags to communicate errors between servers and clients. The primary goals of the error handling system are:
+The MCP C++ SDK uses a combination of JSON-RPC error codes, C++ exceptions, and structured result flags to communicate errors between servers and clients. The primary goals of the error handling system are:
 
 1. **Clarity**: Provide meaningful error messages and codes to identify the source of the problem.
 2. **Isolation**: Prevent a single failure from crashing the entire server or client session.
@@ -50,7 +48,7 @@ Additionally, the SDK defines MCP-specific codes used throughout the library:
 
 The codes ``-32020`` to ``-32022`` belong to protocol revision 2026-07-28. See `Protocol Errors`_.
 
-When implementing custom tools, you should prefer using standard error codes where they apply, or use codes in the range ``-32000`` to ``-32099`` for application-specific protocol errors.
+Custom tools use standard error codes where they apply, and codes in the range ``-32000`` to ``-32099`` for application-specific protocol errors.
 
 Protocol Errors
 ---------------
@@ -122,7 +120,7 @@ Server-side Error Handling
 
 Server handlers (tools, resources, prompts) can report errors in two primary ways:
 
-1. **Throwing Exceptions**: Exceptions from a tool handler — typed, asynchronous or raw — are converted into tool results with ``isError: true``, because a tool that cannot complete has failed at its own task rather than at the protocol. Exceptions from resource and prompt handlers, which have no such result channel, propagate as JSON-RPC ``Internal error (-32603)`` responses, and so do exceptions from middleware: middleware decides whether a call may proceed at all, so refusing one is a protocol-level answer rather than a tool outcome. Exception messages are flattened and length-bounded before they reach the peer.
+1. **Throwing Exceptions**: Exceptions from a tool handler (typed, asynchronous or raw) are converted into tool results with ``isError: true``, because a tool that cannot complete has failed at its own task rather than at the protocol. Exceptions from resource and prompt handlers, which have no such result channel, propagate as JSON-RPC ``Internal error (-32603)`` responses, and so do exceptions from middleware: middleware decides whether a call may proceed at all, so refusing one is a protocol-level answer rather than a tool outcome. Exception messages are flattened and length-bounded before they reach the peer.
 2. **Returning Error Results**: For application-level errors (e.g., "File not found" or "Invalid input"), handlers can return a ``CallToolResult`` with the ``isError`` flag set to ``true``. This allows the client to distinguish between a technical failure (like a crash or timeout) and a logical error within the tool's execution.
 
 Choosing Between Exceptions and Error Results
@@ -156,7 +154,7 @@ Example: Returning an Error Result
 Implicit Exceptions
 ~~~~~~~~~~~~~~~~~~~
 
-It's important to be aware that some library calls might throw exceptions that you don't explicitly catch. For instance, ``nlohmann::json`` throws an exception if you try to access a non-existent key using ``at()``. In a tool handler such an exception becomes a tool error result like any other; in a resource or prompt handler it becomes a JSON-RPC internal error.
+Some library calls throw exceptions that a handler does not catch. For instance, ``nlohmann::json`` throws when ``at()`` accesses a non-existent key. In a tool handler such an exception becomes a tool error result like any other; in a resource or prompt handler it becomes a JSON-RPC internal error.
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
@@ -204,8 +202,8 @@ Request Timeouts
    opts into it: ``ClientOptions::request_timeout`` starts at
    ``std::chrono::seconds(30)``, and a default-constructed ``Client`` uses it
    for ``call_tool``, ``read_resource``, ``list_tools`` and every other
-   request. A tool that legitimately runs longer than that — a large model
-   call, a slow build, a batch job — fails on the client side while the server
+   request. A tool that legitimately runs longer than that (a large model
+   call, a slow build, a batch job) fails on the client side while the server
    is still working on it.
 
 Raise it for the whole client by passing ``ClientOptions`` to the constructor,
@@ -258,12 +256,12 @@ Catch it the same way as any other ``McpError``.
 A non-positive timeout is rejected rather than treated as "no deadline":
 constructing a ``Client`` with one, or passing one in ``RequestOptions``,
 throws ``std::invalid_argument``. The SDK offers no way to disable the deadline
-entirely — use a duration long enough for the slowest call you expect.
+entirely; use a duration long enough for the slowest call you expect.
 
 Catching Server Errors
 ~~~~~~~~~~~~~~~~~~~~~~
 
-When a server returns a JSON-RPC error response, the ``Client`` methods (like ``call_tool`` or ``read_resource``) throw ``mcp::McpError``, a ``std::runtime_error`` that carries the error code and message. This simplifies the client logic, as you can use standard C++ exception handling for both local and remote failures.
+When a server returns a JSON-RPC error response, the ``Client`` methods (like ``call_tool`` or ``read_resource``) throw ``mcp::McpError``, a ``std::runtime_error`` that carries the error code and message. Standard C++ exception handling covers both local and remote failures.
 
 Schema Validation Errors
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -291,7 +289,7 @@ If the server returns a successful JSON-RPC response but the tool itself failed 
 Graceful Degradation Patterns
 -----------------------------
 
-To ensure your application remains usable during partial failures, consider the following patterns:
+These patterns keep an application usable during partial failures:
 
 - **Feature Toggling**: If a specific tool call fails consistently, your client application can temporarily disable or hide the functionality associated with that tool.
 - **Fallback Content**: When reading a resource fails, provide sensible default content or previously cached values. This is particularly useful for configuration or preference resources.
@@ -301,7 +299,7 @@ To ensure your application remains usable during partial failures, consider the 
 Retry Strategies
 ----------------
 
-For transient errors, such as network timeouts or temporary server busy states (indicated by specific error codes), implementing a retry strategy is highly beneficial.
+For transient errors, such as network timeouts or temporary server busy states (indicated by specific error codes), a retry strategy helps.
 
 - **Exponential Backoff**: Increase the wait time between retries (e.g., 100ms, 200ms, 400ms) to avoid overwhelming a struggling server.
 - **Max Retries**: Always define a maximum number of attempts to avoid infinite loops.
@@ -310,7 +308,7 @@ For transient errors, such as network timeouts or temporary server busy states (
 Logging and Monitoring
 ----------------------
 
-The SDK provides a built-in logging system that is essential for debugging and monitoring production systems. Use the ``Context`` object in your handlers to log errors and warnings.
+Use the ``Context`` object in your handlers to log errors and warnings.
 
 .. code-block:: cpp
 

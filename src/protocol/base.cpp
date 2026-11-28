@@ -67,7 +67,7 @@ void from_json(const nlohmann::json& json_obj, Error& error) {
         json_obj.at("code").get_to(error.code);
     }
     // JSON-RPC 2.0 requires `message`, but a peer that omits it or sends it as null has still
-    // told us which error occurred. Decoding to an empty message keeps `code` -- the part a
+    // identified which error occurred. Decoding to an empty message keeps `code` -- the part a
     // caller acts on -- rather than discarding the whole error object.
     if (detail::has_json_value(json_obj, "message")) {
         json_obj.at("message").get_to(error.message);

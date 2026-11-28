@@ -101,10 +101,6 @@ specify whether an argument is required and provide a detailed description.
    :end-before: boost::asio::io_context io_ctx;
    :dedent: 8
 
-In this example, the `code_review` prompt takes two required arguments: `language`
-and `code`. The handler extracts these from the `GetPromptRequestParams` and
-constructs a `GetPromptResult`.
-
 Structured Prompt Results
 -------------------------
 
@@ -115,9 +111,8 @@ a list of `PromptMessage` objects. Each message has a role (e.g., `user` or
 Roles
 ~~~~~
 
-Roles are defined by the `mcp::Role` enum. These roles are critical for the
-LLM to understand the conversation flow and distinguish between user input and
-previous assistant responses.
+Roles are defined by the `mcp::Role` enum. They let the LLM follow the
+conversation flow and distinguish user input from previous assistant responses.
 
 - `Role::eUser`: Represents messages originating from the user. In most
   cases, prompt results consist primarily of user messages that set the stage
@@ -135,8 +130,7 @@ The content of a message is a `ContentBlock`. While the most common type is
 Text Content
 ^^^^^^^^^^^^
 
-In `mcp-cpp-sdk`, you typically use `TextContent` for prompt responses. This
-is the standard way to provide instructions or context to the LLM.
+Use `TextContent` to provide instructions or context to the LLM.
 
 .. code-block:: cpp
 
@@ -183,9 +177,9 @@ including asynchronous handlers and handlers that receive a `mcp::Context`.
 Async Handlers
 ~~~~~~~~~~~~~~
 
-Asynchronous handlers are essential for operations that might take time, such
-as fetching data from an external database or performing complex computations
-before returning the prompt content.
+Asynchronous handlers suit operations that take time, such as fetching data
+from an external database or performing a long computation before returning
+the prompt content.
 
 .. code-block:: cpp
 
@@ -246,6 +240,5 @@ before it serves:
 
    mcp::Server server(info, std::move(caps));
 
-By setting `listChanged` to `true`, you inform the client that your server
-is capable of sending notifications when the prompt list changes, allowing for
-a more dynamic and responsive integration.
+Setting `listChanged` to `true` tells the client that the server sends
+notifications when the prompt list changes.

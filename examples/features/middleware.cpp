@@ -33,7 +33,6 @@ int main() {
         asio::io_context io_ctx;
         bool client_ok = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
         server_caps.logging = nlohmann::json::object();
@@ -99,7 +98,6 @@ int main() {
         });
 
         // ========== TOOL REGISTRATION ==========
-        // Register a simple tool that will be wrapped by the middleware chain
         nlohmann::json echo_schema = {
             {"type", "object"},
             {"properties", {{"message", {{"type", "string"}}}}},
@@ -112,15 +110,12 @@ int main() {
                             return nlohmann::json{{"echo", args.at("message").get<std::string>()}};
                         });
 
-        // ========== CLIENT SETUP ==========
         Implementation client_info;
         client_info.name = "middleware-client";
         client_info.version = "1.0.0";
 
-        // Create bidirectional memory transport pair
         auto [server_transport, client_transport] = make_memory_transport_pair(io_ctx.get_executor());
 
-        // ========== SERVER COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&, transport = server_transport]() mutable -> Task<void> {
@@ -129,7 +124,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== CLIENT COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&, transport = client_transport]() -> Task<void> {
@@ -146,7 +140,6 @@ int main() {
                         }
                     }
 
-                    // ========== TEST 1: Normal execution (middleware chain) ==========
                     std::cout << "=== TEST 1: Normal execution (middleware chain) ===\n";
                     std::cout << "Expected order: A before -> B before -> C before -> Handler -> C "
                                  "after -> B after -> A after\n\n";
@@ -159,7 +152,6 @@ int main() {
                     }
                     std::cout << "[Client] Content blocks: " << result1.content.size() << "\n\n";
 
-                    // ========== TEST 2: Short-circuit execution ==========
                     std::cout << "=== TEST 2: Short-circuit execution (middleware C blocks) ===\n";
                     std::cout << "Expected order: A before -> B before -> C before (short-circuit); "
                                  "the error propagates out through B and A\n";

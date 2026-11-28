@@ -1,6 +1,6 @@
 /**
  * @file auth_integration_test.cpp
- * @brief Tests for OAuth 2.1 integration (Task 19): middleware, bearer extraction, transport wrapper
+ * @brief Tests for OAuth 2.1 integration: middleware, bearer extraction, transport wrapper
  */
 
 #include "support/hang_guard.hpp"

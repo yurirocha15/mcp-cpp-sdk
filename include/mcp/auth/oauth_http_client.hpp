@@ -272,9 +272,8 @@ class MCP_API OAuthHttpClientScope {
                          std::shared_ptr<detail::OAuthScopeState> state);
 
     std::shared_ptr<OAuthHttpClient::Impl> impl_;
-    /// The latch itself, not a name for one held elsewhere. Every exchange issued through this
-    /// scope holds the same control block, so the flag lives exactly as long as someone can
-    /// still consult it and is freed once nobody can.
+    /// The abort latch. Every exchange issued through this scope holds the same control block, so
+    /// the flag lives as long as any of them can still consult it.
     std::shared_ptr<detail::OAuthScopeState> state_;
 };
 

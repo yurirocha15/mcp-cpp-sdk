@@ -54,7 +54,6 @@ TEST_F(ServerLoggingTest, SetLevelChangesServerLogLevel) {
 
     mcp::Server server(std::move(info), std::move(caps));
 
-    // Default level is Debug
     EXPECT_EQ(server.get_log_level(), mcp::LoggingLevel::eDebug);
 
     std::vector<nlohmann::json> responses;
@@ -189,7 +188,6 @@ TEST_F(ServerLoggingTest, LogFilteredByLevel) {
 
     ASSERT_EQ(responses.size(), 4);
 
-    // setLevel result
     EXPECT_EQ(responses[1]["id"], "2");
     EXPECT_EQ(responses[1]["result"], nlohmann::json::object());
 
@@ -199,7 +197,6 @@ TEST_F(ServerLoggingTest, LogFilteredByLevel) {
     EXPECT_EQ(log_notif["params"]["level"], "error");
     EXPECT_EQ(log_notif["params"]["data"], "error message");
 
-    // Tool result
     EXPECT_EQ(responses[3]["id"], "3");
     ASSERT_TRUE(responses[3].contains("result"));
 }
@@ -307,12 +304,10 @@ TEST_F(ServerLoggingTest, ListChangedNotificationsSent) {
 
     ASSERT_EQ(responses.size(), 3);
 
-    // List changed notification
     auto& notif = responses[1];
     EXPECT_EQ(notif["method"], "notifications/tools/list_changed");
     EXPECT_FALSE(notif.contains("id"));
 
-    // Tool result
     EXPECT_EQ(responses[2]["id"], "2");
     ASSERT_TRUE(responses[2].contains("result"));
 }

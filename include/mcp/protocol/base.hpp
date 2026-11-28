@@ -41,12 +41,6 @@ inline bool has_json_value(const nlohmann::json& json_obj, const char* key) {
 
 }  // namespace detail
 
-// MCP Protocol Constants
-
-// Error-code allocation policy: -32000..-32019 is a grandfathered legacy band
-// (pre-existing codes above); -32020..-32099 is the spec-reserved band for
-// codes introduced by newer MCP spec revisions, such as the ones below.
-
 /**
  * @brief The sender or recipient of messages and data in a conversation.
  */
@@ -56,8 +50,6 @@ enum class Role : std::uint8_t {
 };
 
 NLOHMANN_JSON_SERIALIZE_ENUM(Role, {{Role::eUser, "user"}, {Role::eAssistant, "assistant"}})
-
-// JSON-RPC Base Types
 
 /**
  * @brief JSON-RPC request identifier: either a string or an integer.

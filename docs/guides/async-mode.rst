@@ -7,10 +7,9 @@ server answers other requests on the same thread; a client has several calls in
 flight at once; and the program chooses its executors and transports and runs
 other work on the same loop.
 
-This guide walks through ``examples/async/server.cpp`` and
-``examples/async/client.cpp``, a server and a client that use every feature.
-Each feature is described on its page in :doc:`../concepts/index`, and
-:doc:`../examples` shows how to run the programs.
+``examples/async/server.cpp`` and ``examples/async/client.cpp`` are a server and
+a client that use every feature. Each feature has a page in
+:doc:`../concepts/index`, and :doc:`../examples` shows how to run the programs.
 
 Coroutines
 ----------

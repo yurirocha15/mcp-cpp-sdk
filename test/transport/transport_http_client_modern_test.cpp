@@ -442,10 +442,6 @@ mcp::Task<int> failure_code(Make make) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Headers of a modern request
-// ---------------------------------------------------------------------------
-
 TEST(HttpClientModern, HeadersExactPerSpecTable) {
     asio::io_context io;
     RawServer raw(
@@ -846,10 +842,6 @@ TEST(HttpClientModern, HeaderMismatchIsRetriedOnlyOnce) {
               (std::vector<std::string>{"server/discover", "tools/call", "tools/list", "tools/call"}));
 }
 
-// ---------------------------------------------------------------------------
-// Auto detection over HTTP
-// ---------------------------------------------------------------------------
-
 namespace {
 
 /// An Auto client probing a raw server whose probe answer is @p probe: the client ends up legacy.
@@ -979,10 +971,6 @@ TEST(HttpClientModern, Fallback404Legacy) { expect_legacy_fallback(status_reply(
 
 TEST(HttpClientModern, Fallback405Legacy) { expect_legacy_fallback(status_reply(405)); }
 
-// ---------------------------------------------------------------------------
-// No session in the modern era
-// ---------------------------------------------------------------------------
-
 TEST(HttpClientModern, NoSessionIdSentInModern) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
@@ -1061,10 +1049,6 @@ TEST(HttpClientModern, ALegacySseAnswerWithCrlfLinesAndSplitDataIsRead) {
     EXPECT_EQ(tool_names, std::vector<std::string>{"route"});
     EXPECT_EQ(transport->last_event_id(), "2");
 }
-
-// ---------------------------------------------------------------------------
-// Streamed answers
-// ---------------------------------------------------------------------------
 
 TEST(HttpClientModern, StreamedNotificationsArriveBeforeTheResult) {
     asio::io_context io;
@@ -1265,10 +1249,6 @@ TEST(HttpClientModern, CloseEndsTheOpenResponseStream) {
     EXPECT_NE(code, 0);
     EXPECT_EQ(raw.streams_abandoned, 1);
 }
-
-// ---------------------------------------------------------------------------
-// A request whose answer has not started
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -1577,10 +1557,6 @@ TEST(HttpClientModern, ArgumentTooLongForItsHeaderIsRefused) {
     EXPECT_EQ(calls_on_the_wire, 0u);
 }
 
-// ---------------------------------------------------------------------------
-// Against the SDK's own servers
-// ---------------------------------------------------------------------------
-
 namespace {
 
 std::unique_ptr<mcp::Server> make_sdk_server() {
@@ -1741,10 +1717,6 @@ TEST(HttpClientModern, AgainstRunHttpJsonOnly) {
     EXPECT_EQ(outcome.encoded.at("messages").at(0).at("content").at("text"), "ok");
     EXPECT_FALSE(server->is_initialized());
 }
-
-// ---------------------------------------------------------------------------
-// Pinned legacy versions
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -1985,10 +1957,6 @@ TEST(HttpClientPinned, ServerRestrictedPolicyNegotiatesUpAndHeadersFollow) {
             << outcome.requests[index].body;
     }
 }
-
-// ---------------------------------------------------------------------------
-// Errors a legacy client gets with an HTTP error status
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -2297,10 +2265,6 @@ TEST(HttpClientLegacy, ForgottenSessionIsNotReplacedWhenTurnedOff) {
     EXPECT_EQ(status, 404u) << other;
     EXPECT_EQ(initializes, 1);
 }
-
-// ---------------------------------------------------------------------------
-// Hostile server
-// ---------------------------------------------------------------------------
 
 namespace {
 

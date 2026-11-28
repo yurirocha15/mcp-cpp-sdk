@@ -77,10 +77,9 @@ std::string lowercase_ascii(std::string value) {
 }
 
 /// Parse a URL port substring strictly: ASCII digits only, no sign, no whitespace, and in range
-/// [0, 65535]. Leading zeros are tolerated and simply absorbed into the numeric value (`"00443"` and
-/// `"0443"` both parse to 443), but anything that is not a plain unsigned decimal number — including
-/// an empty string, a sign, embedded whitespace, or a value that overflows a 16-bit port — returns
-/// `nullopt` rather than silently truncating or wrapping.
+/// [0, 65535]. Leading zeros are tolerated (`"00443"` and `"0443"` both parse to 443). Anything
+/// else (an empty string, a sign, embedded whitespace, a value that overflows 16 bits) returns
+/// `nullopt` rather than truncating or wrapping.
 std::optional<std::uint32_t> parse_strict_port(const std::string& port_text) {
     std::uint16_t value = 0;
     const char* const end = port_text.data() + port_text.size();
@@ -519,10 +518,9 @@ std::string sanitize_for_diagnostics(std::string_view value) {
 
 }  // namespace detail
 
-/// The target is sanitized for the MESSAGE and kept raw in `target_`. Every throw site passes a URL
-/// or address that came from a peer, and sanitizing here rather than at each of them means a throw
-/// site cannot forget. `target()` still returns the value verbatim, because a caller inspecting it
-/// programmatically wants the real URL, not one with its control characters flattened.
+/// The target is sanitized for the message and kept raw in `target_`: every throw site passes a URL
+/// or address from a peer, so sanitizing here covers all of them. `target()` returns the value
+/// verbatim for callers that inspect it.
 MetadataPolicyError::MetadataPolicyError(MetadataUrlDecision decision, std::string target)
     : std::runtime_error("OAuth metadata target refused (" + std::string(describe(decision)) +
                          "): " + detail::sanitize_for_diagnostics(target)),

@@ -1,6 +1,6 @@
 # MCP C++ SDK Feature Examples
 
-This directory contains feature examples demonstrating advanced capabilities of the MCP C++ SDK. Each example is self-contained and non-interactive. Most examples use loopback or other in-process test-friendly patterns so they remain fast and deterministic in CI.
+These examples demonstrate features of the MCP C++ SDK. Each example is self-contained and non-interactive. Most examples use loopback or other in-process test-friendly patterns so they remain fast and deterministic in CI.
 
 ## Quick Start
 
@@ -85,7 +85,7 @@ done
 
 **Run:** `./build/release/example-feature-middleware`
 
-**Expected output:** Middleware A → B → C execution order, short-circuit demonstration
+**Expected output:** Middleware A, B, C execution order, short-circuit demonstration
 
 ---
 
@@ -263,7 +263,7 @@ done
 
 **Expected output:** OAuth discovery, token acquisition, injection, refresh on expiry
 
-**Serving the challenge over HTTP:** this example runs over `MemoryTransport`, so it renders the 401 header itself. `StreamableHttpSessionManager` and `HttpServerTransport` send it for you — call `set_protected_resource_metadata()`, `set_bearer_token_validator()` or `set_async_bearer_token_validator()`, and `set_unauthenticated_paths()` before `listen()`. See the "Protecting a server" section of `docs/concepts/oauth.rst`.
+**Serving the challenge over HTTP:** this example runs over `MemoryTransport`, so it renders the 401 header itself. `StreamableHttpSessionManager` and `HttpServerTransport` send it for you; call `set_protected_resource_metadata()`, `set_bearer_token_validator()` or `set_async_bearer_token_validator()`, and `set_unauthenticated_paths()` before `listen()`. See the "Protecting a server" section of `docs/concepts/oauth.rst`.
 
 ---
 
@@ -398,10 +398,10 @@ io_ctx.run();
 ```
 
 This approach:
-- ✅ Is fast (no network overhead)
-- ✅ Is deterministic (no timing issues)
-- ✅ Requires no external services
-- ✅ Can run in CI without network access
+- Is fast (no network overhead)
+- Is deterministic (no timing issues)
+- Requires no external services
+- Can run in CI without network access
 
 Examples such as ``http_server_convenience.cpp`` and ``graceful_shutdown.cpp`` demonstrate transport and shutdown behavior directly instead of using ``MemoryTransport``, but they are still written to run unattended in CI.
 
@@ -450,7 +450,7 @@ example hangs or times out:
 
 ### Link errors
 
-Ensure the mcp-cpp-sdk library is built first:
+Build the mcp-cpp-sdk library first:
 
 ```bash
 python scripts/init.py  # Install dependencies

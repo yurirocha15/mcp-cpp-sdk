@@ -76,7 +76,7 @@ namespace {
 /// Loopback HTTP server that answers a scripted handler and records everything it received.
 ///
 /// `accepts()` is the socket ledger the security tests assert on: a control that refuses a target
-/// must leave it at zero even though this server is listening and would happily accept.
+/// must leave it at zero while this server is listening.
 class LoopbackServer final {
    public:
     using Handler =
@@ -576,8 +576,8 @@ TEST(AuthDiscoveryChallengeUrlTest, ChallengeSuppliedUrlSuppressesTheWellKnownFa
 
 namespace {
 
-/// An Authenticator written before the challenge hook existed: it overrides only the two original
-/// pure virtuals and must keep working unchanged.
+/// An Authenticator that overrides only the two original pure virtuals and not the challenge hook;
+/// it must keep working unchanged.
 class LegacyAuthenticator final : public mcp::auth::Authenticator {
    public:
     [[nodiscard]] std::string get_access_token() const override { return access_token_; }
@@ -2257,8 +2257,8 @@ TEST(AuthTransportCloseTest, AFollowerReportsItsOwnFlightsFailureNotALaterFlight
     mcp_test::spawn_detached(io_ctx, server.serve(6));
 
     // The first leader runs here, and so does the gate it parks on, so the gate is only ever
-    // touched from one strand. Expiring a timer from a thread that is not the one waiting on it is
-    // the very defect the single-flight timer had; the test must not reintroduce it.
+    // touched from one strand: expiring a timer from a thread other than the one waiting on it is
+    // a data race.
     auto leader_strand = asio::make_strand(io_ctx);
     auto follower_strand = asio::make_strand(io_ctx);
     asio::steady_timer leader_gate(leader_strand, asio::steady_timer::time_point::max());
@@ -2535,12 +2535,10 @@ TEST(AuthTransportCloseTest,
                                                                           config, callback);
     const std::string header = R"(Bearer resource_metadata=")" + base + R"(/prm")";
 
-    // A single follower racing a single close() call almost never lands in the gap between joining
-    // the flight and registering its wait: starting the runner thread, having it work through
-    // discovery and reach the callback, and then waking it again for one posted follower all take far
-    // longer than close()'s own few instructions. A burst of many followers, posted individually and
-    // racing the same close() call from a second thread with no synchronization, gives the same
-    // narrow window many independent chances to be hit in one test run instead of one.
+    // A single follower rarely lands in the gap between joining the flight and registering its wait,
+    // since the runner thread's start, discovery and wake-up take far longer than close()'s own few
+    // instructions. A burst of followers posted individually and racing the same close() call from a
+    // second thread gives that narrow window many chances per run.
     constexpr int follower_count = 200;
     std::vector<bool> follower_authorized(follower_count, false);
     std::vector<std::exception_ptr> follower_failure(follower_count);
@@ -2589,10 +2587,9 @@ TEST(AuthTransportCloseTest,
                 });
             });
         }
-        // Deliberately no synchronization beyond what the manager itself provides: this call races
-        // the followers' posts above from a second thread that is not running the io_context at all,
-        // which is exactly how close() is used in practice (an application thread tearing down a
-        // transport while the io_context spins elsewhere).
+        // No synchronization beyond the manager's own: this call races the followers' posts from a
+        // thread that does not run the io_context, as an application thread tearing down a transport
+        // does.
         manager->close();
     }
 
@@ -3586,9 +3583,8 @@ TEST(AuthTransportCloseTest, ChallengeOnAClosedManagerThrowsFromTheAwaitNotFromT
     EXPECT_TRUE(requested_scopes.empty());
 }
 
-// Constructing a scope means dereferencing the client, so a null one faults in the constructor
-// rather than later. Nonsensical usage either way; the point is that it is refused the way the
-// sibling constructor refuses it, not that it segfaults.
+// Constructing a scope dereferences the client, so a null one is refused in the constructor, as the
+// sibling constructor refuses it, instead of faulting.
 TEST(AuthAuthenticatorConstructionTest, RefusesANullHttpClientInsteadOfFaulting) {
     auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
     mcp::auth::OAuthConfig config;
@@ -3723,11 +3719,10 @@ TEST(AuthHttpClientScopeRetentionTest, TheScopeAbortLatchIsReleasedByEveryChurne
         << "a scope's abort latch outlived the authenticator that owned it";
 }
 
-// OAuthAuthenticator takes its client by shared_ptr, which is an invitation to share one across
-// several servers, so close() must end only that authenticator's own scope. Latching the whole
-// client instead would disable every other holder, and silently: run_refresh() reports a failed
-// refresh as a plain `false`, so the survivor raises nothing and an application sees tokens
-// quietly stop renewing against a server it never closed.
+// OAuthAuthenticator takes its client by shared_ptr, so one client may be shared across several
+// servers and close() must end only that authenticator's own scope. Latching the whole client would
+// disable every other holder silently: run_refresh() reports a failed refresh as a plain `false`,
+// so the survivor raises nothing and its tokens stop renewing.
 TEST(AuthTransportCloseTest, ClosingOneAuthenticatorLeavesAnotherSharingTheSameClientWorking) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -3751,7 +3746,7 @@ TEST(AuthTransportCloseTest, ClosingOneAuthenticatorLeavesAnotherSharingTheSameC
         store->store(server_url, stored);
     }
 
-    // One client, shared. This is the shape the constructor's signature invites.
+    // One client, shared.
     auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
     http_client->set_metadata_policy(loopback_policy(server.origin()));
 
@@ -4588,7 +4583,7 @@ namespace {
 /// Forwards to a manager, but closes the transport just before forwarding a challenge: a close()
 /// from another thread that lands after the write's own check and before the manager has
 /// registered the attempt, so close() finds nothing to cancel. With `forwards_cancel` false it
-/// keeps the default no-op cancel_pending(), as a wrapper written before that call existed would.
+/// keeps the default no-op cancel_pending(), as a wrapper that does not override it does.
 class CloseBeforeChallengeAuthenticator final : public mcp::auth::Authenticator {
    public:
     CloseBeforeChallengeAuthenticator(std::shared_ptr<mcp::auth::OAuthAuthorizationManager> manager,
@@ -5028,9 +5023,9 @@ TEST(AuthClientIdentityBindingTest, RefusesAnInjectedClientSecretThatNamesNoIssu
     EXPECT_FALSE(outcome.secret_seen_on_the_wire);
 }
 
-// The positive control, without which the two tests above would pass on a build that simply never
-// authorizes. A correctly bound secret still reaches the token endpoint it belongs to, and this is
-// also what proves the wire assertions above can observe a secret when one is really sent.
+// The positive control: the two tests above would pass on a build that never authorizes. A
+// correctly bound secret still reaches the token endpoint it belongs to, which shows the wire
+// assertions above can observe a secret when one is sent.
 TEST(AuthClientIdentityBindingTest, AuthorizesNormallyWhenTheInjectedSecretNamesItsOwnIssuer) {
     const auto outcome = try_injected_secret([](const std::string& base) { return base; });
 
@@ -5124,7 +5119,7 @@ namespace {
 ///
 /// `server_url` need not be reachable: the challenge always names the metadata location explicitly,
 /// so discovery never derives a fetch target from it. Only the `resource` comparison in
-/// RFC 9728 §3.3 validation reads it.
+/// RFC 9728 section 3.3 validation reads it.
 struct PrmResourceOutcome {
     bool authorized{false};
     bool threw{false};
@@ -5184,8 +5179,8 @@ PrmResourceOutcome try_prm_resource(const std::string& server_url, const std::st
 // `server_url` and the PRM `resource` value are only ever compared, never fetched, so a synthetic
 // origin exercises the comparison logic without any network dependency.
 
-// RFC 9728 §3.3: byte-exact match is always accepted, and the PRM's own value is what travels on
-// the authorization request (not a value substituted from config).
+// RFC 9728 section 3.3: byte-exact match is always accepted, and the PRM's own value is what
+// travels on the authorization request (not a value substituted from config).
 TEST(AuthProtectedResourceValidationTest, AcceptsAByteExactMatch) {
     const auto outcome = try_prm_resource("https://example.test/mcp", "https://example.test/mcp");
     EXPECT_FALSE(outcome.threw);
@@ -5221,8 +5216,8 @@ TEST(AuthProtectedResourceValidationTest, AcceptsATrailingSlashOnTheResourceAgai
     EXPECT_EQ(outcome.resolved_resource, "https://example.test/a/b/");
 }
 
-// The mirror of the above: a server URL that trails its path with `/` was already accepted against
-// a resource value that does not, and must remain so.
+// The mirror of the above: a server URL that trails its path with `/` is accepted against a
+// resource value that does not.
 TEST(AuthProtectedResourceValidationTest, AcceptsATrailingSlashOnTheServerAgainstAnEqualPath) {
     const auto outcome = try_prm_resource("https://example.test/a/b/", "https://example.test/a/b");
     EXPECT_FALSE(outcome.threw);
@@ -5291,8 +5286,8 @@ TEST(AuthProtectedResourceValidationTest, RejectsAResourceValueCarryingAQuery) {
     EXPECT_FALSE(outcome.authorized);
 }
 
-// RFC 9728 §2 makes `resource` a required PRM member. An empty value -- indistinguishable, once
-// parsed, from a PRM document that omits the member entirely -- must be rejected rather than
+// RFC 9728 section 2 makes `resource` a required PRM member. An empty value -- indistinguishable,
+// once parsed, from a PRM document that omits the member entirely -- must be rejected rather than
 // silently falling back to the configured server URL.
 TEST(AuthProtectedResourceValidationTest, RejectsAnEmptyPrmResource) {
     const auto outcome = try_prm_resource("https://example.test/mcp", "");
@@ -5469,9 +5464,8 @@ TEST(AuthAuthorizationConfigTest, RefusesShorthandCredentialsAlongsidePreRegiste
 // Rejecting the document is only half of it: it must not be cached either. A document that merely
 // parses must not reach the resource cache ahead of the identity check, or a refused document sits
 // planted under the challenge's own metadata URL for the full TTL and the next attempt is served
-// it without touching the network -- which is what makes an attacker-supplied document worth
-// planting. Discovery takes the caller's acceptance test and commits nothing the caller refuses,
-// so the request log is the evidence: two PRM fetches, not one.
+// it without touching the network. Discovery takes the caller's acceptance test and commits
+// nothing the caller refuses, so the request log is the evidence: two PRM fetches, not one.
 TEST(AuthProtectedResourceValidationTest, ARejectedProtectedResourceDocumentIsNotCached) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -5604,8 +5598,7 @@ bool is_well_formed_utf8(const std::string& text) {
 // Peer-controlled text reaching a diagnostic message is a log-forging vector, and JSON is the sharp
 // edge: a metadata document is decoded before its fields are interpolated, so an issuer written
 // with `\r\n` escape sequences arrives as real control bytes. This one goes through
-// MetadataPolicyError, whose constructor now flattens its own message so that no throw site has to
-// remember to.
+// MetadataPolicyError, whose constructor flattens its own message so that no throw site has to.
 TEST(AuthDiagnosticsSanitizingTest, AnIssuerCarryingControlCharactersCannotForgeALogLine) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -5661,10 +5654,10 @@ TEST(AuthDiagnosticsSanitizingTest, AnIssuerCarryingControlCharactersCannotForge
     EXPECT_EQ(failure.find('\r'), std::string::npos) << failure;
 }
 
-// The same property away from MetadataPolicyError, since sanitizing in that constructor covers only
-// the throw sites that go through it. An `error` on the authorization response is peer-controlled
-// too, and it is interpolated by validate_authorization_response() into the message run_challenge()
-// throws. Being issuer-authentic makes it trustworthy as to origin, not as to content.
+// The same property away from MetadataPolicyError, whose sanitizing covers only the throw sites that
+// go through it. An `error` on the authorization response is peer-controlled too, and
+// validate_authorization_response() interpolates it into the message run_challenge() throws. An
+// authentic issuer vouches for the origin, not the content.
 TEST(AuthDiagnosticsSanitizingTest, AnAuthorizationResponseErrorCannotForgeALogLine) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);
@@ -5794,8 +5787,7 @@ TEST(AuthDiagnosticsSanitizingTest, ATruncatedMultiByteIssuerStaysWellFormedUtf8
 }
 
 // The same guarantee for bytes that were never valid UTF-8 to begin with. A `Location` header is
-// raw bytes with no parser between it and the SDK, unlike a JSON document, so this is the input
-// class the truncation fix alone would not have covered.
+// raw bytes with no parser between it and the SDK, unlike a JSON document.
 TEST(AuthDiagnosticsSanitizingTest, IllFormedBytesAreReplacedRatherThanCopiedThrough) {
     // A lone continuation byte, a truncated three-byte lead, and a surrogate encoding: each is
     // ill-formed, and none is a control character, so the earlier assertions would all have passed.
@@ -5845,13 +5837,12 @@ std::string utf8_codepoint(std::uint32_t codepoint) {
 
 // Forgery without a line break. U+202E reverses the rendering of everything after it, so a peer
 // that gets one into a refusal message can make the message read as its opposite in a terminal or
-// a browser-based log viewer -- the same outcome U+2028/U+2029 were flattened to prevent, reached
-// without ending a line at all.
+// a browser-based log viewer: the outcome U+2028/U+2029 would cause, without ending a line.
 TEST(AuthDiagnosticsSanitizingTest, BidirectionalOverridesAreFlattenedToo) {
     // The bidi controls Unicode defines: the explicit embeddings and overrides (U+202A-U+202E),
     // the isolates (U+2066-U+2069) and all three implicit marks -- LRM (U+200E), RLM (U+200F) and
-    // ALM (U+061C). ALM is the one an enumeration reaches for last, because it sits in the Arabic
-    // block rather than beside the other two; it is the same class as RLM.
+    // ALM (U+061C). ALM sits in the Arabic block rather than beside the other two but is the same
+    // class as RLM.
     const std::vector<std::uint32_t> reordering = {0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066,
                                                    0x2067, 0x2068, 0x2069, 0x200E, 0x200F, 0x061C};
 
@@ -5918,14 +5909,8 @@ TEST(AuthDiagnosticsSanitizingTest, EveryIllFormedSequenceLengthIsReplaced) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Client against the real server.
-//
-// Every other test in this file drives LoopbackServer, whose answers were written alongside the
-// client, so it can never disagree with the client. The tests below stand up the shipped
-// StreamableHttpSessionManager and point the shipped OAuthAuthorizationManager at the challenge it
-// really emits.
-// ---------------------------------------------------------------------------
+// The tests below run the shipped StreamableHttpSessionManager and OAuthAuthorizationManager
+// against each other; the scripted answers of LoopbackServer cannot disagree with the client.
 
 namespace {
 
@@ -6049,16 +6034,13 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
     EXPECT_EQ(challenge.www_authenticate.find("resource_metadata"), std::string::npos)
         << challenge.www_authenticate;
 
-    // Told nothing, the client does not give up: it falls back to guessing the well-known locations
-    // under the URL it was configured with, spends real requests on them, and only then fails. So the
-    // cost of the missing parameter is not one failed handshake, it is the client probing a server
-    // that never advertised anything.
+    // Without a `resource_metadata` parameter the client falls back to the well-known locations
+    // under its configured URL, spends real requests on them, and only then fails.
     EXPECT_GT(discovery_attempts.load(), 0)
         << "the client should have been driven to guess at well-known locations";
     EXPECT_FALSE(client_authorized)
         << "the client authorized against a challenge that names no metadata location";
-    // It reports the configured server URL, because that is all it ever had to go on; a compliant
-    // challenge would have named the document location instead.
+    // It reports the configured server URL; a compliant challenge names the document location.
     EXPECT_NE(client_failure.find("Failed to discover protected resource metadata"), std::string::npos)
         << client_failure;
     EXPECT_NE(client_failure.find("/mcp"), std::string::npos) << client_failure;
@@ -6070,9 +6052,8 @@ TEST(AuthClientServerPairingTest, ServerChallengeCarriesNoResourceMetadataSoDisc
 // A server that is told what resource it represents advertises where its metadata lives, so the
 // shipped client has somewhere to begin discovery.
 //
-// The seam stays guarded in both directions: the test above pins that a server configured with only a
-// validator sends the bare challenge, so the parameter cannot appear by accident, and this one fails
-// if it ever stops appearing when the metadata IS configured.
+// The test above pins that a server configured with only a validator sends the bare challenge; this
+// one fails if the parameter is missing when the metadata is configured.
 TEST(AuthClientServerPairingTest, ClientDiscoversAuthorizationFromTheServersOwnChallenge) {
     constexpr unsigned short port = 19212;
 
@@ -6163,9 +6144,9 @@ TEST(AuthHttpClientPolicyTest, APolicyInstalledMidExchangeDoesNotChangeTheRulesU
     EXPECT_GE(resolver_calls.load(), 2) << "both hops must have resolved for this to prove anything";
 }
 
-// The race itself. Its value is under ThreadSanitizer, where the unsynchronised version reports the
-// setters against the reads in run_get() and connect(); without a sanitizer it still asserts that
-// nothing hangs or crashes while a policy and a resolver are replaced under live requests.
+// Under ThreadSanitizer an unsynchronised version reports the setters against the reads in
+// run_get() and connect(); without a sanitizer it asserts that nothing hangs or crashes while a
+// policy and a resolver are replaced under live requests.
 TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsSafe) {
     constexpr int io_thread_count = 4;
     constexpr int request_count = 60;
@@ -6189,8 +6170,8 @@ TEST(AuthHttpClientPolicyTest, ReplacingThePolicyAndResolverUnderLiveRequestsIsS
         runners.emplace_back([&io_ctx]() { io_ctx.run(); });
     }
 
-    // An application thread that keeps installing both, exactly as a direct user of this client
-    // might when its configuration changes. Every policy it installs is equivalent, so a request
+    // An application thread that keeps installing both, as a direct user of this client might when
+    // its configuration changes. Every policy it installs is equivalent, so a request
     // succeeds whichever one it pinned; what is under test is the concurrent write, not the outcome.
     std::thread writer([&]() {
         while (!stop_writing.load()) {

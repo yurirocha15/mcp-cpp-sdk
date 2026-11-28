@@ -1,9 +1,6 @@
 Contributing
 ============
 
-Thank you for your interest in contributing to mcp-cpp-sdk! This document provides
-guidelines for contributing code, documentation, and bug reports.
-
 Development Setup
 -----------------
 
@@ -88,25 +85,24 @@ files of each commit. CI runs the same hooks over every file, so
 Doxygen Comments
 ^^^^^^^^^^^^^^^^
 
-All public APIs must have Doxygen documentation:
+All public APIs must have Doxygen documentation. The tags say what the declaration
+does not: units, ownership, valid range, what zero or empty means, and when it throws.
 
 .. code-block:: cpp
 
    /**
-    * @brief Register a tool with the server.
+    * @brief Register a tool with a synchronous JSON handler.
     *
-    * @details Tools are callable functions exposed to MCP clients. The handler
-    * will be invoked when a client sends a CallToolRequest with matching name.
-    *
-    * @param name Tool name (must be unique)
-    * @param description Human-readable description
-    * @param input_schema JSON schema for tool parameters
-    * @param handler Callable that processes the tool request
-    *
-    * @throws std::invalid_argument if tool name is empty or already registered
+    * @param name         Unique among the server's tools.
+    * @param description  Returned to clients in tools/list.
+    * @param input_schema JSON Schema of the arguments; must declare "type": "object".
+    * @param handler      Runs for each tools/call of this tool; an exception it throws
+    *                     becomes a tool error result.
+    * @throws std::invalid_argument when a tool with the same name is already registered.
     */
-   void add_tool(std::string name, std::string description,
-                 nlohmann::json input_schema, TypeErasedHandler handler);
+   void add_tool(const std::string& name, const std::string& description,
+                 const nlohmann::json& input_schema,
+                 std::function<nlohmann::json(const nlohmann::json&)> handler);
 
 Required Doxygen tags:
 
@@ -114,7 +110,7 @@ Required Doxygen tags:
 * ``@param`` - For each parameter
 * ``@return`` - For non-void returns (or ``@returns``)
 * ``@throws`` - For exceptions that may be thrown
-* ``@details`` - Extended description (optional but recommended)
+* ``@details`` - Optional, for behaviour the brief cannot hold
 
 Testing
 -------
@@ -126,29 +122,12 @@ Writing Tests
 
 Place tests in ``test/`` directory, mirroring the library surface area:
 
-.. code-block:: bash
+.. code-block:: text
 
-   include/mcp/server/server.hpp  →  test/server/server_core_test.cpp
-   include/mcp/client/client.hpp  →  test/client/client_core_test.cpp
+   include/mcp/server/server.hpp  ->  test/server/server_core_test.cpp
+   include/mcp/client/client.hpp  ->  test/client/client_core_test.cpp
 
-Example test structure:
-
-.. code-block:: cpp
-
-   #include <mcp/core/async.hpp>
-   #include <mcp/server/server.hpp>
-   #include <gtest/gtest.h>
-
-   TEST(ServerTest, AddToolRegistersCorrectly) {
-       mcp::Server server(/* ... */);
-
-       server.add_tool("test", "A test tool", {{"type", "object"}},
-           [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
-               co_return nlohmann::json{{"result", "ok"}};
-           });
-
-       // Assertions...
-   }
+``test/server/server_core_test.cpp`` is a typical test file.
 
 The test program compiles its files a few at a time in one translation unit
 (a unity build). Put the contents of a test file in a namespace named after the
@@ -279,7 +258,7 @@ Fork the repository and create a feature branch:
 
 .. code-block:: bash
 
-   git checkout -b feature/my-awesome-feature
+   git checkout -b fix/client-timeout
 
 Use descriptive branch names:
 
@@ -306,9 +285,9 @@ Write clear, atomic commit messages:
 .. code-block:: bash
 
    # Good commit messages
-   git commit -m "feat: Add WebSocket compression support"
-   git commit -m "fix: Fix client timeout handling for large responses"
-   git commit -m "docs: Update architecture.rst with transport details"
+   git commit -m "feat: add WebSocket compression support"
+   git commit -m "fix: time out requests whose response never arrives"
+   git commit -m "docs: describe the transports in architecture.rst"
 
    # Bad commit messages
    git commit -m "fix bug"
@@ -317,7 +296,7 @@ Write clear, atomic commit messages:
 
 Follow these guidelines:
 
-* First line: Use conventional commit format, imperative mood, <80 chars (e.g., "feat: Add X", "fix: Fix Y")
+* First line: Use conventional commit format, imperative mood, <80 chars (e.g., "feat: add X", "fix: handle Y")
 * Body: Explain **why**, not **what** (code shows what)
 * Reference issues: "Fixes #123" or "Relates to #456"
 
@@ -326,41 +305,13 @@ Follow these guidelines:
 
 .. code-block:: bash
 
-   git push origin feature/my-awesome-feature
+   git push origin fix/client-timeout
 
-Then create a pull request on GitHub with:
+Then open a pull request on GitHub and fill in its template.
 
-* **Title**: Clear, descriptive summary
-* **Description**: What, why, and how
-* **Tests**: Describe test coverage
-* **Breaking changes**: Call out any API changes
-
-PR Template
-^^^^^^^^^^^
-
-.. code-block:: markdown
-
-   ## Summary
-   Brief description of the change.
-
-   ## Motivation
-   Why is this change needed? What problem does it solve?
-
-   ## Changes
-   - Bullet list of changes
-   - Include any API modifications
-   - Note breaking changes
-
-   ## Testing
-   - Unit tests added: [Yes/No]
-   - Integration tests added: [Yes/No]
-   - Manual testing performed: [Yes/No]
-
-   ## Documentation
-   - Doxygen comments updated: [Yes/No]
-   - User documentation (RST) updated: [Yes/No]
-
-   Fixes #123
+Until your first pull request is merged, keep one pull request open at a time.
+Do not open many pull requests or issues in a short time: batches of automated
+submissions are closed.
 
 5. Code Review
 ^^^^^^^^^^^^^^
@@ -372,17 +323,13 @@ Maintainers will review your PR. Be prepared to:
 * Add additional tests
 * Update documentation
 
-All PRs require:
-
-* Passing CI checks (build, tests, format)
-* At least one approving review
-* No unresolved comments
+A pull request into ``main`` needs the ``CI result`` check to pass and one
+approving review given after its last push.
 
 6. Merge
 ^^^^^^^^
 
-Once approved, a maintainer will merge your PR. The project uses squash merging
-to keep the main branch history clean.
+Once approved, a maintainer merges your pull request.
 
 Changelog
 ---------
@@ -401,35 +348,8 @@ written for the last release needs a change to compile.
 Reporting Bugs
 --------------
 
-Use GitHub Issues to report bugs. Include:
-
-* **Environment**: OS, compiler version, Boost version
-* **Steps to reproduce**: Minimal example code
-* **Expected behavior**: What should happen
-* **Actual behavior**: What actually happens
-* **Stack trace**: If applicable (crashes, exceptions)
-
-Example bug report:
-
-.. code-block:: markdown
-
-   **Environment**
-   - OS: Ubuntu 22.04
-   - Compiler: GCC 11.3
-   - Boost: 1.80
-   - SDK Version: 0.1.0
-
-   **Steps to Reproduce**
-   ```cpp
-   mcp::Client client(transport, executor);
-   co_await client.call_tool("nonexistent", nlohmann::json::object());  // Hangs forever
-   ```
-
-   **Expected**: Exception thrown or timeout
-   **Actual**: Hangs indefinitely
-
-   **Stack Trace**
-   (gdb output if available)
+Use the `bug report form <https://github.com/yurirocha15/mcp-cpp-sdk/issues/new?template=bug_report.yml>`_.
+Report a security vulnerability privately, as ``SECURITY.md`` describes.
 
 .. _known-issues:
 
@@ -588,21 +508,4 @@ compile the same code correctly.
 Feature Requests
 ----------------
 
-Feature requests are welcome! Use GitHub Issues with the "enhancement" label.
-
-Include:
-
-* **Use case**: Why do you need this feature?
-* **Proposed API**: What should the API look like?
-* **Alternatives considered**: Other approaches you evaluated
-* **Breaking changes**: Would this break existing code?
-
-Community Guidelines
---------------------
-
-* Be respectful and inclusive
-* Provide constructive feedback
-* Help newcomers get started
-* Celebrate contributions from others
-
-Thank you for contributing to mcp-cpp-sdk!
+Use the `feature request form <https://github.com/yurirocha15/mcp-cpp-sdk/issues/new?template=feature_request.yml>`_.

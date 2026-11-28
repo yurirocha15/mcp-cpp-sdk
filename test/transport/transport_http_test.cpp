@@ -163,7 +163,7 @@ TEST_F(HttpTransportTest, SendMessageServerReceives) {
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
         mcp::HttpClientTransport client_transport(io_ctx_.get_executor(), "http://127.0.0.1:18080/mcp");
 
-        // Send notification (no id) so server returns 202 immediately without blocking
+        // A notification gets 202 at once, without waiting on the server.
         nlohmann::json notification_payload = {{"jsonrpc", "2.0"},
                                                {"method", "notifications/initialized"}};
         co_await client_transport.write_message(notification_payload.dump());
@@ -1215,12 +1215,10 @@ TEST_F(HttpTransportTest, SessionlessDiscoverSucceedsAfterSessionEstablished) {
         EXPECT_FALSE(established_session_id.empty());
         EXPECT_TRUE(discover_request_received);
         EXPECT_EQ(discover_status, http::status::ok) << "body: " << discover_body;
-        // The caller must get its own id back. A sessionless request is carried internally under a
-        // transport-private id so it cannot squat the session's id space; that is an
-        // implementation detail the peer must never see.
+        // A sessionless request is carried internally under a transport-private id; the caller
+        // gets its own id back.
         EXPECT_EQ(nlohmann::json::parse(discover_body).at("id"), 2) << "body: " << discover_body;
-        // State the negative directly rather than inferring it from the id above: no part of the
-        // response a peer can read may carry the internal id, whatever shape it takes.
+        // No part of the response may carry the internal id.
         EXPECT_EQ(discover_body.find("mcp-pregate"), std::string::npos) << "body: " << discover_body;
         EXPECT_FALSE(discover_session_header);
     }
@@ -1283,8 +1281,8 @@ TEST_F(HttpTransportTest, SessionlessNonDiscoverRequestRejectedAfterSessionEstab
             beast::error_code init_shutdown_error;
             init_stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, init_shutdown_error);
 
-            // Same shape as the discover probe above, but a non-pre-gate method: the session
-            // gate must still reject it, pinning the discover exemption as method-specific.
+            // Same shape as the discover probe above, with a method the session gate does not
+            // exempt: it is still refused.
             beast::tcp_stream tools_stream(io_ctx_.get_executor());
             co_await tools_stream.async_connect(*endpoints.begin(), asio::use_awaitable);
 
@@ -1436,7 +1434,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverWithAnInvalidIdIsRejected) {
 
     mcp_test::spawn_detached(io_ctx_, server_transport.listen());
 
-    // A request that reached the server would wait for a response nobody writes.
+    // A request that reached the server would wait for a response that is never written.
     auto deadline = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
     deadline->expires_after(g_hang_guard);
     bool timed_out = false;
@@ -1596,13 +1594,10 @@ TEST_F(HttpTransportTest, PendingSessionlessRequestsAreBounded) {
     EXPECT_EQ(pending_ended, pending_limit);
 }
 
-// Sessionless server/discover is unauthenticated by construction, so its responses must never
-// be appended to the replay EventStore. That store is a bounded ring shared with the
-// established session: a flood of sessionless requests would evict the session's replay
-// history, and its next Last-Event-ID resume would fail with 410 Gone, losing messages
-// unrecoverably. The store is sized to 2 here so that three sessionless requests WOULD evict
-// event "1" if they were stored, mirroring HttpResumabilityTest.GetWithEvictedEventIdReturns410
-// which produces exactly that 410 using the session's own traffic.
+// Sessionless server/discover is unauthenticated, so its responses are never appended to the replay
+// EventStore, a bounded ring shared with the established session. Stored, a flood of them would
+// evict the session's history and its next Last-Event-ID resume would fail with 410 Gone. The store
+// holds 2 events here, so three sessionless responses would evict event "1".
 TEST_F(HttpTransportTest, SessionlessDiscoverDoesNotEvictSessionReplayHistory) {
     mcp::HttpServerTransport server_transport(io_ctx_.get_executor(), "127.0.0.1", 18205, 2);
 
@@ -1751,12 +1746,11 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
     deadline->expires_after(g_hang_guard);
     bool timed_out = false;
 
-    // Signalled once initialize has produced a session, so the sessionless prober runs while a
-    // session is live.
+    // Signalled once initialize has produced a session.
     auto session_ready = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
     session_ready->expires_at(std::chrono::steady_clock::time_point::max());
-    // Signalled once the sessionless discover has reached the server. Registration precedes the
-    // enqueue, so a discover that the server can read is a discover already holding its id.
+    // Signalled once the sessionless discover has reached the server; its id is registered before it
+    // is enqueued.
     auto discover_registered = std::make_shared<asio::steady_timer>(io_ctx_.get_executor());
     discover_registered->expires_at(std::chrono::steady_clock::time_point::max());
 
@@ -1775,9 +1769,8 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
                 {"id", nlohmann::json::parse(initialize_request).at("id")}};
             co_await server_transport.write_message(initialize_response.dump());
 
-            // The sessionless discover is deliberately left unanswered: it holds its pending
-            // entry for the whole test, which is what gives the session request something to
-            // collide with.
+            // The sessionless discover is left unanswered: its pending entry stays for the whole
+            // test, for the session request to collide with.
             const auto discover_request = co_await server_transport.read_message();
             discover_reached_server = true;
             discover_registered->cancel();
@@ -1791,8 +1784,7 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
         },
         [](std::exception_ptr) {});
 
-    // The sessionless prober. It writes its discover and never reads the reply, so the pending
-    // entry it claims stays claimed.
+    // The sessionless prober writes its discover and never reads the reply.
     mcp_test::spawn_then(
         io_ctx_,
         [&]() -> mcp::Task<void> {
@@ -1904,11 +1896,9 @@ TEST_F(HttpTransportTest, SessionlessDiscoverCannotSquatSessionRequestId) {
         << "the session request never reached the server: its id was squatted";
     EXPECT_EQ(collision_status, http::status::ok) << "body: " << collision_body;
     EXPECT_NE(collision_body.find("\"result\""), std::string::npos) << "body: " << collision_body;
-    // Replay-store classification must survive the containment. sessionless_request_ids decides
-    // replay-store exclusion, so if the prober's chosen id were still the key, the session's OWN
-    // response -- which carries that same id 7 -- would be misclassified as sessionless and silently
-    // dropped from the replay store. Both the initialize response and the id-7 session response
-    // belong there; only the unanswered sessionless discover does not.
+    // sessionless_request_ids decides replay-store exclusion; the session's own response carries
+    // the same id 7 and must not be taken for the sessionless one. Only the initialize response
+    // and the id-7 session response are stored.
     EXPECT_EQ(server_transport.event_store().size(), 2u);
 }
 
@@ -2042,10 +2032,8 @@ TEST_F(HttpTransportTest, ServerAcceptsANewSessionAfterTheClientDeletesTheOldOne
 }
 
 // A bearer provider installed after write_message() returns belongs to the next request, not to the
-// one that call already started. HttpClientTransport pins the provider when the request begins, the
-// way OAuthHttpClient::make_exchange() pins its per-exchange state, so the property holds without
-// any timing window to hit: the swap below happens strictly after write_message() has returned and
-// strictly before the request reaches the wire.
+// one that call already started: HttpClientTransport pins the provider when the request begins. The
+// swap below happens after write_message() has returned and before the request reaches the wire.
 TEST_F(HttpTransportTest, WriteMessagePinsBearerProviderAtRequestStart) {
     asio::ip::tcp::acceptor acceptor(io_ctx_,
                                      asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
@@ -2085,10 +2073,6 @@ TEST_F(HttpTransportTest, WriteMessagePinsBearerProviderAtRequestStart) {
     ASSERT_EQ(write_error, nullptr);
     EXPECT_EQ(observed_authorization, "Bearer pinned-at-start");
 }
-
-// ===========================================================================
-// WWW-Authenticate challenge rendering
-// ===========================================================================
 
 // RFC 6750 allows more than one space after the scheme; the token is what follows them.
 TEST(HttpBearerToken, SpacesAfterTheSchemeAreSkipped) {
@@ -2215,9 +2199,8 @@ TEST(ProtectedResourceMetadataTest, AnExplicitPathOverridesTheDerivation) {
 }
 
 TEST(ProtectedResourceMetadataTest, AnExplicitPathWithoutALeadingSlashIsRejected) {
-    // A relative path does not merely produce a bad path: it is concatenated straight onto the
-    // origin, so "https://h" + "evil" advertises the document on a host named "hevil". A typo
-    // that silently changes which host clients are sent to has to be reported, not published.
+    // A relative path is concatenated onto the origin: "https://h" + "evil" would advertise the
+    // document on a host named "hevil".
     mcp::ProtectedResourceMetadataConfig relative;
     relative.resource = "https://h/mcp";
     relative.path = "evil";
@@ -2227,9 +2210,7 @@ TEST(ProtectedResourceMetadataTest, AnExplicitPathWithoutALeadingSlashIsRejected
 }
 
 TEST(ProtectedResourceMetadataTest, AnExplicitPathWithADotSegmentIsRejected) {
-    // The metadata URL is published to clients as the authoritative location of the document,
-    // and this function does not normalise. A dot segment there is never intentional
-    // configuration, so it is refused rather than advertised unresolved.
+    // The path is published unnormalised as the document's location, so a dot segment is refused.
     mcp::ProtectedResourceMetadataConfig parent;
     parent.resource = "https://h/mcp";
     parent.path = "/../../x";
@@ -2240,8 +2221,8 @@ TEST(ProtectedResourceMetadataTest, AnExplicitPathWithADotSegmentIsRejected) {
     current.path = "/a/./b";
     EXPECT_THROW(mcp::protected_resource_metadata_path(current), std::invalid_argument);
 
-    // Only a whole segment is a dot segment. Dots inside a segment are ordinary characters, and
-    // rejecting those would refuse the well-known prefix this module derives itself.
+    // Only a whole segment is a dot segment; the well-known prefix this module derives has dots
+    // inside a segment.
     mcp::ProtectedResourceMetadataConfig dotted;
     dotted.resource = "https://h/mcp";
     dotted.path = "/.well-known/a..b/c.d";
@@ -2267,10 +2248,6 @@ TEST(ProtectedResourceMetadataTest, DocumentOmitsEmptyLists) {
     EXPECT_FALSE(document.contains("authorization_servers"));
     EXPECT_FALSE(document.contains("scopes_supported"));
 }
-
-// ===========================================================================
-// Server-side OAuth challenge, metadata route and unauthenticated paths
-// ===========================================================================
 
 namespace {
 
@@ -2329,10 +2306,9 @@ constexpr std::string_view g_notification_body = R"({"jsonrpc":"2.0","method":"n
 
 }  // namespace
 
-// The challenge URL must come from `resource` alone. Behind a TLS terminator, a reverse proxy or a
-// container port mapping the listener's own origin is not the one clients can reach, so a URL
-// inferred from it would be unfetchable. The listener below is deliberately bound to an ephemeral
-// port that has nothing to do with the advertised resource.
+// The challenge URL comes from `resource` alone: behind a TLS terminator, a reverse proxy or a port
+// mapping, the listener's own origin is not the one clients reach. The listener below is bound to
+// an ephemeral port unrelated to the advertised resource.
 TEST_F(HttpTransportTest, ChallengeMetadataUrlComesFromTheResourceNotTheListener) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
@@ -2380,9 +2356,8 @@ TEST_F(HttpTransportTest, UnconfiguredTransportSendsBareBearerChallenge) {
     EXPECT_EQ(denied.www_authenticate, "Bearer");
 }
 
-// The bearer check runs before the body is parsed, so a request without a valid token never makes
-// the server build a JSON document from its body. A body that is not JSON at all shows the order:
-// it is answered with the challenge, not with the parse error.
+// The bearer check runs before the body is parsed: a body that is not JSON is answered with the
+// challenge, not with the parse error.
 TEST_F(HttpTransportTest, UnauthenticatedPostIsRefusedBeforeItsBodyIsParsed) {
     auto server = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
     server->set_bearer_token_validator([](std::string_view token) { return token == "good"; });
@@ -2599,7 +2574,7 @@ TEST_F(HttpTransportTest, AsyncBearerValidatorCanSuspendBeforeDeciding) {
     server->set_async_bearer_token_validator(
         [&validator_calls](std::string token) -> mcp::Task<mcp::TokenValidation> {
             validator_calls.fetch_add(1, std::memory_order_relaxed);
-            // Suspend, the way a real introspection call would, before deciding.
+            // Suspends before deciding, as an introspection call does.
             asio::steady_timer timer(co_await asio::this_coro::executor);
             timer.expires_after(std::chrono::milliseconds(1));
             co_await timer.async_wait(asio::use_awaitable);
@@ -2746,15 +2721,8 @@ TEST_F(HttpTransportTest, ProtectedResourceMetadataRequiresAnAbsoluteResourceUrl
     server.close();
 }
 
-// ===========================================================================
-// Origin checking (DNS rebinding protection) on HttpServerTransport
-//
-// The conformance runner's dns-rebinding-protection scenario drives
-// StreamableHttpSessionManager, which is what conformance/everything_server.cpp binds. Nothing
-// exercises the same defence on HttpServerTransport, and the two transports do not answer a
-// disallowed origin the same way, so the difference is pinned here rather than assumed away.
-// ===========================================================================
-
+// The conformance runner's dns-rebinding-protection scenario drives StreamableHttpSessionManager,
+// not HttpServerTransport, and the two answer a disallowed origin differently.
 namespace {
 
 /// Post one MCP notification carrying `origin` and report the status the transport answered with.

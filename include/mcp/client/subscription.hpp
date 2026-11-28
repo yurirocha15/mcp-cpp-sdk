@@ -100,8 +100,8 @@ class MCP_API Subscription {
      * @brief Wait for the next notification of this stream.
      *
      * @details Notifications are returned in arrival order, including those that arrived while
-     * nobody was waiting. When the stream has ended and the queue is empty, resolves to nothing;
-     * end_reason() then says how it ended. Only one next() may be outstanding at a time.
+     * no next() call was waiting. When the stream has ended and the queue is empty, resolves to
+     * nothing; end_reason() then says how it ended. Only one next() may be outstanding at a time.
      */
     Task<std::optional<SubscriptionEvent>> next();
 

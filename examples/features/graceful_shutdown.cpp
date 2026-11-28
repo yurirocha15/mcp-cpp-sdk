@@ -71,7 +71,6 @@ int main() {
 
         asio::io_context io_ctx;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
 
@@ -81,8 +80,7 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        // ========== TOOL REGISTRATION ==========
-        // Tool: quick_task — completes immediately
+        // Tool: quick_task: completes immediately
         nlohmann::json quick_schema = {
             {"type", "object"},
             {"properties", {{"value", {{"type", "integer"}}}}},
@@ -97,7 +95,7 @@ int main() {
                 return make_tool_text_result("Quick task result: " + std::to_string(value * 2));
             });
 
-        // Tool: slow_task — simulates work with delay
+        // Tool: slow_task: simulates work with delay
         nlohmann::json slow_schema = {
             {"type", "object"},
             {"properties", {{"duration_ms", {{"type", "integer"}}}}},
@@ -110,7 +108,6 @@ int main() {
                 std::cerr << "[Server] slow_task called\n";
                 int duration_ms = args.at("duration_ms").get<int>();
 
-                // Simulate work with async delay
                 auto executor = co_await asio::this_coro::executor;
                 asio::steady_timer work_timer(executor);
                 work_timer.expires_after(std::chrono::milliseconds(duration_ms));
@@ -121,7 +118,6 @@ int main() {
                                                 std::to_string(duration_ms) + "ms");
             });
 
-        // ========== TRANSPORT SETUP ==========
         // stdout is handed to the transport, so it is the protocol channel and
         // carries JSON-RPC only. Every diagnostic in this example goes to stderr.
         BlockingInputBuffer input_buffer;

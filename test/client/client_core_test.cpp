@@ -1332,10 +1332,8 @@ namespace {
 // Drives a request the peer answers with a JSON-RPC error object, and reports what the client
 // raised.
 //
-// This is the shortest path there is from a peer's bytes to an application's log. `error.message`
-// is deserialized verbatim off the wire (`json_message.at("error").get<Error>()`), carried into
-// McpError, and interpolated into what(). No OAuth, no discovery, no metadata document: an
-// ordinary error response to an ordinary request.
+// `error.message` is deserialized verbatim off the wire (`json_message.at("error").get<Error>()`),
+// carried into McpError, and interpolated into what().
 struct PeerErrorOutcome {
     bool threw{false};
     int code{0};
@@ -1359,8 +1357,7 @@ PeerErrorOutcome send_request_against_peer_error(boost::asio::io_context& io_ctx
             return;
         }
         // The message travels as JSON, so CR/LF written here arrive at the client as real control
-        // bytes rather than as the two-character escapes: the encoder escapes them, the decoder
-        // turns them back. That decode is what makes a parsed field sharper than raw wire bytes.
+        // bytes: the encoder escapes them and the decoder turns them back.
         raw_transport->enqueue_message(
             make_error_response(id, mcp::constants::jsonrpc::g_INTERNAL_ERROR, peer_message).dump());
     });
@@ -1418,7 +1415,7 @@ TEST_F(ClientCoreTest, PeerErrorDiagnosticFlattensThePeerChosenMessage) {
     EXPECT_EQ(outcome.what.find("\xe2\x80\xae"), std::string::npos)
         << "actual what(): " << outcome.what;
 
-    // The split, and it is the point: what() is a diagnostic and is sanitized; error() and the
+    // The split: what() is a diagnostic and is sanitized; error() and the
     // message() it exposes are structured protocol data a caller may compare or re-encode, so they
     // must come back exactly as the peer sent them. Sanitizing those instead would silently change
     // what an application matches on.
@@ -1451,10 +1448,9 @@ namespace {
 // Drives two requests over one session. The peer answers the first with a caller-supplied burst of
 // messages and the second normally.
 //
-// The second request is the whole point: it separates a failure confined to one message from a
-// failure that took the session down with it. A client that survives a message it cannot use fails
-// at most the first request; a client that does not fails the second too, and every request after
-// it, for the life of the connection.
+// The second request separates a failure confined to one message from one that took the session
+// down: a client that survives a message it cannot use fails at most the first request, and one
+// that does not fails every request after it.
 struct SecondRequestOutcome {
     bool first_threw{false};
     int first_code{0};
@@ -1613,7 +1609,7 @@ TEST_F(ClientCoreTest, PeerRequestWithUnusableIdDoesNotStopReadLoop) {
 // `result` and `error` are not symmetric. A null `result` is a legitimate empty result, but a null
 // `error` is the absence of an error -- so selecting on presence alone reads a successful response
 // as one carrying both members, and rejects it. The request completes, so nothing hangs and nothing
-// times out; the caller is simply handed a protocol violation in place of the result that arrived.
+// times out; the caller gets a protocol violation in place of the result that arrived.
 //
 // The second request is the control: the same response without the null member.
 TEST_F(ClientCoreTest, ResultWithNullErrorMemberIsNotAProtocolViolation) {

@@ -287,9 +287,6 @@ void use_threadsafe_death_tests() {
 
 }  // namespace
 
-// ------------------------------------------------------------------------------------------------
-// Connections that succeed
-
 // A TLS failure is a transport failure: a cut-off connection is one of I/O, and every handshake
 // failure one of setting the connection up.
 TEST(TlsClientTest, EachReasonIsATransportErrorOfItsKind) {
@@ -394,9 +391,6 @@ TEST(TlsClientTest, PresentsAClientCertificateWhenTheServerRequiresOne) {
     EXPECT_TRUE(greet_failure(https_url(front.port()), with_tls(foreign)).has_value());
 }
 
-// ------------------------------------------------------------------------------------------------
-// Certificates and servers that are refused
-
 TEST(TlsClientTest, RefusesACertificateFromAnUntrustedAuthority) {
     const PlainServer server;
     const TlsFront front(front_for(certs().untrusted), server.port());
@@ -463,9 +457,6 @@ TEST(TlsClientTest, NoVersionInCommon) {
               TlsError::Reason::eProtocolVersion);
 }
 
-// ------------------------------------------------------------------------------------------------
-// Closing
-
 TEST(TlsClientTest, AClientEndsItsConnectionsWithCloseNotify) {
     const PlainServer server;
     int close_notifies = 0;
@@ -478,9 +469,6 @@ TEST(TlsClientTest, AClientEndsItsConnectionsWithCloseNotify) {
     }
     EXPECT_GE(close_notifies, 1);
 }
-
-// ------------------------------------------------------------------------------------------------
-// Connection reuse
 
 // A request goes on a connection an earlier answer came on, so further calls make no handshakes,
 // and the client ends its kept connections with close_notify when it closes.
@@ -536,9 +524,6 @@ TEST(TlsClientTest, AConnectionTheServerClosedIsNotUsedAgain) {
             client.sync().call_tool("greet", nlohmann::json::object()).isError.value_or(false));
     }
 }
-
-// ------------------------------------------------------------------------------------------------
-// Settings
 
 TEST(TlsClientTest, SettingsThatCannotBeUsed) {
     mcp::TlsClientOptions none;
@@ -746,9 +731,6 @@ TEST(TlsClientTest, AHostWithATrailingDotIsCheckedWithoutIt) {
     }
 }
 
-// ------------------------------------------------------------------------------------------------
-// Proxies
-
 TEST(TlsClientTest, ReachesAnHttpsServerThroughAProxyTunnel) {
     const PlainServer server({"mcp.example.test"});
     const TlsFront front(front_for(certs().server), server.port());
@@ -829,9 +811,6 @@ TEST(TlsClientTest, LoopbackAndListedHostsBypassTheProxy) {
     });
     EXPECT_EQ(proxy.connections(), 0);
 }
-
-// ------------------------------------------------------------------------------------------------
-// OAuth
 
 namespace {
 

@@ -73,7 +73,6 @@ int main() {
         asio::io_context io_ctx;
         bool succeeded = false;
 
-        // ========== SERVER SETUP ==========
         // A list-changed notification is honored only for a capability that sets listChanged, and
         // resource updates only when resources.subscribe is set. This server declares no prompts
         // capability, so it cannot honor a request for prompt notifications.
@@ -92,7 +91,6 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        // ========== RESOURCE REGISTRATION ==========
         const std::string resource_uri = "mcp://status/counter";
 
         Resource resource;
@@ -117,7 +115,6 @@ int main() {
                 };
             });
 
-        // ========== TRANSPORT ==========
         auto [client_transport, server_transport] = make_memory_transport_pair(io_ctx.get_executor());
 
         asio::co_spawn(
@@ -132,7 +129,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== CLIENT COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&, transport = client_transport]() -> Task<void> {
@@ -155,7 +151,6 @@ int main() {
                                   << connected.protocolVersion << '\n';
                     }
 
-                    // ========== OPEN A STREAM ==========
                     SubscriptionFilter filter;
                     filter.toolsListChanged = true;
                     filter.promptsListChanged = true;
@@ -202,7 +197,6 @@ int main() {
                         }
                     }
 
-                    // ========== THE CLIENT ENDS A STREAM ==========
                     co_await stream.close();
                     std::cout << "[Client] First stream: " << end_reason_name(stream.end_reason())
                               << '\n';
@@ -210,7 +204,6 @@ int main() {
                         throw std::runtime_error("the first stream was not cancelled");
                     }
 
-                    // ========== THE SERVER ENDS A STREAM ==========
                     SubscriptionFilter tools_only;
                     tools_only.toolsListChanged = true;
                     Subscription second = co_await client.listen(tools_only);

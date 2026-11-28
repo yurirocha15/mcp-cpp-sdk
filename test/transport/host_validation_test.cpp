@@ -88,9 +88,6 @@ mcp::Task<std::string> read_one_message_allowing(tcp::acceptor& acceptor,
 
 }  // namespace
 
-// ------------------------------------------------------------------------------------------------
-// The policy
-
 TEST(HostPolicyTest, ComparesHostsWithoutPortBracketsCaseOrTrailingDot) {
     EXPECT_EQ(normalized_host("Example.COM:8443"), "example.com");
     EXPECT_EQ(normalized_host("localhost."), "localhost");
@@ -140,9 +137,6 @@ TEST(HostPolicyTest, LoopbackAddressesIncludeMappedIpv4) {
     EXPECT_FALSE(mcp::detail::is_loopback_endpoint(endpoint_of("::ffff:10.1.2.3")));
     EXPECT_FALSE(mcp::detail::is_loopback_endpoint(endpoint_of("0.0.0.0")));
 }
-
-// ------------------------------------------------------------------------------------------------
-// The servers
 
 TEST(HostValidationTest, TheSessionManagerRefusesAForeignHostOnLoopback) {
     const ManagerHost host(nullptr);
