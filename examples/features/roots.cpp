@@ -4,6 +4,9 @@
 /// This example shows:
 /// - A client declaring root URIs via client.set_roots()
 /// - A client registering a handler for roots/list requests via on_roots_list()
+/// - A client changing its roots with set_roots(roots, true), which sends
+///   notifications/roots/list_changed in a session of 2025-11-25 or earlier when the client
+///   declared the listChanged capability
 /// - A server tool that calls ctx.request_roots() to discover client roots
 /// - The server displaying discovered roots
 /// - Loopback communication via MemoryTransport
@@ -151,7 +154,10 @@ int main() {
 
                     std::cout << "Client: Connecting to server\n";
                     {
-                        auto init_result = co_await client.connect(client_info, ClientCapabilities{});
+                        // The listChanged flag lets set_roots(roots, true) notify the server.
+                        ClientCapabilities client_caps;
+                        client_caps.roots = ClientCapabilities::RootsCapability{.listChanged = true};
+                        auto init_result = co_await client.connect(client_info, client_caps);
                         // serverInfo is optional: a server may leave it out.
                         if (init_result.serverInfo) {
                             std::cout << "Client: Connected to " << init_result.serverInfo->name
@@ -172,6 +178,26 @@ int main() {
                         if (const auto* text_content = std::get_if<mcp::TextContent>(&content_block)) {
                             std::cout << "Client: Result:\n" << text_content->text << "\n";
                         }
+                    }
+
+                    // docs-begin: roots-changed
+                    // Changing the roots after connect(). A session of 2025-11-25 or earlier tells
+                    // the server with notifications/roots/list_changed; a 2026-07-28 session has
+                    // no such notification, and the server learns the roots from each request.
+                    client.set_roots({Root{.uri = "file:///workspace/", .name = "Workspace"}}, true);
+                    // docs-end: roots-changed
+                    std::cout << "Client: Changed the roots\n";
+                    auto changed =
+                        co_await client.call_tool("discover_roots", nlohmann::json::object());
+                    std::cout << "Client: Tool completed again with " << changed.content.size()
+                              << " content block(s)\n";
+                    for (const auto& content_block : changed.content) {
+                        if (const auto* text_content = std::get_if<mcp::TextContent>(&content_block)) {
+                            std::cout << "Client: Result:\n" << text_content->text << "\n";
+                        }
+                    }
+                    if (mcp::result_text(changed).find("mcp://docs/") != std::string::npos) {
+                        throw std::runtime_error("the server still lists the removed root");
                     }
 
                     std::cout << "Client: Closing connection\n";

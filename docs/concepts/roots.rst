@@ -84,10 +84,27 @@ While ``set_roots()`` provides a convenient way to manage a static or semi-stati
 Roots Change Notifications
 --------------------------
 
-When the set of roots changes (e.g., the user opens a new folder in their IDE), the client should inform the server.
+When the set of roots changes (for instance, the user opens a new folder in an
+IDE), the client calls ``set_roots(new_roots, true)`` to update its roots and
+notify the server. ``set_roots()`` is an ordinary call in both modes. In a
+session of 2025-11-25 or earlier the notification is sent when the client
+declared the ``roots.listChanged`` capability in the capabilities it passed to
+``connect()``:
 
-1. **Client**: Call ``set_roots(new_roots, true)`` to update and notify.
-2. **Server**: If the server wants to react to these changes, it should monitor the ``roots/list`` state or re-request roots when needed.
+.. literalinclude:: ../../examples/features/roots.cpp
+   :language: cpp
+   :start-after: The listChanged flag lets set_roots(roots, true) notify the server.
+   :end-before: auto init_result
+   :dedent: 24
+
+.. literalinclude:: ../../examples/features/roots.cpp
+   :language: cpp
+   :start-after: docs-begin: roots-changed
+   :end-before: docs-end: roots-changed
+   :dedent: 20
+
+A server that wants to react to the change asks for the roots again with
+``request_roots()``; the example's tool does so on its next call.
 
 Example Walkthrough
 -------------------

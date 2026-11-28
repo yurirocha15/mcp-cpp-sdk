@@ -247,6 +247,32 @@ content blocks.
    :end-before: // ========== CLIENT SETUP ==========
    :dedent: 8
 
+Result Content
+--------------
+
+A tool result holds a list of content blocks, and each block is one alternative
+of ``ContentBlock``: ``TextContent``, ``ImageContent``, ``AudioContent``,
+``ResourceLink`` or ``EmbeddedResource``. An image and an audio clip carry their
+bytes base64-encoded in ``data`` with a ``mimeType``; an embedded resource
+carries the text or blob contents of a resource. A handler that returns a
+``CallToolResult`` fills ``content`` with the blocks it wants:
+
+.. literalinclude:: ../../examples/features/rich_content.cpp
+   :language: cpp
+   :start-after: docs-begin: rich-tool
+   :end-before: docs-end: rich-tool
+   :dedent: 4
+
+A client tells the blocks apart by the alternative each one holds. The blocks
+of a result are read the same way in sync mode, where the call is
+``client.sync().call_tool()``:
+
+.. literalinclude:: ../../examples/features/rich_content.cpp
+   :language: cpp
+   :start-after: docs-begin: rich-tool-client
+   :end-before: docs-end: rich-tool-client
+   :dedent: 4
+
 Schema Validation
 -----------------
 

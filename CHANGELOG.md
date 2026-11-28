@@ -29,6 +29,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   no protected resource metadata, unless `legacy_discovery_fallback` is false.
 - `Endpoint::legacy_sse()` and `StreamableHttpSessionManager::set_legacy_sse()`
   speak the deprecated HTTP+SSE transport of 2024-11-05 as client and server.
+- `examples/features/` shows image, audio and embedded-resource content, binary
+  resources, URL-mode elicitation, the HTTP+SSE transport, resource-template
+  completion and roots changes.
 
 ### Changed
 

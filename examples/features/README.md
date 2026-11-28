@@ -95,14 +95,16 @@ done
 - A prompt whose arguments `server.set_completion_provider()` suggests values for
 - `client.complete()` for requesting completions
 - CompleteResult handling
+- Completing the argument of a resource template with a `ResourceTemplateReference`
 
 **Key APIs:**
 - `Server::set_completion_provider()`
 - `Client::complete()`
+- `ResourceTemplateReference`
 
 **Run:** `./build/release/example-feature-completions`
 
-**Expected output:** Completion suggestions for prompt arguments
+**Expected output:** Completion suggestions for prompt arguments and for a resource template argument
 
 ---
 
@@ -113,14 +115,16 @@ done
 - Cursor-based pagination handling
 - `nextCursor` in list results
 - `Server::set_cache_hints()` and the `ttlMs` / `cacheScope` hints on each page
+- The same cursor loop for `resources/list` and `prompts/list`
 
 **Key APIs:**
 - `Server::set_page_size()`
 - `Server::set_cache_hints()`
+- `Client::list_tools()` / `list_resources()` / `list_prompts()`
 
 **Run:** `./build/release/example-feature-pagination`
 
-**Expected output:** Paginated tool list with cursors (3 items per page)
+**Expected output:** Paginated tool, resource and prompt lists with cursors (3 items per page)
 
 ---
 
@@ -150,6 +154,7 @@ done
 
 **What it demonstrates:**
 - `client.set_roots()` for declaring client root URIs
+- `client.set_roots(roots, true)` for changing them after `connect()` and notifying the server
 - `ctx.request_roots()` for server to discover client roots
 - `client.on_roots_list()` for responding to roots/list
 - Roots are a deprecated feature in protocol revision 2026-07-28; they still work, through a multi round-trip request
@@ -161,7 +166,7 @@ done
 
 **Run:** `./build/release/example-feature-roots`
 
-**Expected output:** Client sets roots, server requests and lists them
+**Expected output:** Client sets roots, server requests and lists them, then the client changes them and the server lists the new ones
 
 ---
 
@@ -313,14 +318,14 @@ done
 **What it demonstrates:**
 - This example is about the older protocol revisions (2025-11-25 and earlier), which start a session with `initialize`
 - `ClientProtocol::pinned()` pinning each of the four older revisions, and `ClientProtocol::legacy()`
-- `ping()` and `resources/subscribe`, which exist only in those revisions, with `Server::on_subscribe()` / `on_unsubscribe()`
+- `ping()`, `resources/subscribe`, `resources/unsubscribe` and `logging/setLevel`, which exist only in those revisions, with `Server::on_subscribe()` / `on_unsubscribe()`
 - `ServerProtocolPolicy` and `Server::set_protocol_policy()`: legacy-only and 2026-07-28-only servers
 - The same calls failing locally in a 2026-07-28 session
 
 **Key APIs:**
 - `ClientProtocol::pinned()` / `ClientProtocol::legacy()`
 - `ServerProtocolPolicy` / `Server::set_protocol_policy()`
-- `Client::ping()`
+- `Client::ping()` / `subscribe_resource()` / `unsubscribe_resource()` / `set_log_level()`
 
 **Run:** `./build/release/example-feature-legacy-protocols`
 
@@ -346,7 +351,64 @@ done
 
 ---
 
-### 17. TLS Client (`tls_client.cpp`)
+### 17. Rich Content (`rich_content.cpp`)
+
+**What it demonstrates:**
+- A tool result with text, image, audio and embedded resource blocks
+- A binary resource, read as `BlobResourceContents` with base64 data
+- A prompt whose messages hold text, an embedded resource and an image
+- A client that reads each block by the alternative of `ContentBlock` it holds
+
+**Key APIs:**
+- `CallToolResult` / `ImageContent` / `AudioContent` / `EmbeddedResource`
+- `BlobResourceContents` / `TextResourceContents`
+- `GetPromptResult` / `PromptMessage`
+
+**Run:** `./build/release/example-feature-rich-content`
+
+**Expected output:** one `[ok]` line per check; the example exits with a failure status if a check differs
+
+---
+
+### 18. URL Elicitation (`url_elicitation.cpp`)
+
+**What it demonstrates:**
+- A tool that asks the user to visit a URL with `ctx.elicit()` and completes the elicitation with `ctx.notify_elicitation_complete()`
+- `Server::notify_elicitation_complete()` from code outside the handler, such as the callback of the site the user visited
+- A tool that throws `UrlElicitationRequired`, and a client that reads the error's elicitations with `url_elicitations_required()`
+- `Client::on_elicitation_complete()` reporting each completion
+- The same URL question in a 2026-07-28 session, which has no completion notification
+
+**Key APIs:**
+- `Context::elicit()` / `Context::notify_elicitation_complete()`
+- `Server::notify_elicitation_complete()`
+- `UrlElicitationRequired` / `url_elicitations_required()`
+- `Client::on_elicitation_complete()`
+
+**Run:** `./build/release/example-feature-url-elicitation`
+
+**Expected output:** one `[ok]` line per check; the example exits with a failure status if a check differs
+
+---
+
+### 19. Legacy HTTP+SSE (`legacy_sse.cpp`)
+
+**What it demonstrates:**
+- The HTTP+SSE transport of protocol revision 2024-11-05, which the specification deprecates in favour of Streamable HTTP
+- A server that serves it next to Streamable HTTP with `StreamableHttpSessionManager::set_legacy_sse()`, through `run_http()` in sync mode and on the program's event loop in async mode
+- A client that connects with `Endpoint::legacy_sse()` in sync mode and with a `LegacySseClientTransport` in async mode
+
+**Key APIs:**
+- `StreamableHttpSessionManager::set_legacy_sse()` / `LegacySseOptions`
+- `Endpoint::legacy_sse()` / `LegacySseClientTransport`
+
+**Run:** `./build/release/example-feature-legacy-sse`
+
+**Expected output:** the protocol version and the echoed text for the sync and the async client
+
+---
+
+### 20. TLS Client (`tls_client.cpp`)
 
 **What it demonstrates:**
 - TLS settings shared by every connection: the system's certificate authorities, and a private one from a PEM file
@@ -363,7 +425,7 @@ done
 
 ---
 
-### 18. TLS Server (`tls_server.cpp`)
+### 21. TLS Server (`tls_server.cpp`)
 
 **What it demonstrates:**
 - `run_http()` ending TLS itself, with the server's certificate chain and key read from PEM files
