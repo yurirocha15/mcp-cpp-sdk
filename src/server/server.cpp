@@ -435,6 +435,10 @@ std::uint64_t Server::dropped_notifications() const {
     return impl_->dropped_notifications->load(std::memory_order_relaxed);
 }
 
+void Server::report_deprecated(DeprecatedFeature feature) const {
+    impl_->registry->deprecations->report(feature);
+}
+
 void Server::set_deprecation_handler(DeprecationHandler handler) {
     impl_->registry->deprecations->set_handler(std::move(handler));
 }

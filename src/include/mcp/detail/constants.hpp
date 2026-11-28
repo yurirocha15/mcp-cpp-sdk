@@ -321,6 +321,32 @@ inline constexpr std::chrono::seconds g_IDLE_CONNECTION_TIMEOUT{90};
 
 }  // namespace http_client
 
+/// The HTTP+SSE transport of protocol revision 2024-11-05.
+namespace sse_legacy {
+
+/// What the client transport's errors name it.
+inline constexpr std::string_view g_TRANSPORT_NAME = "LegacySseClientTransport";
+
+/// The event that names the URL messages are POSTed to.
+inline constexpr std::string_view g_EVENT_ENDPOINT = "endpoint";
+
+/// The event that carries a JSON-RPC message.
+inline constexpr std::string_view g_EVENT_MESSAGE = "message";
+
+/// The content type of an event stream.
+inline constexpr std::string_view g_CONTENT_TYPE_EVENT_STREAM = "text/event-stream";
+
+/// The query parameter of the message URL that names the session.
+inline constexpr std::string_view g_SESSION_ID_PARAMETER = "sessionId";
+
+/// The last character code of the space and control characters an endpoint may not hold.
+inline constexpr unsigned char g_LAST_SPACE_OR_CONTROL = 0x20;
+
+/// The DEL character, which an endpoint may not hold either.
+inline constexpr unsigned char g_DELETE_CHARACTER = 0x7f;
+
+}  // namespace sse_legacy
+
 /// URL prefixes the transports and the OAuth client compare against.
 namespace url {
 

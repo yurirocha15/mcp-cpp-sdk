@@ -88,6 +88,22 @@ class MCP_API Endpoint {
     /// Talk to the server at @p url over Streamable HTTP.
     static Endpoint http(std::string url, HttpEndpointOptions options = {});
 
+    /**
+     * @brief Talk to the server whose event stream is at @p url over the HTTP+SSE transport of
+     *        protocol revision 2024-11-05, see LegacySseClientTransport.
+     *
+     * @details The specification deprecates this transport; use http() for a server that offers
+     * Streamable HTTP.
+     *
+     * @deprecated The specification deprecates the HTTP+SSE transport (SEP-2596) since protocol
+     * revision 2025-03-26; it may remove it three months after SEP-2596 reaches Final. See the
+     * Deprecations guide.
+     */
+    MCP_DEPRECATED(
+        "SEP-2596: The HTTP+SSE transport is deprecated since protocol revision 2025-03-26; "
+        "earliest removal: three months after SEP-2596 reaches Final; use Streamable HTTP")
+    static Endpoint legacy_sse(std::string url);
+
     /// Use the transport @p factory makes, such as a WebSocketClientTransport or a transport of
     /// the application's own.
     /// @throws std::invalid_argument If @p factory is empty.

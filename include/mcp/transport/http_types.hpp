@@ -197,7 +197,9 @@ struct HttpConnectionLimits {
     /// closed. Zero means no limit.
     std::chrono::milliseconds request_read_timeout{
         mcp::constants::http_server::g_DEFAULT_REQUEST_READ_TIMEOUT};
-    /// Requests being handled at once. One past it is answered 503.
+    /// Requests being handled at once. One past it is answered 503. A GET event stream gives its
+    /// place back once its response head is written, so open streams are bounded by
+    /// max_connections and, for a session manager, SessionLimits::max_sessions instead.
     std::size_t max_requests{mcp::constants::http_server::g_DEFAULT_MAX_REQUESTS};
     /// Memory the requests being read or handled may hold together: a body by what has arrived
     /// while it is read, a JSON-RPC message by what it takes parsed. A request past it is answered

@@ -16,6 +16,7 @@
 #include "mcp/detail/transport/session_pipe.hpp"
 #include "modern_exchange.hpp"
 #include "scope_challenge.hpp"
+#include "sse_legacy_server.hpp"
 #include "tls_accept.hpp"
 
 #include <mcp/core/async.hpp>
@@ -368,6 +369,8 @@ struct StreamableHttpSessionManager::Impl {
     std::atomic<std::uint64_t> header_mismatch_rejections_{0};
     StreamOptions stream_options_;
     LegacyStreamOptions legacy_stream_options_;
+    /// The sessions of the HTTP+SSE transport, or null when it is not served. Set before listen().
+    std::unique_ptr<detail::LegacySseSessions> legacy_sse_;
     std::shared_ptr<detail::StreamCounters> stream_counters_ =
         std::make_shared<detail::StreamCounters>();
 
@@ -375,7 +378,8 @@ struct StreamableHttpSessionManager::Impl {
     /// request that serve_modern_exchange writes as it is produced, or a stream of a legacy session
     /// that serve_legacy_stream writes as its events come.
     using Reply = std::variant<StringResponse, std::shared_ptr<detail::ModernExchange>,
-                               std::shared_ptr<detail_session_mgr::LegacyStream>>;
+                               std::shared_ptr<detail_session_mgr::LegacyStream>,
+                               std::shared_ptr<detail::LegacySseSession>>;
 
     Impl(const boost::asio::any_io_executor& exec, std::string host_arg, unsigned short port_arg,
          StreamableHttpSessionManager::ServerFactory factory_arg, std::size_t capacity)
@@ -547,7 +551,7 @@ struct StreamableHttpSessionManager::Impl {
             }
             // at_session_limit() checked before the session was built, without this lock, so
             // initializes that arrive together on several threads can all pass it.
-            if (sessions.size() >= max_sessions) {
+            if (sessions.size() + legacy_session_count() >= max_sessions) {
                 runtime->pipe->close();
                 return nullptr;
             }
@@ -581,7 +585,15 @@ struct StreamableHttpSessionManager::Impl {
             limits = session_limits;
         }
         std::shared_lock lock(sessions_mutex_);
-        return sessions.size() >= limits.max_sessions;
+        return sessions.size() + legacy_session_count() >= limits.max_sessions;
+    }
+
+    /// The sessions of the HTTP+SSE transport, which SessionLimits::max_sessions bounds together
+    /// with the Streamable HTTP ones. Read with sessions_mutex_ held: a session of either kind is
+    /// added under it, and the HTTP+SSE sessions never take it, so the two locks are always taken
+    /// in that order.
+    [[nodiscard]] std::size_t legacy_session_count() const {
+        return legacy_sse_ ? legacy_sse_->size() : 0;
     }
 
     /// Ends the sessions nobody has used for the idle timeout, as a client may leave without a
@@ -776,10 +788,15 @@ struct StreamableHttpSessionManager::Impl {
                 continue;
             }
             if (auto* legacy = std::get_if<2>(&reply)) {
-                if (!co_await serve_legacy_stream(stream, request, *legacy)) {
+                if (!co_await serve_legacy_stream(stream, request, *legacy, slot)) {
                     break;
                 }
                 continue;
+            }
+            if (auto* sse_session = std::get_if<3>(&reply)) {
+                co_await legacy_sse_->serve(stream, request, *sse_session,
+                                            stream_options_.keepalive_interval, closed, slot);
+                break;
             }
             auto& response = std::get<0>(reply);
             const bool keep_connection_alive = response.keep_alive();
@@ -946,6 +963,20 @@ struct StreamableHttpSessionManager::Impl {
                                                               "Not found");
         }
 
+        if (legacy_sse_) {
+            const auto path = http_request_path(detail::to_std_string_view(request.target()));
+            if (path == legacy_sse_->options().sse_path) {
+                co_return handle_legacy_sse_get(
+                    request, detail::request_principal(principal_id, request_authorization(request)),
+                    conn_strand);
+            }
+            if (path == legacy_sse_->options().message_path) {
+                co_return handle_legacy_sse_post(
+                    request, detail::request_principal(principal_id, request_authorization(request)),
+                    bytes, token_scopes);
+            }
+        }
+
         if (request.method() == http::verb::post) {
             co_return co_await handle_post(request, conn_strand, stateless_server, bytes,
                                            std::move(principal_id), token_scopes);
@@ -1008,6 +1039,123 @@ struct StreamableHttpSessionManager::Impl {
         }
         return detail_session_mgr::make_json_response(request, http::status::not_found,
                                                       mcp::detail::dump_json(error_body));
+    }
+
+    // The HTTP+SSE transport
+
+    /// Opens a session for a GET on the event stream's path, answered by the stream itself.
+    Reply handle_legacy_sse_get(const detail::IncomingRequest& request, std::string principal,
+                                const boost::asio::any_io_executor& conn_strand) {
+        if (request.method() != http::verb::get) {
+            auto response = detail_session_mgr::make_error_response(
+                request, http::status::method_not_allowed, "Method not allowed");
+            response.set(http::field::allow, "GET");
+            return response;
+        }
+        if (protocol_policy_ && !protocol_policy_->serve_legacy) {
+            return detail_session_mgr::make_error_response(request, http::status::not_found,
+                                                           "Not found");
+        }
+        if (closed.load(std::memory_order_acquire)) {
+            return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
+                                                           "Transport closed");
+        }
+        auto server = build_server(executor);
+        if (!server) {
+            return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
+                                                           "Server unavailable");
+        }
+        server->report_deprecated(DeprecatedFeature::eHttpSse);
+        std::size_t max_sessions = 0;
+        detail::LegacySseSessions::Limits limits;
+        {
+            std::scoped_lock lock(configuration_mutex_);
+            max_sessions = session_limits.max_sessions;
+            limits.budget_limit = connection_limits_.max_request_bytes;
+        }
+        limits.budget = &budget_.bytes;
+        limits.max_bytes = stream_options_.max_queued_bytes;
+        limits.max_messages = stream_options_.max_queued_notifications;
+        std::shared_ptr<detail::LegacySseSession> session;
+        {
+            // Admitted under the lock Streamable HTTP sessions are added under, so the two kinds
+            // share SessionLimits::max_sessions however their openings interleave.
+            std::unique_lock lock(sessions_mutex_);
+            limits.max_sessions = max_sessions > sessions.size() ? max_sessions - sessions.size() : 0;
+            session = legacy_sse_->open(executor, conn_strand, std::move(principal), limits);
+        }
+        if (!session) {
+            return detail_session_mgr::make_error_response(
+                request, http::status::service_unavailable,
+                closed.load(std::memory_order_acquire) ? "Transport closed" : "Too many sessions");
+        }
+        detail::LegacySseSessions::start(session, std::move(server));
+        return session;
+    }
+
+    /// Delivers a message POSTed to the endpoint a stream named.
+    Reply handle_legacy_sse_post(const detail::IncomingRequest& request, const std::string& principal,
+                                 detail::BudgetLease& bytes,
+                                 const std::optional<std::vector<std::string>>& token_scopes) const {
+        if (request.method() != http::verb::post) {
+            auto response = detail_session_mgr::make_error_response(
+                request, http::status::method_not_allowed, "Method not allowed");
+            response.set(http::field::allow, "POST");
+            return response;
+        }
+        if (closed.load(std::memory_order_acquire)) {
+            return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
+                                                           "Transport closed");
+        }
+        const auto session_id =
+            detail::LegacySseSessions::session_id_of(detail::to_std_string_view(request.target()));
+        if (!session_id) {
+            return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                           "sessionId is required");
+        }
+        // One answer for an id nobody holds and for another principal's, so a client cannot tell
+        // which ids exist.
+        const auto session = legacy_sse_->find(*session_id);
+        if (!session || ((bearer_token_validator_ || async_bearer_token_validator_) &&
+                         session->principal != principal)) {
+            return detail_session_mgr::make_error_response(request, http::status::not_found,
+                                                           "Session not found");
+        }
+
+        auto request_json = detail::parse_peer_json(request.body());
+        if (request_json.is_discarded() || !request_json.is_object()) {
+            return detail_session_mgr::make_error_response(request, http::status::bad_request,
+                                                           "Invalid JSON-RPC payload");
+        }
+        if (!bytes.grow_to(request.body().size() + detail::json_memory_cost(request_json))) {
+            return detail_session_mgr::make_error_response(request, http::status::service_unavailable,
+                                                           "Server busy");
+        }
+        if (auto refusal = check_request_scopes(request, request_json, token_scopes)) {
+            return std::move(*refusal);
+        }
+        // initialize stays a request of the earlier revisions whatever version it asks for: it
+        // negotiates the newest of them.
+        if (detail::is_modern_http_request(request_json,
+                                           detail::http_header(request, "MCP-Protocol-Version"))) {
+            return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::bad_request,
+                mcp::constants::jsonrpc::g_UNSUPPORTED_PROTOCOL_VERSION,
+                "The HTTP+SSE transport serves only protocol revisions before 2026-07-28");
+        }
+        if (request_json.contains("id") && request_json.contains("method") &&
+            !detail::is_request_id(request_json.at("id"))) {
+            return detail_session_mgr::make_jsonrpc_error_response(
+                request, http::status::bad_request, mcp::constants::jsonrpc::g_INVALID_REQUEST,
+                "JSON-RPC request id must be a string or an integer within int64_t");
+        }
+        try {
+            session->pipe->deliver(std::move(request_json));
+        } catch (const TransportError&) {
+            return detail_session_mgr::make_error_response(request, http::status::not_found,
+                                                           "Session not found");
+        }
+        return detail_session_mgr::make_empty_json_response(request, http::status::accepted);
     }
 
     static bool has_valid_protocol_header(const detail::IncomingRequest& request) {
@@ -1166,7 +1314,8 @@ struct StreamableHttpSessionManager::Impl {
     ///
     /// @return Whether the connection may carry another request.
     Task<bool> serve_legacy_stream(Connection& stream, const detail::IncomingRequest& request,
-                                   std::shared_ptr<detail_session_mgr::LegacyStream> legacy) const {
+                                   std::shared_ptr<detail_session_mgr::LegacyStream> legacy,
+                                   detail::BudgetLease& slot) const {
         auto& session = *legacy->session;
         const bool get_stream = legacy->request_key.empty();
         SseEventList events = std::move(legacy->replay);
@@ -1261,6 +1410,11 @@ struct StreamableHttpSessionManager::Impl {
                 }
                 stream_open = true;
                 wrote = true;
+                if (get_stream) {
+                    // An open GET stream is bounded by the connection and session limits, not by
+                    // the requests in flight.
+                    slot.release();
+                }
             }
 
             if (!events.empty()) {
@@ -2082,8 +2236,12 @@ void StreamableHttpSessionManager::set_session_limits(const SessionLimits& limit
 }
 
 std::size_t StreamableHttpSessionManager::session_count() const {
-    std::shared_lock lock(impl_->sessions_mutex_);
-    return impl_->sessions.size();
+    std::size_t count = 0;
+    {
+        std::shared_lock lock(impl_->sessions_mutex_);
+        count = impl_->sessions.size();
+    }
+    return impl_->legacy_sse_ ? count + impl_->legacy_sse_->size() : count;
 }
 
 void StreamableHttpSessionManager::set_json_only(bool json_only) {
@@ -2142,6 +2300,24 @@ void StreamableHttpSessionManager::set_stream_options(StreamOptions options) {
     impl_->stream_options_ = options;
 }
 
+void StreamableHttpSessionManager::set_legacy_sse(LegacySseOptions options) {
+    const auto check_path = [](std::string_view path) {
+        if (path.empty() || path.front() != '/' ||
+            path.find_first_of("?# \t\r\n") != std::string_view::npos) {
+            throw std::invalid_argument(
+                "A legacy SSE path starts with / and holds no query, fragment or space");
+        }
+    };
+    check_path(options.sse_path);
+    check_path(options.message_path);
+    if (options.sse_path == options.message_path) {
+        throw std::invalid_argument("The legacy SSE paths of the stream and the messages differ");
+    }
+    std::scoped_lock lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->legacy_sse_ = std::make_unique<detail::LegacySseSessions>(std::move(options));
+}
+
 void StreamableHttpSessionManager::set_legacy_stream_options(LegacyStreamOptions options) {
     detail::check_legacy_stream_options(options);
     std::scoped_lock lock(impl_->configuration_mutex_);
@@ -2170,6 +2346,9 @@ void StreamableHttpSessionManager::close_impl(const std::shared_ptr<Impl>& impl)
         impl->expiry_timer.cancel();
     });
     impl->close_active_connections();
+    if (impl->legacy_sse_) {
+        impl->legacy_sse_->close();
+    }
 
     std::vector<std::shared_ptr<detail_session_mgr::SessionRuntime>> active_sessions;
     {

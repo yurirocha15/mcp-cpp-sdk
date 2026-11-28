@@ -184,6 +184,11 @@ Task<ConnectResult> Client::connect(const Implementation& client_info,
                        "Client has already been initialized");
     }
 
+    if (state->transport) {
+        if (const auto feature = state->transport->deprecated_feature()) {
+            state->deprecations.report(*feature);
+        }
+    }
     Impl::start_read_loop(state);
     {
         std::scoped_lock lock(state->handlers_mutex);

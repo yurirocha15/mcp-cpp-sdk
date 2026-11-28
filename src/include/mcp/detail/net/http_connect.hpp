@@ -11,6 +11,7 @@
 #include <mcp/transport/tls.hpp>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,6 +27,20 @@ struct HttpUrlScheme {
 /// The scheme of @p url when it is `http` or `https`, in any case of letters, since URL schemes
 /// are compared without regard to case (RFC 3986 section 3.1); nullopt for any other URL.
 std::optional<HttpUrlScheme> http_url_scheme(std::string_view url);
+
+/// The parts of an `http` or `https` URL a client needs.
+struct HttpUrl {
+    std::string host;  ///< An IPv6 literal without its brackets.
+    std::string port;  ///< The URL's, or 80 or 443.
+    std::string path;  ///< The request target: the path and query, never empty.
+    bool https{false};
+};
+
+/// Splits @p url, dropping its fragment.
+/// @param subject Names the transport in the error messages, such as "HttpClientTransport".
+/// @throws std::invalid_argument If the URL is malformed, carries credentials, or uses another
+///         scheme.
+HttpUrl parse_http_url(const std::string& url, std::string_view subject);
 
 /// How a client reaches one server: directly or through a proxy, in plain text or over TLS.
 struct ConnectPlan {

@@ -85,6 +85,7 @@ TEST(DeprecationNoticeTest, EachFeatureNamesItsRegistryEntry) {
         {DeprecatedFeature::eRoots, "SEP-2577", "2026-07-28"},
         {DeprecatedFeature::eIncludeContext, "SEP-2596", "2025-11-25"},
         {DeprecatedFeature::eDynamicClientRegistration, "PR #2858", "2026-07-28"},
+        {DeprecatedFeature::eHttpSse, "SEP-2596", "2025-03-26"},
     };
     for (const auto& entry : expected) {
         const auto& notice = mcp::deprecation_notice(entry.feature);

@@ -68,10 +68,17 @@ const DeprecationNotice& deprecation_notice(DeprecatedFeature feature) {
                 "Use a client ID metadata document (ClientIdentityConfig::client_metadata_url) "
                 "or pre-registered credentials.",
         },
+        {
+            .feature = DeprecatedFeature::eHttpSse,
+            .name = "HTTP+SSE transport",
+            .proposal = "SEP-2596",
+            .deprecated_in = "2025-03-26",
+            .earliest_removal = "three months after SEP-2596 reaches Final",
+            .migration = "Use Streamable HTTP.",
+        },
     });
-    static_assert(
-        s_notices.size() == static_cast<std::size_t>(DeprecatedFeature::eDynamicClientRegistration) + 1,
-        "one notice per DeprecatedFeature");
+    static_assert(s_notices.size() == static_cast<std::size_t>(DeprecatedFeature::eHttpSse) + 1,
+                  "one notice per DeprecatedFeature");
     return s_notices.at(static_cast<std::size_t>(feature));
 }
 

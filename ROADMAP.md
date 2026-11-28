@@ -32,7 +32,7 @@ Each item is Planned, In progress or Done.
 | Send `notifications/elicitation/complete` to the client that started a URL-mode elicitation, and give clients a handler for it | Done |
 | Return the URL elicitation required error (`-32042`) from a server handler, and read its elicitations on the client | Done |
 | Typed client calls for resource subscribe, resource unsubscribe and logging level | Done |
-| The legacy HTTP+SSE transport for clients and servers, marked deprecated from the start (SEP-2596) | Planned |
+| The legacy HTTP+SSE transport for clients and servers, marked deprecated from the start (SEP-2596) | Done |
 | A server call that sends any notification to legacy sessions, and an observer for `subscriptions/listen` streams | Done |
 | Compiled examples for the features that lack one: image, audio and embedded-resource tool results, binary resources, embedded resources and images in prompts, URL-mode elicitation and its completion, roots change notifications, and resource-template completion | Planned |
 | A feature matrix that links each tier-assessment feature to its API reference, guide and example, checked in CI | Planned |

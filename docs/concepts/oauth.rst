@@ -826,9 +826,14 @@ deduplication semantics.
 HTTP authentication
 ~~~~~~~~~~~~~~~~~~~
 
-When ``OAuthClientTransport`` wraps ``HttpClientTransport``, the access token
-is sent as ``Authorization: Bearer <token>``. It is not copied into MCP request
-metadata. Configure the matching server-side validator before starting the
+When ``OAuthClientTransport`` wraps ``HttpClientTransport`` or
+``LegacySseClientTransport``, the access token is sent as ``Authorization:
+Bearer <token>``, on the event stream's GET and on every POST of the latter. It
+is not copied into MCP request metadata. A 401 on a POST renews the token and
+retries as above. A refusal of the event stream's GET ends a
+``LegacySseClientTransport`` for good, so the request fails with the
+``HttpStatusError`` that carries the challenge, without a renewal; renew the
+token and make a new transport. Configure the matching server-side validator before starting the
 listener:
 
 .. code-block:: cpp

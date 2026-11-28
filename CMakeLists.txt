@@ -194,6 +194,8 @@ set(MCP_CPP_SDK_SOURCES
     src/transport/tls_accept.cpp
     src/transport/tls_roots.cpp
     src/transport/http_session_manager.cpp
+    src/transport/sse_legacy_client.cpp
+    src/transport/sse_legacy_server.cpp
     src/transport/modern_exchange.cpp
     src/transport/websocket.cpp)
 
@@ -539,6 +541,7 @@ if(BUILD_TESTING)
       test/transport/transport_http_resumability_test.cpp
       test/transport/transport_http_legacy_stream_test.cpp
       test/transport/transport_http_session_manager_test.cpp
+      test/transport/transport_sse_legacy_test.cpp
       test/transport/transport_http_modern_test.cpp
       test/transport/transport_http_server_modern_test.cpp
       test/transport/transport_http_server_stream_test.cpp

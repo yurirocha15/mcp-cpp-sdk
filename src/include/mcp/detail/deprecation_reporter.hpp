@@ -25,8 +25,7 @@ class DeprecationReporter {
    private:
     std::mutex mutex_;
     DeprecationHandler handler_;
-    std::array<bool, static_cast<std::size_t>(DeprecatedFeature::eDynamicClientRegistration) + 1>
-        reported_{};
+    std::array<bool, static_cast<std::size_t>(DeprecatedFeature::eHttpSse) + 1> reported_{};
 };
 
 }  // namespace mcp::detail

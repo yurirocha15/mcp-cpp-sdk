@@ -18,6 +18,7 @@ enum class DeprecatedFeature : std::uint8_t {
     eRoots,           ///< Roots (SEP-2577).
     eIncludeContext,  ///< The `includeContext` values `thisServer` and `allServers` (SEP-2596).
     eDynamicClientRegistration,  ///< Dynamic client registration (RFC 7591; PR #2858).
+    eHttpSse,                    ///< The HTTP+SSE transport of revision 2024-11-05 (SEP-2596).
 };
 
 /**

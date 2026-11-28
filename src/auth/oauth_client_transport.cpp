@@ -8,6 +8,7 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/detail/json_dump.hpp>
 #include <mcp/transport/http_client.hpp>
+#include <mcp/transport/sse_legacy.hpp>
 
 #include <boost/beast/http.hpp>
 
@@ -360,8 +361,11 @@ struct OAuthClientTransport::Impl {
                 const auto stepped_up =
                     error.status() == static_cast<unsigned int>(http::status::forbidden) &&
                     is_insufficient_scope(error.authenticate_challenge());
+                // A refusal of an event stream that has ended for good cannot be answered by a
+                // new token: nothing reopens the stream, so the retry would fail again.
                 operation->authentication_challenge =
-                    operation->owner->uses_http_authorization_header && (unauthorized || stepped_up);
+                    operation->owner->uses_http_authorization_header && (unauthorized || stepped_up) &&
+                    !operation->owner->inner_has_ended();
                 if (operation->authentication_challenge) {
                     operation->authenticate_challenge = error.authenticate_challenge();
                     operation->refresh_allowed = unauthorized;
@@ -490,6 +494,8 @@ struct OAuthClientTransport::Impl {
         co_return operation->raw;
     }
 
+    [[nodiscard]] bool inner_has_ended() const { return legacy_sse_inner && legacy_sse_inner->ended(); }
+
     std::shared_ptr<ITransport> inner;
     std::shared_ptr<Authenticator> authenticator;
     OAuthClientTransportOptions options;
@@ -500,6 +506,8 @@ struct OAuthClientTransport::Impl {
     std::uint64_t next_generation{0};
     bool closed{false};
     bool uses_http_authorization_header{false};
+    /// Set for an inner transport whose event stream is not reopened once it has ended.
+    std::shared_ptr<const mcp::LegacySseClientTransport> legacy_sse_inner;
     std::mutex observer_mutex;
     ITransport::InteractionObserver interaction_observer;
 };
@@ -524,6 +532,15 @@ OAuthClientTransport::OAuthClientTransport(std::shared_ptr<ITransport> inner,
             return active_authenticator ? active_authenticator->get_access_token() : std::string{};
         });
         impl_->uses_http_authorization_header = true;
+    } else if (const auto legacy_transport =
+                   std::dynamic_pointer_cast<mcp::LegacySseClientTransport>(impl_->inner)) {
+        std::weak_ptr<Authenticator> weak_authenticator = impl_->authenticator;
+        legacy_transport->set_bearer_token_provider([weak_authenticator] {
+            const auto active_authenticator = weak_authenticator.lock();
+            return active_authenticator ? active_authenticator->get_access_token() : std::string{};
+        });
+        impl_->uses_http_authorization_header = true;
+        impl_->legacy_sse_inner = legacy_transport;
     }
 }
 
@@ -531,6 +548,10 @@ Task<std::string> OAuthClientTransport::read_message() { return Impl::read(impl_
 
 bool OAuthClientTransport::overlapping_writes() const noexcept {
     return impl_->inner->overlapping_writes();
+}
+
+std::optional<DeprecatedFeature> OAuthClientTransport::deprecated_feature() const noexcept {
+    return impl_->inner->deprecated_feature();
 }
 
 void OAuthClientTransport::set_interaction_observer(InteractionObserver observer) {

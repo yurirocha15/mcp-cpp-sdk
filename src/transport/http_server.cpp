@@ -1249,7 +1249,7 @@ struct HttpServerTransport::Impl {
     ///
     /// @return Whether the connection may carry another request.
     Task<bool> serve_legacy_stream(Connection& stream, const detail::IncomingRequest& request,
-                                   std::shared_ptr<LegacyStream> legacy) {
+                                   std::shared_ptr<LegacyStream> legacy, detail::BudgetLease& slot) {
         const bool get = legacy->request_key.empty();
         SseEventList events = std::move(legacy->replay);
         bool stream_open = false;
@@ -1350,6 +1350,11 @@ struct HttpServerTransport::Impl {
                 }
                 stream_open = true;
                 wrote = true;
+                if (get) {
+                    // An open GET stream is bounded by the connection and session limits, not by
+                    // the requests in flight.
+                    slot.release();
+                }
             }
 
             if (!events.empty()) {
@@ -1560,7 +1565,7 @@ struct HttpServerTransport::Impl {
                 continue;
             }
             if (auto* legacy = std::get_if<1>(&reply)) {
-                if (!co_await serve_legacy_stream(stream, request, *legacy)) {
+                if (!co_await serve_legacy_stream(stream, request, *legacy, slot)) {
                     break;
                 }
                 continue;

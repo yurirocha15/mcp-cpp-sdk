@@ -947,6 +947,42 @@ TEST_F(LegacyStreamTest, HttpServerTransportRefusesAGetThatDoesNotAcceptEventStr
     EXPECT_EQ(no_accept, 406U);
 }
 
+// An open GET stream gives its place under max_requests back, so the session's POSTs are still
+// served while it is open.
+TEST_F(LegacyStreamTest, HttpServerTransportGetStreamGivesItsRequestPlaceBack) {
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+    mcp::HttpConnectionLimits limits;
+    limits.max_requests = 1;
+    transport->set_connection_limits(limits);
+    const auto port = transport->port();
+    auto server = make_server(shared_);
+    mcp_test::spawn_detached(io_ctx_, transport->listen());
+    mcp_test::spawn_detached(
+        io_ctx_, [&]() -> mcp::Task<void> { co_await server->run(transport, io_ctx_.get_executor()); });
+    unsigned get_status = 0;
+    bool primed = false;
+    Reply pinged;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            const auto session = co_await start_session(executor, port);
+            auto get = std::make_shared<Exchange>(executor);
+            const std::string no_body;
+            const auto headers = session_headers(session);
+            co_await get->open(port, http::verb::get, no_body, headers);
+            get_status = get->status();
+            // The priming event follows the point where the stream gives its place back.
+            primed = (co_await get->next()).has_value();
+            const auto ping = json{{"jsonrpc", "2.0"}, {"id", 7}, {"method", "ping"}}.dump();
+            pinged = co_await send(executor, port, http::verb::post, ping, session);
+        },
+        [&] { transport->close(); });
+
+    EXPECT_EQ(get_status, 200U);
+    EXPECT_TRUE(primed);
+    EXPECT_EQ(pinged.status, 200U) << pinged.body;
+}
+
 // A 2025-11-25 session starts the stream of a POST with an event that has an id and no data. The
 // session's revision decides, not the header of the request; earlier revisions have no such event.
 TEST_F(LegacyStreamTest, SessionManagerPrimesThePostStreamsOfA20251125Session) {

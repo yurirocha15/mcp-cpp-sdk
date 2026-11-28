@@ -3,6 +3,7 @@
 #include <mcp/core/constants.hpp>
 #include <mcp/core/export.hpp>
 #include <mcp/transport/http_server.hpp>
+#include <mcp/transport/sse_legacy.hpp>
 #include <mcp/transport/transport.hpp>
 
 #include <mcp/core/executor.hpp>
@@ -444,6 +445,43 @@ class MCP_API StreamableHttpSessionManager {
      * @throws std::logic_error If listen() has already been called or the manager is closed.
      */
     void set_legacy_stream_options(LegacyStreamOptions options);
+
+    /**
+     * @brief Also serve the HTTP+SSE transport of protocol revision 2024-11-05, which the
+     *        specification deprecates in favour of Streamable HTTP.
+     *
+     * @details A GET on LegacySseOptions::sse_path opens a session and answers with an event
+     * stream. Its first event is `endpoint`, whose data is LegacySseOptions::message_path with the
+     * session's opaque `sessionId` as a query parameter; the server's messages follow as `message`
+     * events. A POST of a message to that URL is delivered to the session's Server and answered
+     * 202. The session lasts as long as its stream, and ends when the client closes it or the
+     * manager is closed.
+     *
+     * The endpoint applies the checks of the Streamable HTTP endpoint: the Host and Origin
+     * allowlists, the bearer token validator and scope requirements, the limits of
+     * set_connection_limits(), and SessionLimits::max_sessions, which also counts these sessions.
+     * A session serves only the principal that opened it, and a POST naming another session, or
+     * none, is answered 404 without saying which. Only the revisions before 2026-07-28 are served:
+     * initialize negotiates at most 2025-11-25, and a request of 2026-07-28 is answered 400. A
+     * session whose stream falls more than StreamOptions::max_queued_notifications messages, or
+     * StreamOptions::max_queued_bytes bytes, behind ends, and so does one whose queued bytes the
+     * listener-wide HttpConnectionLimits::max_request_bytes budget cannot hold. The bytes of the
+     * batch being written count until the write ends, and a message is always queued while none
+     * is held, as far as the budget allows. The first session a Server serves reports
+     * DeprecatedFeature::eHttpSse to that Server's deprecation handler.
+     *
+     * @throws std::invalid_argument If a path does not start with `/`, holds `?`, `#` or a space,
+     *         or both paths are the same.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     *
+     * @deprecated The specification deprecates the HTTP+SSE transport (SEP-2596) since protocol
+     * revision 2025-03-26; it may remove it three months after SEP-2596 reaches Final. See the
+     * Deprecations guide.
+     */
+    MCP_DEPRECATED(
+        "SEP-2596: The HTTP+SSE transport is deprecated since protocol revision 2025-03-26; "
+        "earliest removal: three months after SEP-2596 reaches Final; use Streamable HTTP")
+    void set_legacy_sse(LegacySseOptions options);
 
     /// What the 2026-07-28 streams have done so far.
     [[nodiscard]] StreamStats stream_stats() const;

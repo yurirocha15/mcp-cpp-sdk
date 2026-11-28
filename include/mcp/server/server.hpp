@@ -1189,6 +1189,10 @@ class MCP_API Server {
     friend class SyncServer;
     friend class StreamableHttpSessionManager;
 
+    /// Reports @p feature to this server's deprecation handler, once for the servers sharing its
+    /// registry.
+    void report_deprecated(DeprecatedFeature feature) const;
+
     /// The runs of this server in progress, which the run forms register with.
     [[nodiscard]] std::shared_ptr<detail::RunControl> run_control() const;
 

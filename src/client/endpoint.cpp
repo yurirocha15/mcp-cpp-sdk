@@ -4,6 +4,7 @@
 #include <mcp/client/endpoint.hpp>
 #include <mcp/core/async.hpp>
 #include <mcp/transport/http_client.hpp>
+#include <mcp/transport/sse_legacy.hpp>
 #include <mcp/transport/stdio_client.hpp>
 
 #include <initializer_list>
@@ -91,6 +92,12 @@ Endpoint Endpoint::http(std::string url, HttpEndpointOptions options) {
         }
         return std::make_shared<auth::OAuthClientTransport>(std::move(transport),
                                                             std::move(authenticator));
+    });
+}
+
+Endpoint Endpoint::legacy_sse(std::string url) {
+    return Endpoint([url = std::move(url)](const Executor& executor) -> std::shared_ptr<ITransport> {
+        return std::make_shared<LegacySseClientTransport>(executor, url);
     });
 }
 

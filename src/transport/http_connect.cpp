@@ -48,6 +48,64 @@ std::optional<HttpUrlScheme> http_url_scheme(std::string_view url) {
     return std::nullopt;
 }
 
+HttpUrl parse_http_url(const std::string& url, std::string_view subject) {
+    HttpUrl parsed;
+    const auto scheme = http_url_scheme(url);
+    if (!scheme) {
+        throw std::invalid_argument(std::string(subject) + " URL must start with http:// or https://");
+    }
+    parsed.https = scheme->https;
+
+    // The authority ends where the path, query or fragment begins. The fragment is never
+    // sent, and a query needs the root path.
+    const auto rest = url.substr(scheme->prefix_length);
+    const auto authority_end = rest.find_first_of("/?#");
+    auto authority = rest.substr(0, authority_end);
+    parsed.path = authority_end == std::string::npos ? "" : rest.substr(authority_end);
+    if (const auto fragment = parsed.path.find('#'); fragment != std::string::npos) {
+        parsed.path.erase(fragment);
+    }
+    if (parsed.path.empty() || parsed.path.front() != '/') {
+        parsed.path.insert(0, "/");
+    }
+    if (authority.find('@') != std::string::npos) {
+        throw std::invalid_argument(std::string(subject) +
+                                    " URL must not carry credentials; use set_bearer_token_provider()");
+    }
+
+    parsed.port = parsed.https ? "443" : "80";
+    if (!authority.empty() && authority.front() == '[') {
+        const auto closing = authority.find(']');
+        if (closing == std::string::npos ||
+            (closing + 1 < authority.size() && authority[closing + 1] != ':')) {
+            throw std::invalid_argument(std::string(subject) + " URL has a malformed IPv6 host");
+        }
+        parsed.host = authority.substr(1, closing - 1);
+        if (closing + 1 < authority.size()) {
+            parsed.port = authority.substr(closing + 2);
+            if (parsed.port.empty()) {
+                throw std::invalid_argument(std::string(subject) + " URL contains empty port");
+            }
+        }
+    } else {
+        const std::size_t colon_position = authority.find(':');
+        if (colon_position == std::string::npos) {
+            parsed.host = std::move(authority);
+        } else {
+            parsed.host = authority.substr(0, colon_position);
+            parsed.port = authority.substr(colon_position + 1);
+            if (parsed.port.empty()) {
+                throw std::invalid_argument(std::string(subject) + " URL contains empty port");
+            }
+        }
+    }
+
+    if (parsed.host.empty()) {
+        throw std::invalid_argument(std::string(subject) + " URL is missing host");
+    }
+    return parsed;
+}
+
 std::string ConnectPlan::request_target(const std::string& path) const {
     if (!forwards_requests()) {
         return path;

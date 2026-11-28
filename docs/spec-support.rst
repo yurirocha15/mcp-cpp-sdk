@@ -101,9 +101,10 @@ Transports
      - TLS, mutual TLS and HTTP proxies are covered in :doc:`guides/tls`.
    * - HTTP+SSE (revision 2024-11-05)
      - Deprecated
-     - No
-     - No
-     - The specification asks new implementations not to adopt it.
+     - Yes
+     - Yes
+     - The specification asks new implementations not to adopt it. Revisions
+       before 2026-07-28 only. :ref:`transport-http-sse`
    * - Custom transports
      - Core
      - Yes
@@ -314,6 +315,14 @@ use at run time; :doc:`guides/deprecations` shows both and how to turn them off.
        ``g_ALL_SERVERS``. A server sends them only to a client that declares
        ``sampling.context``.
 
+   * - HTTP+SSE transport
+     - SEP-2596, 2025-03-26
+     - Streamable HTTP.
+     - ``LegacySseClientTransport``, ``Endpoint::legacy_sse()``,
+       ``StreamableHttpSessionManager::set_legacy_sse()``.
+       :ref:`transport-http-sse`
+
 The earliest removal of Roots, Sampling, Logging and dynamic client
 registration is the first revision released on or after 2027-07-28; the
-``includeContext`` values go with Sampling.
+``includeContext`` values go with Sampling, and the HTTP+SSE transport goes three
+months after SEP-2596 reaches Final.
