@@ -469,7 +469,8 @@
             "method": "notifications/roots/list_changed",
             "status": "implemented",
             "api": [
-                "set_roots"
+                "set_roots",
+                "on_roots_list_changed"
             ],
             "guide": "concepts/roots#roots-change-notifications",
             "example": {

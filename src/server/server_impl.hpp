@@ -1383,6 +1383,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         SubscriptionHandler subscribe_handler;
         SubscriptionHandler unsubscribe_handler;
         ListenHandler listen_handler;
+        /// Called for each notifications/roots/list_changed of a session (on_roots_list_changed).
+        std::function<void(std::string_view)> roots_list_changed_handler;
         /// The last number a listen stream of the registry's servers was given.
         std::atomic<std::uint64_t> listen_streams{0};
         /// The servers that share this registry, so that a notification about it reaches the
@@ -1474,7 +1476,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// server weakly, so a transport that outlives it answers with an error.
     static Task<std::string> dispatch_for_http(std::weak_ptr<Impl> weak, nlohmann::json json_msg,
                                                RequestContext request_context);
-    void dispatch_notification(const nlohmann::json& json_msg);
+    void dispatch_notification(const nlohmann::json& json_msg,
+                               const std::shared_ptr<const std::string>& principal);
     void dispatch_response(const nlohmann::json& json_msg) const;
     /// Sends a request to the client. @p related_request, when set, is the id as JSON text of the
     /// client request whose handler asks (see RequestScope::related_request).

@@ -494,7 +494,7 @@ Task<void> Server::Impl::dispatch(nlohmann::json json_msg) {
 Task<void> Server::Impl::dispatch_on_strand(nlohmann::json json_msg,
                                             std::shared_ptr<const std::string> principal) {
     if (is_valid_notification_envelope(json_msg)) {
-        dispatch_notification(json_msg);
+        dispatch_notification(json_msg, principal);
         co_return;
     }
 
@@ -577,11 +577,25 @@ Task<std::string> Server::Impl::dispatch_with_context(nlohmann::json json_msg,
                                        std::move(request_context.watch_cancel), std::move(principal));
 }
 
-void Server::Impl::dispatch_notification(const nlohmann::json& json_msg) {
+void Server::Impl::dispatch_notification(const nlohmann::json& json_msg,
+                                         const std::shared_ptr<const std::string>& principal) {
     if (!is_valid_notification_envelope(json_msg)) {
         return;
     }
     auto method = json_msg.at("method").get<std::string>();
+
+    if (method == methods::g_NOTIFICATIONS_ROOTS_LIST_CHANGED) {
+        // Only a session that has been initialized has roots that can change.
+        const auto& handler = registry->roots_list_changed_handler;
+        if (handler && lifecycle.load(std::memory_order_relaxed) == Impl::LifecycleState::eReady) {
+            try {
+                handler(principal ? std::string_view(*principal) : std::string_view());
+            } catch (...) {
+                // A notification has no answer to carry the failure.
+            }
+        }
+        return;
+    }
 
     if (method == methods::g_NOTIFICATIONS_INITIALIZED) {
         auto expected = Impl::LifecycleState::eAwaitingInitialized;

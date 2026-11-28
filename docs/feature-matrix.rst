@@ -235,7 +235,7 @@ names exists.
      - Roots - change notifications
      - ``notifications/roots/list_changed``
      - Implemented
-     - ``set_roots``
+     - ``set_roots``, ``on_roots_list_changed``
      - :doc:`concepts/roots`, Roots Change Notifications
      - ``examples/features/roots.cpp``
    * - 32

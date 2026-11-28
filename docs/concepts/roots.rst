@@ -103,8 +103,10 @@ declared the ``roots.listChanged`` capability in the capabilities it passed to
    :end-before: docs-end: roots-changed
    :dedent: 20
 
-A server that wants to react to the change asks for the roots again with
-``request_roots()``; the example's tool does so on its next call.
+The server learns of the change through ``Server::on_roots_list_changed()``,
+whose callback receives the principal of the session that sent the
+notification. The callback runs outside any request, so it cannot ask the client
+anything; the server's handlers ask for the new roots with ``request_roots()``.
 
 Example Walkthrough
 -------------------

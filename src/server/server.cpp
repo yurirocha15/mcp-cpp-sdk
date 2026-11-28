@@ -545,6 +545,11 @@ void Server::on_unsubscribe(const SubscriptionHandler& handler) {
 
 void Server::on_listen(ListenHandler handler) { impl_->listen_handler = std::move(handler); }
 
+void Server::on_roots_list_changed(std::function<void(std::string_view principal)> handler) {
+    impl_->registry->deprecations->report(DeprecatedFeature::eRoots);
+    impl_->registry->roots_list_changed_handler = std::move(handler);
+}
+
 bool Server::is_initialized() const {
     return impl_->lifecycle.load(std::memory_order_relaxed) != Impl::LifecycleState::eUninitialized;
 }

@@ -250,6 +250,15 @@ TEST(DeprecationNoticeTest, ClientRegistrationsReportSamplingAndRootsOnce) {
                                                                  DeprecatedFeature::eSampling}));
 }
 
+TEST(DeprecationNoticeTest, ServerRootsObserverReportsRootsOnce) {
+    mcp::Server server("deprecations", "1.0");
+    Received received;
+    server.set_deprecation_handler(received.handler());
+    server.on_roots_list_changed([](std::string_view) {});
+    server.on_roots_list_changed([](std::string_view) {});
+    EXPECT_EQ(received.features, std::vector<DeprecatedFeature>{DeprecatedFeature::eRoots});
+}
+
 TEST(DeprecationNoticeTest, SetLogLevelReportsLoggingOnce) {
     boost::asio::io_context io_ctx;
     auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
