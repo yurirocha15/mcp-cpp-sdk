@@ -700,4 +700,8 @@ void LegacySseClientTransport::close() {
     net::post(impl->strand, [impl] { impl->close_sockets(); });
 }
 
+bool LegacySseClientTransport::ended() const noexcept {
+    return impl_->closed.load(std::memory_order_acquire);
+}
+
 }  // namespace mcp

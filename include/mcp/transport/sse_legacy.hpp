@@ -131,6 +131,14 @@ class MCP_API LegacySseClientTransport final : public ITransport {
     /** @brief Close the event stream and the connection POSTs use. */
     void close() override;
 
+    /**
+     * @brief Whether the transport is over: closed, or its event stream failed or finished.
+     *
+     * A transport that is over fails every read and write, and nothing reopens the stream. That
+     * includes a stream whose GET the server refused with 401.
+     */
+    [[nodiscard]] bool ended() const noexcept;
+
     /** @return DeprecatedFeature::eHttpSse. */
     [[nodiscard]] std::optional<DeprecatedFeature> deprecated_feature() const noexcept override {
         return DeprecatedFeature::eHttpSse;

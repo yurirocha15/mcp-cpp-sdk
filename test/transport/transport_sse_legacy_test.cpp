@@ -1,6 +1,8 @@
 #include "support/hang_guard.hpp"
 #include "support/spawn.hpp"
 
+#include "mcp/auth/authenticator.hpp"
+#include "mcp/auth/oauth_client_transport.hpp"
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
 #include "mcp/core/constants.hpp"
@@ -765,6 +767,97 @@ TEST_F(LegacySseTransportTest, ClientSendsTheBearerTokenOnTheStreamAndOnEveryPos
     for (const auto& request : peer.requests()) {
         EXPECT_EQ(request.authorization, "Bearer secret") << request.method;
     }
+}
+
+namespace {
+
+/// A token that changes when it is renewed, so a retry shows which token it carried.
+class RenewableTokenAuthenticator final : public mcp::auth::Authenticator {
+   public:
+    [[nodiscard]] std::string get_access_token() const override {
+        return token_.load() ? "renewed" : "initial";
+    }
+    mcp::Task<bool> try_refresh_token() override {
+        ++refreshes;
+        token_ = true;
+        co_return true;
+    }
+    std::atomic<int> refreshes{0};
+
+   private:
+    std::atomic<bool> token_{false};
+};
+
+}  // namespace
+
+TEST_F(LegacySseTransportTest, OAuthTransportSendsTheTokenAsAHeaderOnTheStreamAndOnEveryPost) {
+    IoThread io;
+    ScriptedPeer peer;
+    peer.start();
+    auto inner = std::make_shared<mcp::LegacySseClientTransport>(io.executor(), peer.url());
+    mcp::auth::OAuthClientTransport transport(inner, std::make_shared<RenewableTokenAuthenticator>());
+    write_one(io, transport, R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+    ASSERT_TRUE(peer.wait_for_requests(2));
+    for (const auto& request : peer.requests()) {
+        EXPECT_EQ(request.authorization, "Bearer initial") << request.method;
+        EXPECT_EQ(request.body.find("initial"), std::string::npos) << "the token is in the body";
+    }
+}
+
+TEST_F(LegacySseTransportTest, OAuthTransportRenewsTheTokenAfterA401OnAPost) {
+    IoThread io;
+    ScriptedPeer peer;
+    peer.post_status = 401;
+    peer.start();
+    auto inner = std::make_shared<mcp::LegacySseClientTransport>(io.executor(), peer.url());
+    auto authenticator = std::make_shared<RenewableTokenAuthenticator>();
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
+    EXPECT_THROW(write_one(io, transport, R"({"jsonrpc":"2.0","id":1,"method":"ping"})"),
+                 mcp::HttpStatusError);
+    EXPECT_EQ(authenticator->refreshes.load(), 1);
+    const auto requests = peer.requests();
+    ASSERT_EQ(requests.size(), 3U);
+    EXPECT_EQ(requests[1].authorization, "Bearer initial");
+    EXPECT_EQ(requests[2].authorization, "Bearer renewed");
+}
+
+TEST_F(LegacySseTransportTest, OAuthTransportReportsA401OnTheStreamWithoutRenewingTheToken) {
+    IoThread io;
+    ScriptedPeer peer;
+    peer.get_status = 401;
+    peer.start();
+    auto inner = std::make_shared<mcp::LegacySseClientTransport>(io.executor(), peer.url());
+    auto authenticator = std::make_shared<RenewableTokenAuthenticator>();
+    mcp::auth::OAuthClientTransport transport(inner, authenticator);
+    try {
+        write_one(io, transport, R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
+        FAIL() << "the write was accepted";
+    } catch (const mcp::HttpStatusError& error) {
+        EXPECT_EQ(error.status(), 401U);
+        EXPECT_EQ(error.authenticate_challenge(), "Bearer realm=\"scripted\"");
+    }
+    EXPECT_EQ(authenticator->refreshes.load(), 0);
+    EXPECT_TRUE(inner->ended());
+    EXPECT_EQ(peer.requests().size(), 1U);
+}
+
+TEST_F(LegacySseTransportTest, OAuthTransportConnectsToAManagerThatChecksTheToken) {
+    ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
+        manager.set_bearer_token_validator([](std::string_view token) -> mcp::TokenValidation {
+            return {token == "initial", "alice"};
+        });
+    });
+    IoThread io;
+    auto inner = std::make_shared<mcp::LegacySseClientTransport>(
+        io.executor(), "http://127.0.0.1:" + std::to_string(harness.port()) + "/sse");
+    auto transport = std::make_shared<mcp::auth::OAuthClientTransport>(
+        inner, std::make_shared<RenewableTokenAuthenticator>());
+    mcp::Client client(transport, io.executor());
+    run(io, [&client]() -> mcp::Task<void> {
+        const auto connected = co_await client.connect("legacy-sse-client", "1.0.0");
+        EXPECT_EQ(connected.protocolVersion, "2025-11-25");
+    });
+    client.close();
 }
 
 TEST_F(LegacySseTransportTest, AnErrorStatusOfTheStreamIsReportedWithItsStatus) {

@@ -41,8 +41,15 @@ struct OAuthClientTransportOptions {
 /**
  * @brief Transport wrapper that supplies and refreshes OAuth bearer tokens.
  *
- * @details For HttpClientTransport, tokens are sent in the HTTP Authorization header. The legacy
- * request-metadata mechanism is retained only for non-HTTP transports. The wrapper also handles token
+ * @details For HttpClientTransport and LegacySseClientTransport, tokens are sent in the HTTP
+ * Authorization header, on the event stream's GET and on every POST of the latter. The legacy
+ * request-metadata mechanism is retained only for other transports.
+ *
+ * A 401 on a POST of LegacySseClientTransport renews the token and retries like one on
+ * HttpClientTransport. A refusal of the event stream's GET ends that transport for good, so it is
+ * thrown as the HttpStatusError that carries the challenge, without a renewal or a retry; the
+ * application renews the token and makes a new transport.
+ * The wrapper also handles token
  * refresh on legacy JSON-RPC authorization failures. When the server returns -32000, the
  * transport calls `Authenticator::try_refresh_token()` and, if successful, re-sends the request whose
  * ID matches the error response and reads the new response. Only one retry attempt is
