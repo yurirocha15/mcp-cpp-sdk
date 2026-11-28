@@ -171,7 +171,9 @@ mcp::Task<void> legacy_session(const asio::any_io_executor& executor) {
     });
     // docs-end: url-client
 
-    co_await client.connect(Implementation{"url-elicitation-client", "1.0.0"}, url_capabilities());
+    const Implementation client_info{"url-elicitation-client", "1.0.0"};
+    const auto capabilities = url_capabilities();
+    co_await client.connect(client_info, capabilities);
 
     const auto linked = co_await client.call_tool("link_storage", nlohmann::json::object());
     std::cout << "Client: " << result_text(linked) << '\n';
@@ -225,8 +227,9 @@ mcp::Task<void> modern_session(const asio::any_io_executor& executor) {
         co_return answer;
     });
 
-    const auto connected =
-        co_await client.connect(Implementation{"url-elicitation-client", "1.0.0"}, url_capabilities());
+    const Implementation client_info{"url-elicitation-client", "1.0.0"};
+    const auto capabilities = url_capabilities();
+    const auto connected = co_await client.connect(client_info, capabilities);
     expect(connected.era == ProtocolEra::eModern, "the session is of the 2026-07-28 era");
 
     const auto linked = co_await client.call_tool("link_storage", nlohmann::json::object());

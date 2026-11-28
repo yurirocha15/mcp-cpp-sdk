@@ -187,8 +187,9 @@ int main() {
             [&]() -> Task<void> {
                 try {
                     Client client(client_transport, io_ctx.get_executor());
-                    co_await client.connect(Implementation{"rich-content-client", "1.0.0"},
-                                            ClientCapabilities{});
+                    const Implementation client_info{"rich-content-client", "1.0.0"};
+                    const ClientCapabilities capabilities;
+                    co_await client.connect(client_info, capabilities);
                     co_await use_content(client);
                     client.close();
                     client_ok = true;
