@@ -10,13 +10,14 @@
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
-#include <boost/asio/experimental/awaitable_operators.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
+#include <exception>
 #include <functional>
 #include <mcp/core/constants.hpp>
 #include <memory>
@@ -2421,6 +2422,53 @@ TEST_F(MrtrWithoutMiddlewareTest, ListedToolsMatchTheOnesBuiltPageByPage) {
     EXPECT_EQ(listed["result"]["tools"][0]["name"], "ask");
 }
 
+/// Runs @p operands at the same time on the calling coroutine's executor and returns their results
+/// in order, as the `&&` of Boost.Asio's awaitable operators does, which Boost 1.74 lacks. The
+/// executor of the handlers that call it is a strand, so the operands' completions do not race.
+/// The first exception is rethrown once every operand has ended.
+mcp::Task<std::vector<mcp::ElicitResult>> await_together(
+    std::vector<mcp::Task<mcp::ElicitResult>> operands) {
+    struct State {
+        State(const asio::any_io_executor& executor, std::size_t count)
+            : done(executor), results(count), remaining(count) {
+            done.expires_at(asio::steady_timer::time_point::max());
+        }
+        asio::steady_timer done;
+        std::vector<std::optional<mcp::ElicitResult>> results;
+        std::exception_ptr failure;
+        std::size_t remaining;
+    };
+    const auto executor = co_await asio::this_coro::executor;
+    auto state = std::make_shared<State>(executor, operands.size());
+    for (std::size_t index = 0; index < operands.size(); ++index) {
+        asio::co_spawn(executor, std::move(operands[index]),
+                       [state, index](const std::exception_ptr& error, mcp::ElicitResult result) {
+                           if (error) {
+                               if (!state->failure) {
+                                   state->failure = error;
+                               }
+                           } else {
+                               state->results[index] = std::move(result);
+                           }
+                           if (--state->remaining == 0) {
+                               state->done.cancel();
+                           }
+                       });
+    }
+    while (state->remaining != 0) {
+        boost::system::error_code ignored;
+        co_await state->done.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+    }
+    if (state->failure) {
+        std::rethrow_exception(state->failure);
+    }
+    std::vector<mcp::ElicitResult> results;
+    for (auto& result : state->results) {
+        results.push_back(std::move(*result));
+    }
+    co_return results;
+}
+
 /// A server with a tool that asks three questions at once, whose handlers run on @p pool when
 /// one is given. Each operand after the first does work before it asks: the second blocks its
 /// thread, as a synchronous deprecation notice does, and the third first goes back to its
@@ -2439,24 +2487,24 @@ std::unique_ptr<mcp::Server> make_together_server(asio::thread_pool* pool,
     server->add_tool<json, json>(
         "ask_together", "Asks three questions at once", json{{"type", "object"}},
         [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
-            using namespace boost::asio::experimental::awaitable_operators;
             // A lazy coroutine keeps its reference parameter: the question must outlive it.
             const auto question = form_elicitation("A?").get<mcp::ElicitRequestParams>();
-            auto first = ctx.elicit(question);
-            auto second = [](mcp::Context* context) -> mcp::Task<mcp::ElicitResult> {
+            std::vector<mcp::Task<mcp::ElicitResult>> operands;
+            operands.push_back(ctx.elicit(question));
+            operands.push_back([](mcp::Context* context) -> mcp::Task<mcp::ElicitResult> {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 co_return co_await context->elicit(form_elicitation("B?"));
-            }(&ctx);
-            auto third = [](mcp::Context* context) -> mcp::Task<mcp::ElicitResult> {
+            }(&ctx));
+            operands.push_back([](mcp::Context* context) -> mcp::Task<mcp::ElicitResult> {
                 auto executor = co_await asio::this_coro::executor;
                 co_await asio::post(executor, asio::use_awaitable);
                 co_await asio::post(executor, asio::use_awaitable);
                 co_return co_await context->elicit(form_elicitation("C?"));
-            }(&ctx);
-            const auto answers = co_await (std::move(first) && std::move(second) && std::move(third));
-            co_return json{{"a", std::get<0>(answers).content->value("name", "")},
-                           {"b", std::get<1>(answers).content->value("name", "")},
-                           {"c", std::get<2>(answers).content->value("name", "")}};
+            }(&ctx));
+            const auto answers = co_await await_together(std::move(operands));
+            co_return json{{"a", answers.at(0).content->value("name", "")},
+                           {"b", answers.at(1).content->value("name", "")},
+                           {"c", answers.at(2).content->value("name", "")}};
         });
     return server;
 }
