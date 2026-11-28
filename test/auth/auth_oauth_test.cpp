@@ -28,9 +28,11 @@
 #include <mcp/core/constants.hpp>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "mcp/detail/constants.hpp"
@@ -1013,6 +1015,246 @@ TEST_F(DiscoveryTest, FailureNamesWhyEachWellKnownUrlMissed) {
         << failure;
     EXPECT_NE(failure.find("; " + base + "/.well-known/openid-configuration: "), std::string::npos)
         << failure;
+}
+
+namespace {
+
+/// How a discovery against a scripted loopback server ended, with the targets it requested.
+struct DiscoveryOutcome {
+    std::exception_ptr failure;
+    std::vector<std::string> targets;
+};
+
+/// Runs discover_protected_resource() for `<origin>/mcp` against @p handler, naming
+/// `<origin><challenge_path>` as the challenge's metadata URL when @p challenge_path is set, or
+/// discover_auth_server() for the origin when @p auth_server is set.
+DiscoveryOutcome run_discovery(const mcp_test::LoopbackServer::Handler& handler,
+                               const std::optional<std::string>& challenge_path = std::nullopt,
+                               bool auth_server = false) {
+    asio::io_context io_ctx;
+    mcp_test::LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler(handler);
+    mcp_test::spawn_detached(io_ctx, server.serve(4));
+
+    DiscoveryOutcome outcome;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+        mcp::auth::MetadataFetchPolicy policy;
+        policy.allowed_origins.push_back(base);
+        policy.allow_plain_http_loopback = true;
+        http_client->set_metadata_policy(policy);
+        mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
+        try {
+            if (auth_server) {
+                (void)co_await discovery.discover_auth_server(base);
+            } else {
+                std::optional<std::string> challenge_url;
+                if (challenge_path) {
+                    challenge_url = base + *challenge_path;
+                }
+                (void)co_await discovery.discover_protected_resource(base + "/mcp", challenge_url);
+            }
+        } catch (...) {
+            outcome.failure = std::current_exception();
+        }
+        server.close();
+    });
+    io_ctx.run();
+    outcome.targets = server.targets();
+    return outcome;
+}
+
+bool is_not_found(const std::exception_ptr& failure) {
+    try {
+        std::rethrow_exception(failure);
+    } catch (const mcp::auth::MetadataNotFoundError&) {
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+}  // namespace
+
+TEST(AuthDiscoveryAbsenceTest, EveryWellKnownLocationAnswering404Or410IsAbsence) {
+    const auto outcome = run_discovery([](const http::request<http::string_body>& request) {
+        return mcp_test::status_response(std::string(request.target()) ==
+                                                 "/.well-known/oauth-protected-resource"
+                                             ? http::status::gone
+                                             : http::status::not_found);
+    });
+    ASSERT_NE(outcome.failure, nullptr);
+    EXPECT_TRUE(is_not_found(outcome.failure));
+    const std::vector<std::string> expected{"/.well-known/oauth-protected-resource/mcp",
+                                            "/.well-known/oauth-protected-resource"};
+    EXPECT_EQ(outcome.targets, expected);
+
+    const auto auth_outcome = run_discovery(
+        [](const http::request<http::string_body>&) {
+            return mcp_test::status_response(http::status::not_found);
+        },
+        std::nullopt, true);
+    ASSERT_NE(auth_outcome.failure, nullptr);
+    EXPECT_TRUE(is_not_found(auth_outcome.failure));
+    EXPECT_EQ(auth_outcome.targets.size(), 2U);
+}
+
+TEST(AuthDiscoveryAbsenceTest, AnyOtherFailureAmongTheLocationsIsNotAbsence) {
+    struct Case {
+        const char* name;
+        mcp_test::LoopbackServer::Handler root_answer;
+    };
+    const std::vector<Case> cases{
+        {"server error",
+         [](const http::request<http::string_body>&) {
+             return mcp_test::status_response(http::status::internal_server_error);
+         }},
+        {"unauthorized",
+         [](const http::request<http::string_body>&) {
+             return mcp_test::status_response(http::status::unauthorized);
+         }},
+        {"malformed document",
+         [](const http::request<http::string_body>&) {
+             http::response<http::string_body> response{http::status::ok, 11};
+             response.set(http::field::content_type, "application/json");
+             response.body() = "{not json";
+             return response;
+         }},
+        {"404 after a redirect",
+         [](const http::request<http::string_body>& request) {
+             if (std::string(request.target()) == "/moved") {
+                 return mcp_test::status_response(http::status::not_found);
+             }
+             http::response<http::string_body> response{http::status::found, 11};
+             response.set(http::field::location, "/moved");
+             return response;
+         }},
+    };
+    for (const auto& entry : cases) {
+        SCOPED_TRACE(entry.name);
+        const auto outcome = run_discovery([&entry](const http::request<http::string_body>& request) {
+            if (std::string(request.target()) == "/.well-known/oauth-protected-resource/mcp") {
+                return mcp_test::status_response(http::status::not_found);
+            }
+            return entry.root_answer(request);
+        });
+        ASSERT_NE(outcome.failure, nullptr);
+        EXPECT_FALSE(is_not_found(outcome.failure));
+    }
+}
+
+TEST(AuthDiscoveryAbsenceTest, AConnectionClosedWithoutAnAnswerIsNotAbsence) {
+    asio::io_context io_ctx;
+    asio::ip::tcp::acceptor acceptor(io_ctx, {asio::ip::make_address("127.0.0.1"), 0});
+    const auto port = acceptor.local_endpoint().port();
+    const auto base = "http://127.0.0.1:" + std::to_string(port);
+
+    mcp_test::spawn_detached(io_ctx, [&]() -> asio::awaitable<void> {
+        // The path-based location answers 404; the root one reads the request and hangs up.
+        for (int answer = 0; answer < 2; ++answer) {
+            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            beast::tcp_stream stream(std::move(socket));
+            beast::flat_buffer buffer;
+            http::request<http::string_body> req;
+            co_await http::async_read(stream, buffer, req, asio::use_awaitable);
+            if (answer == 0) {
+                http::response<http::string_body> res{http::status::not_found, req.version()};
+                res.prepare_payload();
+                co_await http::async_write(stream, res, asio::use_awaitable);
+            }
+            beast::error_code ec;
+            stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
+        }
+    });
+
+    std::exception_ptr failure;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+        http_client->set_metadata_policy(loopback_policy(port));
+        mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
+        try {
+            (void)co_await discovery.discover_protected_resource(base + "/mcp", std::nullopt);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    });
+    io_ctx.run();
+
+    ASSERT_NE(failure, nullptr);
+    EXPECT_FALSE(is_not_found(failure));
+}
+
+TEST(AuthDiscoveryAbsenceTest, A404AtTheChallengeUrlIsNotAbsence) {
+    const auto outcome = run_discovery(
+        [](const http::request<http::string_body>&) {
+            return mcp_test::status_response(http::status::not_found);
+        },
+        std::string("/custom/prm.json"));
+    ASSERT_NE(outcome.failure, nullptr);
+    EXPECT_FALSE(is_not_found(outcome.failure));
+    const std::vector<std::string> expected{"/custom/prm.json"};
+    EXPECT_EQ(outcome.targets, expected);
+}
+
+TEST(AuthDiscoveryAbsenceTest, APolicyRefusalIsNotAbsence) {
+    asio::io_context io_ctx;
+    std::exception_ptr failure;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+        // The default policy admits no plain-http origin, so every location is refused unsent.
+        mcp::auth::OAuthDiscoveryClient discovery(http_client, std::chrono::seconds(60));
+        try {
+            (void)co_await discovery.discover_protected_resource("http://127.0.0.1:9/mcp",
+                                                                 std::nullopt);
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    });
+    io_ctx.run();
+
+    ASSERT_NE(failure, nullptr);
+    EXPECT_FALSE(is_not_found(failure));
+    EXPECT_THROW(std::rethrow_exception(failure), mcp::auth::MetadataPolicyError);
+}
+
+TEST(AuthDiscoveryAbsenceTest, TheStatusErrorNamesTheStatusUrlAndRedirect) {
+    asio::io_context io_ctx;
+    mcp_test::LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/start") {
+            http::response<http::string_body> response{http::status::moved_permanently, 11};
+            response.set(http::field::location, "/gone");
+            return response;
+        }
+        return mcp_test::status_response(target == "/gone" ? http::status::gone
+                                                           : http::status::not_found);
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(3));
+
+    std::vector<std::tuple<unsigned int, std::string, bool>> seen;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        auto http_client = std::make_shared<mcp::auth::OAuthHttpClient>(io_ctx.get_executor());
+        mcp::auth::MetadataFetchPolicy policy;
+        policy.allowed_origins.push_back(base);
+        policy.allow_plain_http_loopback = true;
+        http_client->set_metadata_policy(policy);
+        for (const auto* path : {"/missing", "/start"}) {
+            try {
+                (void)co_await http_client->get_json(base + path);
+            } catch (const mcp::auth::MetadataStatusError& error) {
+                seen.emplace_back(error.status(), error.url(), error.after_redirect());
+            }
+        }
+        server.close();
+    });
+    io_ctx.run();
+
+    ASSERT_EQ(seen.size(), 2U);
+    EXPECT_EQ(seen[0], std::make_tuple(404U, base + "/missing", false));
+    EXPECT_EQ(seen[1], std::make_tuple(410U, base + "/gone", true));
 }
 
 TEST_F(DiscoveryTest, CacheHitSkipsNetworkCall) {

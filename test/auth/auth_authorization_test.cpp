@@ -483,6 +483,372 @@ TEST(AuthAuthorizationManagerTest, RefusesAnAuthorizationServerThatDoesNotListS2
     }
 }
 
+namespace {
+
+/// What one try_handle_challenge() call on a manager ended with.
+struct ChallengeOutcome {
+    bool authorized{false};
+    std::string error;
+    std::optional<mcp::auth::AuthorizationRequest> record;
+};
+
+/// Answers try_handle_challenge(@p challenge) on @p manager, catching the error it throws.
+mcp::Task<ChallengeOutcome> handle(mcp::auth::OAuthAuthorizationManager& manager,
+                                   std::string challenge) {
+    ChallengeOutcome outcome;
+    try {
+        outcome.authorized = co_await manager.try_handle_challenge(challenge);
+        outcome.record = manager.last_authorization_request();
+    } catch (const std::exception& error) {
+        outcome.error = error.what();
+    }
+    co_return outcome;
+}
+
+/// A manager configuration for the server at @p base, with a public client unless told otherwise.
+mcp::auth::OAuthAuthorizationConfig legacy_config(const std::string& base) {
+    mcp::auth::OAuthAuthorizationConfig config;
+    config.server_url = base + "/mcp";
+    config.client_id = "test-client";
+    config.redirect_uri = "http://127.0.0.1:9999/callback";
+    config.policy = loopback_policy(base);
+    return config;
+}
+
+bool is_protected_resource_target(const std::string& target) {
+    return target.rfind("/.well-known/oauth-protected-resource", 0) == 0;
+}
+
+}  // namespace
+
+// A 2025-03-26 server publishes no protected resource metadata; its authorization server is its
+// origin, whose metadata may name an issuer under a path of that origin.
+TEST(AuthAuthorizationManagerTest, TakesTheOriginForTheAuthorizationServerOfAServerWithoutMetadata) {
+    for (const std::string prefix : {"", "/oauth"}) {
+        SCOPED_TRACE(prefix);
+        asio::io_context io_ctx;
+        LoopbackServer server(io_ctx);
+        const auto base = server.base_url();
+        server.set_handler([&base, &prefix](const http::request<http::string_body>& request) {
+            const std::string target(request.target());
+            if (target == "/.well-known/oauth-authorization-server") {
+                json metadata = auth_server_metadata(base + prefix, false);
+                return json_response(metadata);
+            }
+            if (target == prefix + "/token") {
+                return json_response(token_document());
+            }
+            return status_response(http::status::not_found);
+        });
+        mcp_test::spawn_detached(io_ctx, server.serve(4));
+
+        bool consent_saw_fallback = false;
+        auto callback = [&consent_saw_fallback](const mcp::auth::AuthorizationRequest& request)
+            -> mcp::Task<mcp::auth::AuthorizationResponse> {
+            consent_saw_fallback = request.legacy_discovery;
+            mcp::auth::AuthorizationResponse response;
+            response.code = "test-authorization-code";
+            response.state = request.state;
+            co_return response;
+        };
+        ChallengeOutcome outcome;
+        auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store,
+                                                         legacy_config(base), callback);
+            outcome = co_await handle(manager, R"(Bearer realm="mcp")");
+            server.close();
+        });
+        io_ctx.run();
+
+        ASSERT_EQ(outcome.error, "");
+        EXPECT_TRUE(outcome.authorized);
+        EXPECT_TRUE(consent_saw_fallback);
+        ASSERT_TRUE(outcome.record.has_value());
+        EXPECT_TRUE(outcome.record->legacy_discovery);
+        EXPECT_EQ(outcome.record->issuer, base + prefix);
+        EXPECT_EQ(outcome.record->resource, base + "/mcp");
+        EXPECT_EQ(outcome.record->authorization_url.rfind(base + prefix + "/authorize?", 0), 0U);
+        const std::vector<std::string> expected{
+            "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server", prefix + "/token"};
+        EXPECT_EQ(server.targets(), expected);
+        ASSERT_TRUE(store->load(base + "/mcp").has_value());
+        EXPECT_EQ(store->load(base + "/mcp")->access_token, "granted-access-token");
+    }
+}
+
+TEST(AuthAuthorizationManagerTest, UsesTheDefaultEndpointsWhenTheOriginPublishesNoMetadataEither) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (target == "/register") {
+            auto response = json_response({{"client_id", "registered-client"}});
+            response.result(http::status::created);
+            return response;
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(6));
+
+    auto config = legacy_config(base);
+    // No client_id, so the client registers at the default registration endpoint.
+    config.client_id.clear();
+    config.deprecation_handler = [](const mcp::DeprecationNotice&) {};
+    ChallengeOutcome outcome;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(),
+                                                     std::make_shared<mcp::auth::InMemoryTokenStore>(),
+                                                     config, echoing_callback(nullptr));
+        outcome = co_await handle(manager, R"(Bearer realm="mcp")");
+        server.close();
+    });
+    io_ctx.run();
+
+    ASSERT_EQ(outcome.error, "");
+    EXPECT_TRUE(outcome.authorized);
+    ASSERT_TRUE(outcome.record.has_value());
+    EXPECT_TRUE(outcome.record->legacy_discovery);
+    EXPECT_EQ(outcome.record->issuer, base);
+    EXPECT_EQ(outcome.record->client_id, "registered-client");
+    const auto& url = outcome.record->authorization_url;
+    EXPECT_EQ(url.rfind(base + "/authorize?", 0), 0U) << url;
+    EXPECT_NE(url.find("code_challenge_method=S256"), std::string::npos) << url;
+    EXPECT_NE(url.find("code_challenge="), std::string::npos) << url;
+    const std::vector<std::string> expected{"/.well-known/oauth-protected-resource/mcp",
+                                            "/.well-known/oauth-protected-resource",
+                                            "/.well-known/oauth-authorization-server",
+                                            "/.well-known/openid-configuration",
+                                            "/register",
+                                            "/token"};
+    EXPECT_EQ(server.targets(), expected);
+}
+
+TEST(AuthAuthorizationManagerTest, DoesNotFallBackWhenTheFallbackIsOffOrTheMissIsNotAnAbsence) {
+    struct Case {
+        const char* name;
+        bool fallback;
+        std::string challenge;
+        http::status root_status;
+        std::size_t requests;
+    };
+    const std::vector<Case> cases{
+        {"fallback off", false, R"(Bearer realm="mcp")", http::status::not_found, 2},
+        {"server error", true, R"(Bearer realm="mcp")", http::status::internal_server_error, 2},
+        {"challenge url", true, R"(Bearer resource_metadata="{base}/custom/prm.json")",
+         http::status::not_found, 1},
+    };
+    for (const auto& entry : cases) {
+        SCOPED_TRACE(entry.name);
+        asio::io_context io_ctx;
+        LoopbackServer server(io_ctx);
+        const auto base = server.base_url();
+        server.set_handler([&entry](const http::request<http::string_body>& request) {
+            if (std::string(request.target()) == "/.well-known/oauth-protected-resource") {
+                return status_response(entry.root_status);
+            }
+            return status_response(http::status::not_found);
+        });
+        mcp_test::spawn_detached(io_ctx, server.serve(4));
+
+        auto config = legacy_config(base);
+        config.legacy_discovery_fallback = entry.fallback;
+        auto challenge = entry.challenge;
+        if (const auto at = challenge.find("{base}"); at != std::string::npos) {
+            challenge.replace(at, 6, base);
+        }
+        ChallengeOutcome outcome;
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(
+                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(), config,
+                echoing_callback(nullptr));
+            outcome = co_await handle(manager, challenge);
+            server.close();
+        });
+        io_ctx.run();
+
+        EXPECT_NE(outcome.error.find("Failed to discover protected resource metadata"),
+                  std::string::npos)
+            << outcome.error;
+        EXPECT_EQ(server.targets().size(), entry.requests);
+    }
+}
+
+TEST(AuthAuthorizationManagerTest, DoesNotFallBackWhenTheInjectedCredentialsBelongToAnotherOrigin) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    server.set_handler([](const http::request<http::string_body>&) {
+        return status_response(http::status::not_found);
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(4));
+
+    auto config = legacy_config(base);
+    config.client_secret = "injected-secret";
+    config.client_issuer = "https://as.example.com";
+    ChallengeOutcome outcome;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(),
+                                                     std::make_shared<mcp::auth::InMemoryTokenStore>(),
+                                                     config, echoing_callback(nullptr));
+        outcome = co_await handle(manager, R"(Bearer realm="mcp")");
+        server.close();
+    });
+    io_ctx.run();
+
+    EXPECT_NE(outcome.error.find("Failed to discover protected resource metadata"), std::string::npos)
+        << outcome.error;
+    // Only the two protected resource locations: the origin's metadata is never asked for.
+    EXPECT_EQ(server.targets().size(), 2U);
+}
+
+TEST(AuthAuthorizationManagerTest, RefusesAnOriginsMetadataWhoseIssuerIsOnAnotherOrigin) {
+    for (const std::string suffix : {"https://as.example.com", ".attacker.test"}) {
+        SCOPED_TRACE(suffix);
+        asio::io_context io_ctx;
+        LoopbackServer server(io_ctx);
+        const auto base = server.base_url();
+        const auto issuer = suffix.front() == '.' ? base + suffix : suffix;
+        server.set_handler([&base, &issuer](const http::request<http::string_body>& request) {
+            if (std::string(request.target()) == "/.well-known/oauth-authorization-server") {
+                auto metadata = auth_server_metadata(base, false);
+                metadata["issuer"] = issuer;
+                return json_response(metadata);
+            }
+            return status_response(http::status::not_found);
+        });
+        mcp_test::spawn_detached(io_ctx, server.serve(4));
+
+        ChallengeOutcome outcome;
+        mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+            mcp::auth::OAuthAuthorizationManager manager(
+                io_ctx.get_executor(), std::make_shared<mcp::auth::InMemoryTokenStore>(),
+                legacy_config(base), echoing_callback(nullptr));
+            outcome = co_await handle(manager, R"(Bearer realm="mcp")");
+            server.close();
+        });
+        io_ctx.run();
+
+        EXPECT_NE(outcome.error.find("issuer does not identify the server"), std::string::npos)
+            << outcome.error;
+        EXPECT_EQ(server.targets().size(), 3U);
+    }
+}
+
+// Once this manager has accepted a protected resource metadata document, a later 404 for it is a
+// server fault, not a sign of a 2025-03-26 server. A new manager has no such record.
+TEST(AuthAuthorizationManagerTest, StopsFallingBackOnceItAcceptedResourceMetadata) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    bool publish = true;
+    server.set_handler([&base, &publish](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (publish && target == "/.well-known/oauth-protected-resource/mcp") {
+            return json_response(
+                {{"resource", base + "/mcp"}, {"authorization_servers", json::array({base})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, false));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(10));
+
+    const auto config = legacy_config(base);
+    auto store = std::make_shared<mcp::auth::InMemoryTokenStore>();
+    ChallengeOutcome first;
+    ChallengeOutcome second;
+    ChallengeOutcome fresh;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        {
+            mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                         echoing_callback(nullptr));
+            first = co_await handle(manager, R"(Bearer realm="mcp")");
+            publish = false;
+            second = co_await handle(manager, R"(Bearer realm="mcp")");
+        }
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(), store, config,
+                                                     echoing_callback(nullptr));
+        fresh = co_await handle(manager, R"(Bearer realm="mcp")");
+        server.close();
+    });
+    io_ctx.run();
+
+    ASSERT_EQ(first.error, "");
+    EXPECT_TRUE(first.authorized);
+    ASSERT_TRUE(first.record.has_value());
+    EXPECT_FALSE(first.record->legacy_discovery);
+    EXPECT_NE(second.error.find("Failed to discover protected resource metadata"), std::string::npos)
+        << second.error;
+    ASSERT_EQ(fresh.error, "");
+    EXPECT_TRUE(fresh.authorized);
+    ASSERT_TRUE(fresh.record.has_value());
+    EXPECT_TRUE(fresh.record->legacy_discovery);
+}
+
+// Nothing the fallback stands in for is cached: the next challenge reads the protected resource
+// metadata again and uses it once the server publishes it.
+TEST(AuthAuthorizationManagerTest, ReadsTheResourceMetadataAgainAfterAFallback) {
+    asio::io_context io_ctx;
+    LoopbackServer server(io_ctx);
+    const auto base = server.base_url();
+    bool publish = false;
+    server.set_handler([&base, &publish](const http::request<http::string_body>& request) {
+        const std::string target(request.target());
+        if (publish && target == "/.well-known/oauth-protected-resource/mcp") {
+            return json_response({{"resource", base + "/mcp"},
+                                  {"authorization_servers", json::array({base})},
+                                  {"scopes_supported", json::array({"mcp:read"})}});
+        }
+        if (target == "/.well-known/oauth-authorization-server") {
+            return json_response(auth_server_metadata(base, false));
+        }
+        if (target == "/token") {
+            return json_response(token_document());
+        }
+        return status_response(http::status::not_found);
+    });
+    mcp_test::spawn_detached(io_ctx, server.serve(10));
+
+    ChallengeOutcome first;
+    ChallengeOutcome second;
+    std::size_t first_requests = 0;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        mcp::auth::OAuthAuthorizationManager manager(io_ctx.get_executor(),
+                                                     std::make_shared<mcp::auth::InMemoryTokenStore>(),
+                                                     legacy_config(base), echoing_callback(nullptr));
+        first = co_await handle(manager, R"(Bearer realm="mcp")");
+        first_requests = server.targets().size();
+        publish = true;
+        second = co_await handle(manager, R"(Bearer realm="mcp")");
+        server.close();
+    });
+    io_ctx.run();
+
+    ASSERT_EQ(first.error, "");
+    ASSERT_TRUE(first.record.has_value());
+    EXPECT_TRUE(first.record->legacy_discovery);
+    EXPECT_FALSE(first.record->scope.has_value());
+    ASSERT_EQ(second.error, "");
+    EXPECT_TRUE(second.authorized);
+    ASSERT_TRUE(second.record.has_value());
+    EXPECT_FALSE(second.record->legacy_discovery);
+    EXPECT_EQ(second.record->scope, "mcp:read");
+    ASSERT_GT(server.targets().size(), first_requests);
+    EXPECT_EQ(server.targets()[first_requests], "/.well-known/oauth-protected-resource/mcp");
+    EXPECT_TRUE(std::none_of(server.targets().begin() + static_cast<std::ptrdiff_t>(first_requests) + 1,
+                             server.targets().end(), is_protected_resource_target));
+}
+
 TEST(AuthAuthorizationManagerTest, RefreshesTheStoredTokenAfterAuthorization) {
     asio::io_context io_ctx;
     LoopbackServer server(io_ctx);

@@ -25,6 +25,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `Server::notify()` sends a notification of another method to sessions of
   2025-11-25 and earlier, and `Server::on_listen()` reports each listen stream
   that opens or closes.
+- `OAuthAuthorizationManager` authorizes at a 2025-03-26 server that publishes
+  no protected resource metadata, unless `legacy_discovery_fallback` is false.
 
 ### Changed
 

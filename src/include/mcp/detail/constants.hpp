@@ -286,6 +286,12 @@ inline constexpr std::size_t g_READ_CHUNK_BYTES = 8192;
 /// First status code of an error response (400 Bad Request).
 inline constexpr int g_STATUS_BAD_REQUEST = 400;
 
+/// 404 Not Found.
+inline constexpr unsigned int g_STATUS_NOT_FOUND = 404;
+
+/// 410 Gone.
+inline constexpr unsigned int g_STATUS_GONE = 410;
+
 /// The most a single response body or SSE line may hold before the exchange is abandoned.
 inline constexpr std::size_t g_MAX_MODERN_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
 

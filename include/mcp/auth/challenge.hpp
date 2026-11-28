@@ -84,6 +84,11 @@ struct AuthorizationRequest {
     std::string redirect_uri;             ///< Redirect URI registered for this attempt.
     std::optional<std::string> scope;     ///< Requested scope, omitted when no scope was selected.
     std::optional<std::string> resource;  ///< RFC 8707 resource indicator for this attempt.
+    /// Set when the server published no protected resource metadata and its origin was taken for
+    /// its authorization server, as revision 2025-03-26 discovers it; see
+    /// OAuthAuthorizationConfig::legacy_discovery_fallback. A consent callback that does not
+    /// trust such servers throws to refuse the attempt.
+    bool legacy_discovery{false};
 };
 
 /**

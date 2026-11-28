@@ -90,6 +90,44 @@ to the server that issued the token. A concurrent burst of requests that meet
 the same challenge shares one flight, so the document is read once for the
 burst. Authorization server metadata keeps the discovery cache.
 
+.. _oauth-legacy-discovery:
+
+Servers without protected-resource metadata
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A server written for revision 2025-03-26 publishes no protected-resource
+metadata. When the challenge names no ``resource_metadata`` URL and every
+well-known location answers ``404`` or ``410``, the manager takes the origin of
+``server_url``, with the path dropped, for the authorization server, as that
+revision does:
+
+* It reads the authorization-server metadata from the origin's well-known
+  locations. The issuer that metadata names may sit under a path of the origin,
+  such as ``https://mcp.example.com/oauth``. An issuer on another origin is
+  refused.
+* When the origin publishes no metadata either, the endpoints are
+  ``/authorize``, ``/token`` and ``/register`` at the origin. The authorization
+  request carries an S256 PKCE challenge, although no metadata says the server
+  supports it.
+
+Every path on the origin then shares one authorization server:
+``https://host.example.com/tenant-a/mcp`` and
+``https://host.example.com/tenant-b/mcp`` both authorize at
+``https://host.example.com``.
+
+Any other miss is reported as an error: a server error, a ``404`` at a redirect
+target, a refusal by the fetch policy, or a ``404`` at the URL the challenge
+named. Nor does the manager fall back once it has accepted a
+protected-resource metadata document for its server, or when its injected
+credentials name an issuer on another origin. Nothing it reads or assumes on
+this path enters the discovery cache, so the next challenge looks for the
+protected-resource metadata again.
+
+``AuthorizationRequest::legacy_discovery`` tells the consent callback that the
+attempt took this path, and a callback that does not trust such servers throws
+to refuse it. Set ``OAuthAuthorizationConfig::legacy_discovery_fallback`` to
+``false`` to refuse them outright.
+
 .. _oauth-what-the-manager-validates:
 
 What the manager validates
@@ -104,8 +142,9 @@ yourself:
   URL is attacker-influenced input.
 * **Issuer binding.** The issuer is recorded from the authorization-server
   metadata document the SDK itself fetched and validated, bound byte-for-byte
-  to the URL it came from. A redirect or a substituted document cannot move the
-  flow to a different issuer.
+  to the URL it came from (for a server without protected-resource metadata,
+  to a URL on the same origin; see :ref:`oauth-legacy-discovery`). A redirect
+  or a substituted document cannot move the flow to a different issuer.
 * **Cryptographic state.** The ``state`` parameter is generated from a
   cryptographic random source, and a response whose ``state`` does not match the
   recorded value is rejected.

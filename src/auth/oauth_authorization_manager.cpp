@@ -191,6 +191,12 @@ struct OAuthAuthorizationManager::Impl {
         BearerChallenge challenge;
         std::optional<ProtectedResourceMetadata> resource_metadata;
         std::optional<AuthServerMetadata> auth_metadata;
+        /// Set when the server published no protected resource metadata and its origin,
+        /// `legacy_origin`, is taken for its authorization server (revision 2025-03-26).
+        bool legacy_discovery{false};
+        std::string legacy_origin;
+        /// Set when that origin published no metadata either, so the default endpoints are used.
+        bool default_endpoints{false};
         ClientIdentityServerFacts facts;
         std::optional<OAuthClientInformation> stored_identity;
         OAuthClientInformation identity;
@@ -489,6 +495,88 @@ struct OAuthAuthorizationManager::Impl {
         return token_config;
     }
 
+    /// Whether a server whose well-known locations all answered 404 or 410 may be taken for a
+    /// 2025-03-26 server, whose authorization server is its origin. Not when the application turned
+    /// it off, when the challenge named a metadata URL, when this manager has accepted a metadata
+    /// document before, or when the injected credentials belong to an issuer on another origin.
+    static bool may_use_legacy_discovery(const Impl& owner, const BearerChallenge& challenge,
+                                         const std::string& origin) {
+        if (!owner.config.legacy_discovery_fallback || challenge.resource_metadata || origin.empty()) {
+            return false;
+        }
+        {
+            std::scoped_lock lock(owner.state_mutex);
+            if (owner.resource_metadata_accepted) {
+                return false;
+            }
+        }
+        const auto& injected = owner.config.client_identity.pre_registered;
+        return !injected || injected->issuer.empty() || metadata_url_origin(injected->issuer) == origin;
+    }
+
+    /// Discovers the protected resource and its authorization server into @p operation, passing
+    /// the resource's document to @p accept first. A server that publishes no protected resource
+    /// metadata is taken for a 2025-03-26 server when may_use_legacy_discovery() allows it: a
+    /// document naming its origin stands in for its metadata, and the origin's own authorization
+    /// server metadata, or the default endpoints when it publishes none, for that server's. Neither
+    /// stand-in enters the discovery cache, so a server that publishes its metadata again is read
+    /// afresh on the next attempt. The origin's metadata may name an issuer under a path of that
+    /// origin, as 2025-03-26 servers do, and that issuer is then the one the request is bound to;
+    /// an issuer on another origin still fails the issuer check.
+    static Task<void> discover_metadata(std::shared_ptr<ChallengeOperation> operation,
+                                        ProtectedResourceAcceptor accept) {
+        auto& owner = *operation->owner;
+        try {
+            operation->resource_metadata = co_await operation->discovery->discover_protected_resource(
+                owner.config.server_url, operation->challenge.resource_metadata, accept);
+        } catch (const MetadataNotFoundError&) {
+            operation->legacy_origin = metadata_url_origin(owner.config.server_url);
+            if (!may_use_legacy_discovery(owner, operation->challenge, operation->legacy_origin)) {
+                throw;
+            }
+            operation->legacy_discovery = true;
+        }
+        if (!operation->legacy_discovery) {
+            {
+                std::scoped_lock lock(owner.state_mutex);
+                owner.resource_metadata_accepted = true;
+            }
+            operation->auth_metadata = co_await operation->discovery->discover_auth_server(
+                operation->resource_metadata->authorization_servers.front());
+            co_return;
+        }
+
+        {
+            ProtectedResourceMetadata stand_in;
+            stand_in.resource = owner.config.server_url;
+            stand_in.authorization_servers.push_back(operation->legacy_origin);
+            accept(stand_in);
+            operation->resource_metadata = std::move(stand_in);
+        }
+        try {
+            operation->auth_metadata =
+                co_await operation->discovery->discover_auth_server(operation->legacy_origin);
+        } catch (const MetadataNotFoundError&) {
+            operation->default_endpoints = true;
+        }
+        if (!operation->default_endpoints) {
+            const auto& issuer = operation->auth_metadata->issuer;
+            if (issuer.starts_with(operation->legacy_origin + "/")) {
+                operation->resource_metadata->authorization_servers.front() = issuer;
+            }
+            co_return;
+        }
+        {
+            const auto& origin = operation->legacy_origin;
+            AuthServerMetadata defaults;
+            defaults.issuer = origin;
+            defaults.authorization_endpoint = origin + "/authorize";
+            defaults.token_endpoint = origin + "/token";
+            defaults.registration_endpoint = origin + "/register";
+            operation->auth_metadata = std::move(defaults);
+        }
+    }
+
     static Task<bool> run_challenge(std::shared_ptr<ChallengeOperation> operation) {
         auto& owner = *operation->owner;
 
@@ -516,11 +604,8 @@ struct OAuthAuthorizationManager::Impl {
         // The challenge's own metadata URL wins over the well-known fallback order. A fetch that
         // fails because cancel() aborted it is reported as the cancellation it is.
         try {
-            operation->resource_metadata = co_await operation->discovery->discover_protected_resource(
-                owner.config.server_url, operation->challenge.resource_metadata, std::move(accept));
-
-            operation->auth_metadata = co_await operation->discovery->discover_auth_server(
-                operation->resource_metadata->authorization_servers.front());
+            auto discovering = discover_metadata(operation, std::move(accept));
+            co_await std::move(discovering);
         } catch (...) {
             std::scoped_lock lock(owner.state_mutex);
             if (operation->flight->cancelled) {
@@ -546,10 +631,12 @@ struct OAuthAuthorizationManager::Impl {
                                                     operation->auth_metadata->authorization_endpoint);
         // MCP authorization: PKCE support is known only from the metadata, and a server that does
         // not list S256 in code_challenge_methods_supported must not receive an authorization
-        // request.
+        // request. The default endpoints of a server that publishes no metadata have no list to
+        // read; the request carries an S256 challenge all the same.
         const auto& pkce_methods = operation->auth_metadata->code_challenge_methods_supported;
-        if (!pkce_methods ||
-            std::find(pkce_methods->begin(), pkce_methods->end(), "S256") == pkce_methods->end()) {
+        if (!operation->default_endpoints &&
+            (!pkce_methods ||
+             std::find(pkce_methods->begin(), pkce_methods->end(), "S256") == pkce_methods->end())) {
             throw std::runtime_error(
                 "Authorization server metadata does not list S256 in "
                 "code_challenge_methods_supported");
@@ -566,6 +653,7 @@ struct OAuthAuthorizationManager::Impl {
 
         operation->request = build_request(owner, operation->challenge, *operation->resource_metadata,
                                            *operation->auth_metadata, operation->identity);
+        operation->request.legacy_discovery = operation->legacy_discovery;
         operation->token_config = build_token_config(owner, *operation->auth_metadata,
                                                      operation->request, operation->identity);
         {
@@ -906,6 +994,9 @@ struct OAuthAuthorizationManager::Impl {
     std::optional<AuthorizationRequest> last_request;
     std::optional<OAuthClientInformation> last_identity;
     std::optional<OAuthConfig> token_config;
+    /// Set once a protected resource metadata document was accepted. From then on a server that
+    /// answers 404 for it is not taken for a 2025-03-26 server.
+    bool resource_metadata_accepted{false};
     /// The scope the last successful authorization was granted, with the issuer that granted it.
     struct GrantedScope {
         std::string issuer;
