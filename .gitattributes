@@ -1,1 +1,2 @@
 packaging/** text eol=lf
+*.png binary

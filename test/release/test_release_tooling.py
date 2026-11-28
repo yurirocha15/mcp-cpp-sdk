@@ -817,12 +817,24 @@ class TemplateTests(unittest.TestCase):
             )
             fields = {
                 name: nuspec.findtext(f".//n:{name}", namespaces=namespace)
-                for name in ("title", "projectSourceUrl", "packageSourceUrl", "releaseNotes")
+                for name in (
+                    "title",
+                    "iconUrl",
+                    "projectSourceUrl",
+                    "packageSourceUrl",
+                    "releaseNotes",
+                )
             }
             self.assertEqual(
                 fields,
                 {
                     "title": "Model Context Protocol C++ SDK",
+                    # Chocolatey requires a package icon to come from a CDN, not from GitHub
+                    # directly (CPMR0076); the tag keeps it the icon of that release.
+                    "iconUrl": (
+                        "https://cdn.jsdelivr.net/gh/yurirocha15/mcp-cpp-sdk@v0.2.0/"
+                        "packaging/chocolatey/icon.png"
+                    ),
                     "projectSourceUrl": "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0",
                     "packageSourceUrl": (
                         "https://github.com/yurirocha15/mcp-cpp-sdk/tree/v0.2.0/packaging/chocolatey"
@@ -832,6 +844,8 @@ class TemplateTests(unittest.TestCase):
                     ),
                 },
             )
+            icon = repository / fields["iconUrl"].split("@v0.2.0/", 1)[1]
+            self.assertEqual(icon.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
             nuspec_values = {
                 name: values[name] for name in inventory["chocolatey/mcp-cpp-sdk.nuspec.in"]
             }
