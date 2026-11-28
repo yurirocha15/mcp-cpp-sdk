@@ -9,6 +9,7 @@ RUNNER="$SCRIPT_DIR/runner/node_modules/.bin/conformance"
 SERVER="$BUILD_DIR/conformance/mcp-conformance-everything-server"
 CLIENT="$BUILD_DIR/conformance/mcp-conformance-everything-client"
 BASELINE="$SCRIPT_DIR/expected-failures.yml"
+PENDING_BASELINE="$SCRIPT_DIR/expected-failures-pending.yml"
 SPEC_VERSION="2025-11-25"
 PORT="${MCP_CONFORMANCE_PORT:-3001}"
 SERVER_TIMEOUT="${MCP_CONFORMANCE_SERVER_TIMEOUT:-15m}"
@@ -36,7 +37,7 @@ if [[ -d "$OUTPUT_DIR" ]] && [[ -n "$(find "$OUTPUT_DIR" -mindepth 1 -print -qui
     exit 2
 fi
 
-mkdir -p "$OUTPUT_DIR/server" "$OUTPUT_DIR/client"
+mkdir -p "$OUTPUT_DIR/server" "$OUTPUT_DIR/server-pending" "$OUTPUT_DIR/client"
 
 revision="unknown"
 if revision_value="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null)"; then
@@ -98,6 +99,23 @@ timeout --signal=INT --kill-after=10s "$SERVER_TIMEOUT" "$RUNNER" server \
     2>&1 | tee "$OUTPUT_DIR/server/runner.log"
 server_status=${PIPESTATUS[0]}
 
+# The pending suite holds the scenarios the runner does not score yet. Its baseline fails a
+# scenario on any warning, so check_pending_sse.py checks server-sse-polling check by check.
+timeout --signal=INT --kill-after=10s "$SERVER_TIMEOUT" "$RUNNER" server \
+    --url "http://127.0.0.1:$PORT/mcp" \
+    --suite pending \
+    --spec-version "$SPEC_VERSION" \
+    --expected-failures "$PENDING_BASELINE" \
+    --output-dir "$OUTPUT_DIR/server-pending/results" \
+    2>&1 | tee "$OUTPUT_DIR/server-pending/runner.log"
+pending_status=${PIPESTATUS[0]}
+python3 "$SCRIPT_DIR/check_pending_sse.py" "$OUTPUT_DIR/server-pending/results" \
+    2>&1 | tee -a "$OUTPUT_DIR/server-pending/runner.log"
+pending_check_status=${PIPESTATUS[0]}
+if [[ "$pending_status" -eq 0 && "$pending_check_status" -ne 0 ]]; then
+    pending_status=$pending_check_status
+fi
+
 timeout --signal=INT --kill-after=10s "$CLIENT_TIMEOUT" "$RUNNER" client \
     --command "exec $CLIENT" \
     --suite core \
@@ -111,12 +129,15 @@ set -e
 
 python3 "$SCRIPT_DIR/summarize.py" \
     --server-results "$OUTPUT_DIR/server/results" \
+    --server-pending-results "$OUTPUT_DIR/server-pending/results" \
     --client-results "$OUTPUT_DIR/client/results" \
     --output-dir "$OUTPUT_DIR" \
     --server-status "$server_status" \
+    --server-pending-status "$pending_status" \
     --client-status "$client_status"
 
-if [[ "$server_status" -ne 0 || "$client_status" -ne 0 ]]; then
-    echo "Conformance regression detected (server=$server_status, client=$client_status)" >&2
+if [[ "$server_status" -ne 0 || "$pending_status" -ne 0 || "$client_status" -ne 0 ]]; then
+    echo "Conformance regression detected (server=$server_status," \
+        "server-pending=$pending_status, client=$client_status)" >&2
     exit 1
 fi

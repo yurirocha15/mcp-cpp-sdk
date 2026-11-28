@@ -435,6 +435,10 @@ std::uint64_t Server::dropped_notifications() const {
     return impl_->dropped_notifications->load(std::memory_order_relaxed);
 }
 
+void Server::set_deprecation_handler(DeprecationHandler handler) {
+    impl_->registry->deprecations->set_handler(std::move(handler));
+}
+
 ToolValidationStats Server::tool_validation_stats() const {
     return {
         .argument_rejections = impl_->argument_rejections.load(std::memory_order_relaxed),
@@ -535,6 +539,8 @@ void Server::on_unsubscribe(const SubscriptionHandler& handler) {
     impl_->unsubscribe_handler = handler;
 }
 
+void Server::on_listen(ListenHandler handler) { impl_->listen_handler = std::move(handler); }
+
 bool Server::is_initialized() const {
     return impl_->lifecycle.load(std::memory_order_relaxed) != Impl::LifecycleState::eUninitialized;
 }
@@ -543,7 +549,10 @@ bool Server::is_shutdown_requested() const {
     return impl_->shutdown_requested.load(std::memory_order_relaxed);
 }
 
-LoggingLevel Server::get_log_level() const { return impl_->log_level.load(std::memory_order_relaxed); }
+LoggingLevel Server::get_log_level() const {
+    impl_->registry->deprecations->report(DeprecatedFeature::eLogging);
+    return impl_->log_level.load(std::memory_order_relaxed);
+}
 
 // These three await rather than returning the task, and that is load-bearing. The argument is a
 // temporary bound to a reference parameter of a lazy coroutine: under co_await it lives to the end
@@ -551,6 +560,11 @@ LoggingLevel Server::get_log_level() const { return impl_->log_level.load(std::m
 // coroutine body ever runs and leaves the reference dangling. Both forms compile.
 // Each goes to the sessions of every server sharing this one's registry, such as the legacy
 // sessions run_http() serves.
+Task<bool> Server::notify_elicitation_complete(const std::string& elicitation_id) {
+    return Impl::complete_elicitation(impl_->registry,
+                                      std::make_shared<const std::string>(elicitation_id));
+}
+
 Task<void> Server::notify_tools_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
@@ -585,6 +599,14 @@ Task<void> Server::notify_resource_updated(const std::string& uri) {
                                           std::make_shared<const std::string>(uri));
         co_await member->broadcast_resource_updated(uri);
     }
+}
+
+Task<void> Server::notify(std::string method, std::optional<nlohmann::json> params) {
+    // [gcc11-sso: not-a-coroutine] The strings reach the coroutine through shared state.
+    Impl::check_notification(method, params);
+    return Impl::notify_legacy_sessions(
+        impl_, std::make_shared<const std::string>(std::move(method)),
+        std::make_shared<const std::optional<nlohmann::json>>(std::move(params)));
 }
 
 void Server::close_subscriptions() {

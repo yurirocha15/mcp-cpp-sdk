@@ -135,7 +135,10 @@ notification. A stream stays open until the client cancels it or closes the
 connection. ``Server::close_subscriptions()`` ends every open stream, and
 ``Server::subscription_count()`` counts them. The ``on_subscribe()`` and
 ``on_unsubscribe()`` callbacks below belong to ``resources/subscribe`` and do
-not run for ``subscriptions/listen``.
+not run for ``subscriptions/listen``. ``Server::on_listen()`` registers a
+callback that receives a ``ListenEvent`` when a stream opens, with what the
+server honors, and again when it closes. An exception it throws when a stream
+opens answers the request with an error, and no stream opens.
 
 Which transports carry the stream:
 
@@ -156,6 +159,11 @@ In a session of protocol revision 2025-11-25 or earlier, a client subscribes to
 a resource URI with the ``resources/subscribe`` request to indicate interest in
 updates whenever that resource changes. A 2026-07-28 session has no such
 request; it lists the URIs in a ``subscriptions/listen`` filter instead.
+
+``Client::subscribe_resource()`` and ``Client::unsubscribe_resource()`` send the
+two requests, and ``client.sync()`` has blocking forms of both. In a 2026-07-28
+session they throw ``McpError`` with ``g_METHOD_NOT_FOUND`` without sending
+anything.
 
 Server-side Subscription Callbacks
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -268,7 +276,14 @@ Advanced Notification Patterns
 Custom Notifications
 ~~~~~~~~~~~~~~~~~~~~
 
-While MCP defines several standard notification methods, you can also send custom notifications using the underlying protocol layer if your client and server agree on the method names. However, for most resource-related needs, the standard ``updated`` and ``list_changed`` methods are preferred.
+``Server::notify()``, or ``server.sync().notify()`` from a thread of the
+application, sends a notification of any other method, such as one that an
+extension defines, to every session of protocol revision 2025-11-25 or earlier.
+A 2026-07-28 client receives only what its ``subscriptions/listen`` stream asked
+for, so it gets none of them. ``notify()`` refuses the notifications the server
+addresses itself, such as the list-changed and resource-updated notifications,
+which go through the methods above, and progress, log and elicitation
+notifications, which belong to one request or session.
 
 Throttling and Debouncing
 ~~~~~~~~~~~~~~~~~~~~~~~~~

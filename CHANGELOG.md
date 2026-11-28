@@ -9,11 +9,48 @@ Versioning; a `0.x` version is a stable release unless its version has an
 ### Added
 
 - The Chocolatey package has an icon.
+- `Server::set_deprecation_handler()`, `ClientOptions::deprecation_handler` and
+  `OAuthAuthorizationConfig::deprecation_handler` receive a notice when the
+  object first uses a deprecated feature.
+- `mcp::constants::include_context` names the values of `includeContext`;
+  `g_THIS_SERVER` and `g_ALL_SERVERS` are deprecated.
+- `Server::notify_elicitation_complete()` and
+  `Context::notify_elicitation_complete()` tell the session that sent a URL
+  elicitation that it completed; `Client::on_elicitation_complete()` reports it.
+- A handler throws `UrlElicitationRequired` to answer a 2025-11-25 request with
+  the -32042 error, which `url_elicitations_required()` reads on the client.
+- `Client::subscribe_resource()`, `unsubscribe_resource()` and the deprecated
+  `set_log_level()` send `resources/subscribe`, `resources/unsubscribe` and
+  `logging/setLevel`.
+- `Server::notify()` sends a notification of another method to sessions of
+  2025-11-25 and earlier, and `Server::on_listen()` reports each listen stream
+  that opens or closes.
 
 ### Changed
 
 - The documentation moved to [mcp-cpp-sdk.yurirocha.com](https://mcp-cpp-sdk.yurirocha.com/), and links to the old address redirect there.
 - The installation guide has a page for each platform, each with its install, upgrade and uninstall steps.
+- Without a handler, the first use of a deprecated protocol feature prints one
+  line on standard error; setting `MCP_SILENCE_DEPRECATION_NOTICES` stops it.
+- `Context::elicit()` throws `std::invalid_argument` for an `elicitationId` that
+  another session has in progress.
+- In a 2025-11-25 session, a POST answered as an SSE stream starts with a priming
+  event; `set_legacy_stream_options()` turns it off or adds a `retry` field.
+- Over Streamable HTTP, a message for a 2025-11-25 or earlier session that
+  belongs to no request waits for the session's next GET stream when none is
+  open and no POST waits, up to the queue limit.
+
+### Deprecated
+
+- The APIs of Roots, Sampling, Logging, dynamic client registration and
+  `includeContext` other than `"none"` carry `[[deprecated]]`, citing the
+  proposal and earliest removal.
+
+### Migrating from 0.4.0
+
+- A build that treats warnings as errors and uses a deprecated feature defines
+  `MCP_DISABLE_DEPRECATION_ATTRIBUTES`, or moves to the migration path the
+  warning names.
 
 ## [0.4.0] - 2026-11-26
 

@@ -69,12 +69,12 @@ particular:
   ``set_roots()`` before ``connect()`` so that the roots capability is
   advertised.
 * ``Client::ping()`` works.
-* The server's log level is set with ``logging/setLevel``. ``RequestOptions::log_level``
-  has no effect.
+* The server's log level is set with ``logging/setLevel``, which
+  ``Client::set_log_level()`` sends. ``RequestOptions::log_level`` has no effect.
 * ``resources/subscribe`` and ``resources/unsubscribe`` work, and the server's
-  ``on_subscribe()`` and ``on_unsubscribe()`` callbacks run for them. The
-  ``Client`` has no helper for them: send the request with ``send_request()``,
-  as ``examples/features/legacy_protocols.cpp`` does.
+  ``on_subscribe()`` and ``on_unsubscribe()`` callbacks run for them.
+  ``Client::subscribe_resource()`` and ``Client::unsubscribe_resource()`` send
+  them, as ``examples/features/legacy_protocols.cpp`` does.
 * ``Client::listen()`` is not available and throws ``McpError`` with
   ``g_METHOD_NOT_FOUND``.
 * Server requests to the client (elicitation, sampling, roots) are real

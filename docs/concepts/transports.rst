@@ -250,10 +250,21 @@ anything else was sent gets that response alone. A GET opens the session's
 stream for what the server sends outside any request, one per session, for a
 client whose ``Accept`` lists ``text/event-stream`` (any other GET is answered
 406); the transport sends a request's messages on its own stream, and anything else on
-the GET stream, or on the stream of the only POST waiting when no GET is open.
+the GET stream, or on the stream of the only POST waiting when no GET is open. With
+no GET open and no POST waiting, it holds the message for the next GET, up to the
+queue limit.
 Every event is kept in a bounded store, and a GET with ``Last-Event-ID``
 resumes a stream from there: one still going on continues live, and one that
 ended is replayed. A client leaving a stream does not cancel its request.
+In a session of 2025-11-25, every stream starts with a priming event, an event
+id with no data, which a client can name in ``Last-Event-ID`` to resume the
+stream from its start. The GET stream opens with it; a POST's stream carries it
+ahead of its first message, so a POST answered at once is still one body.
+``set_legacy_stream_options()`` takes a ``LegacyStreamOptions``:
+``prime_post_streams = false`` leaves the POST streams unprimed, and
+``sse_retry`` adds a ``retry`` field to a primed stream's first event, the time
+the client should wait before it reconnects. Without it, no ``retry`` field is
+sent and the client chooses.
 Managed sessions also support session IDs and DELETE teardown.
 
 ``HttpClientTransport`` reaches an ``https://`` URL over TLS, directly or through

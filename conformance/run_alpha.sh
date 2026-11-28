@@ -148,6 +148,13 @@ for scenario in "${SKILLS_CLIENT_SCENARIOS[@]}"; do
         --output-dir "$OUTPUT_DIR/client/skills-results" \
         2>&1 | tee -a "$OUTPUT_DIR/client/skills-runner.log"
 done
+# The requirement set reports server-sse-polling without running its checks. The scenario is on
+# the timeline of 2025-11-25 only, so it runs on its own at that revision.
+timeout --signal=INT --kill-after=10s "$SERVER_TIMEOUT" npx --yes "$RUNNER_PACKAGE" server \
+    --url "http://127.0.0.1:$PORT/mcp" \
+    --scenario server-sse-polling --spec-version 2025-11-25 --force \
+    --output-dir "$OUTPUT_DIR/server/sse-polling-results" \
+    2>&1 | tee "$OUTPUT_DIR/server/sse-polling-runner.log"
 set -e
 
 {
@@ -168,6 +175,8 @@ set -e
         echo "== $side, Skills scenarios (not in the requirement set)"
         grep -E '^Passed:' "$OUTPUT_DIR/$side/skills-runner.log" || echo "no totals in the $side Skills log"
     done
+    echo "== server, server-sse-polling at 2025-11-25"
+    grep -E '^Passed:' "$OUTPUT_DIR/server/sse-polling-runner.log" || echo "no totals in the server-sse-polling log"
 } >"$OUTPUT_DIR/summary.txt"
 cat "$OUTPUT_DIR/summary.txt"
 

@@ -20,7 +20,9 @@
 #include <future>
 #include <mcp/core/constants.hpp>
 #include <memory>
+#include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -538,6 +540,201 @@ TEST_F(Listen, LegacySessionSeesNoChange) {
     EXPECT_EQ(written_[4], (json{{"jsonrpc", "2.0"},
                                  {"method", "notifications/resources/updated"},
                                  {"params", {{"uri", "file:///a"}}}}));
+}
+
+// Server::notify() reaches a session that began with initialize. A 2026-07-28 client gets none of
+// these: its stream carries only what it asked for.
+TEST_F(Listen, NotifyReachesOnlyASessionThatBeganWithInitialize) {
+    auto server = make_server();
+    const auto method = std::make_shared<const std::string>("notifications/example/changed");
+    const std::optional<json> params = json{{"n", 1}};
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(listen_request(1, {{"toolsListChanged", true}}));
+        co_await wait_written(1);
+        auto sent = server->notify(*method, params);
+        co_await std::move(sent);
+        send(make_modern_request(2, "tools/list"));
+        co_await wait_written(2);
+        co_await finish();
+    });
+    ASSERT_EQ(written_.size(), 2u);
+    EXPECT_TRUE(is_notification(written_[0], "notifications/subscriptions/acknowledged"));
+    EXPECT_EQ(written_[1]["id"], 2) << written_[1];
+
+    written_.clear();
+    run_done_.store(false);
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(make_initialize_request("i"));
+        send(make_initialized_notification());
+        co_await wait_written(1);
+        auto with_params = server->notify(*method, params);
+        co_await std::move(with_params);
+        auto without_params = server->notify("notifications/example/ping");
+        co_await std::move(without_params);
+        co_await wait_written(3);
+        co_await finish();
+    });
+    ASSERT_EQ(written_.size(), 3u);
+    EXPECT_EQ(written_[1], (json{{"jsonrpc", "2.0"},
+                                 {"method", "notifications/example/changed"},
+                                 {"params", {{"n", 1}}}}));
+    EXPECT_EQ(written_[2], (json{{"jsonrpc", "2.0"}, {"method", "notifications/example/ping"}}));
+}
+
+// A Server reused for the next client starts from the lifecycle of a new one: a 2026-07-28 client
+// that follows a client that initialized gets no notify() notification.
+TEST_F(Listen, NotifyAfterAnInitializedRunDoesNotReachTheNextModernClient) {
+    auto server = make_server();
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(make_initialize_request("i"));
+        send(make_initialized_notification());
+        co_await wait_written(1);
+        co_await finish();
+    });
+    ASSERT_EQ(written_.size(), 1u);
+
+    written_.clear();
+    run_done_.store(false);
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(make_modern_request(1, "tools/list"));
+        co_await wait_written(1);
+        auto sent = server->notify("notifications/example/changed", json{{"n", 1}});
+        co_await std::move(sent);
+        send(make_modern_request(2, "tools/list"));
+        co_await wait_written(2);
+        co_await finish();
+    });
+    ASSERT_EQ(written_.size(), 2u);
+    EXPECT_EQ(written_[0]["id"], 1) << written_[0];
+    EXPECT_EQ(written_[1]["id"], 2) << written_[1];
+}
+
+// The notifications the server addresses itself are not sent through notify(): a broadcast would
+// miss the listen streams, or reach sessions and requests they do not belong to.
+TEST(ServerNotifyTest, RefusesTheNotificationsTheServerRoutesItself) {
+    auto server = make_server();
+    for (const char* method :
+         {"notifications/tools/list_changed", "notifications/prompts/list_changed",
+          "notifications/resources/list_changed", "notifications/resources/updated",
+          "notifications/tasks", "notifications/elicitation/complete", "notifications/progress",
+          "notifications/message", "notifications/cancelled", "notifications/initialized",
+          "notifications/subscriptions/acknowledged"}) {
+        EXPECT_THROW(static_cast<void>(server->notify(method)), std::invalid_argument) << method;
+        EXPECT_THROW(server->sync().notify(method), std::invalid_argument) << method;
+    }
+    EXPECT_THROW(static_cast<void>(server->notify("notifications/example", json::array())),
+                 std::invalid_argument);
+    // A server that is not running has no session to notify.
+    EXPECT_NO_THROW(server->sync().notify("notifications/example", json::object()));
+}
+
+// on_listen() sees each stream open with what the server honors, and close however it ends.
+TEST_F(Listen, OnListenReportsEachStreamOpeningAndClosing) {
+    auto server = make_server(false);
+    std::vector<mcp::ListenEvent> events;
+    server->on_listen([&events](const mcp::ListenEvent& event) { events.push_back(event); });
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(listen_request(1, {{"toolsListChanged", true},
+                                {"promptsListChanged", true},
+                                {"resourceSubscriptions", {"file:///b", "file:///a"}}}));
+        send(listen_request("second", {{"resourcesListChanged", true}}));
+        co_await wait_written(2);
+        send(cancel_notification(1));
+        const bool one_left = co_await wait_until([&] { return server->subscription_count() == 1; });
+        EXPECT_TRUE(one_left);
+        server->close_subscriptions();
+        const bool none_left = co_await wait_until([&] { return server->subscription_count() == 0; });
+        EXPECT_TRUE(none_left);
+        co_await finish();
+    });
+
+    ASSERT_EQ(events.size(), 4u);
+    const auto position = [&events](mcp::ListenEventKind kind, const mcp::RequestId& id) {
+        for (std::size_t index = 0; index < events.size(); ++index) {
+            if (events[index].kind == kind && events[index].request_id == id) {
+                return index;
+            }
+        }
+        return events.size();
+    };
+    const auto first_opened = position(mcp::ListenEventKind::eOpened, int64_t{1});
+    const auto first_closed = position(mcp::ListenEventKind::eClosed, int64_t{1});
+    const auto second_opened = position(mcp::ListenEventKind::eOpened, "second");
+    const auto second_closed = position(mcp::ListenEventKind::eClosed, "second");
+    ASSERT_LT(first_opened, first_closed);
+    ASSERT_LT(second_opened, second_closed);
+    ASSERT_LT(first_closed, events.size());
+    ASSERT_LT(second_closed, events.size());
+
+    const auto& first = events[first_opened];
+    EXPECT_TRUE(first.tools_list_changed);
+    // The server has no prompts, so that part of the request is not honored.
+    EXPECT_FALSE(first.prompts_list_changed);
+    EXPECT_FALSE(first.resources_list_changed);
+    EXPECT_EQ(first.resource_uris, (std::vector<std::string>{"file:///a", "file:///b"}));
+    EXPECT_TRUE(first.task_ids.empty());
+    EXPECT_EQ(events[first_closed].stream, first.stream);
+    EXPECT_EQ(events[first_closed].resource_uris, first.resource_uris);
+
+    const auto& second = events[second_opened];
+    EXPECT_FALSE(second.tools_list_changed);
+    EXPECT_TRUE(second.resources_list_changed);
+    EXPECT_EQ(events[second_closed].stream, second.stream);
+    EXPECT_NE(first.stream, second.stream);
+}
+
+TEST_F(Listen, AnOnListenCallbackThatThrowsRefusesTheStream) {
+    auto server = make_server();
+    std::size_t closed = 0;
+    server->on_listen([&closed](const mcp::ListenEvent& event) {
+        if (event.kind == mcp::ListenEventKind::eOpened) {
+            throw std::runtime_error("no streams here");
+        }
+        ++closed;
+    });
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(listen_request(1, {{"toolsListChanged", true}}));
+        co_await wait_written(1);
+        co_await finish();
+    });
+
+    ASSERT_EQ(written_.size(), 1u);
+    EXPECT_EQ(field(written_[0], "/id"), 1);
+    EXPECT_EQ(field(written_[0], "/error/code"), mcp::constants::jsonrpc::g_INTERNAL_ERROR)
+        << written_[0];
+    EXPECT_EQ(field(written_[0], "/error/message"), "no streams here");
+    EXPECT_EQ(server->subscription_count(), 0u);
+    EXPECT_EQ(closed, 0u);
+}
+
+TEST_F(Listen, AnExceptionWhenAStreamClosesIsIgnored) {
+    auto server = make_server();
+    server->on_listen([](const mcp::ListenEvent& event) {
+        if (event.kind == mcp::ListenEventKind::eClosed) {
+            throw std::runtime_error("ignored");
+        }
+    });
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(listen_request("g", {{"toolsListChanged", true}}));
+        co_await wait_written(1);
+        server->close_subscriptions();
+        co_await wait_written(3);
+        send(make_modern_request(2, "tools/list"));
+        co_await wait_written(4);
+        co_await finish();
+    });
+
+    ASSERT_EQ(written_.size(), 4u);
+    EXPECT_EQ(field(written_[1], "/result/resultType"), "complete") << written_[1];
+    EXPECT_EQ(written_[3]["id"], 2) << written_[3];
+    EXPECT_TRUE(written_[3].contains("result")) << written_[3];
 }
 
 /// Collects what @p transport delivers until it closes.

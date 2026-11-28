@@ -21,6 +21,14 @@ baseline did not drift; it does not mean that an SDK tier has been achieved.
 The baseline must be regenerated only after reviewing the complete runner
 output. Updating it to hide an uninvestigated regression is not acceptable.
 
+`run.sh` also runs the server `pending` suite, the scenarios the runner does not
+count towards a tier yet, against `expected-failures-pending.yml`, and writes its
+results to `server-pending/results`. The runner fails a scenario on any warning,
+so `check_pending_sse.py` checks `server-sse-polling` check by check: the priming
+event must pass, and the retry field, which the server writes only when the
+application sets `LegacyStreamOptions::sse_retry`, must be the only check left
+with a warning.
+
 ## Skills scenarios
 
 The alpha runner's skills scenarios need a server that serves skills. The
@@ -57,13 +65,19 @@ bash conformance/run_alpha.sh build/release build/conformance-results-alpha
 ```
 
 It never gates anything. The script exits `0` once the runner has run, and the
-`conformance-2026-07-28-alpha` job of `.github/workflows/conformance.yml` sets
-`continue-on-error: true` and uploads the results as the
-`mcp-conformance-2026-07-28-alpha` artifact. The alpha runner has no baseline
+`conformance-2026-07-28-alpha` job of `.github/workflows/conformance-alpha.yml`
+sets `continue-on-error: true` and uploads the results as the
+`mcp-conformance-2026-07-28-alpha` artifact. No other workflow calls that one, so
+the CI result never waits for it. The alpha runner has no baseline
 file, so every failing scenario shows in the report; the 2025-11-25 gate above
 is the only evidence this directory claims.
 `scripts/check_alpha_runner_guard.py` keeps the alpha runner out of every other
 job and script.
+
+In requirement-set mode the alpha runner reports `server-sse-polling` without
+running its checks, so `run_alpha.sh` also runs that scenario alone at
+`2025-11-25` with `--force`. Its results are in `server/sse-polling-results`, and
+its `Passed:` line is in `summary.txt`.
 
 The fixtures serve the tools the scenarios call (`test_input_required_result_*`,
 `test_missing_capability`, `test_streaming_elicitation`, `test_logging_tool`,

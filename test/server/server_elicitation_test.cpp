@@ -1,11 +1,14 @@
 #include "support/test_utils.hpp"
 
 #include "mcp/core/async.hpp"
+#include "mcp/core/constants.hpp"
 #include "mcp/server/server.hpp"
+#include "mcp/server/url_elicitation.hpp"
 #include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -13,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -470,6 +474,127 @@ std::unique_ptr<mcp::Server> make_url_elicit_server() {
     return server;
 }
 
+/// Runs one legacy session that negotiates @p version, with a client that declares @p elicitation,
+/// whose tool sends a URL-mode elicitation and then completes it. Returns whether the completion
+/// was sent, and every method the server wrote.
+std::pair<bool, std::vector<std::string>> complete_in_session(boost::asio::io_context& io_ctx,
+                                                              std::string_view version,
+                                                              const nlohmann::json& elicitation) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    mcp::Server server(mcp::Implementation{"elicit-server", "1.0"}, caps);
+    server.add_tool<nlohmann::json, nlohmann::json>(
+        "complete", "Elicits through a URL and completes it", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& ctx, nlohmann::json /*args*/) -> mcp::Task<nlohmann::json> {
+            mcp::ElicitRequestURLParams url_params;
+            url_params.message = "Please authenticate";
+            url_params.url = "https://example.com/auth";
+            url_params.elicitationId = "flow";
+            static_cast<void>(co_await ctx.elicit(url_params));
+            const auto id = std::make_shared<const std::string>("flow");
+            const bool sent = co_await ctx.notify_elicitation_complete(*id);
+            co_return nlohmann::json{{"sent", sent}};
+        });
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+    bool sent = false;
+    std::vector<std::string> methods;
+    raw_transport->set_on_write([&](std::string_view text) {
+        const auto message = nlohmann::json::parse(text);
+        if (message.contains("method")) {
+            methods.push_back(message.at("method").get<std::string>());
+        }
+        if (message.value("method", "") == "notifications/elicitation/complete") {
+            EXPECT_EQ(message, nlohmann::json::parse(R"({"jsonrpc":"2.0",
+                "method":"notifications/elicitation/complete","params":{"elicitationId":"flow"}})"));
+        }
+        if (message.value("method", "") == "elicitation/create") {
+            raw_transport->enqueue_message(nlohmann::json{
+                {"jsonrpc", "2.0"}, {"id", message.at("id")}, {"result", {{"action", "accept"}}}}
+                                               .dump());
+        } else if (message.contains("result") && message.value("id", "") == "call") {
+            sent = message["result"]["structuredContent"].value("sent", false);
+            raw_transport->close();
+        }
+    });
+    auto initialize = make_initialize_request("initialize");
+    initialize["params"]["protocolVersion"] = version;
+    initialize["params"]["capabilities"] = {{"elicitation", elicitation}};
+    raw_transport->enqueue_message(initialize.dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"},
+                       {"id", "call"},
+                       {"method", "tools/call"},
+                       {"params", {{"name", "complete"}, {"arguments", nlohmann::json::object()}}}}
+            .dump());
+    mcp_test::spawn_detached(io_ctx, [&server, transport, &io_ctx]() -> mcp::Task<void> {
+        co_await server.run(transport, io_ctx.get_executor());
+    });
+    io_ctx.restart();
+    io_ctx.run();
+    return {sent, methods};
+}
+
+mcp::UrlElicitationRequired sign_in_required() {
+    mcp::ElicitRequestURLParams params;
+    params.message = "Please sign in";
+    params.url = "https://example.com/sign-in";
+    params.elicitationId = "sign-in";
+    return mcp::UrlElicitationRequired({params});
+}
+
+/// A server whose "guarded" tool, resource and prompt each need the user to sign in first.
+std::unique_ptr<mcp::Server> make_sign_in_server() {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    caps.resources = mcp::ServerCapabilities::ResourcesCapability{};
+    caps.prompts = mcp::ServerCapabilities::PromptsCapability{};
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"guarded", "1.0"}, caps);
+    server->add_tool<nlohmann::json, nlohmann::json>(
+        "guarded", "Needs a sign-in", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& /*ctx*/, nlohmann::json /*args*/) -> mcp::Task<nlohmann::json> {
+            throw sign_in_required();
+        });
+    mcp::Resource resource;
+    resource.uri = "test://guarded";
+    resource.name = "guarded";
+    server->add_resource<nlohmann::json, nlohmann::json>(
+        resource, [](mcp::Context& /*ctx*/, nlohmann::json /*params*/) -> mcp::Task<nlohmann::json> {
+            throw sign_in_required();
+        });
+    mcp::Prompt prompt;
+    prompt.name = "guarded";
+    server->add_prompt<nlohmann::json, nlohmann::json>(
+        prompt, [](mcp::Context& /*ctx*/, nlohmann::json /*params*/) -> mcp::Task<nlohmann::json> {
+            throw sign_in_required();
+        });
+    return server;
+}
+
+/// The "guarded" tools/call, resources/read and prompts/get, each with its params.
+std::vector<std::pair<std::string, nlohmann::json>> guarded_calls() {
+    return {
+        {"tools/call", nlohmann::json{{"name", "guarded"}, {"arguments", nlohmann::json::object()}}},
+        {"resources/read", nlohmann::json{{"uri", "test://guarded"}}},
+        {"prompts/get", nlohmann::json{{"name", "guarded"}}},
+    };
+}
+
+/// Sends the guarded_calls() in a legacy session of @p version; returns the three answers.
+std::vector<nlohmann::json> call_guarded(boost::asio::io_context& io_ctx, std::string_view version) {
+    auto server = make_sign_in_server();
+    auto initialize = make_initialize_request("initialize");
+    initialize["params"]["protocolVersion"] = version;
+    initialize["params"]["capabilities"] = {{"elicitation", {{"url", nlohmann::json::object()}}}};
+    std::vector<nlohmann::json> messages{initialize, make_initialized_notification()};
+    for (const auto& [method, params] : guarded_calls()) {
+        messages.push_back(
+            nlohmann::json{{"jsonrpc", "2.0"}, {"id", method}, {"method", method}, {"params", params}});
+    }
+    return run_scripted(io_ctx, *server, messages, 3);
+}
+
 class ElicitationLegacy : public ElicitationTest {};
 class ElicitationModern : public ElicitationTest {};
 
@@ -542,6 +667,31 @@ TEST_F(ElicitationModern, UrlModeHasNoElicitationId) {
     EXPECT_FALSE(j.get<mcp::ElicitRequestURLParams>().elicitationId.has_value());
 }
 
+// 2026-07-28 retires -32042: a tool fails with an error result and other requests with an internal
+// error, also where the request is served as a multi-round-trip request.
+TEST_F(ElicitationModern, ARequestNeverGetsTheUrlElicitationError) {
+    auto server = make_sign_in_server();
+    std::vector<nlohmann::json> requests;
+    for (const auto& [method, params] : guarded_calls()) {
+        auto request = make_modern_request(method, method, params);
+        request["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"] = {
+            {"elicitation", {{"url", nlohmann::json::object()}}}};
+        requests.push_back(std::move(request));
+    }
+    const auto answers = run_scripted(io_ctx_, *server, requests, 3);
+    ASSERT_EQ(answers.size(), 3U);
+    for (const auto& answer : answers) {
+        if (answer["id"] == "tools/call") {
+            ASSERT_TRUE(answer.contains("result")) << answer;
+            EXPECT_EQ(answer["result"]["isError"], true) << answer;
+        } else {
+            ASSERT_TRUE(answer.contains("error")) << answer;
+            EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << answer;
+        }
+        EXPECT_EQ(answer.dump().find("elicitationId"), std::string::npos) << answer;
+    }
+}
+
 TEST_F(ElicitationModern, RequestNeverEmitsElicitationIdOrCompletion) {
     auto server = make_url_elicit_server();
     // The handler waits for a retry that never comes; a short wait lets the run end.
@@ -564,6 +714,61 @@ TEST_F(ElicitationModern, RequestNeverEmitsElicitationIdOrCompletion) {
     ASSERT_TRUE(written[0].contains("result")) << written[0];
     EXPECT_EQ(written[0]["result"]["resultType"], "input_required") << written[0];
     EXPECT_EQ(written[0]["result"]["inputRequests"].begin().value()["params"]["mode"], "url");
+}
+
+// notifications/elicitation/complete exists from 2025-11-25, for a client that declares URL mode.
+TEST_F(ElicitationLegacy, ACompletionGoesToA20251125ClientThatDeclaresUrlMode) {
+    const auto [sent, methods] =
+        complete_in_session(io_ctx_, "2025-11-25", {{"url", nlohmann::json::object()}});
+    EXPECT_TRUE(sent);
+    EXPECT_EQ(std::ranges::count(methods, "notifications/elicitation/complete"), 1);
+}
+
+TEST_F(ElicitationLegacy, NoCompletionGoesToAClientWithoutUrlMode) {
+    const auto [sent, methods] =
+        complete_in_session(io_ctx_, "2025-11-25", {{"form", nlohmann::json::object()}});
+    EXPECT_FALSE(sent);
+    EXPECT_EQ(std::ranges::count(methods, "notifications/elicitation/complete"), 0);
+}
+
+// A 2025-11-25 session gets -32042 with the elicitations, for a tool as for any other request.
+TEST_F(ElicitationLegacy, AHandlerThatNeedsAUrlElicitationAnswersWithTheError) {
+    const auto answers = call_guarded(io_ctx_, "2025-11-25");
+    ASSERT_EQ(answers.size(), 3U);
+    for (const auto& answer : answers) {
+        ASSERT_TRUE(answer.contains("error")) << answer;
+        EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED)
+            << answer;
+        EXPECT_EQ(answer["error"]["message"], "This request requires more information.") << answer;
+        const auto& elicitations = answer["error"]["data"]["elicitations"];
+        ASSERT_EQ(elicitations.size(), 1U) << answer;
+        EXPECT_EQ(elicitations[0], nlohmann::json(sign_in_required().elicitations()[0])) << answer;
+    }
+}
+
+// Before 2025-11-25 the error does not exist: the request fails as for any other exception.
+TEST_F(ElicitationLegacy, ASessionBefore20251125GetsTheUsualFailure) {
+    const auto answers = call_guarded(io_ctx_, "2025-06-18");
+    ASSERT_EQ(answers.size(), 3U);
+    for (const auto& answer : answers) {
+        if (answer["id"] == "tools/call") {
+            ASSERT_TRUE(answer.contains("result")) << answer;
+            EXPECT_EQ(answer["result"]["isError"], true) << answer;
+            EXPECT_EQ(answer["result"]["content"][0]["text"],
+                      "This request requires more information.");
+        } else {
+            ASSERT_TRUE(answer.contains("error")) << answer;
+            EXPECT_EQ(answer["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR) << answer;
+            EXPECT_FALSE(answer["error"].contains("data")) << answer;
+        }
+    }
+}
+
+TEST_F(ElicitationLegacy, NoCompletionGoesToASessionBefore20251125) {
+    const auto [sent, methods] =
+        complete_in_session(io_ctx_, "2025-06-18", {{"url", nlohmann::json::object()}});
+    EXPECT_FALSE(sent);
+    EXPECT_EQ(std::ranges::count(methods, "notifications/elicitation/complete"), 0);
 }
 
 }  // namespace server_elicitation_test

@@ -1,45 +1,16 @@
 name: MCP conformance regression baseline
 
 on:
-  # A manual run checks any branch. Pull requests are checked whatever branch they target,
-  # so a pull request stacked on another one gets the same checks; pushes only on main.
+  # ci.yml calls this workflow when a file it reads changed (scripts/ci_changes.py), so a failure
+  # fails the CI result. A manual run checks any branch.
+  workflow_call:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/conformance.yml'
-      - 'CMakeLists.txt'
-      - 'VERSION'
-      - 'cmake/**'
-      - 'conanfile.py'
-      - 'conformance/**'
-      - 'include/**'
-      - 'scripts/build.py'
-      - 'scripts/init.py'
-      - 'src/**'
-      - '!**.md'
-  pull_request:
-    branches: ['**']
-    paths:
-      - '.github/workflows/conformance.yml'
-      - 'CMakeLists.txt'
-      - 'VERSION'
-      - 'cmake/**'
-      - 'conanfile.py'
-      - 'conformance/**'
-      - 'include/**'
-      - 'scripts/build.py'
-      - 'scripts/init.py'
-      - 'src/**'
-      - '!**.md'
 
 permissions:
   contents: read
 
-concurrency:
-  # A new push to a pull request replaces its older run. Pushes to main each keep their own run.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# No concurrency group: in a called workflow github.workflow is the caller's name, so a group
+# here would equal ci.yml's own and queue or cancel this run behind it.
 
 jobs:
   conformance-2025-11-25:
@@ -92,6 +63,9 @@ jobs:
       - name: Install locked official runner
         run: npm ci --ignore-scripts --prefix conformance/runner
 
+      - name: Test the pending-suite check
+        run: PYTHONPATH=conformance python3 -m unittest -v test_check_pending_sse
+
       - name: Run pinned regression suites
         run: bash conformance/run.sh build/release build/conformance-results
 
@@ -114,74 +88,3 @@ jobs:
         with:
           path: ~/.conan2/p
           key: ${{ steps.conan-cache.outputs.cache-primary-key }}
-
-  conformance-2026-07-28-alpha:
-    name: Alpha runner, requirements 2026-07-28 (non-gating)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    # A report, never a gate: the job cannot fail the workflow, and no other job may need it
-    # (scripts/check_alpha_runner_guard.py enforces both).
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: '22'
-
-      - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
-        with:
-          key: ubuntu-24.04-conformance
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      - name: Install CMake
-        uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
-        with:
-          cmake-version: '3.25'
-
-      - name: Restore Conan packages
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.conan2/p
-          key: ubuntu-24.04-conan-conformance-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
-          restore-keys: ubuntu-24.04-conan-
-
-      - name: Install C++ dependencies
-        run: python3 scripts/init.py
-
-      - name: Build conformance fixtures
-        run: python3 scripts/build.py --conformance --jobs "$(nproc)"
-
-      - name: Run the alpha runner against the fixtures
-        run: bash conformance/run_alpha.sh build/release build/conformance-results-alpha
-
-      - name: Report totals
-        if: always()
-        run: |
-          if [ -f build/conformance-results-alpha/summary.txt ]; then
-            {
-              echo '### Alpha runner, requirements 2026-07-28 (non-gating)'
-              echo '```'
-              cat build/conformance-results-alpha/summary.txt
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload alpha results
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: mcp-conformance-2026-07-28-alpha
-          path: build/conformance-results-alpha
-          if-no-files-found: ignore
-          retention-days: 30

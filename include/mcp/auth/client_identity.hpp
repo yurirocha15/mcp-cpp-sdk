@@ -213,8 +213,12 @@ enum class ClientIdentityDecision : std::uint8_t {
     eUsePreRegistered,             ///< Present the application's injected credentials.
     eUseClientIdMetadataDocument,  ///< Present the configured document URL as the client ID.
     eReuseStoredRegistration,      ///< Present credentials already registered with this issuer.
-    eRegisterDynamically,          ///< Register with this issuer and present the result.
-    eUnavailable,                  ///< No path is available; authorization cannot proceed.
+    /// Register with this issuer and present the result.
+    eRegisterDynamically MCP_DEPRECATED(
+        "PR #2858: Dynamic client registration is deprecated since protocol revision "
+        "2026-07-28; earliest removal: first revision released on or after 2027-07-28; use "
+        "a client ID metadata document or pre-registered credentials"),
+    eUnavailable,  ///< No path is available; authorization cannot proceed.
 };
 
 /**
@@ -260,7 +264,15 @@ select_client_identity(const ClientIdentityConfig& config, const ClientIdentityS
  *
  * @details Carries `application_type` (SEP-837) unconditionally. `offline_access` is appended to the
  * requested scope only when the server advertises it in `scopes_supported`.
+ *
+ * @deprecated Protocol revision 2026-07-28 deprecates dynamic client registration (PR #2858); the
+ * specification may remove it in the first revision released on or after 2027-07-28. See the
+ * Deprecations guide.
  */
+MCP_DEPRECATED(
+    "PR #2858: Dynamic client registration is deprecated since protocol revision "
+    "2026-07-28; earliest removal: first revision released on or after 2027-07-28; use a "
+    "client ID metadata document or pre-registered credentials")
 [[nodiscard]] MCP_API nlohmann::json build_registration_request(
     const OAuthClientMetadata& metadata, const ClientIdentityServerFacts& server);
 

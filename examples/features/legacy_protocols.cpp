@@ -27,7 +27,6 @@
 #include <functional>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -196,8 +195,8 @@ mcp::Task<bool> exercise_subscribe(const asio::any_io_executor& executor) {
 
     co_await client.connect(client_info(), mcp::ClientCapabilities{});
 
-    const std::optional<json> subscribe_params = json{{"uri", g_RESOURCE_URI}};
-    co_await client.send_request("resources/subscribe", subscribe_params);
+    auto subscribing = client.subscribe_resource(g_RESOURCE_URI);
+    co_await std::move(subscribing);
     ok &= check(subscribed->size() == 1 && subscribed->front() == g_RESOURCE_URI,
                 "resources/subscribe reached Server::on_subscribe");
 
@@ -210,7 +209,8 @@ mcp::Task<bool> exercise_subscribe(const asio::any_io_executor& executor) {
     const bool got_list_changed = co_await wait_for(list_changed, executor);
     ok &= check(got_list_changed, "the session received notifications/tools/list_changed");
 
-    co_await client.send_request("resources/unsubscribe", subscribe_params);
+    auto unsubscribing = client.unsubscribe_resource(g_RESOURCE_URI);
+    co_await std::move(unsubscribing);
     ok &= check(unsubscribed->size() == 1, "resources/unsubscribe reached Server::on_unsubscribe");
     client.close();
     co_return ok;
@@ -294,8 +294,8 @@ mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) 
 
     bool subscribe_failed = false;
     try {
-        const std::optional<json> subscribe_params = json{{"uri", g_RESOURCE_URI}};
-        co_await client.send_request("resources/subscribe", subscribe_params);
+        auto subscribing = client.subscribe_resource(g_RESOURCE_URI);
+        co_await std::move(subscribing);
     } catch (const mcp::McpError& error) {
         std::cout << "  resources/subscribe: " << error.what() << '\n';
         subscribe_failed = error.code() == jsonrpc::g_METHOD_NOT_FOUND;

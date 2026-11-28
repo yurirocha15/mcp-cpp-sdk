@@ -248,6 +248,16 @@ mcp::Task<int> request_failure(mcp::Client& client, std::string_view method) {
     co_return 0;
 }
 
+/// The error code the task of @p call fails with, or 0 when it succeeds.
+mcp::Task<int> call_failure(std::function<mcp::Task<void>()> call) {
+    try {
+        co_await call();
+    } catch (const mcp::McpError& error) {
+        co_return error.code();
+    }
+    co_return 0;
+}
+
 mcp::ClientOptions auto_options() {
     mcp::ClientOptions options;
     options.protocol = mcp::ClientProtocol::automatic();
@@ -862,6 +872,36 @@ TEST(ClientEra, PingFailsLocallyInModern) {
     EXPECT_EQ(harness.peer.count("notifications/roots/list_changed"), 0u);
 }
 
+// The typed calls for those methods fail the same way.
+TEST(ClientEra, TypedSubscriptionAndLevelCallsFailLocallyInModern) {
+    Harness harness(auto_options());
+    harness.peer.reply = modern_peer;
+
+    std::vector<int> codes;
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("test-client", "1.0");
+        auto& client = *harness.client;
+        std::function<mcp::Task<void>()> subscribe = [&client] {
+            return client.subscribe_resource("test://doc");
+        };
+        std::function<mcp::Task<void>()> unsubscribe = [&client] {
+            return client.unsubscribe_resource("test://doc");
+        };
+        std::function<mcp::Task<void>()> set_level = [&client] {
+            return client.set_log_level(mcp::LoggingLevel::eWarning);
+        };
+        const int subscribe_code = co_await call_failure(std::move(subscribe));
+        const int unsubscribe_code = co_await call_failure(std::move(unsubscribe));
+        const int level_code = co_await call_failure(std::move(set_level));
+        codes = {subscribe_code, unsubscribe_code, level_code};
+    });
+
+    EXPECT_EQ(codes, (std::vector<int>(3, mcp::constants::jsonrpc::g_METHOD_NOT_FOUND)));
+    EXPECT_EQ(harness.peer.count("resources/subscribe"), 0u);
+    EXPECT_EQ(harness.peer.count("resources/unsubscribe"), 0u);
+    EXPECT_EQ(harness.peer.count("logging/setLevel"), 0u);
+}
+
 // The legacy session still sends the roots notification and the ping.
 TEST(ClientEra, LegacySessionKeepsPingAndRootsNotification) {
     Harness harness(pinned_options("2025-11-25"));
@@ -1326,6 +1366,31 @@ TEST(ClientEra, PerRequestLogLevelInMeta) {
     ASSERT_EQ(listings.size(), 2u);
     EXPECT_EQ(Harness::meta_of(listings[0]).at(std::string(g_level_key)), "warning");
     EXPECT_FALSE(Harness::meta_of(listings[1]).contains(std::string(g_level_key)));
+}
+
+// RequestOptions::log_level uses deprecated logging (SEP-2577), so the client reports it once.
+TEST(ClientEra, PerRequestLogLevelReportsTheLoggingDeprecationOnce) {
+    std::vector<mcp::DeprecatedFeature> notices;
+    auto options = auto_options();
+    options.deprecation_handler = [&notices](const mcp::DeprecationNotice& notice) {
+        notices.push_back(notice.feature);
+    };
+    Harness harness(std::move(options));
+    harness.peer.reply = modern_peer;
+
+    harness.run([&]() -> mcp::Task<void> {
+        co_await harness.client->connect("test-client", "1.0");
+        co_await harness.client->list_tools();
+        EXPECT_TRUE(notices.empty());
+        mcp::RequestOptions request_options;
+        request_options.log_level = mcp::LoggingLevel::eWarning;
+        for (int round = 0; round < 2; ++round) {
+            auto pending = harness.client->send_request("tools/list", std::nullopt, request_options);
+            co_await std::move(pending);
+        }
+    });
+
+    EXPECT_EQ(notices, std::vector<mcp::DeprecatedFeature>{mcp::DeprecatedFeature::eLogging});
 }
 
 // basic_index.md: `traceparent`, `tracestate` and `baggage` live in `_meta` too; the client adds

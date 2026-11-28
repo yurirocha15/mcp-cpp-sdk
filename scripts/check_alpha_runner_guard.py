@@ -11,10 +11,12 @@ spec ``2026-07-28``) permanently non-gating:
         alpha results directory (``conformance-results-alpha``) or the alpha
         entrypoint (``run_alpha.sh``).
   (iii) a workflow may reference them only in the job ``ALPHA_JOB`` of
-        ``.github/workflows/conformance.yml``. That job must carry
+        ``.github/workflows/conformance-alpha.yml``. That job must carry
         ``continue-on-error: true`` so its result cannot fail the workflow,
         and no other job may mention it (``needs:`` would make it a
         prerequisite of the gate).
+  (iv)  no other workflow may name ``conformance-alpha.yml``, so none calls it
+        with ``uses:`` and makes the required CI result wait on it.
 
 This intentionally does not require ``conformance/run_alpha.sh`` or the job to
 exist: it only asserts that nothing *consumes* the alpha runner as a pass/fail
@@ -38,7 +40,7 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 # The one workflow job that may run the alpha runner.
-ALPHA_WORKFLOW = "conformance.yml"
+ALPHA_WORKFLOW = "conformance-alpha.yml"
 ALPHA_JOB = "conformance-2026-07-28-alpha"
 
 # This guard and its tests name the forbidden patterns, so the scan skips both files rather than
@@ -49,6 +51,8 @@ SELF_PATHS = (
 )
 
 FORBIDDEN_PATTERN = re.compile(r"conformance-results-alpha|run_alpha\.sh")
+# Outside the alpha workflow, naming it can only be a call (``uses:``) or a trigger on it.
+ALPHA_WORKFLOW_PATTERN = re.compile(re.escape(ALPHA_WORKFLOW))
 
 
 class GuardError(RuntimeError):
@@ -134,6 +138,8 @@ def check_workflow(path: Path, label: str) -> list[str]:
             violations.append(f"{label}:{number}: {line.strip()!r}")
         if allowed is not None and not in_alpha_job and re.search(rf"\b{re.escape(ALPHA_JOB)}\b", line):
             violations.append(f"{label}:{number}: mentions the {ALPHA_JOB} job outside it: {line.strip()!r}")
+        if path.name != ALPHA_WORKFLOW and ALPHA_WORKFLOW_PATTERN.search(line):
+            violations.append(f"{label}:{number}: names {ALPHA_WORKFLOW}, which only it may do: {line.strip()!r}")
     if allowed is not None:
         block = lines[allowed[0] : allowed[1]]
         if not any(re.fullmatch(r"    continue-on-error:\s*true\s*(#.*)?", line) for line in block):

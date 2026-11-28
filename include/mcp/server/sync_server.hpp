@@ -2,6 +2,8 @@
 
 #include <mcp/core/export.hpp>
 
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 
 namespace mcp {
@@ -32,6 +34,13 @@ class MCP_API SyncServer {
     void notify_prompts_list_changed();
     /// Blocking Server::notify_resource_updated().
     void notify_resource_updated(const std::string& uri);
+    /// Blocking Server::notify_elicitation_complete(); false when the server is not running.
+    bool notify_elicitation_complete(const std::string& elicitation_id);
+    /**
+     * @brief Blocking Server::notify().
+     * @throws std::invalid_argument As Server::notify(), also when the server is not running.
+     */
+    void notify(std::string method, std::optional<nlohmann::json> params = std::nullopt);
 
    private:
     Server* server_;

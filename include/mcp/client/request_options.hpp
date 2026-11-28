@@ -24,12 +24,14 @@ struct RequestOptions {
     /**
      * @brief Minimum log level the server should emit for this request.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates logging; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates logging (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Sent as `io.modelcontextprotocol/logLevel` in the request's `_meta` when the
      * session is modern. A legacy session sets its level with logging/setLevel instead, and this
-     * member has no effect there.
+     * member has no effect there. It carries no deprecation attribute, which would warn wherever a
+     * RequestOptions is built; the client reports its use at run time instead, see
+     * ClientOptions::deprecation_handler.
      */
     std::optional<LoggingLevel> log_level;
     /**

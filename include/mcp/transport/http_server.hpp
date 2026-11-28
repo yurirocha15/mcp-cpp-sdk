@@ -275,6 +275,14 @@ class MCP_API HttpServerTransport final : public ITransport {
      */
     void set_stream_options(StreamOptions options);
 
+    /**
+     * @brief Set how the SSE streams of a session of 2025-11-25 or earlier are written.
+     *
+     * @throws std::invalid_argument If LegacyStreamOptions::sse_retry is not positive.
+     * @throws std::logic_error If listen() has already been called or the transport is closed.
+     */
+    void set_legacy_stream_options(LegacyStreamOptions options);
+
     /// What the 2026-07-28 streams of this transport have done.
     [[nodiscard]] StreamStats stream_stats() const;
 
@@ -511,7 +519,7 @@ class MCP_API HttpServerTransport final : public ITransport {
     /**
      * @brief Send a JSON-RPC message: a response answers its pending HTTP request, and any other
      *        message goes on the session's GET stream, or on the stream of the only request
-     *        waiting when no GET opened one.
+     *        waiting when no GET opened one, or waits for the next GET when no request waits.
      *
      * @param message Serialized JSON-RPC message.
      */

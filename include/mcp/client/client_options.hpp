@@ -2,6 +2,7 @@
 
 #include <mcp/client/client_protocol.hpp>
 #include <mcp/core/constants.hpp>
+#include <mcp/core/deprecation.hpp>
 #include <mcp/core/notification_rate_limit.hpp>
 #include <mcp/protocol/base.hpp>
 #include <mcp/protocol/schema.hpp>
@@ -201,6 +202,16 @@ struct ClientOptions {
      * negative or not a number.
      */
     NotificationRateLimit notification_rate_limit;
+    /**
+     * @brief Receives the notice of each deprecated feature this client uses, instead of standard
+     *        error.
+     *
+     * @details The first call to on_sampling(), set_roots() or on_roots_list(), and the first
+     * modern request with RequestOptions::log_level set, report their feature once for the client;
+     * see DeprecationNotice. Without a handler the notice goes to standard error, unless the
+     * environment variable MCP_SILENCE_DEPRECATION_NOTICES is set to a non-empty value.
+     */
+    DeprecationHandler deprecation_handler;
 };
 
 }  // namespace mcp

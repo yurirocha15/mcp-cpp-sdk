@@ -10,12 +10,14 @@
 #include "mcp/detail/async/spawn_awaitable.hpp"
 #include "mcp/detail/async/strand_executor.hpp"
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/deprecation_reporter.hpp"
 #include "mcp/detail/json/peer_json.hpp"
 #include "mcp/detail/net/param_headers.hpp"
 #include "mcp/detail/protocol/middleware_rejection.hpp"
 #include "mcp/detail/protocol/modern_methods.hpp"
 #include "mcp/detail/protocol/notification_budget.hpp"
 #include "mcp/detail/protocol/request_meta.hpp"
+#include "mcp/detail/server/elicitation_records.hpp"
 #include "mcp/detail/server/run_control.hpp"
 #include "mcp/detail/text/diagnostic_text.hpp"
 #include "mcp/detail/text/encoding.hpp"
@@ -1006,6 +1008,8 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::set<std::string> resource_uris;
         /// The tasks whose notifications/tasks the stream carries.
         std::set<std::string> task_ids;
+        /// Identifies the stream among the registry's streams in a ListenEvent.
+        std::uint64_t stream{0};
         MessageSender sink;
         boost::asio::strand<boost::asio::any_io_executor> strand;
         boost::asio::steady_timer timer;
@@ -1103,6 +1107,62 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// session sends it.
     mutable std::mutex client_capabilities_mutex;
     nlohmann::json client_capabilities = nlohmann::json::object();
+    /// The protocol version the session's initialize request negotiated, guarded by
+    /// client_capabilities_mutex. Empty before an initialize, so a server answering 2026-07-28
+    /// requests, which have none, keeps it empty.
+    std::string negotiated_version;
+    [[nodiscard]] std::string negotiated_protocol_version() const {
+        std::scoped_lock lock(client_capabilities_mutex);
+        return negotiated_version;
+    }
+    /// Whether an initialize negotiated @p version or a later one. Versions are dates, so they
+    /// compare as text.
+    [[nodiscard]] bool negotiated_at_least(std::string_view version) const {
+        std::scoped_lock lock(client_capabilities_mutex);
+        return !negotiated_version.empty() && std::string_view{negotiated_version} >= version;
+    }
+    /// Whether the session began with initialize, as a session of 2025-11-25 or earlier does.
+    [[nodiscard]] bool began_with_initialize() const {
+        std::scoped_lock lock(client_capabilities_mutex);
+        return !negotiated_version.empty();
+    }
+    /// Whether the client's initialize request declared URL-mode elicitation.
+    [[nodiscard]] bool client_declares_url_elicitation() const {
+        std::scoped_lock lock(client_capabilities_mutex);
+        const auto elicitation = client_capabilities.find("elicitation");
+        return elicitation != client_capabilities.end() && elicitation->is_object() &&
+               elicitation->contains("url");
+    }
+
+    /// The session a URL-mode elicitation was sent in: a session of this server, and the
+    /// session_epoch() of its transport, so a later session on the same transport is another one.
+    struct ElicitationTarget {
+        std::weak_ptr<Impl> server;
+        std::weak_ptr<Session> session;
+        std::uint64_t epoch{0};
+
+        [[nodiscard]] bool same_session(const ElicitationTarget& other) const {
+            return !session.owner_before(other.session) && !other.session.owner_before(session) &&
+                   epoch == other.epoch;
+        }
+        [[nodiscard]] bool alive() const {
+            const auto locked = session.lock();
+            return locked != nullptr && session_epoch(*locked) == epoch;
+        }
+    };
+    using ElicitationRecords = detail::ElicitationRecords<ElicitationTarget>;
+
+    /// Whether a request whose handler throws UrlElicitationRequired is answered with
+    /// g_URL_ELICITATION_REQUIRED: a legacy request in a session of 2025-11-25 or later. A
+    /// 2026-07-28 request never is, whatever an initialize of the session negotiated.
+    [[nodiscard]] bool emits_url_elicitation_error(bool modern_request) const {
+        return !modern_request &&
+               negotiated_at_least(mcp::constants::protocol::g_PROTOCOL_VERSION_2025_11_25);
+    }
+    /// The `data` of the g_URL_ELICITATION_REQUIRED error for @p required, after recording its
+    /// elicitations for the current session.
+    /// @throws std::invalid_argument If another session has an elicitation with one of the ids.
+    nlohmann::json url_elicitation_error_data(const UrlElicitationRequired& required);
     std::size_t& page_size = registry->page_size;
     std::atomic_size_t& max_in_flight_requests = registry->max_in_flight_requests;
     std::atomic_size_t& max_in_flight_bytes = registry->max_in_flight_bytes;
@@ -1240,6 +1300,7 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     std::vector<Middleware>& middlewares = registry->middlewares;
     SubscriptionHandler& subscribe_handler = registry->subscribe_handler;
     SubscriptionHandler& unsubscribe_handler = registry->unsubscribe_handler;
+    ListenHandler& listen_handler = registry->listen_handler;
 
     mutable std::mutex listeners_mutex;
     std::vector<std::shared_ptr<Listener>> listeners;  // guarded by listeners_mutex
@@ -1261,6 +1322,15 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         /// identity cannot be serialized.
         std::string server_info_meta_text;  // written once, under server_info_meta_once
         std::once_flag server_info_meta_once;
+        /// Reports each deprecated feature the servers sharing this registry use, once for all of
+        /// them.
+        std::shared_ptr<detail::DeprecationReporter> deprecations =
+            std::make_shared<detail::DeprecationReporter>();
+        /// The URL-mode elicitations the sessions sharing this registry sent, until each one
+        /// completes; see Server::notify_elicitation_complete().
+        ElicitationRecords elicitations{mcp::detail::constants::elicitation::g_MAX_RECORDS,
+                                        mcp::detail::constants::elicitation::g_MAX_RECORDS_PER_SESSION,
+                                        mcp::detail::constants::elicitation::g_RECORD_TTL};
         std::size_t page_size{0};
         std::atomic_size_t max_in_flight_requests{
             mcp::detail::constants::server::g_DEFAULT_MAX_IN_FLIGHT_REQUESTS};
@@ -1312,6 +1382,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
         std::vector<Middleware> middlewares;
         SubscriptionHandler subscribe_handler;
         SubscriptionHandler unsubscribe_handler;
+        ListenHandler listen_handler;
+        /// The last number a listen stream of the registry's servers was given.
+        std::atomic<std::uint64_t> listen_streams{0};
         /// The servers that share this registry, so that a notification about it reaches the
         /// sessions of all of them.
         std::mutex members_mutex;
@@ -1426,6 +1499,25 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     /// session that cannot take it, such as one closing meanwhile, misses it without stopping the
     /// notification of the others.
     Task<void> send_broadcast(const std::string& method) const;
+    /// Sends notifications/elicitation/complete for @p id to the session that sent it, when that
+    /// session still runs, negotiated 2025-11-25 or later and declared URL-mode elicitation;
+    /// returns whether it was sent. The record of @p id ends whatever the outcome.
+    static Task<bool> complete_elicitation(std::shared_ptr<Registry> registry,
+                                           std::shared_ptr<const std::string> id);
+    /// As complete_elicitation(), only when @p target's session sent @p id.
+    static Task<bool> complete_own_elicitation(std::shared_ptr<Registry> registry,
+                                               ElicitationTarget target,
+                                               std::shared_ptr<const std::string> id);
+    static Task<bool> send_elicitation_complete(ElicitationTarget target,
+                                                std::shared_ptr<const std::string> id);
+    /// Throws std::invalid_argument for what Server::notify() refuses.
+    static void check_notification(std::string_view method,
+                                   const std::optional<nlohmann::json>& params);
+    /// Server::notify() after check_notification(): sends the notification to each session of the
+    /// registry that began with initialize.
+    static Task<void> notify_legacy_sessions(
+        std::shared_ptr<Impl> impl, std::shared_ptr<const std::string> method,
+        std::shared_ptr<const std::optional<nlohmann::json>> params);
     /// notify_resource_updated() in the same way.
     Task<void> broadcast_resource_updated(const std::string& uri) const;
     static Task<void> notify_resource_updated_on_strand(std::shared_ptr<Session> session,
@@ -1652,6 +1744,9 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
     void end_listeners(ListenEnd reason, const std::shared_ptr<Session>& session = nullptr,
                        const std::string* key = nullptr);
     void remove_listener(const std::shared_ptr<Listener>& listener);
+    /// Hands the on_listen() callback the event of @p kind for @p listener; a callback that throws
+    /// throws from here.
+    void report_listen(const Listener& listener, ListenEventKind kind) const;
     /// Whether the session gets the plain list-changed notifications of 2025-11-25 and earlier. A
     /// session that only serves 2026-07-28 requests gets what its streams opted in to instead.
     [[nodiscard]] bool legacy_broadcast_wanted() const;

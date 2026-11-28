@@ -1,0 +1,11 @@
+# Pinned runner: @modelcontextprotocol/conformance 0.1.16
+# Protocol baseline: 2025-11-25, pending server suite
+#
+# The runner counts a warning as a failure here. server-sse-polling keeps one
+# warning: the server writes the SSE retry field only when the application sets
+# LegacyStreamOptions::sse_retry, and the conformance server does not.
+# check_pending_sse.py checks that this is the only warning and that the
+# priming event passes.
+client: []
+server:
+  - server-sse-polling

@@ -323,6 +323,25 @@ Task<CompleteResult> Client::complete(const CompleteParams& params,
         send_request(methods::g_COMPLETION_COMPLETE, nlohmann::json(params), request_options));
 }
 
+Task<void> Client::subscribe_resource(const std::string& uri, const RequestOptions& request_options) {
+    return Impl::discard_result(send_request(methods::g_RESOURCES_SUBSCRIBE,
+                                             nlohmann::json(ResourceSubscribeParams{.uri = uri}),
+                                             request_options));
+}
+
+Task<void> Client::unsubscribe_resource(const std::string& uri, const RequestOptions& request_options) {
+    return Impl::discard_result(send_request(methods::g_RESOURCES_UNSUBSCRIBE,
+                                             nlohmann::json(ResourceUnsubscribeParams{.uri = uri}),
+                                             request_options));
+}
+
+Task<void> Client::set_log_level(LoggingLevel level, const RequestOptions& request_options) {
+    impl_->deprecations.report(DeprecatedFeature::eLogging);
+    return Impl::discard_result(send_request(methods::g_LOGGING_SET_LEVEL,
+                                             nlohmann::json(SetLevelRequestParams{.level = level}),
+                                             request_options));
+}
+
 Task<void> Client::ping() {
     if (!impl_->read_loop_started.load(std::memory_order_acquire)) {
         throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,
@@ -395,8 +414,30 @@ void Client::on_elicitation(std::function<Task<ElicitResult>(const ElicitRequest
         });
 }
 
+void Client::on_elicitation_complete(ElicitationCompleteCallback callback) {
+    on_notification(std::string(methods::g_NOTIFICATIONS_ELICITATION_COMPLETE),
+                    [state = std::weak_ptr<Impl>(impl_),
+                     callback = std::move(callback)](const nlohmann::json& params) {
+                        ElicitationCompleteNotificationParams completed;
+                        try {
+                            params.get_to(completed);
+                        } catch (const std::exception& error) {
+                            // Reported through ClientOptions::on_protocol_error by the read loop, as
+                            // for on_progress().
+                            throw McpError(mcp::constants::jsonrpc::g_INVALID_PARAMS,
+                                           "Malformed elicitation completion params: " +
+                                               detail::sanitize_for_diagnostics(error.what()));
+                        }
+                        const auto owner = state.lock();
+                        if (owner && owner->take_url_elicitation(completed.elicitationId)) {
+                            callback(completed);
+                        }
+                    });
+}
+
 void Client::on_sampling(
     std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler) {
+    impl_->deprecations.report(DeprecatedFeature::eSampling);
     on_request(std::string(methods::g_SAMPLING_CREATE_MESSAGE),
                [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
                    auto result = co_await handler(params.get<CreateMessageRequestParams>());
@@ -405,6 +446,7 @@ void Client::on_sampling(
 }
 
 void Client::set_roots(const std::vector<Root>& roots, bool notify) {
+    impl_->deprecations.report(DeprecatedFeature::eRoots);
     auto state = impl_;
     bool should_notify = false;
     {
@@ -443,6 +485,7 @@ void Client::set_roots(const std::vector<Root>& roots, bool notify) {
 }
 
 void Client::on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler) {
+    impl_->deprecations.report(DeprecatedFeature::eRoots);
     on_request(std::string(methods::g_ROOTS_LIST),
                [handler = std::move(handler)](const nlohmann::json& params) -> Task<nlohmann::json> {
                    auto result = co_await handler(params);

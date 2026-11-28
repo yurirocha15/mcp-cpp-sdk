@@ -437,6 +437,14 @@ class MCP_API StreamableHttpSessionManager {
      */
     void set_stream_options(StreamOptions options);
 
+    /**
+     * @brief Set how the SSE streams of sessions of 2025-11-25 and earlier are written.
+     *
+     * @throws std::invalid_argument If LegacyStreamOptions::sse_retry is not positive.
+     * @throws std::logic_error If listen() has already been called or the manager is closed.
+     */
+    void set_legacy_stream_options(LegacyStreamOptions options);
+
     /// What the 2026-07-28 streams have done so far.
     [[nodiscard]] StreamStats stream_stats() const;
 

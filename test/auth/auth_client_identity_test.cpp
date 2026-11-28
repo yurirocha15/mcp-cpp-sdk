@@ -599,6 +599,10 @@ TEST(AuthClientIdentityLoopbackTest, FallsBackToDynamicRegistrationAndSendsAppli
     fixture.config.client_identity.metadata.client_name = "mcp-cpp-sdk";
     fixture.config.credential_store = fixture.credentials;
     fixture.config.policy = loopback_policy(server.origin());
+    std::vector<mcp::DeprecatedFeature> notices;
+    fixture.config.deprecation_handler = [&notices](const mcp::DeprecationNotice& notice) {
+        notices.push_back(notice.feature);
+    };
 
     run_single_challenge(server, fixture, io_ctx, R"(Bearer resource_metadata=")" + base + R"(/prm")",
                          4);
@@ -607,6 +611,9 @@ TEST(AuthClientIdentityLoopbackTest, FallsBackToDynamicRegistrationAndSendsAppli
     ASSERT_TRUE(fixture.identity.has_value());
     EXPECT_EQ(fixture.identity->source, mcp::auth::ClientIdentitySource::eDynamicRegistration);
     EXPECT_EQ(fixture.identity->client_id, "registered-client");
+    // Protocol revision 2026-07-28 deprecates dynamic client registration.
+    EXPECT_EQ(notices,
+              std::vector<mcp::DeprecatedFeature>{mcp::DeprecatedFeature::eDynamicClientRegistration});
 
     ASSERT_EQ(server.count("/register"), 1U);
     const auto registration = json::parse(server.body_for("/register"));

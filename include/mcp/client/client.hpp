@@ -396,6 +396,56 @@ class MCP_API Client {
                                   const RequestOptions& request_options = {});
 
     /**
+     * @brief Ask the server to send notifications/resources/updated when the resource at @p uri
+     *        changes.
+     *
+     * @details Sends resources/subscribe to a server that declares `resources.subscribe`; the
+     * notifications reach the callback that on_notification() registers for
+     * `notifications/resources/updated` until unsubscribe_resource(). Fails with McpError
+     * (mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) without sending anything in a modern session:
+     * protocol revision 2026-07-28 has no resources/subscribe, and listen() asks for the
+     * notifications there.
+     *
+     * @param uri The URI of the resource.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
+     * @return A task that completes once the server has accepted the subscription.
+     */
+    Task<void> subscribe_resource(const std::string& uri, const RequestOptions& request_options = {});
+
+    /**
+     * @brief Ask the server to stop the notifications that subscribe_resource() asked for.
+     *
+     * @details Sends resources/unsubscribe; fails in a modern session as subscribe_resource() does.
+     *
+     * @param uri The URI of the resource.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
+     * @return A task that completes once the server has answered.
+     */
+    Task<void> unsubscribe_resource(const std::string& uri, const RequestOptions& request_options = {});
+
+    /**
+     * @brief Ask the server to send the log messages of @p level and more severe ones.
+     *
+     * @deprecated Protocol revision 2026-07-28 deprecates logging (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
+     *
+     * @details Sends logging/setLevel; the server's `notifications/message` notifications reach the
+     * callback that on_notification() registers for them. Fails with McpError
+     * (mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) without sending anything in a modern session,
+     * where RequestOptions::log_level sets the level of each request. The first call reports
+     * Logging, see ClientOptions::deprecation_handler.
+     *
+     * @param level The least severe level the server sends.
+     * @param request_options Per-request options, such as a deadline or a CancellationToken.
+     * @return A task that completes once the server has answered.
+     */
+    MCP_DEPRECATED(
+        "SEP-2577: Logging is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; log to stderr on stdio "
+        "and use OpenTelemetry for observability")
+    Task<void> set_log_level(LoggingLevel level, const RequestOptions& request_options = {});
+
+    /**
      * @brief Send a ping request to the connected server.
      *
      * @details Fails with McpError (mcp::constants::jsonrpc::g_METHOD_NOT_FOUND) without sending
@@ -471,11 +521,29 @@ class MCP_API Client {
      */
     void on_elicitation(std::function<Task<ElicitResult>(const ElicitRequestParams&)> handler);
 
+    /// @brief Callback invoked when the server says a URL-mode elicitation has completed.
+    using ElicitationCompleteCallback =
+        std::function<void(const ElicitationCompleteNotificationParams&)>;
+
+    /**
+     * @brief Register a callback for `notifications/elicitation/complete` (2025-11-25).
+     *
+     * @details The callback runs once for each URL-mode elicitation the server sent, to the handler
+     * of on_elicitation() or in a mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED error (see
+     * url_elicitations_required()), when the server says it has completed. A notification naming an
+     * id the client did not receive, or one it was already told of, is ignored, as the specification
+     * asks. The client remembers the ids of the last 1024 URL-mode elicitations. Registering replaces
+     * a callback that on_notification() set for this method.
+     *
+     * @param callback Receives the notification's parameters.
+     */
+    void on_elicitation_complete(ElicitationCompleteCallback callback);
+
     /**
      * @brief Register a handler for sampling requests from the server.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates sampling; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates sampling (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Registers a request handler for "sampling/createMessage": the handler receives the
      * request's CreateMessageRequestParams and returns the CreateMessageResult sent back. A
@@ -485,14 +553,18 @@ class MCP_API Client {
      * @param handler Async handler: receives CreateMessageRequestParams, returns
      *        CreateMessageResult.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Sampling is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; integrate directly with "
+        "LLM provider APIs")
     void on_sampling(
         std::function<Task<CreateMessageResult>(const CreateMessageRequestParams&)> handler);
 
     /**
      * @brief Set static roots and auto-register the roots/list handler.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates roots (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @details Stores the given roots and registers a request handler for
      * "roots/list" that returns them. If notify is true, sends a
@@ -502,16 +574,24 @@ class MCP_API Client {
      * @param roots The list of roots to provide.
      * @param notify Whether to send a roots-changed notification.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Roots is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; pass directories or files "
+        "through tool parameters, resource URIs or server configuration")
     void set_roots(const std::vector<Root>& roots, bool notify = false);
 
     /**
      * @brief Register a dynamic handler for roots/list requests.
      *
-     * @deprecated doc-only: protocol revision 2026-07-28 deprecates roots; see Deprecated Features
-     * on the Specification Support page for why the SDK keeps it.
+     * @deprecated Protocol revision 2026-07-28 deprecates roots (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
      *
      * @param handler Async handler that returns a ListRootsResult.
      */
+    MCP_DEPRECATED(
+        "SEP-2577: Roots is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; pass directories or files "
+        "through tool parameters, resource URIs or server configuration")
     void on_roots_list(std::function<Task<ListRootsResult>(const nlohmann::json&)> handler);
 
    private:

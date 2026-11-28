@@ -8,6 +8,7 @@
 #include "mcp/detail/async/spawn_awaitable.hpp"
 #include "mcp/detail/client/response_cache.hpp"
 #include "mcp/detail/constants.hpp"
+#include "mcp/detail/deprecation_reporter.hpp"
 #include "mcp/detail/json/peer_json.hpp"
 #include "mcp/detail/protocol/notification_budget.hpp"
 #include "mcp/detail/text/diagnostic_text.hpp"
@@ -986,6 +987,8 @@ struct Client::Impl {
     /// the strand only.
     std::vector<std::weak_ptr<boost::asio::steady_timer>> poll_pauses;
     ClientOptions options;
+    /// See ClientOptions::deprecation_handler; reporting from const members is no change of state.
+    mutable detail::DeprecationReporter deprecations{options.deprecation_handler};
     detail::ResponseCache response_cache{options.response_cache};
     /// See ClientOptions::notification_rate_limit.
     detail::TokenBucket progress_bucket{options.notification_rate_limit};
@@ -1012,6 +1015,53 @@ struct Client::Impl {
     std::map<std::string, std::shared_ptr<ProgressRouteState>, std::less<>> progress_routes;
     std::atomic<int64_t> next_progress_token{1};
     std::map<std::string, RequestHandler, std::less<>> request_handlers;
+    /// The URL-mode elicitation ids the server sent and has not said are complete, oldest first;
+    /// guarded by handlers_mutex.
+    std::deque<std::string> url_elicitations;
+
+    /// Remembers the id of a URL-mode elicitation/create request.
+    void remember_url_elicitation(const nlohmann::json& params) {
+        if (!params.is_object() || params.value("mode", "") != "url") {
+            return;
+        }
+        const auto id = params.find("elicitationId");
+        if (id == params.end() || !id->is_string()) {
+            return;
+        }
+        std::scoped_lock lock(handlers_mutex);
+        if (std::ranges::find(url_elicitations, id->get_ref<const std::string&>()) !=
+            url_elicitations.end()) {
+            return;
+        }
+        if (url_elicitations.size() >= detail::constants::elicitation::g_MAX_CLIENT_IDS) {
+            url_elicitations.pop_front();
+        }
+        url_elicitations.push_back(id->get<std::string>());
+    }
+    /// Remembers the elicitations that a g_URL_ELICITATION_REQUIRED @p error lists.
+    void remember_required_url_elicitations(const Error& error) {
+        if (error.code != mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED || !error.data ||
+            !error.data->is_object()) {
+            return;
+        }
+        const auto listed = error.data->find("elicitations");
+        if (listed == error.data->end() || !listed->is_array()) {
+            return;
+        }
+        for (const auto& elicitation : *listed) {
+            remember_url_elicitation(elicitation);
+        }
+    }
+    /// Forgets @p id; returns whether the client was waiting for its completion.
+    bool take_url_elicitation(const std::string& id) {
+        std::scoped_lock lock(handlers_mutex);
+        const auto found = std::ranges::find(url_elicitations, id);
+        if (found == url_elicitations.end()) {
+            return false;
+        }
+        url_elicitations.erase(found);
+        return true;
+    }
     std::vector<Root> roots;
     ClientCapabilities client_capabilities;
     Implementation client_info;

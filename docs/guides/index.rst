@@ -3,7 +3,8 @@ Guides
 
 Practical guides for common tasks when working with the `mcp-cpp-sdk`: servers
 and clients with coroutines, converting a server or client to them, testing,
-error handling, OAuth, deployment, and older protocol revisions.
+error handling, OAuth, deployment, older protocol revisions and deprecated
+features.
 
 .. toctree::
    :maxdepth: 2
@@ -16,3 +17,4 @@ error handling, OAuth, deployment, and older protocol revisions.
    tls
    deployment
    older-protocols
+   deprecations

@@ -119,7 +119,7 @@ which sends a progress token with the request and is called for each report
 until the answer arrives. ``RequestOptions::log_level`` asks the server for the
 log messages of that call at that level and above; a session of protocol
 revision 2025-11-25 or earlier sets one level for all its requests with a
-``logging/setLevel`` request instead.
+``logging/setLevel`` request instead, which ``Client::set_log_level()`` sends.
 
 .. literalinclude:: ../../examples/sync/client.cpp
    :language: cpp

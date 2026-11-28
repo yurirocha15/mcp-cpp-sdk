@@ -216,6 +216,8 @@ mcp::Task<RawResponse> modern_post(const asio::any_io_executor& executor, unsign
     co_return co_await raw_post(executor, port, body.dump(), modern_headers(body));
 }
 
+/// The messages of an SSE body with their event ids. An event with no data, such as the priming
+/// event of a 2025-11-25 stream, carries no message and is skipped, as an SSE client skips it.
 std::vector<std::pair<std::string, json>> parse_sse_events(const std::string& body) {
     std::vector<std::pair<std::string, json>> events;
     std::istringstream stream(body);
@@ -225,7 +227,7 @@ std::vector<std::pair<std::string, json>> parse_sse_events(const std::string& bo
     while (std::getline(stream, line)) {
         if (line.starts_with("id: ")) {
             event_id = line.substr(4);
-        } else if (line.starts_with("data: ")) {
+        } else if (line.starts_with("data: ") && line.size() > 6) {
             events.emplace_back(event_id, json::parse(line.substr(6)));
             event_id.clear();
         }

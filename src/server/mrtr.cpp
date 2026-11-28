@@ -330,7 +330,8 @@ nlohmann::json InlineInput::missing_capabilities() const {
 bool asks_for_sampling_context(const nlohmann::json& params) {
     // find() gives end() for a value that is no object.
     const auto include = params.find("includeContext");
-    return include != params.end() && include->is_string() && *include != "none";
+    return include != params.end() && include->is_string() &&
+           include->get_ref<const std::string&>() != mcp::constants::include_context::g_NONE;
 }
 
 nlohmann::json missing_client_capabilities(const nlohmann::json& client_capabilities,

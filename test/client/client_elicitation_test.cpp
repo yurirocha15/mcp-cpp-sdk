@@ -69,6 +69,38 @@ std::unique_ptr<mcp::Server> make_server() {
                                      const auto answer = co_await ctx.elicit(params);
                                      co_return json{{"action", json(answer.action)}};
                                  });
+    // Asks a URL with the id in "id"; with "complete" set, it then completes that id twice and an
+    // id it never sent once, and reports which completions were sent.
+    server->add_tool<json, json>(
+        "open_with_id", "Asks a URL with a given id", json{{"type", "object"}},
+        [](mcp::Context& ctx, json args) -> mcp::Task<json> {
+            const auto id = std::make_shared<const std::string>(args.at("id").get<std::string>());
+            mcp::ElicitRequestURLParams params;
+            params.message = "Please sign in";
+            params.url = "https://example.com/sign-in";
+            params.elicitationId = *id;
+            const auto answer = co_await ctx.elicit(params);
+            json outcome = {{"action", json(answer.action)}};
+            if (args.value("complete", false)) {
+                const bool first = co_await ctx.notify_elicitation_complete(*id);
+                const bool again = co_await ctx.notify_elicitation_complete(*id);
+                const auto never_sent = std::make_shared<const std::string>("never-sent");
+                const bool foreign = co_await ctx.notify_elicitation_complete(*never_sent);
+                outcome["first"] = first;
+                outcome["again"] = again;
+                outcome["foreign"] = foreign;
+            }
+            co_return outcome;
+        });
+    // Needs a sign-in first, which a 2025-11-25 session learns of from a -32042 error.
+    server->add_tool<json, json>("needs_sign_in", "Needs a sign-in first", json{{"type", "object"}},
+                                 [](mcp::Context& /*ctx*/, json /*args*/) -> mcp::Task<json> {
+                                     mcp::ElicitRequestURLParams params;
+                                     params.message = "Please sign in";
+                                     params.url = "https://example.com/sign-in";
+                                     params.elicitationId = "sign-in-1";
+                                     throw mcp::UrlElicitationRequired({params});
+                                 });
     return server;
 }
 
@@ -87,6 +119,9 @@ class Session {
     }
 
     mcp::Client& client() { return *client_; }
+    mcp::Server& server() { return *server_; }
+    /// The server's end of the transport, for messages the server itself would not send.
+    std::shared_ptr<mcp::ITransport> server_transport() { return server_transport_; }
 
     /// Runs @p body after connecting, with the server serving the other end.
     void run(std::function<mcp::Task<void>()> body) {
@@ -422,6 +457,163 @@ TEST(ElicitationTimeoutTest, TheServersCancelLeavesTheClientsRequestWithTheSameI
     ASSERT_TRUE(named) << "no cancel named the id of the client's call";
     EXPECT_EQ(failure, "");
     EXPECT_EQ(outcome, json::parse(R"({"unanswered":2})"));
+}
+
+// notifications/elicitation/complete (2025-11-25) reaches the session that sent the elicitation,
+// once, and a client hands its callback only the ids it was sent.
+TEST(ElicitationCompletion, TheHandlerCompletesItsOwnElicitationOnce) {
+    Session session(false, true);
+    answer_with(session, json::object());
+    std::vector<std::string> completed;
+    session.client().on_elicitation_complete(
+        [&completed](const mcp::ElicitationCompleteNotificationParams& params) {
+            completed.push_back(params.elicitationId);
+        });
+    json outcome;
+    session.run([&]() -> mcp::Task<void> {
+        json args = arg("id", "flow-1");
+        args["complete"] = true;
+        outcome = co_await call(session.client(), "open_with_id", std::move(args));
+    });
+    EXPECT_EQ(outcome.value("first", false), true) << outcome;
+    EXPECT_EQ(outcome.value("again", true), false) << outcome;
+    EXPECT_EQ(outcome.value("foreign", true), false) << outcome;
+    EXPECT_EQ(completed, std::vector<std::string>{"flow-1"});
+}
+
+TEST(ElicitationCompletion, TheServerCompletesAnElicitationAfterTheHandlerReturned) {
+    Session session(false, true);
+    answer_with(session, json::object());
+    std::vector<std::string> completed;
+    session.client().on_elicitation_complete(
+        [&completed](const mcp::ElicitationCompleteNotificationParams& params) {
+            completed.push_back(params.elicitationId);
+        });
+    bool sent = false;
+    bool again = true;
+    session.run([&]() -> mcp::Task<void> {
+        static_cast<void>(co_await call(session.client(), "open_with_id", arg("id", "flow-2")));
+        const auto id = std::make_shared<const std::string>("flow-2");
+        sent = co_await session.server().notify_elicitation_complete(*id);
+        again = co_await session.server().notify_elicitation_complete(*id);
+        std::function<bool()> arrived = [&completed] { return !completed.empty(); };
+        co_await wait_until(std::move(arrived));
+    });
+    EXPECT_TRUE(sent);
+    EXPECT_FALSE(again);
+    EXPECT_EQ(completed, std::vector<std::string>{"flow-2"});
+}
+
+// 2026-07-28 has no elicitation ids, so there is nothing to complete.
+TEST(ElicitationCompletion, AModernRequestSendsNoCompletion) {
+    Session session(true, true);
+    answer_with(session, json::object());
+    std::size_t completions = 0;
+    session.client().on_elicitation_complete(
+        [&completions](const mcp::ElicitationCompleteNotificationParams&) { ++completions; });
+    json outcome;
+    session.run([&]() -> mcp::Task<void> {
+        json args = arg("id", "flow-3");
+        args["complete"] = true;
+        outcome = co_await call(session.client(), "open_with_id", std::move(args));
+    });
+    EXPECT_EQ(outcome.value("first", true), false) << outcome;
+    EXPECT_EQ(completions, 0U);
+}
+
+// elicitation.mdx: clients MUST ignore notifications that name an unknown or completed id.
+TEST(ElicitationCompletion, TheClientIgnoresUnknownAndRepeatedIds) {
+    Session session(false, true);
+    answer_with(session, json::object());
+    std::vector<std::string> completed;
+    session.client().on_elicitation_complete(
+        [&completed](const mcp::ElicitationCompleteNotificationParams& params) {
+            completed.push_back(params.elicitationId);
+        });
+    bool marker = false;
+    session.client().on_notification("notifications/tools/list_changed",
+                                     [&marker](const json&) { marker = true; });
+    session.run([&]() -> mcp::Task<void> {
+        static_cast<void>(co_await call(session.client(), "open_with_id", arg("id", "flow-4")));
+        auto server_end = session.server_transport();
+        for (const char* id : {"unknown", "flow-4", "flow-4"}) {
+            const auto wire = std::make_shared<const std::string>(json{
+                {"jsonrpc", "2.0"},
+                {"method", "notifications/elicitation/complete"},
+                {"params", {{"elicitationId", id}}}}.dump());
+            co_await server_end->write_message(*wire);
+        }
+        const auto last = std::make_shared<const std::string>(
+            json{{"jsonrpc", "2.0"}, {"method", "notifications/tools/list_changed"}}.dump());
+        co_await server_end->write_message(*last);
+        std::function<bool()> seen = [&marker] { return marker; };
+        co_await wait_until(std::move(seen));
+    });
+    EXPECT_EQ(completed, std::vector<std::string>{"flow-4"});
+}
+
+// A 2025-11-25 server answers -32042 when the user must complete an elicitation first; the client
+// keeps the id, so the completion that follows reaches the callback.
+TEST(ElicitationCompletion, AnElicitationFromAUrlElicitationErrorIsCompleted) {
+    Session session(false, true);
+    std::vector<std::string> completed;
+    session.client().on_elicitation_complete(
+        [&completed](const mcp::ElicitationCompleteNotificationParams& params) {
+            completed.push_back(params.elicitationId);
+        });
+    int code = 0;
+    std::optional<std::vector<mcp::ElicitRequestURLParams>> required;
+    bool sent = false;
+    session.run([&]() -> mcp::Task<void> {
+        try {
+            static_cast<void>(co_await call(session.client(), "needs_sign_in", json::object()));
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+            required = mcp::url_elicitations_required(error);
+        }
+        const auto id = std::make_shared<const std::string>("sign-in-1");
+        sent = co_await session.server().notify_elicitation_complete(*id);
+        std::function<bool()> arrived = [&completed] { return !completed.empty(); };
+        co_await wait_until(std::move(arrived));
+    });
+    EXPECT_EQ(code, jsonrpc::g_URL_ELICITATION_REQUIRED);
+    ASSERT_TRUE(required.has_value());
+    ASSERT_EQ(required->size(), 1U);
+    EXPECT_EQ(required->at(0).elicitationId, "sign-in-1");
+    EXPECT_EQ(required->at(0).url, "https://example.com/sign-in");
+    EXPECT_EQ(required->at(0).message, "Please sign in");
+    EXPECT_TRUE(sent);
+    EXPECT_EQ(completed, std::vector<std::string>{"sign-in-1"});
+}
+
+TEST(UrlElicitationsRequired, ReadsOnlyAUrlElicitationErrorThatListsUrlElicitations) {
+    const auto elicitation = json::parse(
+        R"({"mode":"url","message":"Sign in","url":"https://example.com","elicitationId":"e-1"})");
+    const auto data = [](json listed) { return json{{"elicitations", std::move(listed)}}; };
+
+    const auto required = mcp::url_elicitations_required(mcp::McpError(
+        jsonrpc::g_URL_ELICITATION_REQUIRED, "Sign in first", data(json::array({elicitation}))));
+    ASSERT_TRUE(required.has_value());
+    ASSERT_EQ(required->size(), 1U);
+    EXPECT_EQ(json(required->at(0)), elicitation);
+
+    EXPECT_FALSE(mcp::url_elicitations_required(mcp::McpError(jsonrpc::g_INTERNAL_ERROR, "Failed",
+                                                              data(json::array({elicitation}))))
+                     .has_value());
+    EXPECT_FALSE(
+        mcp::url_elicitations_required(mcp::McpError(jsonrpc::g_URL_ELICITATION_REQUIRED, "No data"))
+            .has_value());
+    auto without_id = elicitation;
+    without_id.erase("elicitationId");
+    auto form = elicitation;
+    form["mode"] = "form";
+    for (const auto& listed : {json::object(), json::array({without_id}), json::array({form}),
+                               json::array({"not an object"})}) {
+        EXPECT_FALSE(mcp::url_elicitations_required(
+                         mcp::McpError(jsonrpc::g_URL_ELICITATION_REQUIRED, "Bad data", data(listed)))
+                         .has_value())
+            << listed;
+    }
 }
 
 }  // namespace client_elicitation_test

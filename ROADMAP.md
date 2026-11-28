@@ -29,11 +29,11 @@ Each item is Planned, In progress or Done.
 
 | Work item | State |
 |---|---|
-| Send `notifications/elicitation/complete` to the client that started a URL-mode elicitation, and give clients a handler for it | Planned |
-| Return the URL elicitation required error (`-32042`) from a server handler, and read its elicitations on the client | Planned |
-| Typed client calls for resource subscribe, resource unsubscribe and logging level | Planned |
+| Send `notifications/elicitation/complete` to the client that started a URL-mode elicitation, and give clients a handler for it | Done |
+| Return the URL elicitation required error (`-32042`) from a server handler, and read its elicitations on the client | Done |
+| Typed client calls for resource subscribe, resource unsubscribe and logging level | Done |
 | The legacy HTTP+SSE transport for clients and servers, marked deprecated from the start (SEP-2596) | Planned |
-| A server call that sends any notification to legacy sessions, and an observer for `subscriptions/listen` streams | Planned |
+| A server call that sends any notification to legacy sessions, and an observer for `subscriptions/listen` streams | Done |
 | Compiled examples for the features that lack one: image, audio and embedded-resource tool results, binary resources, embedded resources and images in prompts, URL-mode elicitation and its completion, roots change notifications, and resource-template completion | Planned |
 | A feature matrix that links each tier-assessment feature to its API reference, guide and example, checked in CI | Planned |
 
@@ -42,9 +42,9 @@ Each item is Planned, In progress or Done.
 | Work item | State |
 |---|---|
 | Fall back to the 2025-03-26 authorization discovery when a server publishes no protected resource metadata, so the runner's 2025-03-26 back-compat scenarios pass | Planned |
-| Send the SSE priming event on POST streams of 2025-11-25 sessions | Planned |
-| Run the pending and back-compat scenarios in CI | Planned |
-| Make the conformance and repository guard checks block merges | Planned |
+| Send the SSE priming event on POST streams of 2025-11-25 sessions | Done |
+| Run the pending and back-compat scenarios in CI | In progress |
+| Make the conformance and repository guard checks block merges | Done |
 | Install the 2026-07-28 runner from a lockfile and run the 2025-11-25 and 2026-07-28 requirement sets | Planned |
 | Make the 2026-07-28 run block merges once it has stayed green on main | Planned |
 
@@ -60,9 +60,9 @@ warn when they are used.
 
 | Work item | State |
 |---|---|
-| Mark the APIs of these features `[[deprecated]]` with the SEP and the earliest removal, with a macro that turns the attribute off | Planned |
-| Report the first use of a deprecated feature through a replaceable handler, printing to standard error by default | Planned |
-| A CI build that fails on deprecation warnings in the SDK's own code | Planned |
+| Mark the APIs of these features `[[deprecated]]` with the SEP and the earliest removal, with a macro that turns the attribute off | Done |
+| Report the first use of a deprecated feature through a replaceable handler, printing to standard error by default | Done |
+| A CI build that fails on deprecation warnings in the SDK's own code | Done |
 
 ### Authorization extensions
 

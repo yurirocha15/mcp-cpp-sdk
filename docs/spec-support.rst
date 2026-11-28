@@ -266,35 +266,47 @@ Extensions
 Deprecated Features
 -------------------
 
-Revision 2026-07-28 deprecates these features. They stay in the specification
-until at least the first revision released on or after 2027-07-28, and peers of
-earlier revisions still use them, so the SDK keeps them. Their APIs are marked
-deprecated in the API reference without a compiler warning.
+The specification deprecates these features and lists them in its registry of
+deprecated features. Peers of earlier revisions still use them, so the SDK
+keeps them. Their APIs warn at compile time, and the SDK reports their first
+use at run time; :doc:`guides/deprecations` shows both and how to turn them off.
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 40 35
+   :widths: 22 14 32 32
 
    * - Feature
+     - Deprecated by
      - Migration path the specification names
      - In the SDK
    * - Roots
+     - SEP-2577, 2026-07-28
      - Pass directories or files through tool parameters, resource URIs or
        server configuration.
      - ``Context::request_roots()``, ``Client::set_roots()``,
        ``Client::on_roots_list()``
    * - Sampling
+     - SEP-2577, 2026-07-28
      - Integrate directly with LLM provider APIs.
      - ``Context::sample_llm()``, ``Client::on_sampling()``
    * - Logging
+     - SEP-2577, 2026-07-28
      - Log to standard error on stdio; use OpenTelemetry for observability.
      - ``Context::log()``, ``Context::log_info()``,
-       ``RequestOptions::log_level``
+       ``Server::get_log_level()``, ``RequestOptions::log_level``
    * - Dynamic client registration
+     - PR #2858, 2026-07-28
      - Client ID metadata documents.
      - Used last, after pre-registered credentials, a client ID metadata
-       document and a stored registration. :doc:`concepts/oauth`
+       document and a stored registration; ``build_registration_request()``.
+       :doc:`concepts/oauth`
    * - ``includeContext`` values ``thisServer`` and ``allServers``
+     - SEP-2596, 2025-11-25
      - Omit the field or use ``"none"``.
-     - A server sends them only to a client that declares
+     - ``mcp::constants::include_context::g_THIS_SERVER`` and
+       ``g_ALL_SERVERS``. A server sends them only to a client that declares
        ``sampling.context``.
+
+The earliest removal of Roots, Sampling, Logging and dynamic client
+registration is the first revision released on or after 2027-07-28; the
+``includeContext`` values go with Sampling.

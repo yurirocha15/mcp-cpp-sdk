@@ -44,6 +44,11 @@ EXPECTED_SCENARIOS = {
         "tools-call-with-progress",
         "tools-list",
     },
+    # The pending suite: scenarios the runner runs but does not count towards a tier.
+    "server-pending": {
+        "json-schema-2020-12",
+        "server-sse-polling",
+    },
     "client": {
         "auth/basic-cimd",
         "auth/metadata-default",
@@ -70,7 +75,7 @@ EXPECTED_SCENARIOS = {
 def scenario_name(suite: str, root: Path, checks_file: Path) -> str:
     name = checks_file.parent.relative_to(root).as_posix()
     name = TIMESTAMP_SUFFIX.sub("", name)
-    if suite == "server" and name.startswith("server-"):
+    if suite.startswith("server") and name.startswith("server-"):
         name = name.removeprefix("server-")
     return name
 
@@ -138,15 +143,18 @@ def read_metadata(output_dir: Path) -> dict[str, str]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server-results", type=Path, required=True)
+    parser.add_argument("--server-pending-results", type=Path, required=True)
     parser.add_argument("--client-results", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--server-status", type=int, required=True)
+    parser.add_argument("--server-pending-status", type=int, required=True)
     parser.add_argument("--client-status", type=int, required=True)
     args = parser.parse_args()
 
     metadata = read_metadata(args.output_dir)
     suites = {
         "server": summarize_suite("server", args.server_results),
+        "server-pending": summarize_suite("server-pending", args.server_pending_results),
         "client": summarize_suite("client", args.client_results),
     }
     summary = {
@@ -154,6 +162,7 @@ def main() -> None:
         "protocol_version": metadata["protocol_version"],
         "runner_exit_status": {
             "server": args.server_status,
+            "server-pending": args.server_pending_status,
             "client": args.client_status,
         },
         "suites": suites,
@@ -171,12 +180,13 @@ def main() -> None:
         "it does not mean that an MCP SDK tier has been achieved. The pass rate follows the",
         "tier-check convention: warnings do not fail a scenario, while missing evidence does.",
         "The runner status comes from the runner's baseline check, which also fails a scenario",
-        "on a warning.",
+        "on a warning. The server-pending row is the runner's pending suite, which no tier",
+        "counts; its status also covers check_pending_sse.py.",
         "",
         "| Suite | Passed scenarios | Total scenarios | Pass rate | Runner status |",
         "|---|---:|---:|---:|---:|",
     ]
-    for suite in ("server", "client"):
+    for suite in ("server", "server-pending", "client"):
         result = suites[suite]
         markdown.append(
             f"| {suite} | {result['passed']} | {result['total']} | "

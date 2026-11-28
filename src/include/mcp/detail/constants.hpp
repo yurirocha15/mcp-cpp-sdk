@@ -12,6 +12,32 @@
 
 namespace mcp::detail::constants {
 
+/// Deprecation notices (DeprecationReporter).
+namespace deprecation {
+
+/// Set to a non-empty value, it stops the notices that have no handler from going to standard error.
+inline constexpr std::string_view g_SILENCE_ENV = "MCP_SILENCE_DEPRECATION_NOTICES";
+/// The earliest removal of the features protocol revision 2026-07-28 deprecates.
+inline constexpr std::string_view g_REVISION_ON_OR_AFTER_2027_07_28 =
+    "first revision released on or after 2027-07-28";
+
+}  // namespace deprecation
+
+/// URL-mode elicitations and their completion notifications.
+namespace elicitation {
+
+/// Most URL-mode elicitations the sessions of one server keep a record of, to route their
+/// completion notifications.
+inline constexpr std::size_t g_MAX_RECORDS = 4096;
+/// Most of those records one session keeps; its oldest goes first.
+inline constexpr std::size_t g_MAX_RECORDS_PER_SESSION = 256;
+/// How long a record lasts: an out-of-band flow, such as a sign-in, can take hours.
+inline constexpr std::chrono::hours g_RECORD_TTL{24};
+/// Most URL-mode elicitation ids a client remembers, to tell the completions it expects.
+inline constexpr std::size_t g_MAX_CLIENT_IDS = 1024;
+
+}  // namespace elicitation
+
 /// Alphabets and bit arithmetic for hexadecimal, base64, base64url and percent encoding.
 namespace encoding {
 

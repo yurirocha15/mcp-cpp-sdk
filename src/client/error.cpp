@@ -1,4 +1,5 @@
 #include <mcp/client/error.hpp>
+#include <mcp/core/constants.hpp>
 
 #include "mcp/detail/text/diagnostic_text.hpp"
 
@@ -6,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace mcp {
 
@@ -20,5 +22,30 @@ McpError::McpError(Error error)
 
 McpError::McpError(int code, std::string message, std::optional<nlohmann::json> data)
     : McpError(Error{.code = code, .message = std::move(message), .data = std::move(data)}) {}
+
+std::optional<std::vector<ElicitRequestURLParams>> url_elicitations_required(const McpError& error) {
+    const auto& data = error.data();
+    if (error.code() != constants::jsonrpc::g_URL_ELICITATION_REQUIRED || !data || !data->is_object()) {
+        return std::nullopt;
+    }
+    const auto listed = data->find("elicitations");
+    if (listed == data->end() || !listed->is_array()) {
+        return std::nullopt;
+    }
+    std::vector<ElicitRequestURLParams> elicitations;
+    elicitations.reserve(listed->size());
+    try {
+        for (const auto& item : *listed) {
+            auto elicitation = item.get<ElicitRequestURLParams>();
+            if (elicitation.mode != "url" || !elicitation.elicitationId) {
+                return std::nullopt;
+            }
+            elicitations.push_back(std::move(elicitation));
+        }
+    } catch (const nlohmann::json::exception&) {
+        return std::nullopt;
+    }
+    return elicitations;
+}
 
 }  // namespace mcp

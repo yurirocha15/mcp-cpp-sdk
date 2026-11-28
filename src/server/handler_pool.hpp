@@ -403,6 +403,21 @@ struct ContextRouting {
         context.budget_ = std::move(budget);
     }
 
+    /// Records the URL-mode elicitations @p context sends through @p recorder, and completes them
+    /// through @p completer; see Context::notify_elicitation_complete().
+    static void set_elicitation_routes(Context& context,
+                                       std::function<void(const std::string&)> recorder,
+                                       std::function<Task<bool>(const std::string&)> completer) {
+        context.elicitation_recorder_ = std::move(recorder);
+        context.elicitation_completer_ = std::move(completer);
+    }
+
+    /// Reports @p context's use of a deprecated feature to @p reporter.
+    static void set_deprecation_reporter(Context& context,
+                                         std::shared_ptr<DeprecationReporter> reporter) {
+        context.deprecations_ = std::move(reporter);
+    }
+
     /**
      * @brief Sends @p context's notifications and requests to the client from @p loop, the
      *        executor the server serves the request on, while that loop's context exists.

@@ -412,6 +412,7 @@ Task<nlohmann::json> Client::Impl::send_request_wire(std::shared_ptr<Impl> state
     }
 
     if (error) {
+        state->remember_required_url_elicitations(*error);
         throw McpError(std::move(*error));
     }
     if (write_error) {
@@ -753,6 +754,9 @@ Task<void> Client::Impl::dispatch_incoming_request(std::shared_ptr<Impl> state,
     if (request_handler) {
         auto params = detail::has_json_value(json_message, "params") ? json_message.at("params")
                                                                      : nlohmann::json::object();
+        if (method == methods::g_ELICITATION_CREATE) {
+            state->remember_url_elicitation(params);
+        }
         nlohmann::json error_payload;
         nlohmann::json result;
         try {
@@ -918,6 +922,7 @@ std::optional<nlohmann::json> Client::Impl::with_request_meta(
         meta[std::string(mcp::constants::meta::g_META_CLIENT_INFO)] = client_info;
     }
     if (level) {
+        deprecations.report(DeprecatedFeature::eLogging);
         meta[std::string(mcp::constants::meta::g_META_LOG_LEVEL)] = *level;
     }
     merged["_meta"] = std::move(meta);

@@ -41,13 +41,24 @@ whichever is longer. Protocol features follow the MCP feature lifecycle;
 deprecated features remain available for their required compatibility window
 and include migration guidance.
 
-A deprecated declaration is marked `MCP_DEPRECATED("use X; removal no earlier
-than Y")`, so users get a compiler warning, and has an `@deprecated` Doxygen tag.
-CI rejects an `@deprecated` tag without the attribute. A protocol feature that
-peers of an older revision still need is deprecated in its documentation only,
-with `doc-only` after the tag, until the first release after the earliest
-removal date the protocol revision gives. Every deprecation is listed under
-`Deprecated` in `CHANGELOG.md` with the release that may remove it.
+A deprecated declaration is marked `MCP_DEPRECATED(...)`, so users get a
+compiler warning, and has an `@deprecated` Doxygen tag. The message of an SDK
+deprecation reads `use X; removal no earlier than Y`. The message of a protocol
+feature names the proposal that deprecates it, the revision that does, its
+earliest removal and the migration path, as the specification's registry of
+deprecated features gives them. The SDK keeps a deprecated protocol feature at
+least until its earliest removal, and reports its first use at run time as
+well (see the Deprecations guide). Defining `MCP_DISABLE_DEPRECATION_ATTRIBUTES`
+turns the attribute off; the run-time notice stays.
+
+`scripts/deprecation_registry.json` lists every deprecation. CI rejects a
+listed declaration without the attribute and its required message, an
+attribute that no entry lists, a public identifier of a deprecated feature that
+the registry does not classify, and an `@deprecated` tag without the attribute.
+A data member or an enumerator whose attribute would warn in code that does
+not use it is listed as reported at run time only, with the reason. Every
+deprecation is listed under `Deprecated` in `CHANGELOG.md` with the release or
+protocol revision that may remove it.
 
 ## Release evidence
 

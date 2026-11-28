@@ -152,6 +152,7 @@ TEST_F(HttpResumabilityTest, PostResponseIncludesEventIdInSse) {
     });
 
     bool has_event_id = false;
+    bool answered_in_one_body = false;
     std::string client_received;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
         beast::tcp_stream stream(io_ctx_.get_executor());
@@ -174,10 +175,12 @@ TEST_F(HttpResumabilityTest, PostResponseIncludesEventIdInSse) {
         co_await http::async_read(stream, response_buffer, response, asio::use_awaitable);
 
         auto content_type = std::string(response[http::field::content_type]);
+        answered_in_one_body = !response.chunked();
         if (content_type.find("text/event-stream") != std::string::npos) {
             auto body = response.body();
             has_event_id = body.find("id: ") != std::string::npos;
-            auto data_pos = body.find("data: ");
+            // The first event of a 2025-11-25 stream is its priming event, whose data is empty.
+            auto data_pos = body.find("data: {");
             if (data_pos != std::string::npos) {
                 auto data_start = data_pos + 6;
                 auto data_end = body.find('\n', data_start);
@@ -193,6 +196,7 @@ TEST_F(HttpResumabilityTest, PostResponseIncludesEventIdInSse) {
     io_ctx_.run();
 
     EXPECT_TRUE(has_event_id);
+    EXPECT_TRUE(answered_in_one_body);
     auto parsed = nlohmann::json::parse(client_received);
     EXPECT_EQ(parsed["result"], "pong");
 }
