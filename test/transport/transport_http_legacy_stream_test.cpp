@@ -31,6 +31,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -62,7 +63,32 @@ mcp::Task<bool> wait_until(std::function<bool()> condition) {
 struct Event {
     std::string id;
     std::string data;
+    /// The value of the event's `retry` field, or empty.
+    std::string retry;
 };
+
+/// The first event of the SSE body @p body.
+Event first_event(const std::string& body) {
+    Event event;
+    const auto block = body.substr(0, body.find("\n\n"));
+    std::size_t offset = 0;
+    while (offset <= block.size()) {
+        auto line_end = block.find('\n', offset);
+        if (line_end == std::string::npos) {
+            line_end = block.size();
+        }
+        const auto line = block.substr(offset, line_end - offset);
+        if (line.starts_with("id: ")) {
+            event.id = line.substr(4);
+        } else if (line.starts_with("data: ")) {
+            event.data += line.substr(6);
+        } else if (line.starts_with("retry: ")) {
+            event.retry = line.substr(7);
+        }
+        offset = line_end + 1;
+    }
+    return event;
+}
 
 /// One HTTP exchange whose answer is read an event at a time, as a client reads a stream.
 class Exchange {
@@ -180,6 +206,9 @@ class Exchange {
                     has_field = true;
                 } else if (line == "data:") {
                     has_field = true;
+                } else if (line.starts_with("retry: ")) {
+                    event.retry = line.substr(7);
+                    has_field = true;
                 }
                 offset = line_end + 1;
             }
@@ -208,6 +237,8 @@ struct Reply {
     unsigned status{0};
     std::string session_id;
     std::string body;
+    /// Whether the answer came as a chunked stream rather than one body.
+    bool chunked{false};
 };
 
 /// The messages of @p exchange's stream from here to its end.
@@ -224,7 +255,8 @@ mcp::Task<std::vector<json>> rest_of(std::shared_ptr<Exchange> exchange) {
 
 /// Sends one request and reads the whole answer.
 mcp::Task<Reply> send(const asio::any_io_executor& executor, unsigned short port, http::verb verb,
-                      std::string body, std::string session_id) {
+                      std::string body, std::string session_id,
+                      const char* protocol_version = g_version) {
     beast::tcp_stream stream(executor);
     auto resolver = asio::ip::tcp::resolver(executor);
     auto endpoints =
@@ -234,7 +266,7 @@ mcp::Task<Reply> send(const asio::any_io_executor& executor, unsigned short port
     request.set(http::field::host, "127.0.0.1");
     request.set(http::field::accept, "application/json, text/event-stream");
     request.set(http::field::content_type, "application/json");
-    request.set("MCP-Protocol-Version", g_version);
+    request.set("MCP-Protocol-Version", protocol_version);
     if (!session_id.empty()) {
         request.set("Mcp-Session-Id", session_id);
     }
@@ -248,6 +280,7 @@ mcp::Task<Reply> send(const asio::any_io_executor& executor, unsigned short port
     reply.status = response.result_int();
     reply.session_id = std::string(response["Mcp-Session-Id"]);
     reply.body = response.body();
+    reply.chunked = response.chunked();
     co_return reply;
 }
 
@@ -273,23 +306,24 @@ mcp::Task<unsigned> get_status(const asio::any_io_executor& executor, unsigned s
     co_return response.result_int();
 }
 
-json initialize_request() {
+json initialize_request(const char* version = g_version) {
     return {{"jsonrpc", "2.0"},
             {"id", 1},
             {"method", "initialize"},
             {"params",
-             {{"protocolVersion", g_version},
+             {{"protocolVersion", version},
               {"capabilities", {{"elicitation", json::object()}}},
               {"clientInfo", {{"name", "raw"}, {"version", "1"}}}}}};
 }
 
-/// Starts a session as a client does, and returns its id.
-mcp::Task<std::string> start_session(const asio::any_io_executor& executor, unsigned short port) {
+/// Starts a session of @p version as a client does, and returns its id.
+mcp::Task<std::string> start_session(const asio::any_io_executor& executor, unsigned short port,
+                                     const char* version = g_version) {
     // Named: GCC mishandles a temporary in a co_await operand.
-    const auto initialize = initialize_request().dump();
-    const auto reply = co_await send(executor, port, http::verb::post, initialize, {});
+    const auto initialize = initialize_request(version).dump();
+    const auto reply = co_await send(executor, port, http::verb::post, initialize, {}, version);
     const auto notification = json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}.dump();
-    co_await send(executor, port, http::verb::post, notification, reply.session_id);
+    co_await send(executor, port, http::verb::post, notification, reply.session_id, version);
     co_return reply.session_id;
 }
 
@@ -302,6 +336,16 @@ json call_tool(int id, const std::string& name, json arguments = json::object())
             {"id", id},
             {"method", "tools/call"},
             {"params", {{"name", name}, {"arguments", std::move(arguments)}}}};
+}
+
+/// The SSE body of a tools/call that a session of @p version answers at once, sent with
+/// @p header as its MCP-Protocol-Version. The caller sets Shared::released first.
+mcp::Task<std::string> answered_post(const asio::any_io_executor& executor, unsigned short port,
+                                     const char* version, const char* header) {
+    const auto session = co_await start_session(executor, port, version);
+    const auto body = call_tool(2, "wait", json{{"tag", "now"}}).dump();
+    const auto reply = co_await send(executor, port, http::verb::post, body, session, header);
+    co_return reply.body;
 }
 
 std::string text_of(const json& response) {
@@ -430,10 +474,14 @@ class LegacyStreamTest : public ::testing::Test {
         });
     }
 
-    std::unique_ptr<mcp::StreamableHttpSessionManager> make_manager(unsigned short port) {
+    std::unique_ptr<mcp::StreamableHttpSessionManager> make_manager(
+        unsigned short port, std::optional<mcp::LegacyStreamOptions> legacy = std::nullopt) {
         auto manager = std::make_unique<mcp::StreamableHttpSessionManager>(
             io_ctx_.get_executor(), "127.0.0.1", port,
             [shared = shared_](const mcp::Executor&) { return make_server(shared); });
+        if (legacy) {
+            manager->set_legacy_stream_options(*legacy);
+        }
         mcp_test::spawn_detached(io_ctx_, manager->listen());
         return manager;
     }
@@ -897,6 +945,214 @@ TEST_F(LegacyStreamTest, HttpServerTransportRefusesAGetThatDoesNotAcceptEventStr
 
     EXPECT_EQ(json_only, 406U);
     EXPECT_EQ(no_accept, 406U);
+}
+
+// A 2025-11-25 session starts the stream of a POST with an event that has an id and no data. The
+// session's revision decides, not the header of the request; earlier revisions have no such event.
+TEST_F(LegacyStreamTest, SessionManagerPrimesThePostStreamsOfA20251125Session) {
+    constexpr unsigned short port = 19461;
+    auto manager = make_manager(port);
+    shared_->released = true;
+    std::string current;
+    std::string old_header;
+    std::string june;
+    std::string march;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            current = co_await answered_post(executor, port, "2025-11-25", "2025-11-25");
+            old_header = co_await answered_post(executor, port, "2025-11-25", "2025-03-26");
+            june = co_await answered_post(executor, port, "2025-06-18", "2025-06-18");
+            march = co_await answered_post(executor, port, "2025-03-26", "2025-03-26");
+        },
+        [&] { manager->close(); });
+
+    for (const auto* body : {&current, &old_header}) {
+        const auto priming = first_event(*body);
+        EXPECT_FALSE(priming.id.empty()) << *body;
+        EXPECT_TRUE(priming.data.empty()) << *body;
+        EXPECT_TRUE(priming.retry.empty()) << *body;
+        EXPECT_NE(body->find("done-now"), std::string::npos) << *body;
+    }
+    for (const auto* body : {&june, &march}) {
+        EXPECT_EQ(json::parse(first_event(*body).data).value("method", ""), "notifications/message")
+            << *body;
+    }
+}
+
+// The priming event's id resumes the stream from its start: a client that left after it gets every
+// message the stream carries.
+TEST_F(LegacyStreamTest, SessionManagerResumesAPostStreamFromItsPrimingEvent) {
+    constexpr unsigned short port = 19462;
+    auto manager = make_manager(port);
+    std::optional<Event> priming;
+    std::vector<json> resumed_messages;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            const auto session = co_await start_session(executor, port);
+            auto left = std::make_shared<Exchange>(executor);
+            const auto body = call_tool(2, "wait", json{{"tag", "p"}}).dump();
+            const auto post_headers = session_headers(session);
+            co_await left->open(port, http::verb::post, body, post_headers);
+            priming = co_await left->next();
+            left->close();
+            auto headers = session_headers(session);
+            headers.emplace_back("Last-Event-ID", priming ? priming->id : std::string());
+            auto resumed = std::make_shared<Exchange>(executor);
+            const std::string no_body;
+            co_await resumed->open(port, http::verb::get, no_body, headers);
+            resumed_messages.push_back((co_await resumed->next_message()).value_or(json()));
+            shared_->released = true;
+            resumed_messages.push_back((co_await resumed->next_message()).value_or(json()));
+        },
+        [&] { manager->close(); });
+
+    ASSERT_TRUE(priming.has_value());
+    EXPECT_TRUE(priming->data.empty());
+    ASSERT_EQ(resumed_messages.size(), 2U);
+    EXPECT_EQ(resumed_messages[0]["params"]["data"], "p") << resumed_messages[0];
+    EXPECT_EQ(text_of(resumed_messages[1]), "done-p") << resumed_messages[1];
+}
+
+// LegacyStreamOptions::sse_retry goes in the first event of every primed stream; without it no
+// stream names a retry time.
+TEST_F(LegacyStreamTest, SessionManagerWritesTheRetryTimeItIsGiven) {
+    constexpr unsigned short port = 19463;
+    auto manager =
+        make_manager(port, mcp::LegacyStreamOptions{.prime_post_streams = true,
+                                                    .sse_retry = std::chrono::milliseconds(1500)});
+    shared_->released = true;
+    std::string post;
+    std::optional<Event> get_priming;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            post = co_await answered_post(executor, port, "2025-11-25", "2025-11-25");
+            const auto session = co_await start_session(executor, port);
+            auto get = std::make_shared<Exchange>(executor);
+            const auto headers = session_headers(session);
+            const std::string no_body;
+            co_await get->open(port, http::verb::get, no_body, headers);
+            get_priming = co_await get->next();
+        },
+        [&] { manager->close(); });
+
+    const auto priming = first_event(post);
+    EXPECT_EQ(priming.retry, "1500") << post;
+    EXPECT_TRUE(priming.data.empty()) << post;
+    // Only the first event carries it.
+    EXPECT_EQ(post.find("retry:"), post.rfind("retry:")) << post;
+    ASSERT_TRUE(get_priming.has_value());
+    EXPECT_EQ(get_priming->retry, "1500");
+}
+
+// The priming event goes ahead of the stream's first message, so a POST answered at once is still
+// one body rather than a stream opened for the priming event alone.
+TEST_F(LegacyStreamTest, SessionManagerKeepsAPostAnsweredAtOnceInOneBody) {
+    constexpr unsigned short port = 19465;
+    auto manager = make_manager(port);
+    Reply listed;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            const auto session = co_await start_session(executor, port);
+            const json list = {{"jsonrpc", "2.0"}, {"id", 3}, {"method", "tools/list"}};
+            listed = co_await send(executor, port, http::verb::post, list.dump(), session);
+        },
+        [&] { manager->close(); });
+
+    EXPECT_EQ(listed.status, 200U);
+    EXPECT_FALSE(listed.chunked) << listed.body;
+    const auto priming = first_event(listed.body);
+    EXPECT_FALSE(priming.id.empty()) << listed.body;
+    EXPECT_TRUE(priming.data.empty()) << listed.body;
+    EXPECT_NE(listed.body.find("\"tools\""), std::string::npos) << listed.body;
+}
+
+TEST_F(LegacyStreamTest, SessionManagerCanLeaveThePostStreamsUnprimed) {
+    constexpr unsigned short port = 19464;
+    auto manager = make_manager(
+        port, mcp::LegacyStreamOptions{.prime_post_streams = false, .sse_retry = std::nullopt});
+    shared_->released = true;
+    std::string post;
+    std::optional<Event> get_priming;
+    run(
+        [&]() -> mcp::Task<void> {
+            const auto executor = io_ctx_.get_executor();
+            post = co_await answered_post(executor, port, "2025-11-25", "2025-11-25");
+            const auto session = co_await start_session(executor, port);
+            auto get = std::make_shared<Exchange>(executor);
+            const auto headers = session_headers(session);
+            const std::string no_body;
+            co_await get->open(port, http::verb::get, no_body, headers);
+            get_priming = co_await get->next();
+        },
+        [&] { manager->close(); });
+
+    EXPECT_EQ(json::parse(first_event(post).data).value("method", ""), "notifications/message") << post;
+    EXPECT_EQ(post.find("retry:"), std::string::npos) << post;
+    // The GET stream still starts with one.
+    ASSERT_TRUE(get_priming.has_value());
+    EXPECT_TRUE(get_priming->data.empty());
+}
+
+// HttpServerTransport primes the POST streams of a 2025-11-25 session the same way.
+TEST_F(LegacyStreamTest, HttpServerTransportPrimesThePostStreamsOfA20251125Session) {
+    const auto answered = [this](const char* version, std::optional<mcp::LegacyStreamOptions> legacy) {
+        auto transport =
+            std::make_shared<mcp::HttpServerTransport>(io_ctx_.get_executor(), "127.0.0.1", 0);
+        if (legacy) {
+            transport->set_legacy_stream_options(*legacy);
+        }
+        const auto port = transport->port();
+        auto server = make_server(shared_);
+        mcp_test::spawn_detached(io_ctx_, transport->listen());
+        mcp_test::spawn_detached(io_ctx_, [&server, transport, this]() -> mcp::Task<void> {
+            co_await server->run(transport, io_ctx_.get_executor());
+        });
+        std::string body;
+        io_ctx_.restart();
+        run(
+            [&]() -> mcp::Task<void> {
+                body = co_await answered_post(io_ctx_.get_executor(), port, version, version);
+            },
+            [&] { transport->close(); });
+        return body;
+    };
+    shared_->released = true;
+    const auto primed = answered("2025-11-25", std::nullopt);
+    const auto with_retry =
+        answered("2025-11-25", mcp::LegacyStreamOptions{.prime_post_streams = true,
+                                                        .sse_retry = std::chrono::milliseconds(250)});
+    const auto unprimed = answered(
+        "2025-11-25", mcp::LegacyStreamOptions{.prime_post_streams = false, .sse_retry = std::nullopt});
+    const auto june = answered("2025-06-18", std::nullopt);
+
+    EXPECT_FALSE(first_event(primed).id.empty()) << primed;
+    EXPECT_TRUE(first_event(primed).data.empty()) << primed;
+    EXPECT_NE(primed.find("done-now"), std::string::npos) << primed;
+    EXPECT_EQ(primed.find("retry:"), std::string::npos) << primed;
+    EXPECT_EQ(first_event(with_retry).retry, "250") << with_retry;
+    EXPECT_FALSE(first_event(unprimed).data.empty()) << unprimed;
+    EXPECT_FALSE(first_event(june).data.empty()) << june;
+}
+
+TEST(LegacyStreamOptionsTest, ARetryTimeMustBePositive) {
+    asio::io_context io_ctx;
+    mcp::StreamableHttpSessionManager manager(
+        io_ctx.get_executor(), "127.0.0.1", 0, [](const mcp::Executor&) {
+            return std::make_unique<mcp::Server>(mcp::Implementation{"s", "1"},
+                                                 mcp::ServerCapabilities{});
+        });
+    mcp::HttpServerTransport transport(io_ctx.get_executor(), "127.0.0.1", 0);
+    for (const auto retry : {std::chrono::milliseconds(0), std::chrono::milliseconds(-1)}) {
+        const mcp::LegacyStreamOptions options{.prime_post_streams = true, .sse_retry = retry};
+        EXPECT_THROW(manager.set_legacy_stream_options(options), std::invalid_argument);
+        EXPECT_THROW(transport.set_legacy_stream_options(options), std::invalid_argument);
+    }
+    EXPECT_NO_THROW(manager.set_legacy_stream_options(mcp::LegacyStreamOptions{}));
+    EXPECT_NO_THROW(transport.set_legacy_stream_options(mcp::LegacyStreamOptions{}));
 }
 
 }  // namespace

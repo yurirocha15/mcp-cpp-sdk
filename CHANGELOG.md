@@ -34,6 +34,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   line on standard error; setting `MCP_SILENCE_DEPRECATION_NOTICES` stops it.
 - `Context::elicit()` throws `std::invalid_argument` for an `elicitationId` that
   another session has in progress.
+- In a 2025-11-25 session, a POST answered as an SSE stream starts with a priming
+  event; `set_legacy_stream_options()` turns it off or adds a `retry` field.
 
 ### Deprecated
 

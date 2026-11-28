@@ -235,6 +235,23 @@ struct StreamOptions {
 };
 
 /**
+ * @brief How an HTTP server transport writes the SSE streams of a session of protocol revision
+ *        2025-11-25 or earlier.
+ *
+ * @details The session's negotiated revision decides, not the MCP-Protocol-Version header of a
+ * request. A GET stream of a 2025-11-25 session always starts with an event that has an id and no
+ * data, which lets the client resume it with Last-Event-ID before it has carried anything.
+ */
+struct LegacyStreamOptions {
+    /// In a 2025-11-25 session, start each POST answered as an SSE stream with such an event too.
+    /// It goes ahead of the stream's first message, so a POST answered at once is still one body.
+    bool prime_post_streams{true};
+    /// The reconnection time a primed stream asks for in its first event's `retry` field. Unset,
+    /// the field is left out and the client chooses.
+    std::optional<std::chrono::milliseconds> sse_retry;
+};
+
+/**
  * @brief Counts of what the 2026-07-28 streams of an HTTP server transport have done.
  */
 struct StreamStats {

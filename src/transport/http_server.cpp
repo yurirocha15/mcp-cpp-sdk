@@ -39,6 +39,7 @@
 #include <boost/beast/http.hpp>
 #include <chrono>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -110,8 +111,15 @@ struct HttpServerTransport::Impl {
         std::uint64_t generation{0};
         /// Woken when the stream has something new.
         std::shared_ptr<boost::asio::steady_timer> signal;
-        /// Events to write before any other: those a resumed stream missed, or the priming event.
+        /// Events to write before any other: those a resumed stream missed, or the priming event
+        /// of the GET stream.
         SseEventList replay;
+        /// The priming event of a POST's stream, written ahead of the first event the stream
+        /// carries, so that a POST answered at once still gets one complete response.
+        SseEventList priming;
+        /// The `retry` field of the stream's first event, LegacyStreamOptions::sse_retry for a
+        /// primed stream.
+        std::optional<std::chrono::milliseconds> retry;
         /// Opens the stream at once rather than at its first event, as a GET does.
         bool open_at_once{false};
     };
@@ -293,15 +301,12 @@ struct HttpServerTransport::Impl {
         return response;
     }
 
-    static StringResponse make_sse_replay_response(const detail::IncomingRequest& request,
-                                                   const SseEventList& events) {
+    static StringResponse make_sse_replay_response(
+        const detail::IncomingRequest& request, const SseEventList& events,
+        std::optional<std::chrono::milliseconds> retry = std::nullopt) {
         std::string sse_body;
         for (const auto& [id, data] : events) {
-            sse_body += "id: ";
-            sse_body += id;
-            sse_body += "\ndata: ";
-            sse_body += data;
-            sse_body += "\n\n";
+            detail::append_sse_event(sse_body, id, data, std::exchange(retry, std::nullopt));
         }
         StringResponse response{http::status::ok, request.version()};
         set_common_headers(response, request.keep_alive());
@@ -1021,10 +1026,18 @@ struct HttpServerTransport::Impl {
             auto& pending = pending_responses.at(request_id_key);
             pending.streams = true;
             pending.stream = std::to_string(++response_streams);
-            enqueue_incoming_message(request.body(), std::move(principal));
             auto legacy = std::make_shared<LegacyStream>();
             legacy->request_key = request_id_key;
             legacy->signal = *timer_signal;
+            // In a 2025-11-25 session the stream starts with an event that has an id and no data,
+            // stored before the request reaches the server so that it comes first.
+            if (legacy_stream_options.prime_post_streams &&
+                negotiated_protocol_version >= "2025-11-25") {
+                auto id = event_store.append(std::string(), pending.stream);
+                legacy->priming.emplace_back(std::move(id), std::string());
+                legacy->retry = legacy_stream_options.sse_retry;
+            }
+            enqueue_incoming_message(request.body(), std::move(principal));
             co_return legacy;
         }
         enqueue_incoming_message(request.body(), std::move(principal));
@@ -1214,6 +1227,7 @@ struct HttpServerTransport::Impl {
         if (negotiated_protocol_version >= "2025-11-25") {
             auto id = event_store.append(std::string(), get_stream);
             legacy->replay.emplace_back(std::move(id), std::string());
+            legacy->retry = legacy_stream_options.sse_retry;
         }
         co_return legacy;
     }
@@ -1277,6 +1291,12 @@ struct HttpServerTransport::Impl {
                 }
             }
 
+            if (!events.empty() && !legacy->priming.empty()) {
+                events.insert(events.begin(), std::make_move_iterator(legacy->priming.begin()),
+                              std::make_move_iterator(legacy->priming.end()));
+                legacy->priming.clear();
+            }
+
             if (finished && !stream_open && !get) {
                 StringResponse response;
                 if (session_ended) {
@@ -1288,7 +1308,7 @@ struct HttpServerTransport::Impl {
                     response = make_error_response(request, http::status::internal_server_error,
                                                    "Missing response body for request");
                 } else if (!events.empty()) {
-                    response = make_sse_replay_response(request, events);
+                    response = make_sse_replay_response(request, events, legacy->retry);
                 } else {
                     response = make_json_response(request, http::status::ok, std::move(*response_body));
                 }
@@ -1326,11 +1346,8 @@ struct HttpServerTransport::Impl {
             if (!events.empty()) {
                 std::string text;
                 for (const auto& [id, data] : events) {
-                    text += "id: ";
-                    text += id;
-                    text += "\ndata: ";
-                    text += data;
-                    text += "\n\n";
+                    detail::append_sse_event(text, id, data,
+                                             std::exchange(legacy->retry, std::nullopt));
                 }
                 events.clear();
                 boost::system::error_code error;
@@ -1698,6 +1715,7 @@ struct HttpServerTransport::Impl {
     boost::asio::any_io_executor modern_dispatch_executor;
     /// Set before listen(); read while serving.
     StreamOptions stream_options;
+    LegacyStreamOptions legacy_stream_options;
     std::shared_ptr<detail::StreamCounters> stream_counters =
         std::make_shared<detail::StreamCounters>();
     /// The versions named when initialize arrives with a 2026-07-28 header; every version until
@@ -1801,6 +1819,13 @@ void HttpServerTransport::set_stream_options(StreamOptions options) {
     std::scoped_lock lock(impl_->configuration_mutex);
     impl_->ensure_configurable();
     impl_->stream_options = options;
+}
+
+void HttpServerTransport::set_legacy_stream_options(LegacyStreamOptions options) {
+    detail::check_legacy_stream_options(options);
+    std::scoped_lock lock(impl_->configuration_mutex);
+    impl_->ensure_configurable();
+    impl_->legacy_stream_options = options;
 }
 
 StreamStats HttpServerTransport::stream_stats() const { return impl_->stream_counters->snapshot(); }

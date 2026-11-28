@@ -63,6 +63,9 @@ jobs:
       - name: Install locked official runner
         run: npm ci --ignore-scripts --prefix conformance/runner
 
+      - name: Test the pending-suite check
+        run: PYTHONPATH=conformance python3 -m unittest -v test_check_pending_sse
+
       - name: Run pinned regression suites
         run: bash conformance/run.sh build/release build/conformance-results
 

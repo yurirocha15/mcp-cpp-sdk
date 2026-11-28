@@ -101,9 +101,10 @@ Headers modern_headers(std::optional<std::string> authorization) {
 
 /// The principal a tools/call of `whoami` reported, or the reply itself when it has none.
 std::string principal_of(const Reply& reply) {
-    // A legacy session's answer may come as an SSE event; its data line is the JSON-RPC message.
+    // A legacy session's answer may come as SSE events; the data line that is not empty holds the
+    // JSON-RPC message, after the priming event of a 2025-11-25 session.
     std::string_view text = reply.body;
-    if (const auto data = text.find("data: "); data != std::string_view::npos) {
+    if (const auto data = text.find("data: {"); data != std::string_view::npos) {
         text.remove_prefix(data + 6);
         text = text.substr(0, text.find('\n'));
     }

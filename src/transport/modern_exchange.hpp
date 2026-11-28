@@ -55,6 +55,27 @@ inline void check_stream_options(const StreamOptions& options) {
     }
 }
 
+inline void check_legacy_stream_options(const LegacyStreamOptions& options) {
+    if (options.sse_retry && options.sse_retry->count() <= 0) {
+        throw std::invalid_argument("The SSE retry time must be positive");
+    }
+}
+
+/// Appends one SSE event carrying @p data, a JSON-RPC message or nothing, to @p out, with a `retry`
+/// field when @p retry is set.
+inline void append_sse_event(std::string& out, const std::string& id, const std::string& data,
+                             std::optional<std::chrono::milliseconds> retry = std::nullopt) {
+    out += "id: ";
+    out += id;
+    if (retry) {
+        out += "\nretry: ";
+        out += std::to_string(retry->count());
+    }
+    out += "\ndata: ";
+    out += data;
+    out += "\n\n";
+}
+
 /// The answer to a 2026-07-28 request while it is produced: the notifications its handler sends
 /// and, once the server has answered, the response. Filled from the dispatch executor and read on
 /// the connection's strand, which owns `signal`.

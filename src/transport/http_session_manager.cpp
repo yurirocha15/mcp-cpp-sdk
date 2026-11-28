@@ -107,20 +107,18 @@ struct LegacyStream {
     std::uint64_t generation{0};
     /// Woken, on the connection's strand, when the stream has something new.
     std::shared_ptr<boost::asio::steady_timer> signal;
-    /// Events to write before any other: those a resumed stream missed, or the priming event.
+    /// Events to write before any other: those a resumed stream missed, or the priming event of
+    /// the GET stream.
     SseEventList replay;
+    /// The priming event of a POST's stream, written ahead of the first event the stream carries,
+    /// so that a POST answered at once still gets one complete response.
+    SseEventList priming;
+    /// The `retry` field of the stream's first event, LegacyStreamOptions::sse_retry for a primed
+    /// stream.
+    std::optional<std::chrono::milliseconds> retry;
     /// Opens the stream at once rather than at its first event, as a GET does.
     bool open_at_once{false};
 };
-
-/// Appends one SSE event carrying @p data, a JSON-RPC message or nothing, to @p out.
-inline void append_sse_event(std::string& out, const std::string& id, const std::string& data) {
-    out += "id: ";
-    out += id;
-    out += "\ndata: ";
-    out += data;
-    out += "\n\n";
-}
 
 struct SessionRuntime {
     std::string session_id;
@@ -278,10 +276,11 @@ inline StringResponse make_empty_json_response(const detail::IncomingRequest& re
 }
 
 inline StringResponse make_sse_response(const detail::IncomingRequest& request,
-                                        const SseEventList& events) {
+                                        const SseEventList& events,
+                                        std::optional<std::chrono::milliseconds> retry = std::nullopt) {
     std::string sse_body;
     for (const auto& [id, data] : events) {
-        append_sse_event(sse_body, id, data);
+        detail::append_sse_event(sse_body, id, data, std::exchange(retry, std::nullopt));
     }
     StringResponse response{http::status::ok, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
@@ -365,6 +364,7 @@ struct StreamableHttpSessionManager::Impl {
     std::shared_ptr<detail::RunControl> served_run_control_;
     std::atomic<std::uint64_t> header_mismatch_rejections_{0};
     StreamOptions stream_options_;
+    LegacyStreamOptions legacy_stream_options_;
     std::shared_ptr<detail::StreamCounters> stream_counters_ =
         std::make_shared<detail::StreamCounters>();
 
@@ -1214,6 +1214,12 @@ struct StreamableHttpSessionManager::Impl {
                 co_return false;
             }
 
+            if (!events.empty() && !legacy->priming.empty()) {
+                events.insert(events.begin(), std::make_move_iterator(legacy->priming.begin()),
+                              std::make_move_iterator(legacy->priming.end()));
+                legacy->priming.clear();
+            }
+
             if (finished && !stream_open && !get_stream) {
                 StringResponse response;
                 if (!response_body.has_value()) {
@@ -1221,7 +1227,7 @@ struct StreamableHttpSessionManager::Impl {
                         request, http::status::internal_server_error,
                         "Missing response body for request");
                 } else if (!events.empty()) {
-                    response = detail_session_mgr::make_sse_response(request, events);
+                    response = detail_session_mgr::make_sse_response(request, events, legacy->retry);
                 } else {
                     response = detail_session_mgr::make_json_response(request, http::status::ok,
                                                                       std::move(*response_body));
@@ -1257,7 +1263,8 @@ struct StreamableHttpSessionManager::Impl {
             if (!events.empty()) {
                 std::string text;
                 for (const auto& [id, data] : events) {
-                    detail_session_mgr::append_sse_event(text, id, data);
+                    detail::append_sse_event(text, id, data,
+                                             std::exchange(legacy->retry, std::nullopt));
                 }
                 events.clear();
                 if (!co_await write_chunk(stream, text)) {
@@ -1522,35 +1529,50 @@ struct StreamableHttpSessionManager::Impl {
         auto timer_signal = std::make_shared<boost::asio::steady_timer>(conn_strand);
         timer_signal->expires_at(std::chrono::steady_clock::time_point::max());
 
+        // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
+        // request of the server's own reaches it while the handler waits for the answer.
+        const auto accept_it = request.find(http::field::accept);
+        const bool streams =
+            !is_initialize && request.version() >= mcp::detail::constants::http_client::g_VERSION_11 &&
+            !json_only_mode_->load(std::memory_order_acquire) && accept_it != request.end() &&
+            detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
+                std::string_view::npos;
+        // The priming event is stored before the request reaches the server, so that it comes
+        // before every event of the stream and a resume from it misses none.
+        const bool primes = streams && legacy_stream_options_.prime_post_streams &&
+                            session->protocol_version() >= "2025-11-25";
+        SseEventList priming;
         {
             std::scoped_lock lock(session->response_mutex);
             if (session->pending_responses.contains(request_id_key)) {
                 co_return detail_session_mgr::make_error_response(request, http::status::bad_request,
                                                                   "Request id already pending");
             }
-            session->pending_responses.emplace(request_id_key,
-                                               detail_session_mgr::PendingResponse{
-                                                   .ready_timer = timer_signal,
-                                                   .response_body = std::nullopt,
-                                                   .stream_events = {},
-                                                   .response_ready = false,
-                                                   .stream = std::to_string(++session->streams),
-                                               });
+            auto stream_id = std::to_string(++session->streams);
+            if (primes) {
+                auto event_id = session->event_store.append(std::string(), stream_id);
+                priming.emplace_back(std::move(event_id), std::string());
+            }
+            session->pending_responses.emplace(request_id_key, detail_session_mgr::PendingResponse{
+                                                                   .ready_timer = timer_signal,
+                                                                   .response_body = std::nullopt,
+                                                                   .stream_events = {},
+                                                                   .response_ready = false,
+                                                                   .stream = std::move(stream_id),
+                                                               });
         }
 
         session->pipe->deliver(std::move(request_json));
 
-        // A client that takes SSE over HTTP/1.1 gets the request's events as they come, so a
-        // request of the server's own reaches it while the handler waits for the answer.
-        const auto accept_it = request.find(http::field::accept);
-        if (!is_initialize && request.version() >= mcp::detail::constants::http_client::g_VERSION_11 &&
-            !json_only_mode_->load(std::memory_order_acquire) && accept_it != request.end() &&
-            detail::to_std_string_view(accept_it->value()).find("text/event-stream") !=
-                std::string_view::npos) {
+        if (streams) {
             auto legacy = std::make_shared<detail_session_mgr::LegacyStream>();
             legacy->session = std::move(session);
             legacy->request_key = request_id_key;
             legacy->signal = std::move(timer_signal);
+            legacy->priming = std::move(priming);
+            if (primes) {
+                legacy->retry = legacy_stream_options_.sse_retry;
+            }
             co_return legacy;
         }
 
@@ -1716,6 +1738,7 @@ struct StreamableHttpSessionManager::Impl {
             if (primes) {
                 auto id = session->event_store.append(std::string(), session->get_stream);
                 legacy->replay.emplace_back(std::move(id), std::string());
+                legacy->retry = legacy_stream_options_.sse_retry;
             }
         }
         legacy->session = std::move(session);
@@ -2104,6 +2127,13 @@ void StreamableHttpSessionManager::set_stream_options(StreamOptions options) {
     std::scoped_lock lock(impl_->configuration_mutex_);
     impl_->ensure_configurable();
     impl_->stream_options_ = options;
+}
+
+void StreamableHttpSessionManager::set_legacy_stream_options(LegacyStreamOptions options) {
+    detail::check_legacy_stream_options(options);
+    std::scoped_lock lock(impl_->configuration_mutex_);
+    impl_->ensure_configurable();
+    impl_->legacy_stream_options_ = options;
 }
 
 StreamStats StreamableHttpSessionManager::stream_stats() const {
