@@ -79,10 +79,11 @@ versions report findings that it does not.
 Code Formatting
 ^^^^^^^^^^^^^^^
 
-Use ``make format`` to automatically format your code with clang-format. The
-pre-commit hook that ``python scripts/init.py --dev`` installs formats the files
-of each commit with the clang-format version pinned in
-``.pre-commit-config.yaml``. CI does not check formatting.
+``make format`` formats every file with the clang-format version pinned in
+``.pre-commit-config.yaml``, through pre-commit, which
+``python scripts/init.py --dev`` installs together with a hook that formats the
+files of each commit. CI runs the same hooks over every file, so
+``pre-commit run --all-files`` shows what it would report.
 
 Doxygen Comments
 ^^^^^^^^^^^^^^^^

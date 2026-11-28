@@ -103,6 +103,29 @@ jobs:
         --warnings-as-errors='readability-identifier-naming'
         --header-filter="^$PWD/examples/.*"
 
+  format:
+    # Runs the hooks of .pre-commit-config.yaml over every tracked file, as
+    # `pre-commit run --all-files` does locally: clang-format, cmake-format, trailing whitespace,
+    # line endings and the YAML and JSON syntax checks. Every file is an input, so it always runs.
+    name: pre-commit
+    runs-on: ubuntu-24.04
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: '3.12'
+
+    - name: Install pre-commit
+      run: python3 -m pip install pre-commit==4.7.0
+
+    - name: Run the hooks over every file
+      run: pre-commit run --all-files --show-diff-on-failure
+
   readme:
     # Compiles the README's C++ when only the README changes, with the compiler and flags of the
     # examples, and checks that it holds the minimal examples verbatim. A change to the library runs
@@ -798,6 +821,7 @@ jobs:
     needs:
       - changes
       - lint
+      - format
       - readme
       - build
       - sanitize

@@ -34,8 +34,10 @@ docs:
 clean:
 	$(PYTHON) scripts/build.py --clean
 
+# The clang-format version pinned in .pre-commit-config.yaml, which CI checks with. pre-commit exits
+# with 1 when it reformatted a file, which is what this target is for.
 format:
-	find include src test examples -name '*.hpp' -o -name '*.cpp' | xargs clang-format -i
+	pre-commit run clang-format --all-files; status=$$?; [ $$status -le 1 ]
 
 lint:
 	@BUILD_DIR=$$(find build -name compile_commands.json -print -quit | xargs dirname 2>/dev/null || echo "build/release"); \
