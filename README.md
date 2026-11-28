@@ -264,7 +264,7 @@ Guides, API reference and integration details are on the **[documentation site](
 - **[Installation](https://mcp-cpp-sdk.yurirocha.com/installation.html)**: Packages for each platform, and builds from source.
 - **[Core Concepts](https://mcp-cpp-sdk.yurirocha.com/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
 - **[Guides](https://mcp-cpp-sdk.yurirocha.com/guides/index.html)**: Async servers and clients, converting sync programs, testing, error handling and deployment.
-- **[Client App Integrations](https://mcp-cpp-sdk.yurirocha.com/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
+- **[Client App Integrations](https://mcp-cpp-sdk.yurirocha.com/integrations/client-apps.html)**: How to connect your server to MCP clients and test it with the MCP Inspector.
 - **[Examples](https://mcp-cpp-sdk.yurirocha.com/examples.html)**: Walkthrough of included example applications.
 
 ## Compiler Notes

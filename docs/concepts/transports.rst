@@ -15,7 +15,7 @@ Standard Transports
 The SDK includes several built-in transport types to cover different use cases:
 
 1. **StdioTransport**: For local process communication via standard input/output.
-   This is the most common choice for connecting to local agents like Claude Desktop.
+   This is the most common choice for local clients such as coding agents, IDEs and desktop apps.
 2. **HttpServerTransport / HttpClientTransport**: Single-session Streamable HTTP
    building blocks. ``StreamableHttpSessionManager`` provides a multi-session
    server endpoint.

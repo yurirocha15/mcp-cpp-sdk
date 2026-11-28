@@ -8,7 +8,7 @@ Overview
 
 When moving from development to production, you must decide how your server will communicate with clients. The Model Context Protocol supports several transport mechanisms:
 
-- **Stdio**: Best for local integration with desktop applications (like Claude Desktop or IDEs).
+- **Stdio**: Best for local integration with coding agents, IDEs and desktop applications.
 - **HTTP/SSE**: Recommended for remote deployments, multi-client support, or web-based integrations.
 
 A server built with the SDK serves protocol revision 2026-07-28 and the older revisions on the same transport by default. See `Serving Both Protocol Eras`_ for what that means over HTTP.
