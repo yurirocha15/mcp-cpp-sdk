@@ -343,7 +343,7 @@ python scripts/build.py --examples --test
 
 ### Code Quality & Standards
 
-- **Formatting**: `make format` (requires `clang-format`)
+- **Formatting**: `make format` (requires `pre-commit`, which `python scripts/init.py --dev` installs)
 - **Linting**: `make lint` (requires `clang-tidy`)
 - **Testing**: We use GoogleTest for all unit and integration tests.
 

@@ -99,8 +99,8 @@ Example Walkthrough
 
 The completions example (``examples/features/completions.cpp``) demonstrates a full round-trip:
 
-1. **Server Setup**: The server registers a completion provider that suggests "language" and "framework" values for ``code_analyzer``.
-2. **Client Request**: The client simulates a user typing "C" for the "language" argument, naming ``code_analyzer`` in a ``PromptReference``.
+1. **Server Setup**: The server registers a prompt named ``code_analyzer`` and a completion provider that suggests "language" and "framework" values for its arguments.
+2. **Client Request**: The client simulates a user typing "C" for the "language" argument of that prompt, using a ``PromptReference``.
 3. **Server Response**: The server filters its internal list and returns "C++" and "C" as suggestions.
 4. **Result Handling**: The client receives and prints the suggestions.
 

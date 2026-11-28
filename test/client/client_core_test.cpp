@@ -1679,4 +1679,62 @@ TEST_F(ClientCoreTest, MessagesThatAreNotJsonRpcTwoAreReportedAndDropped) {
     }
 }
 
+// JSON-RPC batches are not supported (docs/guides/older-protocols.rst): a batch from the server is
+// reported and dropped whole. The response inside it does not complete the request, which the error
+// sent after the batch does, and the request inside it gets no answer.
+TEST_F(ClientCoreTest, BatchFromTheServerIsReportedAndDroppedWhole) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<std::string> answered_ids;
+    raw_transport->set_on_write([raw_transport, &answered_ids](std::string_view msg) {
+        const auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        const auto id = json_msg.at("id").get<std::string>();
+        const auto method = json_msg.value("method", "");
+        if (method.empty()) {
+            answered_ids.push_back(id);
+        } else if (method == "initialize") {
+            raw_transport->enqueue_message(make_result_response(id, make_initialize_result()).dump());
+        } else if (method == "ping") {
+            raw_transport->enqueue_message(
+                nlohmann::json::array(
+                    {{{"jsonrpc", "2.0"}, {"id", id}, {"result", nlohmann::json::object()}},
+                     {{"jsonrpc", "2.0"}, {"id", "server-ping"}, {"method", "ping"}}})
+                    .dump());
+            raw_transport->enqueue_message(
+                nlohmann::json{{"jsonrpc", "2.0"},
+                               {"id", id},
+                               {"error", {{"code", -32000}, {"message", "sent after the batch"}}}}
+                    .dump());
+        }
+    });
+
+    std::vector<mcp::Error> reported;
+    mcp::ClientOptions options;
+    options.request_timeout = g_hang_guard;
+    options.on_protocol_error = [&reported](const mcp::Error& error) { reported.push_back(error); };
+    options.protocol = mcp::ClientProtocol::legacy();  // the scripted peer answers initialize
+    mcp::Client client(transport, io_ctx_.get_executor(), options);
+
+    int ping_code = 0;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        static_cast<void>(co_await client.connect("test-client", "0.1"));
+        try {
+            co_await client.ping();
+        } catch (const mcp::McpError& error) {
+            ping_code = error.code();
+        }
+        raw_transport->close();
+    });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(ping_code, -32000) << "the response inside the batch completed the request";
+    EXPECT_TRUE(answered_ids.empty()) << "the client answered a request inside the batch";
+    ASSERT_EQ(reported.size(), 1U) << "the drop was silent";
+    EXPECT_EQ(reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
+}
+
 }  // namespace client_core_test

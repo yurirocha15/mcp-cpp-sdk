@@ -451,6 +451,67 @@ TEST_F(ServerCoreTest, RequestsRequireCompletedInitializationHandshake) {
     EXPECT_TRUE(server.is_initialized());
 }
 
+// JSON-RPC batches are not supported (docs/guides/older-protocols.rst): a batch is answered with one
+// error, none of its requests runs, and the session serves the next request.
+TEST_F(ServerCoreTest, BatchIsAnsweredWithOneErrorAndRunsNoneOfItsRequests) {
+    mcp::Implementation info;
+    info.name = "test-server";
+    info.version = "1.0";
+    mcp::Server server(info, mcp::ServerCapabilities{});
+    bool tool_ran = false;
+    server.add_tool("mark", "Records that it ran", nlohmann::json{{"type", "object"}},
+                    [&tool_ran](const nlohmann::json&) -> nlohmann::json {
+                        tool_ran = true;
+                        return "ran";
+                    });
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    std::vector<nlohmann::json> responses;
+    raw_transport->set_on_write([&responses, raw_transport](std::string_view message) {
+        responses.push_back(nlohmann::json::parse(message));
+        if (responses.back().value("id", nlohmann::json()) == "after") {
+            raw_transport->close();
+        }
+    });
+
+    const nlohmann::json call = {
+        {"jsonrpc", "2.0"},
+        {"id", "call"},
+        {"method", "tools/call"},
+        {"params", {{"name", "mark"}, {"arguments", nlohmann::json::object()}}}};
+    const nlohmann::json ping = {{"jsonrpc", "2.0"}, {"id", "ping"}, {"method", "ping"}};
+    raw_transport->enqueue_message(make_initialize_request("init").dump());
+    raw_transport->enqueue_message(make_initialized_notification().dump());
+    raw_transport->enqueue_message(nlohmann::json::array({call, ping}).dump());
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "after"}, {"method", "ping"}}.dump());
+
+    boost::asio::steady_timer guard(io_ctx_, g_hang_guard);
+    guard.async_wait([raw_transport](const boost::system::error_code& error) {
+        if (!error) {
+            raw_transport->close();
+        }
+    });
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await server.run(transport, io_ctx_.get_executor());
+        guard.cancel();
+    });
+
+    io_ctx_.run();
+
+    ASSERT_EQ(responses.size(), 3U) << nlohmann::json(responses).dump();
+    EXPECT_EQ(responses[0]["id"], "init");
+    // The error answers no request it can name, so it carries no id.
+    ASSERT_TRUE(responses[1].contains("error")) << responses[1].dump();
+    EXPECT_EQ(responses[1]["error"]["code"], mcp::constants::jsonrpc::g_INVALID_REQUEST);
+    EXPECT_FALSE(responses[1].contains("result")) << responses[1].dump();
+    EXPECT_FALSE(responses[1].contains("id")) << responses[1].dump();
+    EXPECT_EQ(responses[2]["id"], "after");
+    EXPECT_TRUE(responses[2].contains("result"));
+    EXPECT_FALSE(tool_ran);
+}
+
 TEST_F(ServerCoreTest, InitializedNotificationWithNullParamsCompletesTheHandshake) {
     mcp::Implementation info;
     info.name = "test-server";
