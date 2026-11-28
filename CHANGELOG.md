@@ -6,6 +6,10 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 ## [Unreleased]
 
+### Changed
+
+- The documentation moved to [mcp-cpp-sdk.yurirocha.com](https://mcp-cpp-sdk.yurirocha.com/), and links to the old address redirect there.
+
 ## [0.4.0] - 2026-11-26
 
 ### Highlights

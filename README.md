@@ -3,7 +3,7 @@
 A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (MCP). Build servers that give LLM applications tools, resources and prompts, and clients that use them.
 
 [![Release](https://img.shields.io/github/v/release/yurirocha15/mcp-cpp-sdk)](https://github.com/yurirocha15/mcp-cpp-sdk/releases/latest)
-[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://www.yurirocha.com/mcp-cpp-sdk/)
+[![Docs](https://img.shields.io/badge/docs-online-blue.svg)](https://mcp-cpp-sdk.yurirocha.com/)
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg)](https://isocpp.org/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/yurirocha15/mcp-cpp-sdk/actions/workflows/ci.yml)
@@ -25,14 +25,14 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 
 | Platform | How |
 |---|---|
-| Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 | [APT repository](https://www.yurirocha.com/mcp-cpp-sdk/installation.html#apt-deb) |
-| Fedora 43 / 44, Enterprise Linux 9 / 10 | [RPM repository](https://www.yurirocha.com/mcp-cpp-sdk/installation.html#rpm) |
+| Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 | [APT repository](https://mcp-cpp-sdk.yurirocha.com/installation.html#apt-deb) |
+| Fedora 43 / 44, Enterprise Linux 9 / 10 | [RPM repository](https://mcp-cpp-sdk.yurirocha.com/installation.html#rpm) |
 | Arch Linux | AUR package [`mcp-cpp-sdk`](https://aur.archlinux.org/packages/mcp-cpp-sdk) |
 | macOS / Linux | `brew install yurirocha15/mcp-cpp-sdk/mcp-cpp-sdk` |
 | Windows x64 | SDK zip from the [latest release](https://github.com/yurirocha15/mcp-cpp-sdk/releases/latest) |
 | Any platform | CMake `FetchContent`, below |
 
-The [installation guide](https://www.yurirocha.com/mcp-cpp-sdk/installation.html)
+The [installation guide](https://mcp-cpp-sdk.yurirocha.com/installation.html)
 has the full commands and the CMake and package names.
 
 Before 1.0, releases are not binary compatible with each other, so rebuild your
@@ -100,8 +100,8 @@ int main(int argc, char** argv) {
 `./greeter-client ./greeter` prints `Hello, Ada!`.
 
 Both programs use the blocking API. The
-[getting-started guide](https://www.yurirocha.com/mcp-cpp-sdk/getting-started.html) explains
-them, and [Async Servers and Clients](https://www.yurirocha.com/mcp-cpp-sdk/guides/async-mode.html)
+[getting-started guide](https://mcp-cpp-sdk.yurirocha.com/getting-started.html) explains
+them, and [Async Servers and Clients](https://mcp-cpp-sdk.yurirocha.com/guides/async-mode.html)
 covers the coroutine API.
 
 ## Usage Highlights
@@ -110,7 +110,7 @@ covers the coroutine API.
 
 In async mode the program runs the event loop, an `mcp::Runtime`, and handlers and client calls
 are coroutines that return `mcp::Task` (see
-[Async Servers and Clients](https://www.yurirocha.com/mcp-cpp-sdk/guides/async-mode.html)). The
+[Async Servers and Clients](https://mcp-cpp-sdk.yurirocha.com/guides/async-mode.html)). The
 greeter in async mode:
 
 ```cpp
@@ -193,7 +193,7 @@ server.add_tool<nlohmann::json, nlohmann::json>("long_task", "A task with progre
 
 `run_http()` serves any number of clients over Streamable HTTP until SIGINT or SIGTERM. A
 callback it takes configures the endpoint before it listens, such as its allowed origins and
-bearer token validation (see [Transports](https://www.yurirocha.com/mcp-cpp-sdk/concepts/transports.html)):
+bearer token validation (see [Transports](https://mcp-cpp-sdk.yurirocha.com/concepts/transports.html)):
 
 ```cpp
 server.run_http("127.0.0.1", 8080);
@@ -210,7 +210,7 @@ client.sync().connect("my-client", "1.0.0");
 
 A handler can ask the user, through the client, to fill in a form. The client answers with the
 handler it registers with `on_elicitation()` (see
-[Elicitation](https://www.yurirocha.com/mcp-cpp-sdk/concepts/elicitation.html)):
+[Elicitation](https://mcp-cpp-sdk.yurirocha.com/concepts/elicitation.html)):
 
 ```cpp
 mcp::ElicitRequestFormParams form;
@@ -227,7 +227,7 @@ if (answer.action == mcp::ElicitAction::eAccept && answer.content) {
 
 Under protocol revision 2026-07-28, a tool call can become a task: the server answers at once
 with a handle, runs the tool apart from the request, and keeps its result for the client to
-fetch (see [Tasks](https://www.yurirocha.com/mcp-cpp-sdk/concepts/tasks.html)):
+fetch (see [Tasks](https://mcp-cpp-sdk.yurirocha.com/concepts/tasks.html)):
 
 ```cpp
 // Server
@@ -245,7 +245,7 @@ if (auto* task = std::get_if<mcp::TaskHandle>(&started)) {
 
 Middleware wraps each request that an application handler answers, such as `tools/call` and
 `resources/read`, in the order it is registered (see
-[Middleware](https://www.yurirocha.com/mcp-cpp-sdk/concepts/middleware.html)):
+[Middleware](https://mcp-cpp-sdk.yurirocha.com/concepts/middleware.html)):
 
 ```cpp
 server.use([](mcp::Context& ctx, const nlohmann::json& params,
@@ -257,13 +257,13 @@ server.use([](mcp::Context& ctx, const nlohmann::json& params,
 
 ## Documentation
 
-Guides, API reference and integration details are on the **[documentation site](https://www.yurirocha.com/mcp-cpp-sdk)**.
+Guides, API reference and integration details are on the **[documentation site](https://mcp-cpp-sdk.yurirocha.com/)**.
 
-- **[Getting Started](https://www.yurirocha.com/mcp-cpp-sdk/getting-started.html)**: Detailed installation and build instructions.
-- **[Core Concepts](https://www.yurirocha.com/mcp-cpp-sdk/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
-- **[Guides](https://www.yurirocha.com/mcp-cpp-sdk/guides/index.html)**: Async servers and clients, converting sync programs, testing, error handling and deployment.
-- **[Client App Integrations](https://www.yurirocha.com/mcp-cpp-sdk/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
-- **[Examples](https://www.yurirocha.com/mcp-cpp-sdk/examples.html)**: Walkthrough of included example applications.
+- **[Getting Started](https://mcp-cpp-sdk.yurirocha.com/getting-started.html)**: Detailed installation and build instructions.
+- **[Core Concepts](https://mcp-cpp-sdk.yurirocha.com/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
+- **[Guides](https://mcp-cpp-sdk.yurirocha.com/guides/index.html)**: Async servers and clients, converting sync programs, testing, error handling and deployment.
+- **[Client App Integrations](https://mcp-cpp-sdk.yurirocha.com/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
+- **[Examples](https://mcp-cpp-sdk.yurirocha.com/examples.html)**: Walkthrough of included example applications.
 
 ## Compiler Notes
 
@@ -304,7 +304,7 @@ co_await client.connect(client_info, capabilities);
 ```
 
 The contributing guide's
-[Known Issues](https://www.yurirocha.com/mcp-cpp-sdk/contributing.html#known-issues)
+[Known Issues](https://mcp-cpp-sdk.yurirocha.com/contributing.html#known-issues)
 section has the full list of affected code for both compiler bugs.
 
 ---
