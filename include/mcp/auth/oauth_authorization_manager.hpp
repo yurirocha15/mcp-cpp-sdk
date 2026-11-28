@@ -67,6 +67,17 @@ struct OAuthAuthorizationConfig {
     /// TLS settings for authorization servers; null uses the system's certificate authorities.
     std::shared_ptr<const TlsClientContext> tls;
     ProxyOptions proxy;  ///< Proxy for discovery and token requests; none by default.
+    /// Treat a server that publishes no protected resource metadata as a 2025-03-26 server: when
+    /// every well-known location answers 404 or 410, the origin of `server_url` is taken for its
+    /// authorization server, whose metadata is read from the origin's well-known locations or,
+    /// when it publishes none, whose endpoints default to `/authorize`, `/token` and `/register`
+    /// there. That metadata may name an issuer under a path of the origin. Every path on the
+    /// origin then shares that authorization server. AuthorizationRequest::legacy_discovery tells
+    /// the consent callback. The fallback is never used once this manager has accepted a
+    /// protected resource metadata document, when the challenge named a `resource_metadata` URL,
+    /// or when the injected credentials name an issuer on another origin. Set to false to refuse
+    /// such servers.
+    bool legacy_discovery_fallback{true};
     /// Receives the notice the first time this manager registers a client dynamically, instead of
     /// standard error; see DeprecationNotice. Without a handler the notice goes to standard error,
     /// unless the environment variable MCP_SILENCE_DEPRECATION_NOTICES is set to a non-empty value.

@@ -10,10 +10,26 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace mcp::auth {
+
+/**
+ * @brief Discovery found no document: every location it tried answered 404 Not Found or 410 Gone.
+ *
+ * @details Thrown only when each location itself gave that answer, not a redirect target, and only
+ * for the well-known locations: a `resource_metadata` URL a challenge named that answers 404 throws
+ * a plain std::runtime_error, since the server said the document is there. Any other failure,
+ * including a network error, a 5xx status or a document that does not parse, throws
+ * std::runtime_error as well.
+ */
+class MCP_API MetadataNotFoundError : public std::runtime_error {
+   public:
+    /** @param message Which document was looked for, and where. */
+    explicit MetadataNotFoundError(const std::string& message);
+};
 
 /**
  * @brief Metadata exposed by an OAuth protected resource.
@@ -120,6 +136,7 @@ class MCP_API OAuthDiscoveryClient {
      *
      * @details When the challenge supplied a URL it is fetched and nothing else is tried. Otherwise
      * the well-known fallback runs, trying the path-based location before the root one.
+     * @throws MetadataNotFoundError When every well-known location answered 404 or 410.
      */
     Task<ProtectedResourceMetadata> discover_protected_resource(
         const std::string& resource_url, const std::optional<std::string>& challenge_metadata_url);
@@ -159,6 +176,7 @@ class MCP_API OAuthDiscoveryClient {
      *
      * @param issuer_url Issuer URL or base URL of the authorization server.
      * @return A task resolving to the discovered authorization-server metadata.
+     * @throws MetadataNotFoundError When every well-known location answered 404 or 410.
      */
     Task<AuthServerMetadata> discover_auth_server(const std::string& issuer_url);
 

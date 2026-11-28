@@ -69,6 +69,11 @@ EXPECTED_SCENARIOS = {
         "sse-retry",
         "tools_call",
     },
+    # The back-compat suite: the 2025-03-26 authorization scenarios.
+    "client-backcompat": {
+        "auth/2025-03-26-oauth-endpoint-fallback",
+        "auth/2025-03-26-oauth-metadata-backcompat",
+    },
 }
 
 
@@ -145,10 +150,12 @@ def main() -> None:
     parser.add_argument("--server-results", type=Path, required=True)
     parser.add_argument("--server-pending-results", type=Path, required=True)
     parser.add_argument("--client-results", type=Path, required=True)
+    parser.add_argument("--client-backcompat-results", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--server-status", type=int, required=True)
     parser.add_argument("--server-pending-status", type=int, required=True)
     parser.add_argument("--client-status", type=int, required=True)
+    parser.add_argument("--client-backcompat-status", type=int, required=True)
     args = parser.parse_args()
 
     metadata = read_metadata(args.output_dir)
@@ -156,6 +163,9 @@ def main() -> None:
         "server": summarize_suite("server", args.server_results),
         "server-pending": summarize_suite("server-pending", args.server_pending_results),
         "client": summarize_suite("client", args.client_results),
+        "client-backcompat": summarize_suite(
+            "client-backcompat", args.client_backcompat_results
+        ),
     }
     summary = {
         "runner": metadata["runner"],
@@ -164,6 +174,7 @@ def main() -> None:
             "server": args.server_status,
             "server-pending": args.server_pending_status,
             "client": args.client_status,
+            "client-backcompat": args.client_backcompat_status,
         },
         "suites": suites,
     }
@@ -181,12 +192,13 @@ def main() -> None:
         "tier-check convention: warnings do not fail a scenario, while missing evidence does.",
         "The runner status comes from the runner's baseline check, which also fails a scenario",
         "on a warning. The server-pending row is the runner's pending suite, which no tier",
-        "counts; its status also covers check_pending_sse.py.",
+        "counts; its status also covers check_pending_sse.py. The client-backcompat row is",
+        "the 2025-03-26 authorization scenarios, which run without a --spec-version filter.",
         "",
         "| Suite | Passed scenarios | Total scenarios | Pass rate | Runner status |",
         "|---|---:|---:|---:|---:|",
     ]
-    for suite in ("server", "server-pending", "client"):
+    for suite in ("server", "server-pending", "client", "client-backcompat"):
         result = suites[suite]
         markdown.append(
             f"| {suite} | {result['passed']} | {result['total']} | "

@@ -52,9 +52,9 @@ namespace {
 /// Flattens peer-controlled text -- control characters, bidi overrides and ill-formed UTF-8 -- and
 /// caps it, so a value a peer chose cannot forge or reorder a line of a diagnostic. Every throw
 /// site in this file that interpolates a value originating from a peer must route it through here;
-/// `MetadataPolicyError` does the same inside its own constructor, so its throw sites do not repeat
-/// it. This is a convention, not something the compiler checks: a new throw site that forgets it
-/// re-opens the hole silently.
+/// `MetadataPolicyError` and `MetadataStatusError` do the same inside their own constructors, so
+/// their throw sites do not repeat it. This is a convention, not something the compiler checks: a new
+/// throw site that forgets it re-opens the hole silently.
 using detail::sanitize_for_diagnostics;
 
 /// Does `reference` begin with an RFC 3986 §3.1 scheme, `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`
@@ -635,7 +635,9 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
         auto guard = track_exchange(exchange);
 
         const auto redirect_budget = exchange->policy.max_redirects;
+        bool redirected = false;
         for (std::size_t redirect = 0;; ++redirect) {
+            redirected = redirect != 0;
             // Re-read the abort on every hop, not just at track_exchange() above: abort_pending()
             // can land between two iterations, where it has nothing left to close.
             throw_if_aborted(exchange);
@@ -668,9 +670,7 @@ struct OAuthHttpClient::Impl : std::enable_shared_from_this<OAuthHttpClient::Imp
 
         if (exchange->response().result_int() >=
             mcp::detail::constants::http_client::g_STATUS_BAD_REQUEST) {
-            throw std::runtime_error("HTTP GET " + sanitize_for_diagnostics(exchange->url) +
-                                     " failed with status " +
-                                     std::to_string(exchange->response().result_int()));
+            throw MetadataStatusError(exchange->response().result_int(), exchange->url, redirected);
         }
 
         exchange->body = exchange->response().body();
@@ -862,6 +862,13 @@ Task<TokenResponse> OAuthHttpClient::refresh_token(const OAuthConfig& config,
     return impl_->post_token_request(config.token_endpoint, request.params,
                                      std::move(request.authorization));
 }
+
+MetadataStatusError::MetadataStatusError(unsigned int status, std::string url, bool after_redirect)
+    : std::runtime_error("HTTP GET " + sanitize_for_diagnostics(url) + " failed with status " +
+                         std::to_string(status)),
+      status_(status),
+      url_(std::move(url)),
+      after_redirect_(after_redirect) {}
 
 Task<nlohmann::json> OAuthHttpClient::get_json(const std::string& url) { return impl_->get_json(url); }
 

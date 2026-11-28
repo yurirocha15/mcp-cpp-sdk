@@ -207,6 +207,13 @@ Authorization
      - Yes
      - Includes step-up for missing scopes and token refresh.
        :doc:`concepts/oauth`
+   * - Discovery for 2025-03-26 servers without protected resource metadata
+     - Core
+     - n/a
+     - Yes
+     - The server's origin is taken for its authorization server, with default
+       endpoints when it publishes no metadata. On by default.
+       :ref:`oauth-legacy-discovery`
    * - Client ID metadata documents and pre-registered clients
      - Core
      - n/a

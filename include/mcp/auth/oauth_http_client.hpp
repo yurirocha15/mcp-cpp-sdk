@@ -13,10 +13,44 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace mcp::auth {
+
+/**
+ * @brief A discovery document request answered with an HTTP error status.
+ *
+ * @details Thrown by OAuthHttpClient::get_json() for a status of 400 or more. Discovery reads it to
+ * tell a document that does not exist (404 or 410 at the address asked for) from one it could not
+ * get.
+ */
+class MCP_API MetadataStatusError : public std::runtime_error {
+   public:
+    /**
+     * @brief Construct the error for one answered request.
+     *
+     * @param status HTTP status of the answer.
+     * @param url URL that answered, the last one when redirects were followed.
+     * @param after_redirect Whether the answer came from a redirect target.
+     */
+    MetadataStatusError(unsigned int status, std::string url, bool after_redirect);
+
+    /** @return HTTP status of the answer. */
+    [[nodiscard]] unsigned int status() const noexcept { return status_; }
+
+    /** @return URL that answered. */
+    [[nodiscard]] const std::string& url() const noexcept { return url_; }
+
+    /** @return Whether the answer came from a redirect target rather than the URL asked for. */
+    [[nodiscard]] bool after_redirect() const noexcept { return after_redirect_; }
+
+   private:
+    unsigned int status_;
+    std::string url_;
+    bool after_redirect_;
+};
 
 /**
  * @brief Configuration for OAuth token exchange and refresh operations.
@@ -165,6 +199,8 @@ class MCP_API OAuthHttpClient {
      *
      * @param url HTTP URL to fetch.
      * @return A task resolving to the parsed JSON body.
+     * @throws MetadataStatusError When the server answers with a status of 400 or more.
+     * @throws MetadataPolicyError When the fetch policy refuses the URL or a redirect target.
      */
     Task<nlohmann::json> get_json(const std::string& url);
 

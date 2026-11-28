@@ -41,9 +41,9 @@ Each item is Planned, In progress or Done.
 
 | Work item | State |
 |---|---|
-| Fall back to the 2025-03-26 authorization discovery when a server publishes no protected resource metadata, so the runner's 2025-03-26 back-compat scenarios pass | Planned |
+| Fall back to the 2025-03-26 authorization discovery when a server publishes no protected resource metadata, so the runner's 2025-03-26 back-compat scenarios pass | Done |
 | Send the SSE priming event on POST streams of 2025-11-25 sessions | Done |
-| Run the pending and back-compat scenarios in CI | In progress |
+| Run the pending and back-compat scenarios in CI | Done |
 | Make the conformance and repository guard checks block merges | Done |
 | Install the 2026-07-28 runner from a lockfile and run the 2025-11-25 and 2026-07-28 requirement sets | Planned |
 | Make the 2026-07-28 run block merges once it has stayed green on main | Planned |

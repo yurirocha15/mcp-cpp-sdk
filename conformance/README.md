@@ -29,6 +29,12 @@ event must pass, and the retry field, which the server writes only when the
 application sets `LegacyStreamOptions::sse_retry`, must be the only check left
 with a warning.
 
+The client `backcompat` suite holds the two 2025-03-26 authorization scenarios,
+in which the server publishes no protected resource metadata. `--spec-version`
+would select none of them, so `run.sh` runs the suite without it, against
+`expected-failures.yml`, writes its results to `client-backcompat/results`, and
+fails when fewer than two scenario results exist.
+
 ## Skills scenarios
 
 The alpha runner's skills scenarios need a server that serves skills. The

@@ -1,4 +1,7 @@
+#include "mcp/detail/constants.hpp"
+
 #include <mcp/auth/oauth_discovery.hpp>
+#include <mcp/auth/oauth_http_client.hpp>
 #include <mcp/core/async.hpp>
 
 #include <chrono>
@@ -28,7 +31,21 @@ namespace {
 /// re-opens the hole silently.
 using detail::sanitize_for_diagnostics;
 
+/// Whether @p failure says the document does not exist at the URL asked for: a 404 or 410 answer
+/// from that URL itself, not from a redirect target.
+bool reports_absence(const std::exception& failure) {
+    const auto* status = dynamic_cast<const MetadataStatusError*>(&failure);
+    if (status == nullptr || status->after_redirect()) {
+        return false;
+    }
+    return status->status() == mcp::detail::constants::http_client::g_STATUS_NOT_FOUND ||
+           status->status() == mcp::detail::constants::http_client::g_STATUS_GONE;
+}
+
 }  // namespace
+
+MetadataNotFoundError::MetadataNotFoundError(const std::string& message)
+    : std::runtime_error(message) {}
 
 void from_json(const nlohmann::json& json, ProtectedResourceMetadata& metadata) {
     metadata = ProtectedResourceMetadata{};
@@ -112,23 +129,32 @@ struct OAuthDiscoveryClient::Impl {
         std::function<void(const Metadata&)> accept;
         /// Why each URL tried so far gave no document, for the error when none does.
         std::vector<std::string> misses;
+        /// Whether the URLs are the well-known locations, rather than one a challenge named.
+        bool well_known{true};
+        /// Whether every URL tried so far answered that the document does not exist there.
+        bool only_absent{true};
 
         /// Records why @p url gave no document: @p failure, led by the URL unless it names it.
         void miss(const std::string& url, const std::exception& failure) {
+            only_absent = only_absent && reports_absence(failure);
             auto reason = sanitize_for_diagnostics(failure.what());
             const auto where = sanitize_for_diagnostics(url);
             misses.push_back(reason.find(where) == std::string::npos ? where + ": " + reason
                                                                      : std::move(reason));
         }
 
-        /// The error for a discovery in which no URL gave a document: @p summary and the misses.
-        [[nodiscard]] std::runtime_error failure(std::string summary) const {
+        /// Throws the error for a discovery in which no URL gave a document: @p summary and the
+        /// misses, as a MetadataNotFoundError when every well-known location said it has none.
+        [[noreturn]] void fail(std::string summary) const {
             summary += " for " + sanitize_for_diagnostics(cache_key);
             for (std::size_t index = 0; index < misses.size(); ++index) {
                 summary += index == 0 ? ": " : "; ";
                 summary += misses[index];
             }
-            return std::runtime_error(summary);
+            if (well_known && only_absent && !misses.empty()) {
+                throw MetadataNotFoundError(summary);
+            }
+            throw std::runtime_error(summary);
         }
     };
 
@@ -199,6 +225,7 @@ struct OAuthDiscoveryClient::Impl {
         if (challenge_metadata_url) {
             // The challenge named the location; take the server at its word and try nothing else.
             operation->urls.push_back(*challenge_metadata_url);
+            operation->well_known = false;
             return run_protected_discovery(std::move(operation));
         }
 
@@ -281,7 +308,7 @@ struct OAuthDiscoveryClient::Impl {
             }
             co_return *operation->metadata;
         }
-        throw operation->failure("Failed to discover protected resource metadata");
+        operation->fail("Failed to discover protected resource metadata");
     }
 
     static Task<AuthServerMetadata> run_auth_discovery(
@@ -306,7 +333,7 @@ struct OAuthDiscoveryClient::Impl {
                 continue;
             }
         }
-        throw operation->failure("Failed to discover authorization server metadata");
+        operation->fail("Failed to discover authorization server metadata");
     }
 
     std::shared_ptr<OAuthHttpClient> http_client;
