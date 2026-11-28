@@ -891,6 +891,17 @@ struct Gate {
     std::atomic<bool> release{false};
 };
 
+/// Waits until the test releases @p gate, or until the release guard runs out.
+mcp::Task<void> wait_for_release(std::shared_ptr<Gate> gate) {
+    const auto executor = co_await asio::this_coro::executor;
+    const auto give_up = std::chrono::steady_clock::now() + g_release_guard;
+    while (!gate->release.load() && std::chrono::steady_clock::now() < give_up) {
+        asio::steady_timer timer(executor, std::chrono::milliseconds(10));
+        boost::system::error_code ignored;
+        co_await timer.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+    }
+}
+
 /// The answer to one request of a raw client.
 struct Answer {
     int status{-1};
@@ -963,19 +974,12 @@ std::future<Answers> start_slow_call(uint16_t port, bool pipelined) {
 class ServerHttpDrainTest : public ServerHttpTest {
    protected:
     ServerHttpDrainTest() {
-        server_->add_tool(
-            "slow", "Runs until released", nlohmann::json{{"type", "object"}},
-            [gate = gate_](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
-                gate->started = true;
-                const auto executor = co_await asio::this_coro::executor;
-                const auto give_up = std::chrono::steady_clock::now() + g_release_guard;
-                while (!gate->release.load() && std::chrono::steady_clock::now() < give_up) {
-                    asio::steady_timer timer(executor, std::chrono::milliseconds(10));
-                    boost::system::error_code ignored;
-                    co_await timer.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
-                }
-                co_return nlohmann::json("done");
-            });
+        server_->add_tool("slow", "Runs until released", nlohmann::json{{"type", "object"}},
+                          [gate = gate_](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
+                              gate->started = true;
+                              co_await wait_for_release(gate);
+                              co_return nlohmann::json("done");
+                          });
     }
 
     void TearDown() override { gate_->release = true; }
@@ -1046,9 +1050,39 @@ TEST_F(ServerHttpDrainTest, ASignalAnswersARequestInFlight) {
     expect_answer_in_flight([] { mcp::detail::trigger_shutdown_signal(); });
 }
 
-// A request that begins on an open connection during the drain is refused, and the connection
-// closes; the one before it is still answered.
+// A request that begins during the drain, on a connection that stayed open since its last answer,
+// is refused, and the connection closes; the one in flight is still answered.
 TEST_F(ServerHttpDrainTest, ARequestThatBeginsDuringTheDrainGets503AndTheConnectionCloses) {
+    mcp::HttpRunOptions options;
+    options.on_drain_start = [this] { note("drain"); };
+    const auto port = start(options);
+
+    asio::io_context client_ctx;
+    beast::tcp_stream idle(client_ctx);
+    connect_when_listening(idle, port);
+    const auto init_resp = send_json_rpc(idle, make_initialize_request("1"));
+    const std::string session_id(init_resp["MCP-Session-Id"]);
+    static_cast<void>(send_json_rpc(idle, make_initialized_notification(), session_id));
+
+    auto call = start_slow_call(port, false);
+    ASSERT_TRUE(eventually([&] { return gate_->started.load(); }));
+    server_->stop();
+    ASSERT_TRUE(eventually([&] { return !events().empty(); }));
+
+    http::write(idle, make_post(make_tool_call_request("3", "greet", {{"name", "late"}}), session_id));
+    beast::flat_buffer buffer;
+    const auto refused = read_answer(idle, buffer);
+    EXPECT_EQ(refused.status, 503);
+    EXPECT_FALSE(refused.keep_alive);
+
+    gate_->release = true;
+    EXPECT_EQ(call.get().first.status, 200);
+    join();
+}
+
+// An answer written during the drain says Connection: close, and the server serves nothing behind
+// it on that connection, so a client knows to send a request it pipelined again.
+TEST_F(ServerHttpDrainTest, AnAnswerWrittenDuringTheDrainClosesItsConnection) {
     mcp::HttpRunOptions options;
     options.on_drain_start = [this] { note("drain"); };
     const auto port = start(options);
@@ -1061,9 +1095,96 @@ TEST_F(ServerHttpDrainTest, ARequestThatBeginsDuringTheDrainGets503AndTheConnect
 
     const auto answers = call.get();
     EXPECT_EQ(answers.first.status, 200);
-    ASSERT_TRUE(answers.second.has_value());
-    EXPECT_EQ(answers.second->status, 503);
-    EXPECT_FALSE(answers.second->keep_alive);
+    EXPECT_FALSE(answers.first.keep_alive);
+    EXPECT_FALSE(answers.second.has_value());
+    join();
+}
+
+// A legacy client's answer to the question of a request in flight is served during the drain, so
+// the request is answered.
+TEST_F(ServerHttpDrainTest, ALegacyClientsAnswerToAQuestionIsServedDuringTheDrain) {
+    server_->add_tool<nlohmann::json, mcp::CallToolResult>(
+        "ask", "Asks for a name once released", nlohmann::json{{"type", "object"}},
+        [gate = gate_](mcp::Context& context, const nlohmann::json&) -> mcp::Task<mcp::CallToolResult> {
+            gate->started = true;
+            co_await wait_for_release(gate);
+            mcp::ElicitRequestFormParams question;
+            question.message = "Your name?";
+            question.requestedSchema = {{"type", "object"},
+                                        {"properties", {{"name", {{"type", "string"}}}}}};
+            const auto params = std::make_shared<const mcp::ElicitRequestParams>(question);
+            const auto answer = co_await context.elicit(*params);
+            co_return mcp::make_tool_text_result(
+                answer.content.value_or(nlohmann::json::object()).value("name", "nobody"));
+        });
+    mcp::HttpRunOptions options;
+    options.on_drain_start = [this] { note("drain"); };
+    const auto port = start(options);
+
+    mcp::ClientOptions client_options;
+    client_options.protocol = mcp::ClientProtocol::legacy();
+    mcp::Client client(mcp::Endpoint::http("http://127.0.0.1:" + std::to_string(port) + "/mcp"),
+                       client_options);
+    client.on_elicitation([](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
+        mcp::ElicitResult result;
+        result.action = mcp::ElicitAction::eAccept;
+        result.content = nlohmann::json{{"name", "mona"}};
+        co_return result;
+    });
+    client.sync().connect("drain-test", "1.0");
+
+    auto call = std::async(std::launch::async, [&client] {
+        try {
+            const nlohmann::json result = client.sync().call_tool("ask", nlohmann::json::object());
+            return result.at("content").at(0).at("text").get<std::string>();
+        } catch (const std::exception& error) {
+            return std::string("failed: ") + error.what();
+        }
+    });
+    ASSERT_TRUE(eventually([&] { return gate_->started.load(); }));
+    server_->stop();
+    ASSERT_TRUE(eventually([&] { return !events().empty(); }));
+    gate_->release = true;
+
+    EXPECT_EQ(call.get(), "mona");
+    join();
+    EXPECT_FALSE(run_error_);
+    client.close();
+}
+
+// A legacy client's notification is served during the drain, on a connection it kept open and on
+// a new one.
+TEST_F(ServerHttpDrainTest, ALegacyClientsNotificationIsServedDuringTheDrain) {
+    mcp::HttpRunOptions options;
+    options.on_drain_start = [this] { note("drain"); };
+    const auto port = start(options);
+
+    asio::io_context client_ctx;
+    beast::tcp_stream kept(client_ctx);
+    connect_when_listening(kept, port);
+    const auto init_resp = send_json_rpc(kept, make_initialize_request("1"));
+    const std::string session_id(init_resp["MCP-Session-Id"]);
+    static_cast<void>(send_json_rpc(kept, make_initialized_notification(), session_id));
+
+    beast::tcp_stream calling(client_ctx);
+    connect_when_listening(calling, port);
+    http::write(calling,
+                make_post(make_tool_call_request("2", "slow", nlohmann::json::object()), session_id));
+    ASSERT_TRUE(eventually([&] { return gate_->started.load(); }));
+    server_->stop();
+    ASSERT_TRUE(eventually([&] { return !events().empty(); }));
+
+    const nlohmann::json cancelled = {
+        {"jsonrpc", "2.0"},
+        {"method", "notifications/cancelled"},
+        {"params", {{"requestId", "2"}, {"reason", "drain test"}}},
+    };
+    EXPECT_EQ(send_json_rpc(kept, cancelled, session_id).result_int(), 202U);
+    beast::tcp_stream fresh(client_ctx);
+    fresh.connect(asio::ip::tcp::endpoint(asio::ip::make_address("127.0.0.1"), port));
+    EXPECT_EQ(send_json_rpc(fresh, cancelled, session_id).result_int(), 202U);
+
+    gate_->release = true;
     join();
 }
 
@@ -1369,7 +1490,7 @@ TEST_F(ServerHttpDrainTest, TheManagersDrainWaitsForTheRequestsBeingServed) {
 
     auto drained = asio::co_spawn(io_ctx, manager.drain(std::chrono::seconds(60)), asio::use_future);
     EXPECT_EQ(drained.wait_for(std::chrono::milliseconds(200)), std::future_status::timeout);
-    // The drain no longer accepts connections.
+    // The drain refuses a new session.
     {
         asio::io_context client_ctx;
         beast::tcp_stream stream(client_ctx);
@@ -1404,6 +1525,47 @@ TEST_F(ServerHttpDrainTest, TheManagersDrainWaitsForTheRequestsBeingServed) {
                  std::invalid_argument);
 
     manager.close();
+    work.reset();
+    loop.join();
+}
+
+// The drain of one manager ends only the listen streams it carries, not those of another manager
+// that serves the same server.
+TEST_F(ServerHttpDrainTest, TheManagersDrainLeavesTheListenStreamsOfAnotherManager) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{true};
+    mcp::Server served(mcp::Implementation{"listen-test", "1.0"}, caps);
+    asio::io_context io_ctx;
+    auto work = asio::make_work_guard(io_ctx);
+    mcp::StreamableHttpSessionManager drained(io_ctx.get_executor(), "127.0.0.1", 0, served);
+    mcp::StreamableHttpSessionManager other(io_ctx.get_executor(), "127.0.0.1", 0, served);
+    asio::co_spawn(io_ctx, drained.listen(), asio::detached);
+    asio::co_spawn(io_ctx, other.listen(), asio::detached);
+    std::thread loop([&io_ctx] { io_ctx.run(); });
+
+    const auto url = [](uint16_t port) { return "http://127.0.0.1:" + std::to_string(port) + "/mcp"; };
+    mcp::Client on_drained(mcp::Endpoint::http(url(drained.port())));
+    mcp::Client on_other(mcp::Endpoint::http(url(other.port())));
+    on_drained.sync().connect("drain-test", "1.0");
+    on_other.sync().connect("drain-test", "1.0");
+    mcp::SubscriptionFilter filter;
+    filter.toolsListChanged = true;
+    auto ended = on_drained.sync().listen(filter);
+    auto kept = on_other.sync().listen(filter);
+    ASSERT_TRUE(eventually([&] { return served.subscription_count() == 2; }));
+
+    asio::co_spawn(io_ctx, drained.drain(std::chrono::seconds(60)), asio::use_future).get();
+    EXPECT_FALSE(ended.sync().next().has_value());
+    EXPECT_EQ(ended.end_reason(), mcp::SubscriptionEnd::eServerClosed);
+
+    asio::co_spawn(io_ctx, served.notify_tools_list_changed(), asio::use_future).get();
+    EXPECT_TRUE(kept.sync().next().has_value());
+    EXPECT_EQ(served.subscription_count(), 1U);
+
+    on_drained.close();
+    on_other.close();
+    drained.close();
+    other.close();
     work.reset();
     loop.join();
 }

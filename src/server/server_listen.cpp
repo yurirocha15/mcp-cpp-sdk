@@ -158,9 +158,14 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     const Removal removal{.impl = shared_from_this(), .listener = listener};
 
     // A transport that sets the cancellation flag wakes the wait through this; the flag is read
-    // after registering, so a cancellation that came first is not missed.
+    // after registering, so a cancellation that came first is not missed. Called with the flag
+    // clear, it ends the stream as close_subscriptions() does.
     if (scope.watch_cancel) {
-        scope.watch_cancel([listener] { listener->end(ListenEnd::eCancelled); });
+        scope.watch_cancel([listener, cancelled = scope.cancelled] {
+            listener->end(cancelled && cancelled->load(std::memory_order_acquire)
+                              ? ListenEnd::eCancelled
+                              : ListenEnd::eClosed);
+        });
     }
     if (scope.cancelled && scope.cancelled->load(std::memory_order_relaxed)) {
         listener->end(ListenEnd::eCancelled);

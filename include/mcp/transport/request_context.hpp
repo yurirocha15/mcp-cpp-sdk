@@ -39,8 +39,10 @@ struct RequestContext {
     /// Called by the server, while it serves a subscriptions/listen request, with a function to
     /// call whenever `cancelled` is set (from any thread, after setting it), so a request that
     /// waits for the client to go away is woken. A transport that streams notifications supplies
-    /// it so that closing the stream ends the subscription. When unset, `cancelled` is not
-    /// watched by anything but the request itself.
+    /// it so that closing the stream ends the subscription. Called while `cancelled` is clear,
+    /// the function ends the stream as Server::close_subscriptions() does, which lets a transport
+    /// end only the streams it carries. When unset, `cancelled` is not watched by anything but
+    /// the request itself.
     std::function<void(std::function<void()>)> watch_cancel;
 };
 

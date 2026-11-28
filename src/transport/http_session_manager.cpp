@@ -199,6 +199,34 @@ struct SessionRuntime {
 
 inline std::string generate_session_id() { return detail::generate_secure_session_id(); }
 
+/// Whether @p message is one a client sends to finish what a request in flight started: its answer
+/// to a request of the server, or a notification such as notifications/cancelled.
+inline bool is_reply_or_notification(const nlohmann::json& message) {
+    return message.is_object() && (!message.contains("method") || !message.contains("id"));
+}
+
+/// Whether a draining endpoint serves @p request: a POST that holds only answers to the server's
+/// requests and notifications, or a DELETE that ends a session. Every other request begins new
+/// work, which the drain refuses.
+inline bool served_while_draining(const detail::IncomingRequest& request) {
+    if (request.method() == http::verb::delete_) {
+        return true;
+    }
+    if (request.method() != http::verb::post) {
+        return false;
+    }
+    const auto body = detail::parse_peer_json(request.body());
+    if (!body.is_array()) {
+        return is_reply_or_notification(body);
+    }
+    for (const auto& message : body) {
+        if (!is_reply_or_notification(message)) {
+            return false;
+        }
+    }
+    return !body.empty();
+}
+
 inline bool is_initialize_request(const nlohmann::json& request_json) {
     return request_json.is_object() && request_json.contains("method") &&
            request_json.at("method").is_string() &&
@@ -355,6 +383,8 @@ struct StreamableHttpSessionManager::Impl {
     std::unordered_map<std::shared_ptr<Connection>, Activity> active_connections_;
     std::size_t busy_connections_{0};
     std::size_t streaming_connections_{0};
+    /// The subscriptions/listen streams this manager carries, which its drain ends.
+    std::vector<std::weak_ptr<detail::ModernExchange>> listen_exchanges_;
     /// Set once, under connections_mutex_, by begin_drain().
     std::atomic<bool> draining_{false};
     mutable std::shared_mutex sessions_mutex_;
@@ -453,7 +483,7 @@ struct StreamableHttpSessionManager::Impl {
 
     bool register_connection(const std::shared_ptr<Connection>& connection) {
         std::scoped_lock lock(connections_mutex_);
-        if (closed.load(std::memory_order_acquire) || draining_.load(std::memory_order_acquire)) {
+        if (closed.load(std::memory_order_acquire)) {
             return false;
         }
         active_connections_.emplace(connection, Activity::eIdle);
@@ -485,27 +515,29 @@ struct StreamableHttpSessionManager::Impl {
         activity = next;
     }
 
-    /// Marks @p connection as serving a request, from the moment its headers are read. Returns
-    /// false, and marks nothing, when the endpoint is draining: the request is to be refused.
-    bool begin_request(const std::shared_ptr<Connection>& connection) {
+    /// Marks @p connection as serving a request, from the moment its headers are read.
+    void begin_request(const std::shared_ptr<Connection>& connection) {
         std::scoped_lock lock(connections_mutex_);
-        if (draining_.load(std::memory_order_acquire)) {
-            return false;
-        }
         const auto it = active_connections_.find(connection);
         if (it != active_connections_.end()) {
             set_activity(it->second, Activity::eBusy);
         }
-        return true;
     }
 
     /// Marks @p connection as holding a stream that drain() ends, so it no longer counts as
-    /// serving a request.
-    void begin_stream(const std::shared_ptr<Connection>& connection) {
+    /// serving a request. @p listen is the subscriptions/listen exchange the stream carries, if any.
+    void begin_stream(const std::shared_ptr<Connection>& connection,
+                      const std::shared_ptr<detail::ModernExchange>& listen = nullptr) {
         std::scoped_lock lock(connections_mutex_);
         const auto it = active_connections_.find(connection);
         if (it != active_connections_.end()) {
             set_activity(it->second, Activity::eStreaming);
+        }
+        if (listen) {
+            std::erase_if(listen_exchanges_, [](const std::weak_ptr<detail::ModernExchange>& held) {
+                return held.expired();
+            });
+            listen_exchanges_.push_back(listen);
         }
     }
 
@@ -551,43 +583,32 @@ struct StreamableHttpSessionManager::Impl {
 
     // Draining
 
-    /// Starts the drain, once: no connection is accepted, connections between requests close, and
-    /// the streams that only end when told to are told to.
+    /// Starts the drain, once: from then on the endpoint refuses the requests that begin new work,
+    /// and the streams that only end when told to are told to. It keeps accepting connections and
+    /// keeps the open ones, since a client may send what finishes a request in flight, such as its
+    /// answer to the server's question, on any connection.
     static void begin_drain(const std::shared_ptr<Impl>& impl) {
-        std::vector<std::shared_ptr<Connection>> idle;
-        {
-            std::scoped_lock lock(impl->connections_mutex_);
-            if (impl->draining_.exchange(true, std::memory_order_acq_rel)) {
-                return;
-            }
-            for (const auto& [connection, activity] : impl->active_connections_) {
-                if (activity == Activity::eIdle) {
-                    idle.push_back(connection);
-                }
-            }
-        }
-        boost::asio::post(impl->listener_strand, [impl] {
-            boost::system::error_code ec;
-            (void)impl->acceptor.cancel(ec);
-            (void)impl->acceptor.close(ec);
-        });
-        for (const auto& connection : idle) {
-            request_connection_close(connection);
+        if (impl->draining_.exchange(true, std::memory_order_acq_rel)) {
+            return;
         }
         impl->end_streams_for_drain();
     }
 
     /// Ends the streams that would otherwise stay open: the 2026-07-28 subscriptions/listen
-    /// streams, answered as Server::close_subscriptions() answers them, and the GET streams of
-    /// legacy sessions, which finish when they see the drain.
+    /// streams this manager carries, answered as Server::close_subscriptions() answers them, and
+    /// the GET streams of legacy sessions, which finish when they see the drain.
     void end_streams_for_drain() {
-        std::shared_ptr<Server> modern;
+        std::vector<std::shared_ptr<detail::ModernExchange>> listening;
         {
-            std::scoped_lock lock(modern_server_mutex_);
-            modern = modern_server_;
+            std::scoped_lock lock(connections_mutex_);
+            for (const auto& held : listen_exchanges_) {
+                if (auto exchange = held.lock()) {
+                    listening.push_back(std::move(exchange));
+                }
+            }
         }
-        if (modern) {
-            modern->close_subscriptions();
+        for (const auto& exchange : listening) {
+            exchange->end_stream();
         }
         std::vector<std::shared_ptr<boost::asio::steady_timer>> timers;
         {
@@ -860,25 +881,16 @@ struct StreamableHttpSessionManager::Impl {
         std::optional<std::string> principal_id;
         // The scopes the bearer token validator reported for the request being served.
         std::optional<std::vector<std::string>> token_scopes;
-        // A request counts as served from its headers until its answer is completely written, and a
-        // draining endpoint refuses the ones that begin after the drain did.
+        // A request counts as served from its headers until its answer is completely written.
         const detail::RefuseBeforeBody refuse =
             [this, connection, &principal_id, &token_scopes, loopback_connection](
                 const detail::RequestHead& head) -> Task<std::optional<StringResponse>> {
-            if (!begin_request(connection)) {
-                co_return detail_session_mgr::make_error_response(
-                    head, http::status::service_unavailable, "Server is shutting down");
-            }
+            begin_request(connection);
             co_return co_await refuse_before_body(head, principal_id, token_scopes,
                                                   loopback_connection);
         };
 
         for (;;) {
-            // A draining endpoint keeps a connection only for the request it already holds bytes
-            // of, which is refused.
-            if (draining_.load(std::memory_order_acquire) && request_buffer.size() == 0) {
-                break;
-            }
             const RequestScope serving(*this, connection);
             const auto limits = current_connection_limits();
             principal_id.reset();
@@ -899,6 +911,14 @@ struct StreamableHttpSessionManager::Impl {
             detail::IncomingRequest request = detail::take_request(parser);
 
             if (closed.load(std::memory_order_acquire)) {
+                break;
+            }
+            if (draining_.load(std::memory_order_acquire) &&
+                !detail_session_mgr::served_while_draining(request)) {
+                auto refused = detail_session_mgr::make_error_response(
+                    request, http::status::service_unavailable, "Server is shutting down");
+                refused.keep_alive(false);
+                co_await detail::write_response_within_limits(stream, refused, limits, response_head);
                 break;
             }
 
@@ -923,7 +943,7 @@ struct StreamableHttpSessionManager::Impl {
             }
             if (auto* exchange = std::get_if<1>(&reply)) {
                 if ((*exchange)->long_lived) {
-                    begin_stream(connection);
+                    begin_stream(connection, *exchange);
                 }
                 const detail::ModernServing serving{
                     .closed = closed,
@@ -931,6 +951,7 @@ struct StreamableHttpSessionManager::Impl {
                     .counters = *stream_counters_,
                     .header_mismatch_rejections = header_mismatch_rejections_,
                     .limits = limits,
+                    .draining = &draining_,
                 };
                 const bool keep_serving = co_await detail::serve_modern_exchange(
                     stream, request_buffer, request, *exchange, client_finished_sending, serving,
@@ -950,6 +971,10 @@ struct StreamableHttpSessionManager::Impl {
                 continue;
             }
             auto& response = std::get<0>(reply);
+            // What a draining endpoint writes ends the connection, which the drain's end closes.
+            if (draining_.load(std::memory_order_acquire)) {
+                response.keep_alive(false);
+            }
             const bool keep_connection_alive = response.keep_alive();
             if (!co_await detail::write_response_within_limits(stream, response, limits,
                                                                response_head) ||
@@ -1339,6 +1364,8 @@ struct StreamableHttpSessionManager::Impl {
         const bool get_stream = legacy->request_key.empty();
         SseEventList events = std::move(legacy->replay);
         bool stream_open = false;
+        // What the head of the stream told the client, once it is written.
+        bool stream_keeps_alive = false;
         for (;;) {
             bool finished = false;
             bool replaced = false;
@@ -1398,6 +1425,9 @@ struct StreamableHttpSessionManager::Impl {
                                                                       std::move(*response_body));
                 }
                 response.set("Mcp-Session-Id", session.session_id);
+                if (draining_.load(std::memory_order_acquire)) {
+                    response.keep_alive(false);
+                }
                 boost::system::error_code error;
                 co_await http::async_write(
                     stream, response, boost::asio::redirect_error(boost::asio::use_awaitable, error));
@@ -1411,7 +1441,8 @@ struct StreamableHttpSessionManager::Impl {
                 header.set(http::field::cache_control, "no-cache");
                 header.set("X-Accel-Buffering", "no");
                 header.set("Mcp-Session-Id", session.session_id);
-                header.keep_alive(request.keep_alive());
+                stream_keeps_alive = request.keep_alive() && !draining_.load(std::memory_order_acquire);
+                header.keep_alive(stream_keeps_alive);
                 header.chunked(true);
                 http::response_serializer<http::empty_body> serializer{header};
                 boost::system::error_code error;
@@ -1443,7 +1474,7 @@ struct StreamableHttpSessionManager::Impl {
                 co_await boost::asio::async_write(
                     stream, http::make_chunk_last(),
                     boost::asio::redirect_error(boost::asio::use_awaitable, error));
-                co_return !error && request.keep_alive();
+                co_return !error && stream_keeps_alive;
             }
 
             // A signal that comes while a write is suspended finds no wait to cancel, so after a
@@ -2412,8 +2443,9 @@ Task<void> StreamableHttpSessionManager::listen_as_run(std::shared_ptr<Impl> imp
 
 Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl) {
     for (;;) {
-        if (impl->closed.load(std::memory_order_acquire) ||
-            impl->draining_.load(std::memory_order_acquire)) {
+        // A draining manager still accepts: a client may send what finishes a request in flight
+        // on a new connection.
+        if (impl->closed.load(std::memory_order_acquire)) {
             co_return;
         }
 
@@ -2423,7 +2455,6 @@ Task<void> StreamableHttpSessionManager::listen_impl(std::shared_ptr<Impl> impl)
             socket = co_await impl->acceptor.async_accept(boost::asio::use_awaitable);
         } catch (const boost::system::system_error& err) {
             if (impl->closed.load(std::memory_order_acquire) ||
-                impl->draining_.load(std::memory_order_acquire) ||
                 err.code() == boost::asio::error::operation_aborted) {
                 co_return;
             }

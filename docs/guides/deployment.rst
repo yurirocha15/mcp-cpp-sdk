@@ -231,10 +231,12 @@ When ``run_http()`` is ended by a signal, ``server.stop()`` or a failing listene
 so a request being served when the shutdown begins is answered instead of cut off. The steps are:
 
 1. ``on_drain_start`` is called on the event loop.
-2. The endpoint stops accepting connections, closes the ones between requests, and ends the
-   ``subscriptions/listen`` streams and the standalone GET streams of older-protocol sessions. A request that
-   begins on a connection that is still open is answered ``503`` with ``Connection: close``. The answers to
-   the requests being served are still written.
+2. The endpoint answers a request that begins from then on with ``503`` and ``Connection: close``, and ends
+   the ``subscriptions/listen`` streams and the standalone GET streams of older-protocol sessions. It still
+   serves what an older-protocol client sends to finish a request in flight: its answers to the server's
+   questions, its notifications, such as ``notifications/cancelled``, and a DELETE that ends its session. It
+   keeps accepting connections, so these arrive however the client sends them. The answers to the requests
+   being served are still written, with ``Connection: close`` when they begin after the drain did.
 3. The run waits until no request is being served, for ``drain_timeout`` at most. A request counts until its
    answer is completely written, so an older-protocol POST whose SSE response waits for its handler counts.
 4. ``on_shutdown`` is awaited. The connections stay open meanwhile, so an answer a handler produces because of

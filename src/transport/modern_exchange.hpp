@@ -93,6 +93,11 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
     /// `cancelled` once registered, since a cancellation before it did not call the function.
     void set_on_cancel(std::function<void()> hook);
 
+    /// Calls the function of set_on_cancel() without cancelling the request, which ends a
+    /// subscriptions/listen stream as Server::close_subscriptions() ends it. Before the function is
+    /// registered, set_on_cancel() calls it instead.
+    void end_stream();
+
     void finish(std::string response_wire);
 
     boost::asio::any_io_executor strand;
@@ -115,6 +120,7 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
     std::optional<BudgetLease> budget_lease;  // guarded by mutex
     std::optional<std::string> response;      // guarded by mutex
     std::function<void()> on_cancel;          // guarded by mutex
+    bool end_requested{false};                // guarded by mutex
 };
 
 /// Serves a request of 2026-07-28 and returns its serialized response.
@@ -148,6 +154,14 @@ struct ModernServing {
     std::atomic<std::uint64_t>& header_mismatch_rejections;
     /// Bounds how long the peer may take to read what is written to it.
     const HttpConnectionLimits& limits;
+    /// Set while the endpoint drains, when it does; an answer written then ends the connection.
+    const std::atomic<bool>* draining{nullptr};
+
+    /// Whether an answer whose head is written now may leave the connection open for @p request.
+    [[nodiscard]] bool keeps_alive(const IncomingRequest& request) const {
+        return request.keep_alive() &&
+               (draining == nullptr || !draining->load(std::memory_order_acquire));
+    }
 };
 
 /// What starting an exchange needs besides the request.

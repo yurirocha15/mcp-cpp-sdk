@@ -451,14 +451,17 @@ class MCP_API StreamableHttpSessionManager {
     /**
      * @brief Starts a graceful shutdown and waits for the requests being served.
      *
-     * @details The first call starts the drain, which every call then waits for: the manager
-     * stops accepting connections; a request that begins on a connection that was already open is
-     * answered `503` with `Connection: close`; connections between requests close; the
-     * `subscriptions/listen` streams of 2026-07-28 end as Server::close_subscriptions() ends them,
-     * and so do the standalone GET streams of legacy sessions. The answer to a request whose
-     * headers were already read is still written to its connection. The returned task completes
-     * when no such request remains, or after @p timeout, whichever comes first. A request counts
-     * until its answer is completely written, so a legacy POST whose SSE response waits for its
+     * @details The first call starts the drain, which every call then waits for: a request that
+     * begins from then on is answered `503` with `Connection: close`; the `subscriptions/listen`
+     * streams of 2026-07-28 that this manager carries end as Server::close_subscriptions() ends
+     * them, and so do the standalone GET streams of legacy sessions. The manager still serves what
+     * a legacy client sends to finish a request in flight: its answers to the server's questions,
+     * its notifications, such as `notifications/cancelled`, and a DELETE that ends its session. It
+     * keeps accepting connections and keeps the open ones, so these arrive however the client
+     * sends them. The answer to a request whose headers were already read is still written to its
+     * connection, with `Connection: close` when it begins after the drain did. The returned task
+     * completes when no such request remains, or after @p timeout, whichever comes first. A request
+     * counts until its answer is completely written, so a legacy POST whose SSE response waits for its
      * handler counts, while the streams the drain ends do not.
      *
      * The drain does not close the manager: call close() afterwards. Drain is safe to call

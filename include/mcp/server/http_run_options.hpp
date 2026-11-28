@@ -19,11 +19,13 @@ class StreamableHttpSessionManager;
  * runs these steps:
  *
  * 1. @ref on_drain_start is called.
- * 2. The session manager drains (StreamableHttpSessionManager::drain()): it stops accepting
- *    connections, answers a request that begins on a connection already open with `503` and
- *    `Connection: close`, closes the connections between requests and ends the
- *    `subscriptions/listen` and legacy GET streams. The answers to requests already being served
- *    are still written.
+ * 2. The session manager drains (StreamableHttpSessionManager::drain()): it answers a request
+ *    that begins from then on with `503` and `Connection: close`, and ends the
+ *    `subscriptions/listen` and legacy GET streams. It still serves what a legacy client sends to
+ *    finish a request in flight: its answers to the server's questions, its notifications, such
+ *    as `notifications/cancelled`, and a DELETE that ends its session. The answers to requests
+ *    already being served are still written, with `Connection: close` when they begin after the
+ *    drain did.
  * 3. The run waits until no request is being served, for @ref drain_timeout at most.
  * 4. @ref on_shutdown is awaited. The connections stay open meanwhile, so an answer a handler
  *    produces while it runs is delivered.
