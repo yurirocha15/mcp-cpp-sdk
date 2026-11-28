@@ -4,7 +4,7 @@ This repository is an independent community SDK. Completing the work below
 makes the project tier-ready; official Tier assignment and inclusion in the MCP
 SDK roster require approval from MCP governance.
 
-The [specification support](https://www.yurirocha.com/mcp-cpp-sdk/spec-support.html)
+The [specification support](https://mcp-cpp-sdk.yurirocha.com/spec-support.html)
 page lists what the SDK implements today. This page lists the work that remains
 against the [SDK tier requirements](https://modelcontextprotocol.io/community/sdk-tiers)
 and the non-experimental features of the tier assessment.
