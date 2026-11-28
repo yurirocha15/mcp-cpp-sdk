@@ -16,8 +16,10 @@ The SDK builds both shared and static library variants. Much of the client,
 server, and network-transport runtime is implemented in ``.cpp`` files, while
 serialization helpers and typed handler templates remain in public headers.
 The transport and OAuth runtime implementations live in compiled translation
-units. The async and transport APIs still expose Boost.Asio types and
-Boost.Beast aliases, so consumers parse the corresponding Boost headers.
+units. Only ``<mcp/core/async.hpp>``, ``<mcp/core/signal.hpp>``,
+``<mcp/transport/websocket.hpp>`` and ``<mcp/transport/http_beast.hpp>``
+include Boost headers; ``<mcp/mcp.hpp>`` and the other server, client, auth and
+transport headers do not, so a program in sync mode parses no Boost header.
 
 This design:
 
@@ -42,15 +44,23 @@ The SDK follows modern C++ best practices:
 * **Explicit lifetime contracts**: request-scoped non-owning views are paired
   with an owning session or runtime state
 
-Coroutine-Based Async
-^^^^^^^^^^^^^^^^^^^^^^
+Sync and Async Modes
+^^^^^^^^^^^^^^^^^^^^
 
-All asynchronous operations use C++20 coroutines via Boost.Asio:
+The same ``Server`` and ``Client`` objects work in two modes:
 
-* ``Task<T>`` return type for async functions (compatible with ``boost::asio::awaitable<T>``)
-* ``co_await`` for sequential async operations
-* ``co_spawn`` for launching concurrent tasks
-* No callback hell - linear, readable async code
+* **Sync mode**: ``Server::run_stdio()`` and ``Server::run_http()`` run an
+  event loop of their own and block while they serve, and handlers can be
+  ordinary functions. A ``Client`` constructed from an ``Endpoint`` runs its
+  own event loop on a thread of its own, and ``Client::sync()`` makes blocking
+  calls on it.
+* **Async mode**: the program runs a Boost.Asio event loop, and handlers and
+  client calls are C++20 coroutines that return ``Task<T>``, from
+  ``<mcp/core/async.hpp>``. ``co_await`` sequences operations and ``co_spawn``
+  starts concurrent ones.
+
+:doc:`getting-started` starts in sync mode, and :doc:`guides/async-mode`
+covers async mode.
 
 Type Safety
 ^^^^^^^^^^^
@@ -104,7 +114,9 @@ Client
 **Key responsibilities**:
 
 * Request/response correlation (JSON-RPC id matching) via ``RequestId`` — a type-safe wrapper for JSON-RPC request identifiers (string or integer)
-* Reverse RPC: ``dispatch_incoming_request`` handles server-to-client JSON-RPC requests, enabling servers to request client capabilities (elicitation, sampling, roots)
+* Reverse RPC: the handlers set with ``on_elicitation()``, ``on_sampling()``
+  and ``on_roots_list()`` answer the server's requests for elicitation,
+  sampling and roots
 * Timeout management for requests
 * Connection lifecycle (``connect()`` and ``close()``; the read loop is managed
   internally). ``connect()`` resolves to a ``ConnectResult`` that names the era
@@ -126,18 +138,36 @@ Transport Abstraction
        virtual void close() = 0;
    };
 
+Two more members have defaults: ``read_incoming()`` reads ``read_message()``
+and gives the message an empty principal, and ``write_related_message()``
+writes with ``write_message()``. A transport that authenticates each message
+overrides ``read_incoming()``, and a transport that wraps another forwards both.
+
 Built-in implementations:
 
 * **StdioTransport**: Reads from stdin, writes to stdout (common for AI tools)
-* **WebSocketServerTransport / WebSocketClientTransport**: Communicate over WebSocket (Boost.Beast)
-* **HttpClientTransport**: Sends MCP messages to a Streamable HTTP endpoint
-* **HttpServerTransport**: Exposes a single-session Streamable HTTP endpoint
+* **StdioClientTransport**: Launches a server process and talks to it over its
+  stdin and stdout
+* **HttpClientTransport**: Sends MCP messages to a Streamable HTTP endpoint,
+  over TLS for ``https://`` URLs and through HTTP proxies, and reuses its
+  connections for later requests
+* **HttpServerTransport**: Exposes a Streamable HTTP endpoint with one session
+  for older revisions, and serves 2026-07-28 requests without a session
+* **WebSocketServerTransport / WebSocketClientTransport**: Communicate over
+  WebSocket or WebSocket over TLS (Boost.Beast)
+* **MemoryTransport**: A connected pair in one process, for tests
+
+A ``Client`` in sync mode gets its transport from an ``Endpoint``:
+``Endpoint::stdio()`` launches a server, ``Endpoint::http()`` connects to a URL
+and ``Endpoint::custom()`` takes the application's own transport.
+:doc:`guides/tls` covers TLS and proxies.
 
 For multi-session HTTP deployments, ``StreamableHttpSessionManager`` owns the
 listener and creates per-session ``Server`` instances backed by in-memory
 transports for clients of older revisions. The canonical session header name
 used in the docs is ``MCP-Session-Id``. It serves 2026-07-28 requests on the
 same endpoint without a session, from one shared ``Server``.
+``Server::run_http()`` runs such a manager in sync mode.
 
 Custom transports can be added by implementing the ``ITransport`` interface.
 
@@ -153,8 +183,9 @@ Context
 
 ``mcp::Context`` provides execution context for handlers:
 
-* **Logging**: ``log_debug()``, ``log_info()``, ``log_warning()``, ``log_error()``
-* **Reverse RPC**: ``sample_llm()`` for server-to-client sampling requests
+* **Logging**: ``log()`` with a ``LoggingLevel``, and ``log_info()``
+* **Reverse RPC**: ``sample_llm()``, ``elicit()`` and ``request_roots()`` ask
+  the client for sampling, elicitation and roots
 * **Notifications**: Send notifications back to the connected peer
 * **Request utilities**: Progress reporting, roots requests, elicitation, and cancellation state
 
@@ -172,7 +203,13 @@ Core Types
 
 The core headers expose fundamental types in the ``mcp`` namespace:
 
-* ``Task<T>`` - Coroutine return type, a class derived from ``boost::asio::awaitable<T>``
+* ``Task<T>`` - Coroutine return type, a class derived from
+  ``boost::asio::awaitable<T>``, defined in ``<mcp/core/async.hpp>``
+* ``Executor`` - The executor the SDK's APIs take; any Asio executor converts
+  to it
+* ``Runtime`` - An event loop run on the calling thread or on threads of its
+  own, for example as the pool that ``Server::set_handler_executor()`` runs
+  tool handlers on
 * ``LoggingLevel`` - Protocol enum for log severity
 * ``Error`` and JSON-RPC error responses - Structured peer-visible failures
 
@@ -231,7 +268,7 @@ The typical data flow for a tool call:
 13. **Client** matches response to pending request by ID
 14. **Client** deserializes and returns result to caller
 
-The flow above is the same in both eras. In a 2026-07-28 session step 1 also
+The flow above is the same in both eras. Under 2026-07-28 step 1 also
 puts the protocol version and client capabilities in the request's ``_meta``,
 and no ``initialize`` request precedes it. If the handler asks the client a
 question in step 8, the server answers with an ``input_required`` result and
@@ -247,7 +284,7 @@ Why Boost.Asio?
 ^^^^^^^^^^^^^^^
 
 The SDK uses Boost.Asio for async I/O because it provides the primitives used by
-the public coroutine model:
+the coroutine model of async mode; in sync mode it stays inside the library:
 
 * C++20 coroutine support through ``awaitable<T>`` and ``co_spawn``
 * Cross-platform (Windows, Linux, macOS)
@@ -294,9 +331,8 @@ retaining the template-based public API:
 * **Template ergonomics**: Typed handlers remain available without a separate
   code-generation step
 
-Tradeoff: the coroutine and executor types remain part of the source-level API,
-and PImpl calls cannot be inlined across the library boundary without link-time
-optimization.
+Tradeoff: async mode's coroutine type is a Boost.Asio type, and PImpl calls
+cannot be inlined across the library boundary without link-time optimization.
 
 Why Multiple Handler Signatures?
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -339,13 +375,15 @@ so the project does not promise zero-copy operation.
 
 For high-throughput scenarios, consider:
 
-* Reusing an ``io_context`` and a multi-session HTTP manager
+* Serving every HTTP client from one multi-session server, ``Server::run_http()``
+  or a ``StreamableHttpSessionManager``
 * Keeping handlers from blocking. A handler runs on the executor that reads and
   answers requests, so a blocking call (a synchronous library call, a sleep, file
   or network I/O without ``co_await``) holds up every request behind it. Await
   asynchronous operations instead, or call ``Server::set_handler_executor()``
-  with an executor of its own, such as a ``boost::asio::thread_pool``, to run
-  tool handlers there; the server's own work stays on its executor. A pool of
+  with an executor of its own, such as that of a ``Runtime`` started on its own
+  threads or a ``boost::asio::thread_pool``, to run tool handlers there; the
+  server's own work stays on its executor. A pool of
   one thread also keeps state that only the handlers touch on a single thread.
   The ``debugger_server`` example does this for LLDB's blocking calls.
 * Returning ``mcp::CallToolResult`` (``Out = mcp::CallToolResult``) from tools,
@@ -374,7 +412,6 @@ Future Work
 
 Potential future enhancements:
 
-* **Connection pooling**: Reuse transports across multiple requests
 * **HTTP/2 transport**: For deployments that require HTTP/2
 * **Sender/receiver interoperability**: Integration with standard execution
   APIs as supported toolchains make it practical
