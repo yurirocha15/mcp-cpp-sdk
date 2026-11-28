@@ -556,7 +556,12 @@ void Client::Impl::dispatch_message(const std::shared_ptr<Impl>& state, const st
                                std::to_string(mcp::detail::constants::peer_json::g_MAX_DEPTH) +
                                " levels");
         }
-        auto json_message = nlohmann::json::parse(raw);
+        nlohmann::json json_message;
+        if (!detail::parse_json_fast(raw, json_message)) {
+            // Invalid text, and the few valid inputs the fast parser leaves to nlohmann::json,
+            // which also reports the first.
+            json_message = nlohmann::json::parse(raw);
+        }
 
         if (!json_message.is_object()) {
             throw McpError(mcp::constants::jsonrpc::g_INVALID_REQUEST,

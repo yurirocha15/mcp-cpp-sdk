@@ -1786,6 +1786,11 @@ struct HttpClientTransport::Impl {
         if (!call.final_message) {
             return false;
         }
+        // The specification answers a header mismatch with 400, so a successful answer is not
+        // parsed for one.
+        if (call.status != static_cast<unsigned int>(http::status::bad_request)) {
+            return false;
+        }
         const auto code = detail::response_error_code(*call.final_message);
         return code && *code == mcp::constants::jsonrpc::g_HEADER_MISMATCH;
     }
