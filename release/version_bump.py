@@ -47,18 +47,19 @@ class Pin:
 # The runtime package names carry the shared library's SOVERSION (CMakeLists.txt).
 PINS = (
     Pin("README.md", r"GIT_TAG v", r"$", "version", 1),
-    Pin("docs/getting-started.rst", r"GIT_TAG v", r"$", "version", 1),
-    Pin("docs/installation.rst", r"find_package\(mcp-cpp-sdk ", r" EXACT", "version", 1),
-    Pin("docs/installation.rst", r"libmcp-cpp-sdk", r"(?=``|$)", "soversion", 2),
-    Pin("docs/installation.rst", r"(?<!lib)mcp-cpp-sdk", r"-libs$", "soversion", 1),
+    Pin("docs/installation/source.rst", r"GIT_TAG v", r"$", "version", 1),
+    Pin("docs/installation/cmake.rst", r"find_package\(mcp-cpp-sdk ", r" EXACT", "version", 1),
+    Pin("docs/installation/ubuntu-debian.rst", r"libmcp-cpp-sdk", r"(?=``|$)", "soversion", 2),
+    Pin("docs/installation/fedora.rst", r"(?<!lib)mcp-cpp-sdk", r"-libs$", "soversion", 1),
+    Pin("docs/installation/enterprise-linux.rst", r"(?<!lib)mcp-cpp-sdk", r"-libs$", "soversion", 1),
     Pin(
-        "docs/installation.rst",
+        "docs/installation/arch.rst",
         r"/releases/download/v",
         r"/release-signing-key\.asc$",
         "version",
         1,
     ),
-    Pin("docs/installation.rst", r"choco install mcp-cpp-sdk --version=", r"$", "version", 1),
+    Pin("docs/installation/windows.rst", r"choco install mcp-cpp-sdk --version=", r"$", "version", 1),
     Pin(
         ".github/ISSUE_TEMPLATE/bug_report.yml",
         r"placeholder: v",

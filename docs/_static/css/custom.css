@@ -83,3 +83,9 @@ footer {
 ::-webkit-scrollbar-thumb:hover {
     background: #bbb;
 }
+
+/* A table with the wrap class fits the page: its cells wrap instead of scrolling */
+.rst-content table.wrap td,
+.rst-content table.wrap th {
+    white-space: normal;
+}

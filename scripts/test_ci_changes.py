@@ -130,10 +130,10 @@ class ClassifierTests(unittest.TestCase):
     def test_version_pin_text_runs_the_release_checks(self) -> None:
         self.write("README.md", README.replace("Prose.", "Prose.\n\n    GIT_TAG v9.9.9\n"))
         self.assertEqual(self.jobs("pull_request", self.commit()), {"release"})
-        self.write("docs/installation.rst", "choco install mcp-cpp-sdk --version=9.9.9\n")
+        self.write("docs/installation/windows.rst", "choco install mcp-cpp-sdk --version=9.9.9\n")
         pinned = self.commit()
         self.assertEqual(self.jobs("pull_request", pinned), {"release"})
-        self.write("docs/installation.rst", "choco install mcp-cpp-sdk --version=9.9.9\n\nProse.\n")
+        self.write("docs/installation/windows.rst", "choco install mcp-cpp-sdk --version=9.9.9\n\nProse.\n")
         self.assertEqual(self.jobs("pull_request", self.commit(), base=pinned), set())
 
     def test_changelog_runs_the_release_checks(self) -> None:

@@ -1,110 +1,17 @@
 Getting Started
 ===============
 
-This page installs the SDK and builds a minimal server and client with the
-blocking API, in which handlers are plain functions, client calls block until
-they are answered, and the ``Server`` and ``Client`` run their own event loop.
-The coroutine API, in which the program runs the event loop and handlers and
-calls are C++20 coroutines, is described in :doc:`guides/async-mode`.
+This page builds a minimal server and client with the blocking API, in which
+handlers are plain functions, client calls block until they are answered, and
+the ``Server`` and ``Client`` run their own event loop.  The coroutine API, in
+which the program runs the event loop and handlers and calls are C++20
+coroutines, is described in :doc:`guides/async-mode`.
 
-Prerequisites
--------------
+Install the SDK
+---------------
 
-You need:
-
-* **C++20 compiler**: GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022
-* **CMake**: 3.20 or newer
-* **Boost** 1.74+, **nlohmann_json** 3.10.5+ and **OpenSSL** 3.0+, which the
-  packages below install for you
-
-Building the SDK itself with its scripts also needs **Conan** 2 and, on Windows,
-`Chocolatey <https://chocolatey.org/install>`__.
-
-Installation
-------------
-
-See :doc:`installation` for package-manager commands, supported platforms,
-shared/static target selection, verification, and uninstall instructions.
-
-From a Source Checkout with Conan
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-In a clone of this repository, Conan can provide the dependencies:
-
-.. code-block:: bash
-
-   # Install dependencies
-   conan install . --output-folder=build --build=missing \
-     -s compiler.cppstd=20 \
-     -c tools.cmake.cmaketoolchain:generator=Ninja
-
-   # Build the project
-   cmake --preset conan-release
-   cmake --build --preset conan-release
-
-Using CMake FetchContent
-^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Add mcp-cpp-sdk to your CMakeLists.txt:
-
-.. code-block:: cmake
-
-   include(FetchContent)
-   FetchContent_Declare(
-     mcp-cpp-sdk
-     GIT_REPOSITORY https://github.com/yurirocha15/mcp-cpp-sdk.git
-     GIT_TAG v0.4.0
-   )
-   # Skip the SDK's own tests, examples and docs.
-   set(BUILD_TESTING OFF)
-   set(BUILD_EXAMPLES OFF)
-   set(BUILD_DOCS OFF)
-   FetchContent_MakeAvailable(mcp-cpp-sdk)
-
-   target_link_libraries(your_target PRIVATE mcp::sdk)
-
-Using Git Submodule
-^^^^^^^^^^^^^^^^^^^
-
-Clone the repository as a submodule:
-
-.. code-block:: bash
-
-   git submodule add https://github.com/yurirocha15/mcp-cpp-sdk.git third_party/mcp-cpp-sdk
-   git submodule update --init --recursive
-
-Then in your CMakeLists.txt:
-
-.. code-block:: cmake
-
-   add_subdirectory(third_party/mcp-cpp-sdk)
-   target_link_libraries(your_target PRIVATE mcp::sdk)
-
-Since 0.3.0, ``BUILD_TESTING``, ``BUILD_EXAMPLES`` and ``BUILD_DOCS`` default
-to ``ON`` only when the SDK is the top-level project, so a project that adds it
-with FetchContent or ``add_subdirectory`` builds only the libraries and does
-not need GTest. With 0.2.0, set the three options to ``OFF`` before adding the
-SDK, as in the FetchContent example.
-
-Building from Source
---------------------
-
-To build the SDK and examples from source:
-
-.. code-block:: bash
-
-   # Clone the repository
-   git clone https://github.com/yurirocha15/mcp-cpp-sdk.git
-   cd mcp-cpp-sdk
-
-   # Initialize development environment
-   python scripts/init.py
-
-   # Build the project
-   python scripts/build.py
-
-   # Run tests
-   python scripts/build.py --test
+Follow the page for your platform in :doc:`installation`.  It installs the SDK
+for CMake's ``find_package``.
 
 Your First Server
 -----------------
@@ -125,7 +32,7 @@ This server offers one tool, ``greet``, over stdio:
 * ``run_stdio()`` serves until standard input closes or the process receives
   SIGINT or SIGTERM.
 
-Build it with CMake against an installed SDK (see :doc:`installation`):
+Build it with CMake:
 
 .. code-block:: cmake
 
@@ -135,6 +42,9 @@ Build it with CMake against an installed SDK (see :doc:`installation`):
    add_executable(greeter minimal_server.cpp)
    target_compile_features(greeter PRIVATE cxx_std_20)
    target_link_libraries(greeter PRIVATE mcp::sdk)
+
+A project that builds the SDK with ``FetchContent``, as
+:doc:`installation/source` shows, leaves out ``find_package``.
 
 Your First Client
 -----------------

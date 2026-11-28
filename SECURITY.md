@@ -13,7 +13,7 @@ personal data in the report.
 ## Release integrity
 
 Install only from the routes in the
-[installation guide](https://www.yurirocha.com/mcp-cpp-sdk/installation.html).
+[installation guide](https://mcp-cpp-sdk.yurirocha.com/installation.html).
 Each GitHub Release publishes its source archives, checksums, manifest and SBOMs
 with signatures you can verify.
 
