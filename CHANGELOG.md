@@ -34,6 +34,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   completion and roots changes.
 - The documentation has a feature matrix that links each tier-assessment feature
   to its API reference, guide and example.
+- `CONTRIBUTING.md` points to the contributing guide, and `MAINTENANCE.md`
+  commits to an SDK release within 30 days of each specification release.
 
 ### Changed
 
