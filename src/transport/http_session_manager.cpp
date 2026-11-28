@@ -385,7 +385,7 @@ struct StreamableHttpSessionManager::Impl {
     std::size_t streaming_connections_{0};
     /// The subscriptions/listen streams this manager carries, which its drain ends.
     std::vector<std::weak_ptr<detail::ModernExchange>> listen_exchanges_;
-    /// Set once, under connections_mutex_, by begin_drain().
+    /// Set once, by begin_drain().
     std::atomic<bool> draining_{false};
     mutable std::shared_mutex sessions_mutex_;
     SessionMap sessions;
