@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -108,6 +109,9 @@ class MCP_API OAuthClientTransport final : public ITransport {
 
     /** @brief What the wrapped transport does. */
     [[nodiscard]] bool overlapping_writes() const noexcept override;
+
+    /** @brief What the wrapped transport carries. */
+    [[nodiscard]] std::optional<DeprecatedFeature> deprecated_feature() const noexcept override;
 
     /**
      * @brief Report to @p observer while a write waits for Authenticator::try_handle_challenge().

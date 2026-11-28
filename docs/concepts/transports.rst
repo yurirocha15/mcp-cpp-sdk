@@ -24,6 +24,9 @@ The SDK includes several built-in transport types to cover different use cases:
    it is not the standard Streamable HTTP transport.
 4. **MemoryTransport**: An in-memory transport for unit testing and in-process
    communication.
+5. **LegacySseClientTransport**: The deprecated HTTP+SSE transport of protocol
+   revision 2024-11-05, for a peer that offers nothing newer. The server side is
+   ``StreamableHttpSessionManager::set_legacy_sse()``.
 
 Stdio Transport (Local)
 -----------------------
@@ -359,6 +362,68 @@ yourself.
    :end-before: // ========== CONVENIENCE SETUP (this example) ==========
    :dedent: 8
 
+.. _transport-http-sse:
+
+HTTP+SSE Transport (Deprecated)
+-------------------------------
+
+The HTTP+SSE transport is the network transport of protocol revision
+2024-11-05. The specification deprecates it since revision 2025-03-26 in favour
+of Streamable HTTP and asks new implementations not to adopt it, so use it only
+to reach a peer that offers nothing newer (see :doc:`/guides/deprecations`).
+
+A client opens an event stream with a GET. The server's first event is
+``endpoint``, whose data is the URL the client POSTs its messages to, and the
+server's messages follow as ``message`` events; each POST is answered 202.
+Nothing resumes a stream, so when it ends the session is over. The transport
+carries the revisions before 2026-07-28 only: ``initialize`` negotiates at most
+2025-11-25, and a request of 2026-07-28 is refused.
+
+``StreamableHttpSessionManager::set_legacy_sse()`` serves the transport next to
+Streamable HTTP, before ``listen()``. A GET on ``LegacySseOptions::sse_path``
+(``/sse``) opens a session whose endpoint is ``LegacySseOptions::message_path``
+(``/messages``) with the session's opaque ``sessionId``. The Host and Origin
+allowlists, the bearer token validator and the connection limits of the HTTP
+endpoint above apply, and a session serves only the principal that opened it.
+``SessionLimits::max_sessions`` also bounds these sessions, which last as long
+as their streams. The server side in sync and async mode:
+
+.. code-block:: cpp
+   :caption: Sync mode
+
+   server.run_http("127.0.0.1", 8080, [](mcp::StreamableHttpSessionManager& http) {
+       http.set_legacy_sse({});
+   });
+
+.. code-block:: cpp
+   :caption: Async mode
+
+   mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", 8080, server);
+   manager.set_legacy_sse({.sse_path = "/events", .message_path = "/inbox"});
+   boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+
+``Endpoint::legacy_sse(url)`` connects a ``Client`` in sync mode; in async mode
+the application gives the ``Client`` a ``LegacySseClientTransport`` on its own
+event loop. The transport takes the endpoint the server names, resolved against
+the stream's URL, and refuses one on another scheme, host or port. Its TLS,
+proxy and bearer token settings are those of ``HttpClientTransport``
+(:doc:`/guides/tls`).
+
+.. code-block:: cpp
+   :caption: Sync mode
+
+   mcp::Client client(mcp::Endpoint::legacy_sse("http://127.0.0.1:8080/sse"));
+   client.sync().connect("my-client", "1.0.0");
+
+.. code-block:: cpp
+   :caption: Async mode
+
+   auto transport = std::make_shared<mcp::LegacySseClientTransport>(
+       io.get_executor(), "http://127.0.0.1:8080/sse");
+   transport->set_bearer_token_provider([] { return std::string("token"); });
+   mcp::Client client(transport, io.get_executor());
+   co_await client.connect("my-client", "1.0.0");
+
 WebSocket Transport
 -------------------
 
@@ -464,6 +529,9 @@ integration. Use the table below as a guide:
 | **HTTP**             | MCP remote endpoints     | - Standard Streamable HTTP request model       |
 |                      |                          | - Managed sessions and bounded event replay    |
 |                      |                          | - TLS of its own or from a reverse proxy       |
++----------------------+--------------------------+------------------------------------------------+
+| **HTTP+SSE**         | Peers of 2024-11-05      | - Deprecated; Streamable HTTP replaces it      |
+|                      |                          | - Revisions before 2026-07-28 only             |
 +----------------------+--------------------------+------------------------------------------------+
 | **WebSocket**        | Agreed custom integration| - Full-duplex persistent channel               |
 |                      |                          | - Separate client and server transport types   |

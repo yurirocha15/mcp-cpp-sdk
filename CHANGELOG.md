@@ -27,6 +27,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
   that opens or closes.
 - `OAuthAuthorizationManager` authorizes at a 2025-03-26 server that publishes
   no protected resource metadata, unless `legacy_discovery_fallback` is false.
+- `Endpoint::legacy_sse()` and `StreamableHttpSessionManager::set_legacy_sse()`
+  speak the deprecated HTTP+SSE transport of 2024-11-05 as client and server.
 
 ### Changed
 
@@ -47,6 +49,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The APIs of Roots, Sampling, Logging, dynamic client registration and
   `includeContext` other than `"none"` carry `[[deprecated]]`, citing the
   proposal and earliest removal.
+- The HTTP+SSE transport (`LegacySseClientTransport`, `Endpoint::legacy_sse()`
+  and `set_legacy_sse()`) carries `[[deprecated]]`; the specification deprecates
+  it.
 
 ### Migrating from 0.4.0
 

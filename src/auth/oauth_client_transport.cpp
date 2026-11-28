@@ -533,6 +533,10 @@ bool OAuthClientTransport::overlapping_writes() const noexcept {
     return impl_->inner->overlapping_writes();
 }
 
+std::optional<DeprecatedFeature> OAuthClientTransport::deprecated_feature() const noexcept {
+    return impl_->inner->deprecated_feature();
+}
+
 void OAuthClientTransport::set_interaction_observer(InteractionObserver observer) {
     std::scoped_lock lock(impl_->observer_mutex);
     impl_->interaction_observer = std::move(observer);

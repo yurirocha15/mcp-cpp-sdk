@@ -39,7 +39,9 @@ still sends and reads, such as ``LoggingLevel`` and ``SamplingMessage``, the
 data members of option and capability structures, such as
 ``RequestOptions::log_level``, and ``ClientIdentitySource::eDynamicRegistration``.
 The run-time notice covers ``RequestOptions::log_level`` and dynamic
-registration.
+registration. The HTTP+SSE transport marks its client transport's constructor,
+``Endpoint::legacy_sse()`` and ``StreamableHttpSessionManager::set_legacy_sse()``,
+not the classes. See :ref:`transport-http-sse`.
 
 Run-Time Notices
 ----------------
@@ -54,6 +56,10 @@ feature and object:
   ``Context::request_roots()``, and Logging when the application calls
   ``Server::get_log_level()``. The servers ``run_http()`` builds for its
   sessions share one report.
+* A ``Server`` also reports the HTTP+SSE transport when
+  ``StreamableHttpSessionManager::set_legacy_sse()`` serves its first session.
+* A ``Client`` reports the HTTP+SSE transport when it connects over a
+  ``LegacySseClientTransport``, such as the one ``Endpoint::legacy_sse()`` makes.
 * A ``Client`` reports Sampling and Roots when the application calls
   ``on_sampling()``, ``set_roots()`` or ``on_roots_list()``, and Logging when it
   calls ``set_log_level()`` and for the first 2026-07-28 request that sets

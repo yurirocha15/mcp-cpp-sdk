@@ -1,10 +1,12 @@
 #pragma once
 
 #include <mcp/core/async_fwd.hpp>
+#include <mcp/core/deprecation.hpp>
 #include <mcp/core/export.hpp>
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -181,6 +183,18 @@ class MCP_API ITransport {
      *         otherwise (the default).
      */
     virtual StdioTransport* stdio_transport() noexcept { return nullptr; }
+
+    /**
+     * @brief The deprecated protocol feature this transport carries, if any.
+     *
+     * @details A Client reports it as a DeprecationNotice when it connects over the transport. A
+     * transport that wraps another forwards this.
+     *
+     * @return The feature, or nothing (the default).
+     */
+    [[nodiscard]] virtual std::optional<DeprecatedFeature> deprecated_feature() const noexcept {
+        return std::nullopt;
+    }
 
     /**
      * @brief Whether write_message() calls may overlap.

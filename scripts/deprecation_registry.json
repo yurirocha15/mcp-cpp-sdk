@@ -208,10 +208,14 @@
             "proposal": "SEP-2596",
             "since": "2025-03-26",
             "earliest_removal": "three months after SEP-2596 reaches Final",
-            "declarations": [],
+            "declarations": [
+                "include/mcp/transport/sse_legacy.hpp:LegacySseClientTransport",
+                "include/mcp/client/endpoint.hpp:legacy_sse",
+                "include/mcp/transport/http_session_manager.hpp:set_legacy_sse"
+            ],
             "runtime_only": [],
             "exemptions": [],
-            "notice_test": null
+            "notice_test": "LegacySseTransportTest.ReportsTheDeprecationOnceOnEachSide"
         }
     ]
 }

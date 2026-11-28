@@ -10,6 +10,7 @@
 #include "mcp/detail/protocol/request_meta.hpp"
 #include "mcp/detail/text/diagnostic_text.hpp"
 #include "mcp/detail/transport/http_request_metadata.hpp"
+#include "mcp/detail/transport/sse_decoder.hpp"
 
 #include <mcp/core/async.hpp>
 #include <mcp/core/constants.hpp>
@@ -57,117 +58,7 @@ namespace net = boost::asio;
 
 namespace {
 
-/// Reads a text/event-stream body in the pieces the network delivers it and returns the data of each
-/// event as soon as its terminating blank line arrives. It keeps the last event id and the
-/// reconnection time the server asked for, which a resume needs; comment lines and other fields are
-/// skipped. As the SSE standard has it, CRLF, LF and CR each end a line, an `id` counts once its
-/// event has arrived whole, and an event the stream ends inside of is dropped.
-class SseDecoder {
-   public:
-    SseDecoder() = default;
-    /// A decoder for a stream resumed after the event @p last_id.
-    explicit SseDecoder(std::string last_id) : last_id_(last_id), id_buffer_(std::move(last_id)) {}
-
-    /// The id of the last whole event that named one, which a resume sends as Last-Event-ID.
-    [[nodiscard]] const std::string& last_id() const { return last_id_; }
-
-    /// The reconnection time a `retry` field asked for, if one did.
-    [[nodiscard]] std::optional<std::chrono::milliseconds> retry() const { return retry_; }
-
-    /// Whether the stream carried an event or an event id.
-    [[nodiscard]] bool carried_anything() const { return carried_anything_; }
-
-    std::vector<std::string> feed(std::string_view chunk) {
-        std::vector<std::string> events;
-        for (const char symbol : chunk) {
-            // The LF of a CRLF, which may come in the next chunk, ends no line of its own.
-            const bool second_of_crlf = symbol == '\n' && after_carriage_return_;
-            after_carriage_return_ = symbol == '\r';
-            if (second_of_crlf) {
-                continue;
-            }
-            if (symbol != '\n' && symbol != '\r') {
-                line_.push_back(symbol);
-                if (line_.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                    throw TransportError(TransportError::Kind::eProtocol,
-                                         "An SSE line from the server is too long");
-                }
-                continue;
-            }
-            consume_line(events);
-        }
-        return events;
-    }
-
-   private:
-    void consume_line(std::vector<std::string>& events) {
-        if (line_.empty()) {
-            // The blank line ends the event: its id, or the one before, becomes the stream's.
-            if (id_named_) {
-                last_id_ = id_buffer_;
-                id_named_ = false;
-                carried_anything_ = true;
-            }
-            if (!payload_.empty()) {
-                events.push_back(std::move(payload_));
-                payload_.clear();
-                carried_anything_ = true;
-            }
-        } else if (const auto id = field_value("id:")) {
-            const std::string_view value = *id;
-            // An id holding NUL is ignored, as the SSE standard has it.
-            if (value.find('\0') == std::string_view::npos) {
-                id_buffer_.assign(value.data(), value.size());
-                id_named_ = true;
-            }
-        } else if (const auto retry = field_value("retry:")) {
-            const std::string_view value = *retry;
-            if (!value.empty() && value.size() <= g_max_retry_digits &&
-                value.find_first_not_of("0123456789") == std::string_view::npos) {
-                retry_ = std::chrono::milliseconds(std::stoll(std::string(value)));
-            }
-        } else if (const auto data = field_value("data:")) {
-            const std::string_view value = *data;
-            if (payload_.size() + value.size() + 1 >
-                mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
-                throw TransportError(TransportError::Kind::eProtocol,
-                                     "An SSE event from the server is too long");
-            }
-            if (!payload_.empty()) {
-                payload_.push_back('\n');
-            }
-            payload_.append(value.data(), value.size());
-        }
-        line_.clear();
-    }
-
-    /// The value of the line when it is the field @p name, which ends with its colon: the rest of
-    /// the line, less one leading space.
-    [[nodiscard]] std::optional<std::string_view> field_value(std::string_view name) const {
-        std::string_view line = line_;
-        if (!line.starts_with(name)) {
-            return std::nullopt;
-        }
-        line.remove_prefix(name.size());
-        if (!line.empty() && line.front() == ' ') {
-            line.remove_prefix(1);
-        }
-        return line;
-    }
-
-    /// Longest `retry` value read, in digits: past this the field is ignored.
-    static constexpr std::size_t g_max_retry_digits = 9;
-
-    std::string line_;
-    std::string payload_;
-    std::string last_id_;
-    /// The id named since the last blank line, which counts once that event ends.
-    std::string id_buffer_;
-    bool id_named_ = false;
-    bool after_carriage_return_ = false;
-    bool carried_anything_ = false;
-    std::optional<std::chrono::milliseconds> retry_;
-};
+using detail::SseDecoder;
 
 /// The call cannot be sent as it stands, which is its caller's error rather than a failed write.
 class UnsendableCall : public std::runtime_error {
@@ -226,12 +117,7 @@ struct ModernCall {
 }  // namespace
 
 struct HttpClientTransport::Impl {
-    struct ParsedUrl {
-        std::string host;  ///< An IPv6 literal without its brackets.
-        std::string port;
-        std::string path;  ///< The request target: the path and query, never empty.
-        bool https{false};
-    };
+    using ParsedUrl = detail::HttpUrl;
 
     struct SharedState {
         explicit SharedState(net::strand<net::any_io_executor>& strand)
@@ -386,62 +272,7 @@ struct HttpClientTransport::Impl {
     }
 
     static ParsedUrl parse_url(const std::string& url) {
-        ParsedUrl parsed;
-        const auto scheme = detail::http_url_scheme(url);
-        if (!scheme) {
-            throw std::invalid_argument("HttpClientTransport URL must start with http:// or https://");
-        }
-        parsed.https = scheme->https;
-
-        // The authority ends where the path, query or fragment begins. The fragment is never
-        // sent, and a query needs the root path.
-        const auto rest = url.substr(scheme->prefix_length);
-        const auto authority_end = rest.find_first_of("/?#");
-        auto authority = rest.substr(0, authority_end);
-        parsed.path = authority_end == std::string::npos ? "" : rest.substr(authority_end);
-        if (const auto fragment = parsed.path.find('#'); fragment != std::string::npos) {
-            parsed.path.erase(fragment);
-        }
-        if (parsed.path.empty() || parsed.path.front() != '/') {
-            parsed.path.insert(0, "/");
-        }
-        if (authority.find('@') != std::string::npos) {
-            throw std::invalid_argument(
-                "HttpClientTransport URL must not carry credentials; use "
-                "set_bearer_token_provider()");
-        }
-
-        parsed.port = parsed.https ? "443" : "80";
-        if (!authority.empty() && authority.front() == '[') {
-            const auto closing = authority.find(']');
-            if (closing == std::string::npos ||
-                (closing + 1 < authority.size() && authority[closing + 1] != ':')) {
-                throw std::invalid_argument("HttpClientTransport URL has a malformed IPv6 host");
-            }
-            parsed.host = authority.substr(1, closing - 1);
-            if (closing + 1 < authority.size()) {
-                parsed.port = authority.substr(closing + 2);
-                if (parsed.port.empty()) {
-                    throw std::invalid_argument("HttpClientTransport URL contains empty port");
-                }
-            }
-        } else {
-            const std::size_t colon_position = authority.find(':');
-            if (colon_position == std::string::npos) {
-                parsed.host = std::move(authority);
-            } else {
-                parsed.host = authority.substr(0, colon_position);
-                parsed.port = authority.substr(colon_position + 1);
-                if (parsed.port.empty()) {
-                    throw std::invalid_argument("HttpClientTransport URL contains empty port");
-                }
-            }
-        }
-
-        if (parsed.host.empty()) {
-            throw std::invalid_argument("HttpClientTransport URL is missing host");
-        }
-        return parsed;
+        return detail::parse_http_url(url, "HttpClientTransport");
     }
 
     /// Builds how the next connections are made from the current settings. Callers hold
