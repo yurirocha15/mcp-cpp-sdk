@@ -214,14 +214,12 @@ std::optional<std::string> LegacySseSessions::session_id_of(std::string_view tar
     }
     auto query = target.substr(question + 1);
     query = query.substr(0, query.find('#'));
+    constexpr auto name = sse_constants::g_SESSION_ID_PARAMETER;
     while (!query.empty()) {
         const auto ampersand = query.find('&');
         const auto pair = query.substr(0, ampersand);
-        const auto equals = pair.find('=');
-        if (equals != std::string_view::npos &&
-            pair.substr(0, equals) == sse_constants::g_SESSION_ID_PARAMETER &&
-            equals + 1 < pair.size()) {
-            return std::string(pair.substr(equals + 1));
+        if (pair.size() > name.size() + 1 && pair.starts_with(name) && pair[name.size()] == '=') {
+            return std::string(pair.substr(name.size() + 1));
         }
         if (ampersand == std::string_view::npos) {
             break;

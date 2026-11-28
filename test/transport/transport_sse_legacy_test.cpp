@@ -1003,6 +1003,25 @@ TEST_F(LegacySseTransportTest, AnUnknownSessionIsRefusedWithoutAValidator) {
     EXPECT_EQ(raw_request(harness.port(), http::verb::post, "/sse", ping.dump()).status, 405U);
 }
 
+TEST_F(LegacySseTransportTest, APostFindsTheSessionIdAmongOtherQueryParameters) {
+    ManagerHarness harness;
+    SseStream stream(harness.port());
+    const auto endpoint = stream.endpoint();
+    const auto id = endpoint.substr(endpoint.find('=') + 1);
+    const json ping = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "ping"}};
+    const auto post = [&](const std::string& target) {
+        return raw_request(harness.port(), http::verb::post, target, ping.dump()).status;
+    };
+
+    EXPECT_EQ(post("/messages?trace=1&sessionId=" + id + "&last"), 202U);
+    EXPECT_EQ(post("/messages?sessionId=" + id + "#sessionId=other"), 202U);
+    EXPECT_EQ(post("/messages?sessionId=&sessionId=" + id), 202U);
+    EXPECT_EQ(post("/messages?sessionId="), 400U);
+    EXPECT_EQ(post("/messages?sessionIdx=" + id), 400U);
+    EXPECT_EQ(post("/messages?session=" + id), 400U);
+    EXPECT_EQ(post("/messages?trace=1#sessionId=" + id), 400U);
+}
+
 TEST_F(LegacySseTransportTest, MalformedPostsAreRefused) {
     ManagerHarness harness;
     SseStream stream(harness.port());
