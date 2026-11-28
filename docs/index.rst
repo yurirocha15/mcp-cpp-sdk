@@ -24,7 +24,8 @@ Features
 Quick Links
 -----------
 
-* :doc:`getting-started` - Installation and quick start guide
+* :doc:`getting-started` - A first server and client
+* :doc:`installation` - Packages for each platform, and builds from source
 * :doc:`guides/async-mode` - Servers and clients with coroutines on an event loop
 * :doc:`api/index` - Complete API reference
 * :doc:`examples` - Example programs and code snippets
@@ -37,8 +38,8 @@ Quick Links
    :caption: Getting Started
 
    Overview <self>
-   installation
    getting-started
+   installation
    examples
 
 .. toctree::

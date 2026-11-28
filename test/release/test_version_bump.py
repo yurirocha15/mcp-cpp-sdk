@@ -65,7 +65,7 @@ class VersionBumpTests(unittest.TestCase):
         self.assertEqual(read_version(self.root), new)
         self.assertEqual(check_pins(self.root, new), [])
         self.assertIn("VERSION", changed)
-        self.assertIn("docs/installation.rst", changed)
+        self.assertIn("docs/installation/windows.rst", changed)
         changelog = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn(f"## [Unreleased]\n\n## [{new}] - 2026-12-01\n\n### Highlights\n\n- The fix.\n", changelog)
         self.assertIn("## [0.3.0] - 2026-11-17", changelog)

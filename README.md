@@ -25,11 +25,12 @@ A C++20 SDK for the [Model Context Protocol](https://modelcontextprotocol.io) (M
 
 | Platform | How |
 |---|---|
-| Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 | [APT repository](https://mcp-cpp-sdk.yurirocha.com/installation.html#apt-deb) |
-| Fedora 43 / 44, Enterprise Linux 9 / 10 | [RPM repository](https://mcp-cpp-sdk.yurirocha.com/installation.html#rpm) |
-| Arch Linux | AUR package [`mcp-cpp-sdk`](https://aur.archlinux.org/packages/mcp-cpp-sdk) |
+| Ubuntu 22.04 / 24.04 / 26.04, Debian 12 / 13 | [APT repository](https://mcp-cpp-sdk.yurirocha.com/installation/ubuntu-debian.html) |
+| Fedora 43 / 44 | [RPM repository](https://mcp-cpp-sdk.yurirocha.com/installation/fedora.html) |
+| AlmaLinux, Rocky Linux, RHEL 9 / 10 | [RPM repository](https://mcp-cpp-sdk.yurirocha.com/installation/enterprise-linux.html) |
+| Arch Linux | AUR package [`mcp-cpp-sdk`](https://mcp-cpp-sdk.yurirocha.com/installation/arch.html) |
 | macOS / Linux | `brew install yurirocha15/mcp-cpp-sdk/mcp-cpp-sdk` |
-| Windows x64 | SDK zip from the [latest release](https://github.com/yurirocha15/mcp-cpp-sdk/releases/latest) |
+| Windows x64 | [`choco install mcp-cpp-sdk`](https://mcp-cpp-sdk.yurirocha.com/installation/windows.html) |
 | Any platform | CMake `FetchContent`, below |
 
 The [installation guide](https://mcp-cpp-sdk.yurirocha.com/installation.html)
@@ -259,7 +260,8 @@ server.use([](mcp::Context& ctx, const nlohmann::json& params,
 
 Guides, API reference and integration details are on the **[documentation site](https://mcp-cpp-sdk.yurirocha.com/)**.
 
-- **[Getting Started](https://mcp-cpp-sdk.yurirocha.com/getting-started.html)**: Detailed installation and build instructions.
+- **[Getting Started](https://mcp-cpp-sdk.yurirocha.com/getting-started.html)**: A first server and client.
+- **[Installation](https://mcp-cpp-sdk.yurirocha.com/installation.html)**: Packages for each platform, and builds from source.
 - **[Core Concepts](https://mcp-cpp-sdk.yurirocha.com/concepts/index.html)**: Deep dive into Tools, Resources, and Transports.
 - **[Guides](https://mcp-cpp-sdk.yurirocha.com/guides/index.html)**: Async servers and clients, converting sync programs, testing, error handling and deployment.
 - **[Client App Integrations](https://mcp-cpp-sdk.yurirocha.com/integrations/client-apps.html)**: How to connect your server to Claude, IDEs, and the MCP Inspector.
