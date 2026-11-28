@@ -2,7 +2,7 @@
 /// @brief Demonstrates Server::set_completion_provider() and Client::complete().
 ///
 /// This example shows:
-/// - A server that registers a tool with arguments supporting completion
+/// - A server that registers a prompt whose arguments support completion
 /// - A server that sets up a completion provider handler
 /// - A client that calls complete() to get argument completion suggestions
 /// - The completion flow: client sends partial argument, server returns suggestions
@@ -21,6 +21,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace asio = boost::asio;
@@ -33,46 +34,25 @@ int main() {
         bool client_ok = false;
 
         // ========== SERVER SETUP ==========
-        ServerCapabilities server_caps;
-        server_caps.tools = ServerCapabilities::ToolsCapability{};
-
         Implementation server_info;
         server_info.name = "completions-server";
         server_info.version = "1.0.0";
 
-        Server server(server_info, server_caps);
+        Server server(server_info, ServerCapabilities{});
 
-        // ========== TOOL REGISTRATION ==========
-        // Define a tool with arguments that support completion
-        nlohmann::json tool_schema = {
-            {"type", "object"},
-            {
-                "properties",
-                {
-                    {"language", {{"type", "string"}, {"description", "Programming language"}}},
-                    {"framework", {{"type", "string"}, {"description", "Framework name"}}},
-                },
-            },
-            {"required", nlohmann::json::array({"language"})},
-        };
-
-        server.add_tool<nlohmann::json, nlohmann::json>(
-            "code_analyzer", "Analyzes code in a specific language and framework", tool_schema,
-            [](const nlohmann::json& args) -> Task<nlohmann::json> {
-                std::string language = args.at("language").get<std::string>();
-                std::string framework = args.value("framework", "");
-
-                std::cout << "Tool: Analyzing code in " << language;
-                if (!framework.empty()) {
-                    std::cout << " with " << framework;
+        // ========== PROMPT REGISTRATION ==========
+        // Completions suggest values for the arguments of a prompt or a resource template.
+        server.add_text_prompt(
+            "code_analyzer", "Analyzes code in a specific language and framework",
+            {PromptArgument{
+                 .name = "language", .description = "Programming language", .required = true},
+             PromptArgument{.name = "framework", .description = "Framework name"}},
+            [](const Server::PromptArguments& args) {
+                std::string text = "Analyze this code, written in " + args.at("language");
+                if (const auto framework = args.find("framework"); framework != args.end()) {
+                    text += " with " + framework->second;
                 }
-                std::cout << "\n";
-
-                co_return nlohmann::json{
-                    {"status", "analyzed"},
-                    {"language", language},
-                    {"framework", framework},
-                };
+                return text;
             });
 
         // ========== COMPLETION PROVIDER ==========
@@ -81,6 +61,12 @@ int main() {
                       << params.argument.value << "\n";
 
             CompleteResult result;
+
+            // Only the arguments of the code_analyzer prompt have suggestions.
+            const auto* prompt = std::get_if<PromptReference>(&params.ref);
+            if (prompt == nullptr || prompt->name != "code_analyzer") {
+                co_return result;
+            }
 
             // Provide completions based on argument name
             if (params.argument.name == "language") {

@@ -92,7 +92,7 @@ done
 ### 4. Completions (`completions.cpp`)
 
 **What it demonstrates:**
-- `server.set_completion_provider()` for argument completion
+- A prompt whose arguments `server.set_completion_provider()` suggests values for
 - `client.complete()` for requesting completions
 - CompleteResult handling
 

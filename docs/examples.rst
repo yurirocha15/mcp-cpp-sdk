@@ -55,7 +55,7 @@ in-memory loopback and others exercise local network transports.
 1. **progress_cancellation** - Real-time progress updates and request cancellation
 2. **notifications_subscriptions** - Server-to-client notifications and subscription handling
 3. **middleware** - Intercepting and processing requests via a middleware chain
-4. **completions** - Argument completion suggestions
+4. **completions** - Completion suggestions for prompt arguments
 5. **pagination** - Handling large lists via cursor-based pagination
 6. **elicitation** - Server-initiated information requests (input forms)
 7. **roots** - Declaring and discovering client-side root URIs
