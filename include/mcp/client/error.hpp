@@ -2,11 +2,13 @@
 
 #include <mcp/core/export.hpp>
 #include <mcp/protocol/base.hpp>
+#include <mcp/protocol/elicitation.hpp>
 
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace mcp {
 
@@ -65,5 +67,18 @@ class MCP_API ElicitationContentError : public McpError {
    public:
     using McpError::McpError;
 };
+
+/**
+ * @brief The URL-mode elicitations a server asks the user to complete before it answers a request,
+ *        when @p error is a mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED error (protocol
+ *        revision 2025-11-25).
+ *
+ * @details Each elicitation has its `elicitationId`; Client::on_elicitation_complete() reports the
+ * id when the server says that the elicitation completed, and the request can then be sent again.
+ * @return The elicitations, or no value for any other error and for an error whose `data` does not
+ *         list URL-mode elicitations with their ids.
+ */
+[[nodiscard]] MCP_API std::optional<std::vector<ElicitRequestURLParams>> url_elicitations_required(
+    const McpError& error);
 
 }  // namespace mcp

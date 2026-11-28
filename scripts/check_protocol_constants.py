@@ -12,9 +12,10 @@ to ``ALLOWED_USES`` on purpose.
 
 Implementations of protocol revision 2026-07-28 must not emit ``-32002``
 (resource not found in 2025-11-25 and earlier) or ``-32042`` (URL elicitation
-required, 2025-11-25 only). The library may hold ``-32002`` only as the value
-of ``g_RESOURCE_NOT_FOUND``, which answers sessions of 2025-11-25 and earlier;
-any other literal of either code under ``src/`` or ``include/`` fails.
+required, 2025-11-25 only). The library may hold them only as the values of
+``g_RESOURCE_NOT_FOUND`` and ``g_URL_ELICITATION_REQUIRED``, which answer
+sessions of 2025-11-25 and earlier; any other literal of either code under
+``src/`` or ``include/`` fails.
 
 Comments are ignored. Usage: ``check_protocol_constants.py [repo-root]``.
 """
@@ -55,6 +56,7 @@ RETIRED_CODES = ("-32002", "-32042")
 # (path, code) -> number of literals allowed outside comments.
 ALLOWED_CODES: dict[tuple[str, str], int] = {
     ("include/mcp/core/constants.hpp", "-32002"): 1,  # g_RESOURCE_NOT_FOUND
+    ("include/mcp/core/constants.hpp", "-32042"): 1,  # g_URL_ELICITATION_REQUIRED
 }
 
 _COMMENT_OR_STRING = re.compile(

@@ -618,6 +618,179 @@ TEST_F(ServerHttpTest, SyncNotifiesTheSessionsOfRunHttpFromAnotherThread) {
     server_thread.join();
 }
 
+// server.sync().notify() reaches every session of run_http() that began with initialize.
+TEST_F(ServerHttpTest, NotifyReachesEachLegacySession) {
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0);
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto port = wait_for_port(*server_);
+
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    const auto endpoint = mcp::Endpoint::http("http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    mcp::Client first(endpoint, options);
+    mcp::Client second(endpoint, options);
+    std::atomic<int> first_seen{0};
+    std::atomic<int> second_seen{0};
+    first.on_notification("notifications/example/changed",
+                          [&](const nlohmann::json& params) { first_seen += params.value("n", 0); });
+    second.on_notification("notifications/example/changed",
+                           [&](const nlohmann::json& params) { second_seen += params.value("n", 0); });
+    first.sync().connect("first", "1.0");
+    second.sync().connect("second", "1.0");
+    // Each client opens the stream that carries such notifications after connecting.
+    EXPECT_TRUE(eventually(
+        [&] {
+            if (first_seen.load() != 0 && second_seen.load() != 0) {
+                return true;
+            }
+            server_->sync().notify("notifications/example/changed", nlohmann::json{{"n", 1}});
+            return false;
+        },
+        g_hang_guard, std::chrono::milliseconds(20)));
+
+    first.close();
+    second.close();
+    server_->stop();
+    server_thread.join();
+}
+
+// notifications/elicitation/complete goes to the session that sent the elicitation: two clients of
+// run_http() share the server's records, and each sees only its own completion. An id that is in
+// progress in one session cannot be used by another.
+TEST_F(ServerHttpTest, ElicitationCompleteReachesOnlyTheSessionThatAsked) {
+    server_->add_tool<nlohmann::json, nlohmann::json>(
+        "open_with_id", "Asks a URL with a given id", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+            mcp::ElicitRequestURLParams params;
+            params.message = "Please sign in";
+            params.url = "https://example.com/sign-in";
+            params.elicitationId = args.at("id").get<std::string>();
+            nlohmann::json outcome;
+            try {
+                const auto answer = co_await ctx.elicit(params);
+                outcome = {{"action", nlohmann::json(answer.action)}};
+            } catch (const std::invalid_argument&) {
+                outcome = {{"error", "in use"}};
+            }
+            co_return outcome;
+        });
+    server_->add_tool<nlohmann::json, nlohmann::json>(
+        "require_id", "Needs a URL elicitation with a given id", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& /*ctx*/, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+            mcp::ElicitRequestURLParams params;
+            params.message = "Please sign in";
+            params.url = "https://example.com/sign-in";
+            params.elicitationId = args.at("id").get<std::string>();
+            throw mcp::UrlElicitationRequired({params});
+        });
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0);
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto port = wait_for_port(*server_);
+
+    mcp::ClientOptions options;
+    options.protocol = mcp::ClientProtocol::legacy();
+    const auto endpoint = mcp::Endpoint::http("http://127.0.0.1:" + std::to_string(port) + "/mcp");
+    mcp::Client first(endpoint, options);
+    mcp::Client second(endpoint, options);
+    std::mutex mutex;
+    std::vector<std::string> first_completed;
+    std::vector<std::string> second_received;
+    std::atomic<int> first_listed{0};
+    std::atomic<int> second_listed{0};
+    for (auto* client : {&first, &second}) {
+        client->on_elicitation([](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
+            mcp::ElicitResult answer;
+            answer.action = mcp::ElicitAction::eAccept;
+            co_return answer;
+        });
+    }
+    first.on_elicitation_complete([&](const mcp::ElicitationCompleteNotificationParams& params) {
+        const std::scoped_lock lock(mutex);
+        first_completed.push_back(params.elicitationId);
+    });
+    // The second client sees every completion notification that reaches it, unfiltered.
+    second.on_notification("notifications/elicitation/complete", [&](const nlohmann::json& params) {
+        const std::scoped_lock lock(mutex);
+        second_received.push_back(params.value("elicitationId", ""));
+    });
+    first.on_notification("notifications/tools/list_changed",
+                          [&](const nlohmann::json&) { ++first_listed; });
+    second.on_notification("notifications/tools/list_changed",
+                           [&](const nlohmann::json&) { ++second_listed; });
+    mcp::ClientCapabilities capabilities;
+    capabilities.elicitation = mcp::ClientCapabilities::ElicitationCapability{
+        .form = nlohmann::json::object(), .url = nlohmann::json::object()};
+    first.sync().connect(mcp::Implementation{"first", "1.0"}, capabilities);
+    second.sync().connect(mcp::Implementation{"second", "1.0"}, capabilities);
+    // Each client opens the stream that carries notifications outside a request after
+    // connecting, so the test waits until both have one.
+    eventually(
+        [&] {
+            if (first_listed.load() != 0 && second_listed.load() != 0) {
+                return true;
+            }
+            server_->sync().notify_tools_list_changed();
+            return false;
+        },
+        g_hang_guard, std::chrono::milliseconds(20));
+
+    const auto structured = [](const mcp::CallToolResult& result) {
+        return result.structuredContent.value_or(nlohmann::json());
+    };
+    EXPECT_EQ(structured(first.sync().call_tool("open_with_id", {{"id", "a-flow"}})),
+              (nlohmann::json{{"action", "accept"}}));
+    EXPECT_EQ(structured(second.sync().call_tool("open_with_id", {{"id", "a-flow"}})),
+              (nlohmann::json{{"error", "in use"}}));
+    const auto error_code = [](mcp::Client& client, const char* id) {
+        try {
+            static_cast<void>(client.sync().call_tool("require_id", {{"id", id}}));
+        } catch (const mcp::McpError& error) {
+            return error.code();
+        }
+        return 0;
+    };
+    // The same id in a URL elicitation error is refused as well.
+    EXPECT_EQ(error_code(second, "a-flow"), mcp::constants::jsonrpc::g_INTERNAL_ERROR);
+    EXPECT_EQ(error_code(second, "c-flow"), mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED);
+    EXPECT_EQ(structured(second.sync().call_tool("open_with_id", {{"id", "b-flow"}})),
+              (nlohmann::json{{"action", "accept"}}));
+
+    EXPECT_TRUE(server_->sync().notify_elicitation_complete("a-flow"));
+    EXPECT_FALSE(server_->sync().notify_elicitation_complete("a-flow"));
+    EXPECT_FALSE(server_->sync().notify_elicitation_complete("never-sent"));
+    EXPECT_TRUE(eventually(
+        [&] {
+            const std::scoped_lock lock(mutex);
+            return !first_completed.empty();
+        },
+        g_hang_guard, std::chrono::milliseconds(5)));
+    EXPECT_TRUE(server_->sync().notify_elicitation_complete("b-flow"));
+    EXPECT_TRUE(eventually(
+        [&] {
+            const std::scoped_lock lock(mutex);
+            return !second_received.empty();
+        },
+        g_hang_guard, std::chrono::milliseconds(5)));
+    {
+        const std::scoped_lock lock(mutex);
+        EXPECT_EQ(first_completed, std::vector<std::string>{"a-flow"});
+        EXPECT_EQ(second_received, std::vector<std::string>{"b-flow"});
+    }
+
+    first.close();
+    second.close();
+    server_->stop();
+    server_thread.join();
+}
+
 // A manager constructed with a server serves it on the application's loop as run_http() does: the
 // server answers 2026-07-28 requests, and each legacy session gets a server with its registrations.
 TEST_F(ServerHttpTest, ManagerServesTheServerItIsGiven) {

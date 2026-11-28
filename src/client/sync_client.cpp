@@ -141,6 +141,21 @@ CompleteResult SyncClient::complete(const CompleteParams& params,
         client_->impl_->blocking_loop, [&] { return client_->complete(params, request_options); });
 }
 
+void SyncClient::subscribe_resource(const std::string& uri, const RequestOptions& request_options) {
+    detail::run_blocking<void>(client_->impl_->blocking_loop,
+                               [&] { return client_->subscribe_resource(uri, request_options); });
+}
+
+void SyncClient::unsubscribe_resource(const std::string& uri, const RequestOptions& request_options) {
+    detail::run_blocking<void>(client_->impl_->blocking_loop,
+                               [&] { return client_->unsubscribe_resource(uri, request_options); });
+}
+
+void SyncClient::set_log_level(LoggingLevel level, const RequestOptions& request_options) {
+    detail::run_blocking<void>(client_->impl_->blocking_loop,
+                               [&] { return client_->set_log_level(level, request_options); });
+}
+
 void SyncClient::ping() {
     detail::run_blocking<void>(client_->impl_->blocking_loop, [&] { return client_->ping(); });
 }

@@ -70,6 +70,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     listener->key = json_msg.at("id").get<RequestId>().correlation_key();
     listener->session = owner;
     listener->sink = std::move(sink);
+    listener->stream = registry->listen_streams.fetch_add(1, std::memory_order_relaxed) + 1;
 
     // Only the types this server advertises it emits are honored; the acknowledgment reports them.
     nlohmann::json honored = nlohmann::json::object();
@@ -135,10 +136,28 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
         acknowledgment = std::make_shared<const std::string>(mcp::detail::dump_json(message));
     }
 
+    // A callback that throws refuses the stream, and the request is answered with the exception.
+    report_listen(*listener, ListenEventKind::eOpened);
     {
         std::scoped_lock lock(listeners_mutex);
         listeners.push_back(listener);
     }
+    if (owner) {
+        owner->modern_listeners.fetch_add(1, std::memory_order_relaxed);
+    }
+    struct Removal {
+        std::shared_ptr<Impl> impl;
+        std::shared_ptr<Listener> listener;
+        ~Removal() {
+            impl->remove_listener(listener);
+            try {
+                impl->report_listen(*listener, ListenEventKind::eClosed);
+            } catch (...) {
+                // The stream has ended; there is nothing left for the exception to refuse.
+            }
+        }
+    };
+    const Removal removal{.impl = shared_from_this(), .listener = listener};
     // The state of each listed task as it is now follows the acknowledgment, so that a task that
     // finished before the stream was registered is not missed; what changes later is sent as it
     // happens. The stream holds these messages back until the acknowledgment is written.
@@ -147,15 +166,6 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
             listener->deliver_or_defer(task_notification_wire(*current, *listener));
         }
     }
-    if (owner) {
-        owner->modern_listeners.fetch_add(1, std::memory_order_relaxed);
-    }
-    struct Removal {
-        std::shared_ptr<Impl> impl;
-        std::shared_ptr<Listener> listener;
-        ~Removal() { impl->remove_listener(listener); }
-    };
-    const Removal removal{.impl = shared_from_this(), .listener = listener};
 
     // A transport that sets the cancellation flag wakes the wait through this; the flag is read
     // after registering, so a cancellation that came first is not missed.
@@ -237,6 +247,24 @@ void Server::Impl::remove_listener(const std::shared_ptr<Listener>& listener) {
     if (listener->session) {
         listener->session->modern_listeners.fetch_sub(1, std::memory_order_relaxed);
     }
+}
+
+void Server::Impl::report_listen(const Listener& listener, ListenEventKind kind) const {
+    if (!listen_handler) {
+        return;
+    }
+    const ListenEvent event{
+        .kind = kind,
+        .stream = listener.stream,
+        .request_id = listener.id.get<RequestId>(),
+        .tools_list_changed = listener.tools_list_changed,
+        .prompts_list_changed = listener.prompts_list_changed,
+        .resources_list_changed = listener.resources_list_changed,
+        .resource_uris =
+            std::vector<std::string>(listener.resource_uris.begin(), listener.resource_uris.end()),
+        .task_ids = std::vector<std::string>(listener.task_ids.begin(), listener.task_ids.end()),
+    };
+    listen_handler(event);
 }
 
 void Server::Impl::end_listeners(ListenEnd reason, const std::shared_ptr<Session>& session,

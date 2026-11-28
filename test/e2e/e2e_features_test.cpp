@@ -13,7 +13,10 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
+#include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace e2e_features_test {
 
@@ -80,6 +83,55 @@ TEST_F(E2EFeaturesTest, OneSessionConnectsPingsListsAndCallsTools) {
 
     io_ctx_.run();
     EXPECT_TRUE(test_passed);
+}
+
+// A legacy session's typed calls: a subscription brings the resource's updates until it ends, and
+// the log level reaches the server.
+TEST_F(E2EFeaturesTest, SubscriptionsAndTheLogLevelReachTheServer) {
+    auto [client_transport, server_transport] = mcp::make_memory_transport_pair(io_ctx_.get_executor());
+
+    mcp::ServerCapabilities capabilities;
+    mcp::ServerCapabilities::ResourcesCapability resources;
+    resources.subscribe = true;
+    capabilities.resources = resources;
+    capabilities.logging = nlohmann::json::object();
+    mcp::Server server({"test-server", "1.0"}, capabilities);
+    std::vector<std::string> subscribed;
+    server.on_subscribe([&subscribed](const std::string& uri) { subscribed.push_back(uri); });
+
+    std::vector<std::string> updated;
+    std::optional<mcp::LoggingLevel> level;
+    bool finished = false;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+            try {
+                co_await server.run(server_transport, io_ctx_.get_executor());
+            } catch (...) {
+            }
+        });
+
+        mcp::Client client(client_transport, io_ctx_.get_executor(), legacy_client_options());
+        client.on_notification(
+            "notifications/resources/updated",
+            [&updated](const nlohmann::json& params) { updated.push_back(params.value("uri", "")); });
+        co_await client.connect("test-client", "1.0");
+        const auto uri = std::make_shared<const std::string>("file:///notes.txt");
+        co_await client.subscribe_resource(*uri);
+        co_await server.notify_resource_updated(*uri);
+        co_await client.unsubscribe_resource(*uri);
+        co_await server.notify_resource_updated(*uri);
+        co_await client.set_log_level(mcp::LoggingLevel::eWarning);
+        level = server.get_log_level();
+        client.close();
+        finished = true;
+    });
+
+    io_ctx_.run();
+    EXPECT_TRUE(finished);
+    EXPECT_EQ(subscribed, std::vector<std::string>{"file:///notes.txt"});
+    // The update that followed the unsubscribe was not sent.
+    EXPECT_EQ(updated, std::vector<std::string>{"file:///notes.txt"});
+    EXPECT_EQ(level, mcp::LoggingLevel::eWarning);
 }
 
 }  // namespace e2e_features_test

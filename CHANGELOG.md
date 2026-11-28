@@ -14,6 +14,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
   object first uses a deprecated feature.
 - `mcp::constants::include_context` names the values of `includeContext`;
   `g_THIS_SERVER` and `g_ALL_SERVERS` are deprecated.
+- `Server::notify_elicitation_complete()` and
+  `Context::notify_elicitation_complete()` tell the session that sent a URL
+  elicitation that it completed; `Client::on_elicitation_complete()` reports it.
+- A handler throws `UrlElicitationRequired` to answer a 2025-11-25 request with
+  the -32042 error, which `url_elicitations_required()` reads on the client.
+- `Client::subscribe_resource()`, `unsubscribe_resource()` and the deprecated
+  `set_log_level()` send `resources/subscribe`, `resources/unsubscribe` and
+  `logging/setLevel`.
+- `Server::notify()` sends a notification of another method to sessions of
+  2025-11-25 and earlier, and `Server::on_listen()` reports each listen stream
+  that opens or closes.
 
 ### Changed
 
@@ -21,6 +32,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The installation guide has a page for each platform, each with its install, upgrade and uninstall steps.
 - Without a handler, the first use of a deprecated protocol feature prints one
   line on standard error; setting `MCP_SILENCE_DEPRECATION_NOTICES` stops it.
+- `Context::elicit()` throws `std::invalid_argument` for an `elicitationId` that
+  another session has in progress.
 
 ### Deprecated
 

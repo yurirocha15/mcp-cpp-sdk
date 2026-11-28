@@ -186,6 +186,50 @@ URL-based elicitation (``ElicitRequestURLParams``) is used when the user needs t
 ``ctx.elicit()`` generates one when you leave it unset. A 2026-07-28 question
 carries none: the server removes it from the question it sends.
 
+Completing a URL elicitation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In a session of protocol revision 2025-11-25 whose client declares URL mode
+(``ClientCapabilities::ElicitationCapability::url``), the server can tell the
+client that the user has finished the step on the other site, with
+``notifications/elicitation/complete``. Earlier revisions do not have the
+notification, and a 2026-07-28 question has no id to complete.
+
+- ``ctx.notify_elicitation_complete(id)`` completes an elicitation that the
+  handler's own session sent.
+- ``Server::notify_elicitation_complete(id)``, or
+  ``server.sync().notify_elicitation_complete(id)`` from a thread of the
+  application, completes it after the handler has returned, for instance from
+  the code that receives the other site's callback.
+
+Both return whether the notification was sent, and an id completes once. The
+notification goes only to the session that sent the elicitation. The server
+remembers the ids its sessions sent for 24 hours, at most 4096 of them and 256
+per session, the oldest going first, and forgets those of a session that ends.
+An ``elicitationId`` that another session has in progress is refused:
+``ctx.elicit()`` throws ``std::invalid_argument``.
+
+A client receives the notifications with ``Client::on_elicitation_complete()``,
+once for each URL elicitation it was sent. It ignores a notification that names
+an id it did not receive or was already told of, as the specification asks.
+
+Requiring a URL elicitation first
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A handler that cannot answer until the user completes a URL elicitation, such as
+a sign-in on a third-party site, throws ``UrlElicitationRequired`` with the
+elicitations. A 2025-11-25 session gets the JSON-RPC error
+``g_URL_ELICITATION_REQUIRED`` (-32042) with the elicitations in its ``data``,
+for a ``tools/call`` as for any other request, and the server records their ids
+as ``ctx.elicit()`` does, so ``Server::notify_elicitation_complete()`` completes
+them. A session of an earlier revision and a 2026-07-28 request get what any
+other exception gives, and so does an ``elicitationId`` that another session
+has in progress.
+
+On the client the request throws ``McpError``. ``url_elicitations_required()``
+returns the elicitations it lists, and ``on_elicitation_complete()`` reports
+each completion, after which the request can be sent again.
+
 Client-side Handling
 --------------------
 

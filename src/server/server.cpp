@@ -539,6 +539,8 @@ void Server::on_unsubscribe(const SubscriptionHandler& handler) {
     impl_->unsubscribe_handler = handler;
 }
 
+void Server::on_listen(ListenHandler handler) { impl_->listen_handler = std::move(handler); }
+
 bool Server::is_initialized() const {
     return impl_->lifecycle.load(std::memory_order_relaxed) != Impl::LifecycleState::eUninitialized;
 }
@@ -558,6 +560,11 @@ LoggingLevel Server::get_log_level() const {
 // coroutine body ever runs and leaves the reference dangling. Both forms compile.
 // Each goes to the sessions of every server sharing this one's registry, such as the legacy
 // sessions run_http() serves.
+Task<bool> Server::notify_elicitation_complete(const std::string& elicitation_id) {
+    return Impl::complete_elicitation(impl_->registry,
+                                      std::make_shared<const std::string>(elicitation_id));
+}
+
 Task<void> Server::notify_tools_list_changed() {
     for (const auto& member : impl_->registry_members()) {
         co_await member->notify_listeners(Impl::ListenTopic::eToolsListChanged, nullptr);
@@ -592,6 +599,14 @@ Task<void> Server::notify_resource_updated(const std::string& uri) {
                                           std::make_shared<const std::string>(uri));
         co_await member->broadcast_resource_updated(uri);
     }
+}
+
+Task<void> Server::notify(std::string method, std::optional<nlohmann::json> params) {
+    // [gcc11-sso: not-a-coroutine] The strings reach the coroutine through shared state.
+    Impl::check_notification(method, params);
+    return Impl::notify_legacy_sessions(
+        impl_, std::make_shared<const std::string>(std::move(method)),
+        std::make_shared<const std::optional<nlohmann::json>>(std::move(params)));
 }
 
 void Server::close_subscriptions() {

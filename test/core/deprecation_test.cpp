@@ -249,4 +249,19 @@ TEST(DeprecationNoticeTest, ClientRegistrationsReportSamplingAndRootsOnce) {
                                                                  DeprecatedFeature::eSampling}));
 }
 
+TEST(DeprecationNoticeTest, SetLogLevelReportsLoggingOnce) {
+    boost::asio::io_context io_ctx;
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    Received received;
+    mcp::ClientOptions options;
+    options.deprecation_handler = received.handler();
+    mcp::Client client(transport, io_ctx.get_executor(), std::move(options));
+
+    // The client is not connected, so nothing is sent; each call still uses the feature.
+    for (int call = 0; call < 2; ++call) {
+        EXPECT_THROW(static_cast<void>(client.set_log_level(mcp::LoggingLevel::eInfo)), mcp::McpError);
+    }
+    EXPECT_EQ(received.features, std::vector<DeprecatedFeature>{DeprecatedFeature::eLogging});
+}
+
 }  // namespace deprecation_test

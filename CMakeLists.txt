@@ -170,6 +170,7 @@ set(MCP_CPP_SDK_SOURCES
     src/server/task_run.cpp
     src/server/task_store.cpp
     src/server/server.cpp
+    src/server/url_elicitation.cpp
     src/server/protocol_policy.cpp
     src/server/sync_server.cpp
     src/server/tool_params.cpp
@@ -508,6 +509,7 @@ if(BUILD_TESTING)
       test/core/encoding_test.cpp
       test/core/serialized_transport_writer_test.cpp
       test/core/strand_executor_test.cpp
+      test/server/elicitation_records_test.cpp
       test/server/roots_test.cpp
       test/server/sampling_test.cpp
       test/server/server_apps_test.cpp

@@ -23,6 +23,21 @@ inline constexpr std::string_view g_REVISION_ON_OR_AFTER_2027_07_28 =
 
 }  // namespace deprecation
 
+/// URL-mode elicitations and their completion notifications.
+namespace elicitation {
+
+/// Most URL-mode elicitations the sessions of one server keep a record of, to route their
+/// completion notifications.
+inline constexpr std::size_t g_MAX_RECORDS = 4096;
+/// Most of those records one session keeps; its oldest goes first.
+inline constexpr std::size_t g_MAX_RECORDS_PER_SESSION = 256;
+/// How long a record lasts: an out-of-band flow, such as a sign-in, can take hours.
+inline constexpr std::chrono::hours g_RECORD_TTL{24};
+/// Most URL-mode elicitation ids a client remembers, to tell the completions it expects.
+inline constexpr std::size_t g_MAX_CLIENT_IDS = 1024;
+
+}  // namespace elicitation
+
 /// Alphabets and bit arithmetic for hexadecimal, base64, base64url and percent encoding.
 namespace encoding {
 

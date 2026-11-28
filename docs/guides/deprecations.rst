@@ -55,8 +55,9 @@ feature and object:
   ``Server::get_log_level()``. The servers ``run_http()`` builds for its
   sessions share one report.
 * A ``Client`` reports Sampling and Roots when the application calls
-  ``on_sampling()``, ``set_roots()`` or ``on_roots_list()``, and Logging for the
-  first 2026-07-28 request that sets ``RequestOptions::log_level``.
+  ``on_sampling()``, ``set_roots()`` or ``on_roots_list()``, and Logging when it
+  calls ``set_log_level()`` and for the first 2026-07-28 request that sets
+  ``RequestOptions::log_level``.
 * An ``OAuthAuthorizationManager`` reports dynamic client registration when it
   registers with an authorization server.
 

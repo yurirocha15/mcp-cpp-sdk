@@ -10,6 +10,7 @@
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/cache_hint.hpp>
 #include <mcp/server/handler.hpp>
+#include <mcp/server/listen_event.hpp>
 #include <mcp/server/middleware.hpp>
 #include <mcp/server/mrtr_options.hpp>
 #include <mcp/server/protocol_policy.hpp>
@@ -18,6 +19,7 @@
 #include <mcp/server/task_store.hpp>
 #include <mcp/server/tool_params.hpp>
 #include <mcp/server/tool_validation.hpp>
+#include <mcp/server/url_elicitation.hpp>
 #include <mcp/transport/request_context.hpp>
 #include <mcp/transport/transport.hpp>
 
@@ -1003,6 +1005,49 @@ class MCP_API Server {
     Task<void> notify_resource_updated(const std::string& uri);
 
     /**
+     * @brief Send the notification @p method to every session of protocol revision 2025-11-25 or
+     *        earlier.
+     *
+     * @details Reaches the sessions that began with initialize: the session of run() or run_stdio(),
+     * or each session of run_http(). A 2026-07-28 client receives only the notification types its
+     * subscriptions/listen stream asked for, so it gets none of these. Those types go through
+     * notify_tools_list_changed(), notify_prompts_list_changed(), notify_resources_list_changed()
+     * and notify_resource_updated(), which reach both kinds of client, and so do the other
+     * notifications this server addresses itself; notify() refuses them all. A session whose
+     * transport cannot take the message ends through that transport.
+     *
+     * @param method The method, such as one that an extension defines.
+     * @param params The params, an object; none when absent.
+     * @throws std::invalid_argument If @p params is not an object, or @p method is
+     *         notifications/tools/list_changed, notifications/prompts/list_changed,
+     *         notifications/resources/list_changed, notifications/resources/updated,
+     *         notifications/tasks, notifications/elicitation/complete, notifications/progress,
+     *         notifications/message, notifications/cancelled, notifications/initialized or
+     *         notifications/subscriptions/acknowledged.
+     */
+    Task<void> notify(std::string method, std::optional<nlohmann::json> params = std::nullopt);
+
+    /**
+     * @brief Tell a client that a URL-mode elicitation has completed, after the handler that
+     *        sent it has returned.
+     *
+     * @details Sends `notifications/elicitation/complete` naming @p elicitation_id to the session
+     * that sent the elicitation through Context::elicit(), whichever session of this server, or
+     * of run_http(), that is, and to no other. It is sent when that session still runs,
+     * negotiated 2025-11-25 and its client declared URL-mode elicitation. The notification goes
+     * once: the record of the id ends whether or not it is sent. A record also ends when its
+     * session ends, after 24 hours, and when the sessions hold too many: 256 for one session, whose
+     * oldest goes first, and 4096 for the server. An id no record holds, as for a session of an
+     * earlier revision or a 2026-07-28 request, sends nothing.
+     *
+     * The Server object must outlive the returned task.
+     *
+     * @param elicitation_id The `elicitationId` of the elicitation.
+     * @return A task that resolves to whether the notification was sent.
+     */
+    Task<bool> notify_elicitation_complete(const std::string& elicitation_id);
+
+    /**
      * @brief Ends every open subscriptions/listen stream gracefully.
      *
      * Each stream's request is answered with its empty `resultType: "complete"` result carrying
@@ -1032,6 +1077,23 @@ class MCP_API Server {
      * @param handler Callback receiving the unsubscribed resource URI.
      */
     void on_unsubscribe(const SubscriptionHandler& handler);
+
+    /// @brief Callback invoked when a subscriptions/listen stream opens or closes.
+    using ListenHandler = std::function<void(const ListenEvent&)>;
+
+    /**
+     * @brief Register a callback for the 2026-07-28 subscriptions/listen streams of this server.
+     *
+     * @details The callback receives a ListenEvent of kind ListenEventKind::eOpened once the server
+     * has decided what a stream receives, before it sends the acknowledgment, and one of kind
+     * ListenEventKind::eClosed when that stream ends. It runs on the thread that serves the request.
+     * An exception it throws when a stream opens answers the request as a handler's exception does,
+     * and no stream opens; one it throws when a stream closes is ignored. on_subscribe() and
+     * on_unsubscribe() concern the resources/subscribe requests of earlier revisions only.
+     *
+     * @param handler The callback; an empty one removes it.
+     */
+    void on_listen(ListenHandler handler);
 
     /**
      * @brief Get the currently active server log level.

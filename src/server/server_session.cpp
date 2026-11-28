@@ -679,11 +679,117 @@ Task<void> Server::Impl::send_notification(const std::string& method,
     co_await session->writer->write_message(wire);
 }
 
+nlohmann::json Server::Impl::url_elicitation_error_data(const UrlElicitationRequired& required) {
+    nlohmann::json elicitations = nlohmann::json::array();
+    const auto session = session_snapshot();
+    const auto now = ElicitationRecords::Clock::now();
+    for (const auto& elicitation : required.elicitations()) {
+        if (session) {
+            registry->elicitations.record(*elicitation.elicitationId,
+                                          ElicitationTarget{
+                                              .server = weak_from_this(),
+                                              .session = session,
+                                              .epoch = session_epoch(*session),
+                                          },
+                                          now);
+        }
+        elicitations.push_back(elicitation);
+    }
+    return nlohmann::json{{"elicitations", std::move(elicitations)}};
+}
+
+Task<bool> Server::Impl::complete_elicitation(std::shared_ptr<Registry> registry,
+                                              std::shared_ptr<const std::string> id) {
+    auto target = registry->elicitations.take(*id, ElicitationRecords::Clock::now());
+    if (!target) {
+        co_return false;
+    }
+    co_return co_await send_elicitation_complete(std::move(*target), std::move(id));
+}
+
+Task<bool> Server::Impl::complete_own_elicitation(std::shared_ptr<Registry> registry,
+                                                  ElicitationTarget target,
+                                                  std::shared_ptr<const std::string> id) {
+    if (!registry->elicitations.take_own(*id, target, ElicitationRecords::Clock::now())) {
+        co_return false;
+    }
+    co_return co_await send_elicitation_complete(std::move(target), std::move(id));
+}
+
+Task<bool> Server::Impl::send_elicitation_complete(ElicitationTarget target,
+                                                   std::shared_ptr<const std::string> id) {
+    auto impl = target.server.lock();
+    auto session = target.session.lock();
+    if (!impl || !session || session->stopping.load(std::memory_order_acquire) ||
+        impl->session_snapshot() != session || session_epoch(*session) != target.epoch ||
+        !impl->negotiated_at_least(mcp::constants::protocol::g_PROTOCOL_VERSION_2025_11_25) ||
+        !impl->client_declares_url_elicitation()) {
+        co_return false;
+    }
+    // [gcc11-sso: scope-before-await]
+    std::shared_ptr<const std::string> wire;
+    {
+        JSONRPCNotification notification;
+        notification.method = methods::g_NOTIFICATIONS_ELICITATION_COMPLETE;
+        notification.params =
+            nlohmann::json(ElicitationCompleteNotificationParams{.elicitationId = *id});
+        wire = std::make_shared<const std::string>(
+            mcp::detail::dump_json(nlohmann::json(std::move(notification))));
+    }
+    try {
+        co_await session->writer->write_message(*wire);
+    } catch (const std::exception&) {
+        // A session whose transport cannot take the message ends through that transport.
+        co_return false;
+    }
+    co_return true;
+}
+
 Task<void> Server::Impl::send_broadcast(const std::string& method) const {
     try {
         co_await send_notification(method, std::nullopt);
     } catch (const std::exception&) {
         // A session whose transport cannot take the message ends through that transport.
+    }
+}
+
+void Server::Impl::check_notification(std::string_view method,
+                                      const std::optional<nlohmann::json>& params) {
+    // Each has its own route: the streams that asked for it, a session or a request.
+    static constexpr std::array<std::string_view, 11> s_routed = {
+        methods::g_NOTIFICATIONS_TOOLS_LIST_CHANGED,
+        methods::g_NOTIFICATIONS_PROMPTS_LIST_CHANGED,
+        methods::g_NOTIFICATIONS_RESOURCES_LIST_CHANGED,
+        methods::g_NOTIFICATIONS_RESOURCES_UPDATED,
+        methods::g_NOTIFICATIONS_TASKS,
+        methods::g_NOTIFICATIONS_ELICITATION_COMPLETE,
+        methods::g_NOTIFICATIONS_PROGRESS,
+        methods::g_NOTIFICATIONS_MESSAGE,
+        methods::g_NOTIFICATIONS_CANCELLED,
+        methods::g_NOTIFICATIONS_INITIALIZED,
+        methods::g_NOTIFICATIONS_SUBSCRIPTIONS_ACKNOWLEDGED,
+    };
+    if (std::ranges::find(s_routed, method) != s_routed.end()) {
+        throw std::invalid_argument("Server::notify() does not send " + std::string(method) +
+                                    "; the server sends it through its own route");
+    }
+    if (params && !params->is_object()) {
+        throw std::invalid_argument("The params of a notification must be an object");
+    }
+}
+
+Task<void> Server::Impl::notify_legacy_sessions(
+    std::shared_ptr<Impl> impl, std::shared_ptr<const std::string> method,
+    std::shared_ptr<const std::optional<nlohmann::json>> params) {
+    for (const auto& member : impl->registry_members()) {
+        if (!member->began_with_initialize()) {
+            continue;
+        }
+        try {
+            co_await member->send_notification(*method, *params);
+        } catch (const std::exception&) {
+            // As in send_broadcast().
+        }
     }
 }
 

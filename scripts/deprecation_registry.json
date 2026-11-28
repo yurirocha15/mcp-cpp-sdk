@@ -30,7 +30,9 @@
             "declarations": [
                 "include/mcp/core/context.hpp:log_info",
                 "include/mcp/core/context.hpp:log",
-                "include/mcp/server/server.hpp:get_log_level"
+                "include/mcp/server/server.hpp:get_log_level",
+                "include/mcp/client/client.hpp:set_log_level",
+                "include/mcp/client/sync_client.hpp:set_log_level"
             ],
             "runtime_only": [
                 {

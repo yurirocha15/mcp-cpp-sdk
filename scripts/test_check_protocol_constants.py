@@ -64,6 +64,12 @@ class ProtocolConstantGuardTest(unittest.TestCase):
         self.assertEqual(len(violations), 1, violations)
         self.assertIn("-32042", violations[0])
 
+    def test_fails_on_a_second_32042_in_the_constants_header(self) -> None:
+        self.append("include/mcp/core/constants.hpp", "\nconstexpr int g_stray_code = -32042;\n")
+        violations = check.find_violations(self.root)
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("include/mcp/core/constants.hpp", violations[0])
+
     def test_fails_on_32002_outside_the_connection_closed_constant(self) -> None:
         self.append("src/client/client.cpp", "\nconstexpr int g_stray_code = - 32002;\n")
         violations = check.find_violations(self.root)

@@ -4,10 +4,14 @@
 #include <mcp/core/async.hpp>
 #include <mcp/core/context.hpp>
 #include <mcp/detail/deprecation_reporter.hpp>
+#include <mcp/detail/protocol/elicitation_id.hpp>
 #include <mcp/transport/transport.hpp>
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -19,6 +23,22 @@
 namespace methods = mcp::constants::methods;
 
 namespace mcp {
+
+namespace {
+
+Task<bool> not_sent() { co_return false; }
+
+}  // namespace
+
+namespace detail {
+
+std::string generate_elicitation_id() {
+    static std::atomic<std::uint64_t> s_counter{0};
+    static const std::uint64_t s_seed = std::random_device{}();
+    return "elicit-" + std::to_string(s_seed) + "-" + std::to_string(s_counter.fetch_add(1));
+}
+
+}  // namespace detail
 
 void Context::report_deprecated(DeprecatedFeature feature) const {
     if (deprecations_) {
@@ -124,9 +144,14 @@ Task<ElicitResult> Context::elicit(const ElicitRequestParams& params, InputOptio
     }
 
     nlohmann::json json_params = params;
-    if (json_params.value("mode", "") == "url" && !json_params.contains("elicitationId")) {
-        // Before 2026-07-28 the field is required on the wire.
-        json_params["elicitationId"] = generate_elicitation_id();
+    if (json_params.value("mode", "") == "url") {
+        if (!json_params.contains("elicitationId")) {
+            // Before 2026-07-28 the field is required on the wire.
+            json_params["elicitationId"] = detail::generate_elicitation_id();
+        }
+        if (elicitation_recorder_) {
+            elicitation_recorder_(json_params.at("elicitationId").get<std::string>());
+        }
     }
     auto result_json = co_await sender_(std::string(methods::g_ELICITATION_CREATE),
                                         std::move(json_params), std::move(options.key));
@@ -135,6 +160,15 @@ Task<ElicitResult> Context::elicit(const ElicitRequestParams& params, InputOptio
         check_form_content(params, result);
     }
     co_return result;
+}
+
+Task<bool> Context::notify_elicitation_complete(const std::string& elicitation_id) {
+    // [gcc11-sso: not-a-coroutine] The completer copies the id before the task starts, so the
+    // caller's string need not outlive the task.
+    if (!elicitation_completer_) {
+        return not_sent();
+    }
+    return elicitation_completer_(elicitation_id);
 }
 
 Task<ListRootsResult> Context::request_roots(InputOptions options) {

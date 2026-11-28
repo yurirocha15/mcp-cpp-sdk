@@ -102,6 +102,13 @@ inline constexpr int g_CONNECTION_CLOSED = -31000;
 inline constexpr int g_RESOURCE_NOT_FOUND = -32002;
 
 /**
+ * @brief JSON-RPC error code for a request that needs the user to complete URL-mode
+ * elicitations first, in protocol revision 2025-11-25. Its `data` lists them under
+ * `elicitations`; see mcp::UrlElicitationRequired and mcp::url_elicitations_required().
+ */
+inline constexpr int g_URL_ELICITATION_REQUIRED = -32042;
+
+/**
  * @brief JSON-RPC error code for a mismatched or missing required header.
  */
 inline constexpr int g_HEADER_MISMATCH = -32020;

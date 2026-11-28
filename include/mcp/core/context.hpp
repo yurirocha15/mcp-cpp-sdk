@@ -314,7 +314,10 @@ class Context {
      * via the ElicitRequestParams variant.
      *
      * Before 2026-07-28 a URL-mode request needs an `elicitationId`, and one is generated when
-     * the request leaves it unset; a 2026-07-28 question carries none.
+     * the request leaves it unset; a 2026-07-28 question carries none. In a session of
+     * 2025-11-25 the server records which session sent the id, so that
+     * notify_elicitation_complete() and Server::notify_elicitation_complete() reach that session
+     * only.
      *
      * A form-mode answer with action `accept` is checked against the request's `requestedSchema`
      * before it is returned, as the specification asks servers to do; a URL-mode answer carries no
@@ -325,7 +328,8 @@ class Context {
      *        accepted form answer is checked; see InputOptions.
      * @return A task that resolves to the client's ElicitResult.
      * @throws std::invalid_argument If `options.key` is empty, reserved or already used, in a
-     *         2026-07-28 request (other requests ignore the key).
+     *         2026-07-28 request (other requests ignore the key), or if another session of the
+     *         server has a URL-mode elicitation in progress with the same `elicitationId`.
      * @throws std::runtime_error If no request sender is available, or the accepted content does
      *         not conform to the schema (the message lists the violations). A schema the SDK
      *         cannot compile leaves the content unchecked.
@@ -339,6 +343,21 @@ class Context {
      * 2026-07-28 request cannot ask the client anything, and the call throws std::runtime_error.
      */
     MCP_API Task<ElicitResult> elicit(const ElicitRequestParams& params, InputOptions options = {});
+
+    /**
+     * @brief Tell the client that a URL-mode elicitation this session sent has completed.
+     *
+     * @details Sends `notifications/elicitation/complete` naming @p elicitation_id, when this
+     * request's session negotiated 2025-11-25, its client declared URL-mode elicitation, and the
+     * session sent an elicitation with that id through elicit(). The notification goes once: the
+     * record of the id ends whether or not it is sent. A session of an earlier revision, a
+     * 2026-07-28 request and an id the session did not send get nothing, and the call returns
+     * false. Server::notify_elicitation_complete() does the same after the handler has returned.
+     *
+     * @param elicitation_id The `elicitationId` of the elicitation.
+     * @return A task that resolves to whether the notification was sent.
+     */
+    MCP_API Task<bool> notify_elicitation_complete(const std::string& elicitation_id);
 
     /**
      * @brief Request the list of roots from the client (reverse RPC).
@@ -390,13 +409,6 @@ class Context {
         }
     }
 
-    /// A fresh, process-unique identifier for a legacy URL-mode elicitation.
-    static std::string generate_elicitation_id() {
-        static std::atomic<std::uint64_t> s_counter{0};
-        static const std::uint64_t s_seed = std::random_device{}();
-        return "elicit-" + std::to_string(s_seed) + "-" + std::to_string(s_counter.fetch_add(1));
-    }
-
     ITransport& transport_;
     RequestSender sender_;
     std::shared_ptr<std::atomic<bool>> cancelled_;
@@ -411,6 +423,10 @@ class Context {
     std::shared_ptr<detail::NotificationBudget> budget_;
     /// Reports this context's use of a deprecated feature for its server; null reports nothing.
     std::shared_ptr<detail::DeprecationReporter> deprecations_;
+    /// Record the URL-mode elicitations this context sends, and complete them; empty outside a
+    /// session of 2025-11-25.
+    std::function<void(const std::string&)> elicitation_recorder_;
+    std::function<Task<bool>(const std::string&)> elicitation_completer_;
 
     void report_deprecated(DeprecatedFeature feature) const;
 };

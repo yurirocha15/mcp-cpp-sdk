@@ -37,6 +37,9 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
     }
 
     RequestSender request_sender;
+    // A URL-mode elicitation of a legacy request in a session of 2025-11-25 or later is recorded,
+    // so that its completion goes to this session only.
+    std::optional<ElicitationTarget> elicitation_target;
     if (task_run) {
         request_sender = [task_run](std::string method, std::optional<nlohmann::json> params,
                                     std::optional<std::string> key) -> Task<nlohmann::json> {
@@ -71,6 +74,10 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                 "server-to-client requests are unavailable for a 2026-07-28 request");
         };
     } else {
+        if (session && negotiated_at_least(mcp::constants::protocol::g_PROTOCOL_VERSION_2025_11_25)) {
+            elicitation_target =
+                ElicitationTarget{.server = weak_from_this(), .session = session, .epoch = epoch};
+        }
         request_sender = [impl = shared_from_this(), session, epoch, cancelled, related_request](
                              const std::string& method, const std::optional<nlohmann::json>& params,
                              const std::optional<std::string>&) -> Task<nlohmann::json> {
@@ -98,6 +105,17 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                     std::move(principal),
                     mrtr ? mrtr->replaying : nullptr};
     detail::ContextRouting::set_deprecation_reporter(context, registry->deprecations);
+    if (elicitation_target) {
+        detail::ContextRouting::set_elicitation_routes(
+            context,
+            [registry = registry, target = *elicitation_target](const std::string& id) {
+                registry->elicitations.record(id, target, ElicitationRecords::Clock::now());
+            },
+            [registry = registry, target = *elicitation_target](const std::string& id) {
+                return Impl::complete_own_elicitation(registry, target,
+                                                      std::make_shared<const std::string>(id));
+            });
+    }
     if (notification_rate_limit.burst > 0) {
         detail::ContextRouting::set_notification_budget(
             context, std::make_shared<detail::NotificationBudget>(notification_rate_limit,
@@ -250,11 +268,15 @@ Task<std::string> Server::Impl::dispatch_request_wire(
     // [gcc11-sso: scope-before-await] DO NOT use optional<string> for error state.
     nlohmann::json error_payload;
     int error_code = mcp::constants::jsonrpc::g_INTERNAL_ERROR;
+    // The `data` of a g_URL_ELICITATION_REQUIRED answer; null for any other.
+    nlohmann::json error_data;
+    bool modern_request = false;
 
     try {
         // A request naming its protocol version in _meta is served on its own, without
         // initialize, and leaves the lifecycle and log level of a session untouched.
         if (checked_modern ? *checked_modern : detail::is_modern_request(json_msg, method)) {
+            modern_request = true;
             // [gcc11-sso: named-aggregate-arg] DO NOT pass RequestScope{...} inside the co_await.
             RequestScope scope{
                 .meta = nullptr,
@@ -361,6 +383,19 @@ Task<std::string> Server::Impl::dispatch_request_wire(
                                       mcp::constants::jsonrpc::g_METHOD_NOT_FOUND,
                                       "Method not found: " + std::string(method));
         }
+    } catch (const UrlElicitationRequired& required) {
+        if (json_msg.contains("id")) {
+            error_payload = detail::sanitize_for_diagnostics(required.what());
+            if (emits_url_elicitation_error(modern_request)) {
+                try {
+                    error_data = url_elicitation_error_data(required);
+                    error_code = mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED;
+                } catch (const std::invalid_argument&) {
+                    // An id that another session uses is the handler's mistake: the request fails
+                    // as for any other exception, and this client learns nothing of that session.
+                }
+            }
+        }
     } catch (const InvalidParamsError& error) {
         error_code = mcp::constants::jsonrpc::g_INVALID_PARAMS;
         error_payload = error.what();
@@ -383,6 +418,10 @@ Task<std::string> Server::Impl::dispatch_request_wire(
         }
     }
 
+    if (!error_data.is_null()) {
+        co_return make_error_wire(json_msg.at("id").get<RequestId>(), error_code,
+                                  error_payload.get<std::string>(), std::move(error_data));
+    }
     if (!error_payload.is_null()) {
         co_return make_error_wire(json_msg.at("id").get<RequestId>(), error_code,
                                   error_payload.get<std::string>());
@@ -613,6 +652,11 @@ Task<nlohmann::json> Server::Impl::call_tool_handler(const ToolRegistration& too
         }
         co_return co_await call_on_handler_strand(tool.handler, ctx, arguments);
     } catch (const std::exception& error) {
+        // A session of 2025-11-25 answers this one with a JSON-RPC error instead of a tool error.
+        if (dynamic_cast<const UrlElicitationRequired*>(&error) != nullptr &&
+            emits_url_elicitation_error(ctx.request_meta() != nullptr)) {
+            throw;
+        }
         co_return nlohmann::json(
             make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
     } catch (...) {
@@ -739,6 +783,8 @@ Task<nlohmann::json> Server::Impl::call_task_preparation(const ToolRegistration&
     try {
         co_return co_await call_on_handler_strand(run, ctx, arguments);
     } catch (const std::exception& error) {
+        // A preparation runs only for a 2026-07-28 request, which has no URL elicitation error, so
+        // UrlElicitationRequired gets an error result here as any other exception does.
         co_return nlohmann::json(
             make_tool_error_result(detail::sanitize_for_diagnostics(error.what())));
     } catch (...) {

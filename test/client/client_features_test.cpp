@@ -445,6 +445,44 @@ TEST_F(ClientFeaturesTest, GetPromptWithoutArgumentsSendsCorrectWireFormat) {
     EXPECT_EQ(result.messages[0].role, mcp::Role::eAssistant);
 }
 
+TEST_F(ClientFeaturesTest, SubscriptionAndLogLevelCallsSendTheirRequests) {
+    auto [client, raw] = make_client_with_auto_init();
+
+    std::vector<nlohmann::json> sent;
+    raw->set_on_write([raw, &sent](std::string_view msg) {
+        auto json_msg = nlohmann::json::parse(msg);
+        if (!json_msg.contains("id")) {
+            return;
+        }
+        auto id = json_msg["id"].get<std::string>();
+        auto method = json_msg.value("method", "");
+        if (method == "initialize") {
+            raw->enqueue_message(make_result_response(id, make_initialize_result()).dump());
+            return;
+        }
+        sent.push_back({{"method", method}, {"params", json_msg["params"]}});
+        raw->enqueue_message(make_result_response(id, nlohmann::json::object()).dump());
+    });
+
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        co_await client.connect("test-client", "0.1");
+        const auto uri = std::make_shared<const std::string>("file:///notes.txt");
+        co_await client.subscribe_resource(*uri);
+        co_await client.unsubscribe_resource(*uri);
+        co_await client.set_log_level(mcp::LoggingLevel::eWarning);
+        raw->close();
+    });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(sent,
+              (std::vector<nlohmann::json>{
+                  {{"method", "resources/subscribe"}, {"params", {{"uri", "file:///notes.txt"}}}},
+                  {{"method", "resources/unsubscribe"}, {"params", {{"uri", "file:///notes.txt"}}}},
+                  {{"method", "logging/setLevel"}, {"params", {{"level", "warning"}}}},
+              }));
+}
+
 TEST_F(ClientFeaturesTest, CompleteSendsCorrectWireFormat) {
     auto [client, raw] = make_client_with_auto_init();
 

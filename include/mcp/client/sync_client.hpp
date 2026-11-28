@@ -120,6 +120,21 @@ class MCP_API SyncClient {
                                const RequestOptions& request_options = {});
     /// As Client::complete().
     CompleteResult complete(const CompleteParams& params, const RequestOptions& request_options = {});
+    /// As Client::subscribe_resource().
+    void subscribe_resource(const std::string& uri, const RequestOptions& request_options = {});
+    /// As Client::unsubscribe_resource().
+    void unsubscribe_resource(const std::string& uri, const RequestOptions& request_options = {});
+    /**
+     * @brief As Client::set_log_level().
+     *
+     * @deprecated Protocol revision 2026-07-28 deprecates logging (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
+     */
+    MCP_DEPRECATED(
+        "SEP-2577: Logging is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; log to stderr on stdio "
+        "and use OpenTelemetry for observability")
+    void set_log_level(LoggingLevel level, const RequestOptions& request_options = {});
     /// As Client::ping().
     void ping();
     /// As Client::cancel().
