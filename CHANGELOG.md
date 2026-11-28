@@ -32,6 +32,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - `examples/features/` shows image, audio and embedded-resource content, binary
   resources, URL-mode elicitation, the HTTP+SSE transport, resource-template
   completion and roots changes.
+- The documentation has a feature matrix that links each tier-assessment feature
+  to its API reference, guide and example.
 
 ### Changed
 
