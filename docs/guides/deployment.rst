@@ -1,34 +1,27 @@
 Deployment Guide
 ================
 
-Deploying an MCP server into a production environment requires careful consideration of transport selection, lifecycle management, and operational security. This guide covers the essential patterns for deploying MCP servers built with the mcp-cpp-sdk.
+Deploying an MCP server to production involves transport selection, lifecycle management and operational security.
 
 Overview
 --------
 
-When moving from development to production, you must decide how your server will communicate with clients. The Model Context Protocol supports several transport mechanisms:
+A production server communicates with clients over one of these transports:
 
 - **Stdio**: Best for local integration with coding agents, IDEs and desktop applications.
 - **HTTP/SSE**: Recommended for remote deployments, multi-client support, or web-based integrations.
 
 A server built with the SDK serves protocol revision 2026-07-28 and the older revisions on the same transport by default. See `Serving Both Protocol Eras`_ for what that means over HTTP.
 
-Key considerations for deployment include:
-
-- Choosing the right transport for your use case.
-- Implementing graceful shutdown to protect in-flight requests.
-- Integrating with system process managers (like systemd or Docker).
-- Monitoring and health checks.
-
 HTTP Server Setup
 -----------------
 
-The mcp-cpp-sdk provides two ways to set up an HTTP server: a high-level convenience API and a manual setup for fine-grained control.
+An HTTP server is set up with the convenience API or manually.
 
 Convenience API (run_http)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For most deployments, the :cpp:func:`mcp::Server::run_http` method is the simplest approach. It manages the ``io_context``, sets up a :cpp:class:`mcp::StreamableHttpSessionManager` that serves each older-protocol client in a session of its own with the same server, and handles signal mapping automatically.
+For most deployments, use :cpp:func:`mcp::Server::run_http`. It manages the ``io_context``, sets up a :cpp:class:`mcp::StreamableHttpSessionManager` that serves each older-protocol client in a session of its own with the same server, and maps signals to shutdown.
 
 .. literalinclude:: ../../examples/sync/server.cpp
    :language: cpp
@@ -43,7 +36,7 @@ port it listens on, which is the one the system chose when it was given port 0.
 Manual HTTP Setup
 ~~~~~~~~~~~~~~~~~
 
-If you need to integrate the MCP server into an existing Boost.Asio application or require custom middleware, you can set up the transport manually.
+To integrate the MCP server into an existing Boost.Asio application, set up the transport manually.
 
 .. code-block:: cpp
 
@@ -73,7 +66,7 @@ carries.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The manager builds a ``Server`` with its factory for each session of an older
-revision, as before. All 2026-07-28 requests are answered by one shared
+revision. All 2026-07-28 requests are answered by one shared
 ``Server``: the one passed to ``set_modern_server()``, or else one built from
 the factory the first time it is needed. ``modern_server()`` returns it, and
 builds it if no request has yet. Because every 2026-07-28 client sees the same
@@ -119,12 +112,10 @@ naming the versions served, and every ``GET`` and ``DELETE`` is answered
 
 ``HttpServerTransport`` serves 2026-07-28 requests next to its one legacy
 session, with the same header checks and error statuses. The server that reads
-the transport answers each request directly. The answer is plain JSON. If a
-handler sends a notification while it runs (a log message at the request's own
-log level, or progress) and the client accepts ``text/event-stream``, the answer
-is a chunked event stream that carries the notifications and then the response,
-as on ``StreamableHttpSessionManager``. A ``subscriptions/listen`` request is an
-event stream that stays open until the client closes it, the server ends the
+the transport answers each request directly. The answer is plain JSON, or
+a chunked event stream of the notifications and then the response under the
+same conditions as on ``StreamableHttpSessionManager``. A
+``subscriptions/listen`` request is an event stream that stays open until the client closes it, the server ends the
 subscription or the transport closes. A client that disconnects while its
 request runs cancels it, and so does a reset after a half-close. A client that
 accepts ``text/event-stream`` and half-closes its connection gets an event stream
@@ -203,7 +194,7 @@ annotation out of ``tools/list`` and reports it through
 Graceful Shutdown
 -----------------
 
-In production, servers are frequently restarted or moved. Graceful shutdown ensures that the server finishes processing active requests before exiting, preventing data loss or client-side errors.
+Servers are restarted or moved in production. Graceful shutdown lets the server finish active requests before it exits, until the shutdown timeout expires.
 
 .. _signal-handling:
 
@@ -214,7 +205,7 @@ Signal Handling
 and ``server.stop()`` ends them the same way. A program that runs the event loop
 itself, with ``Server::run()``, handles the signals as below.
 
-You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdown process. The SDK provides ``mcp::graceful_shutdown()`` in ``mcp/core/signal.hpp`` to close the transport and stop the ``io_context`` after in-flight work finishes or times out.
+Handle ``SIGINT`` and ``SIGTERM`` to trigger the shutdown. ``mcp::graceful_shutdown()`` in ``mcp/core/signal.hpp`` closes the transport and stops the ``io_context`` after in-flight work finishes or times out.
 
 .. literalinclude:: ../../examples/features/graceful_shutdown.cpp
    :language: cpp
@@ -222,7 +213,7 @@ You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdow
    :end-before: // ========== SERVER COROUTINE ==========
    :dedent: 8
 
-The :cpp:func:`mcp::graceful_shutdown` function closes the transport (preventing new connections) and starts a watchdog timer. If requests don't finish within the timeout (defined by ``mcp::constants::shutdown::g_TIMEOUT_MS``), it stops the ``io_context`` forcefully. It returns the timer: cancel it once ``Server::run()`` has returned, as the example does, or the pending timer keeps ``io_context::run()`` going until the timeout.
+The :cpp:func:`mcp::graceful_shutdown` function closes the transport (preventing new connections) and starts a watchdog timer. If requests do not finish within the timeout (defined by ``mcp::constants::shutdown::g_TIMEOUT_MS``), it stops the ``io_context`` forcefully. It returns the timer: cancel it once ``Server::run()`` has returned, as the example does, or the pending timer keeps ``io_context::run()`` going until the timeout.
 
 Production Considerations
 -------------------------
@@ -238,12 +229,12 @@ Port Binding and Security
 Unix Daemon / Service Setup
 ---------------------------
 
-Running your server as a background process (daemon) ensures it stays alive and restarts on failure.
+A server run as a background process (daemon) stays alive and restarts on failure.
 
 systemd Integration
 ~~~~~~~~~~~~~~~~~~~
 
-On Linux, ``systemd`` is the standard way to manage services. Using a system service ensures that your MCP server starts automatically on boot and recovers from crashes.
+On Linux, ``systemd`` manages the server as a service that starts on boot and restarts after a crash.
 
 Create a service file at ``/etc/systemd/system/mcp-server.service``:
 
@@ -281,7 +272,7 @@ After creating the file, reload the systemd manager and enable the service:
 Docker Deployment
 -----------------
 
-Containerization provides a consistent environment for your MCP server, making it easier to deploy across different cloud providers. Use a multi-stage Dockerfile to keep the production image small and secure.
+Use a multi-stage Dockerfile to keep the production image small.
 
 .. code-block:: dockerfile
 
@@ -307,17 +298,17 @@ Containerization provides a consistent environment for your MCP server, making i
    EXPOSE 8080
    ENTRYPOINT ["/usr/local/bin/my_mcp_server"]
 
-When running in Docker, ensure you map the ports correctly and provide any necessary configuration via environment variables.
+Map the ports and pass configuration through environment variables.
 
 Load Balancing and Scaling
 --------------------------
 
-As your MCP application grows, you might need to scale horizontally by running multiple instances.
+Several instances can run behind a load balancer to scale horizontally.
 
 Sticky Sessions
 ~~~~~~~~~~~~~~~
 
-A session of 2025-11-25 or earlier is stateful (initialization, followed by multiple requests), so ensure your load balancer uses **sticky sessions** (session affinity) for such clients. If a client's request is routed to a different instance that hasn't seen the ``initialize`` request, the server will reject the request.
+A session of 2025-11-25 or earlier is stateful (initialization, followed by multiple requests), so the load balancer must use **sticky sessions** (session affinity) for such clients. A request routed to an instance that has not seen the ``initialize`` request is rejected.
 
 A 2026-07-28 request needs no session, and any instance that serves the same tools, resources and prompts can answer it. Three cases can still need the request to reach a particular instance:
 
@@ -328,7 +319,7 @@ A 2026-07-28 request needs no session, and any instance that serves the same too
 Health Checks
 ~~~~~~~~~~~~~
 
-For HTTP deployments, you can implement a health check endpoint. While the MCP protocol doesn't define a standard health check, you can add a simple tool or a parallel HTTP route to verify the server's status.
+The MCP protocol defines no health check. An HTTP deployment can add a tool or a parallel HTTP route to report the server's status.
 
 - **Liveness**: Verify the process is running and the ``io_context`` event loop is responsive.
 - **Readiness**: Verify that any external resources (databases, APIs, or model endpoints) that the tools depend on are currently available.
@@ -336,15 +327,15 @@ For HTTP deployments, you can implement a health check endpoint. While the MCP p
 Monitoring and Logging
 ----------------------
 
-Production servers should emit structured logs for troubleshooting.
+Production servers should emit structured logs.
 
 - **Standard Streams**: In Stdio mode, avoid writing anything to ``stdout`` except MCP messages. Use ``stderr`` for all logging.
-- **Structured Logging**: When using HTTP, consider using a logging library that outputs JSON for better integration with log aggregators like ELK or Datadog.
+- **Structured Logging**: When using HTTP, consider a logging library that outputs JSON for log aggregators such as ELK or Datadog.
 
 Example Walkthrough
 -------------------
 
-The ``http_server_convenience.cpp`` example provides a complete, runnable demonstration of an HTTP-based deployment using the high-level API.
+``http_server_convenience.cpp`` is a runnable HTTP deployment that uses the high-level API.
 
 .. literalinclude:: ../../examples/features/http_server_convenience.cpp
    :language: cpp
@@ -352,7 +343,7 @@ The ``http_server_convenience.cpp`` example provides a complete, runnable demons
    :end-before: constexpr auto startup_delay
    :dedent: 8
 
-For advanced users, ``graceful_shutdown.cpp`` demonstrates how to build a robust server that respects system signals and manages the connection lifecycle manually. This is particularly useful when you need to coordinate the shutdown of multiple services or databases alongside the MCP server.
+``graceful_shutdown.cpp`` handles system signals and manages the connection lifecycle manually, which suits a program that coordinates the shutdown of other services or databases with the MCP server.
 
 .. literalinclude:: ../../examples/features/graceful_shutdown.cpp
    :language: cpp
@@ -363,5 +354,5 @@ For advanced users, ``graceful_shutdown.cpp`` demonstrates how to build a robust
 Cross-References
 ----------------
 
-- See :doc:`/concepts/transports` for more details on HTTP and Stdio transport specifics.
-- See :doc:`error-handling` for patterns on managing production errors and logging exceptions.
+- :doc:`/concepts/transports` for HTTP and Stdio transport specifics.
+- :doc:`error-handling` for managing production errors and logging exceptions.

@@ -3,9 +3,8 @@ Protocol Revisions
 
 The SDK serves protocol revision 2026-07-28, the newest one, and the older
 revisions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05 on the same
-``Server`` and the same transports. This page describes the 2026-07-28 model,
-which is what a default ``Client`` and a default ``Server`` speak with each
-other.
+``Server`` and the same transports. A default ``Client`` and a default
+``Server`` speak the 2026-07-28 model with each other.
 
 The model in short
 ------------------
@@ -181,7 +180,7 @@ client retries one call. The timeout of the call covers all rounds. A question
 for which the client has no handler fails the call with an error that names the
 method.
 
-Some details to know:
+Details:
 
 * The ``requestState`` of stored state is a random token. It works once, for the same principal,
   method and parameters, and an unknown, expired or reused one is answered with

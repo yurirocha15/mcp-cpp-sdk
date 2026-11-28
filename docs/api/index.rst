@@ -1,13 +1,11 @@
 API Reference
 =============
 
-This section provides a complete API reference for the mcp-cpp-sdk, automatically
-generated from the source code documentation using Doxygen and Breathe.
+The reference is generated from the source code documentation with Doxygen and
+Breathe.
 
 Overview
 --------
-
-The mcp-cpp-sdk is organized into several key namespaces and components:
 
 * **mcp::Server** - MCP server implementation for hosting tools, resources, and prompts
 * **mcp::Client** - MCP client implementation for connecting to servers

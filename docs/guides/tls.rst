@@ -4,8 +4,7 @@ TLS and Proxies
 Clients reach ``https://`` servers over TLS, with the server's certificate
 checked against the system's certificate authorities, and can send their
 connections through an HTTP proxy. The HTTP and WebSocket servers end TLS
-themselves when given a certificate. This guide covers the settings of the MCP
-HTTP client, the OAuth client, the servers and WebSocket.
+themselves when given a certificate.
 
 Connecting over TLS
 -------------------

@@ -1,9 +1,8 @@
 Getting Started
 ===============
 
-This page builds a minimal server and client with the blocking API, in which
-handlers are plain functions, client calls block until they are answered, and
-the ``Server`` and ``Client`` run their own event loop.  The coroutine API, in
+With the blocking API, handlers are plain functions, client calls block until
+they are answered, and the ``Server`` and ``Client`` run their own event loop.  The coroutine API, in
 which the program runs the event loop and handlers and calls are C++20
 coroutines, is described in :doc:`guides/async-mode`.
 

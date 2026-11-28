@@ -1,7 +1,7 @@
 Middleware
 ==========
 
-Middleware provides a powerful way to intercept and augment the execution of tool handlers, resource requests, prompt retrievals, resource subscriptions and completions: every request that reaches an application handler. Requests the server answers itself, such as the list methods, ``ping`` and ``logging/setLevel``, do not pass through it. By using middleware, you can implement cross-cutting concerns like logging, authentication, rate limiting, and request validation without cluttering your core business logic.
+Middleware intercepts and augments the execution of tool handlers, resource requests, prompt retrievals, resource subscriptions and completions: every request that reaches an application handler. Requests the server answers itself, such as the list methods, ``ping`` and ``logging/setLevel``, do not pass through it. It suits cross-cutting concerns such as logging, authentication, rate limiting, and request validation.
 
 Overview
 --------
@@ -45,8 +45,6 @@ Where:
 - ``params``: The raw JSON parameters of the request.
 - ``next``: A functional object representing the next step in the chain (either another middleware or the final handler).
 
-The following example shows how to register multiple middleware layers:
-
 .. literalinclude:: ../../examples/features/middleware.cpp
    :language: cpp
    :start-after: // ========== MIDDLEWARE REGISTRATION ==========
@@ -84,15 +82,15 @@ In the example below, ``Middleware C`` checks for a "block" flag and throws if i
 Composition Patterns
 --------------------
 
-Middleware can be composed to build complex request processing pipelines. By combining several small, single-purpose middleware functions, you can create highly specialized server behaviors while keeping the code maintainable.
+Several small, single-purpose middleware functions can be combined into a request-processing pipeline.
 
 Common patterns include:
 
-- **Logging & Metrics**: An outer middleware that logs the start and end of every request, measuring execution time. This provides visibility into server performance and usage patterns.
-- **Authentication**: A middleware that validates API keys, session tokens, or OAuth tokens before allowing access to sensitive tools. This ensures that only authorized clients can trigger certain actions.
+- **Logging & Metrics**: An outer middleware that logs the start and end of every request, measuring execution time.
+- **Authentication**: A middleware that validates API keys, session tokens, or OAuth tokens before allowing access to sensitive tools.
 - **Rate Limiting**: A middleware that tracks request frequency from clients and returns a "Too Many Requests" error if they exceed their quota.
 - **Validation**: A middleware that ensures request parameters conform to additional business rules beyond what JSON Schema can express (e.g., checking if a file exists or if a value is within a dynamic range).
-- **Error Mapping**: A middleware that catches exceptions from resource and prompt handlers, or from inner middleware, and rethrows them with a clearer message. A tool handler's exception never reaches middleware; it arrives as an ``isError`` result.
+- **Error Mapping**: A middleware that catches exceptions from resource and prompt handlers, or from inner middleware, and rethrows them with a clearer message.
 - **Tracing**: A middleware that injects tracing headers or spans into the context to enable distributed tracing across multiple services.
 
 Common Examples
@@ -154,10 +152,10 @@ Best Practices
 
 - **Keep it focused**: Each middleware should handle exactly one concern. This makes your code easier to test, debug, and reuse across different servers.
 - **Always co_await next**: Unless you are explicitly short-circuiting, ensure you ``co_await next(ctx, params)`` to maintain the execution chain. Forgetting to call or await ``next`` will cause the request to hang or terminate prematurely.
-- **Handle exceptions**: If a middleware performs risky operations (like database queries or network calls), catch their failures inside the middleware. An exception that leaves a middleware is answered as ``-32603``. Wrapping ``next()`` in a try-catch sees exceptions from inner middleware, including a refusal from ``make_auth_middleware()``, and from resource and prompt handlers, but not tool handler exceptions, which arrive as ``isError`` results.
+- **Handle exceptions**: If a middleware performs risky operations (like database queries or network calls), catch their failures inside the middleware. Wrapping ``next()`` in a try-catch sees exceptions from inner middleware, including a refusal from ``make_auth_middleware()``, and from resource and prompt handlers, but not tool handler exceptions, which arrive as ``isError`` results.
 - **Mind the order**: Register global concerns (like logging or tracing) first, and more specific concerns (like tool-specific validation or authentication) later. Remember that the first registered middleware is the outermost.
-- **Use the Context**: Leverage the ``ctx`` object for logging information relevant to the middleware's task. This helps in auditing and troubleshooting request flows in production environments.
-- **Avoid Heavy lifting**: Middleware should be relatively lightweight. If a middleware needs to perform a very expensive operation, consider if it should be part of the tool handler itself or if it can be optimized with caching.
+- **Use the Context**: Use the ``ctx`` object for logging information relevant to the middleware's task.
+- **Avoid Heavy lifting**: Middleware should be relatively lightweight. If a middleware needs to perform an expensive operation, consider if it should be part of the tool handler itself or if it can be optimized with caching.
 - **Thread Safety**: Ensure your middleware logic is thread-safe, as it may be called from multiple concurrent request handlers within the Boost.Asio io_context. Avoid sharing non-thread-safe state unless protected by mutexes or strands.
 
 See Also

@@ -95,7 +95,7 @@ For more complex resources, you can use the structured protocol types:
 Resource Templates
 ------------------
 
-Resource templates let one handler serve a family of URIs. The current matcher
+Resource templates let one handler serve a family of URIs. The matcher
 supports the common RFC 6570 expression forms for routing, but it is not a full
 RFC 6570 expansion or variable-extraction engine. The handler receives the full
 requested URI and can parse or validate application-specific segments itself.
@@ -120,9 +120,6 @@ requested URI and can parse or validate application-specific segments itself.
            return result;
        });
 
-Templates are particularly useful when you have a large or open-ended set of
-resources that share the same schema or purpose.
-
 Dynamic Resources
 -----------------
 
@@ -143,8 +140,7 @@ Resource Subscriptions
 ----------------------
 
 Clients can subscribe to resources to receive notifications when their content
-changes. This is essential for live data like logs, telemetry, or collaborative
-documents.
+changes.
 
 The server can track these subscriptions and perform actions (like starting a
 polling loop or opening a file watch) when a client expresses interest.
@@ -157,7 +153,7 @@ polling loop or opening a file watch) when a client expresses interest.
    :linenos:
    :caption: Handling resource subscriptions and unsubscriptions.
 
-For more details on subscriptions and the notifications they deliver, see :doc:`subscriptions`.
+See :doc:`subscriptions` for the notifications they deliver.
 
 Resource Change Notifications
 -----------------------------

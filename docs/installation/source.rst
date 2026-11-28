@@ -1,9 +1,9 @@
 Build from Source
 =================
 
-This page covers systems without a package and projects that build the SDK
-themselves.  Either way, CMake must find Boost 1.74 or newer, nlohmann_json
-3.10.5 or newer and OpenSSL 3.0 or newer.
+On systems without a package, and in projects that build the SDK themselves,
+CMake must find Boost 1.74 or newer, nlohmann_json 3.10.5 or newer and OpenSSL
+3.0 or newer.
 
 Build the SDK with your project
 -------------------------------

@@ -38,7 +38,7 @@ handler, which ``on_roots_list()`` registers:
 Client-side Setup
 -----------------
 
-A client provides its list of roots using the ``set_roots()`` method. This method stores the roots internally, registers a handler for ``roots/list``, and—when called before ``connect()``—automatically advertises the matching client capability.
+A client provides its list of roots using the ``set_roots()`` method. This method stores the roots internally, registers a handler for ``roots/list``, and advertises the matching client capability automatically when called before ``connect()``.
 
 .. literalinclude:: ../../examples/features/roots.cpp
    :language: cpp
@@ -69,7 +69,7 @@ Servers can discover client roots at any time using the ``request_roots()`` meth
 Handling Roots Requests
 -----------------------
 
-While ``set_roots()`` provides a convenient way to manage a static or semi-static list of roots, you can also register a dynamic handler using ``on_roots_list()``. This is useful if the roots need to be calculated on-the-fly when requested.
+``set_roots()`` manages a static or semi-static list of roots. To calculate the roots when they are requested, register a dynamic handler with ``on_roots_list()``.
 
 .. code-block:: cpp
 
@@ -92,7 +92,7 @@ When the set of roots changes (e.g., the user opens a new folder in their IDE), 
 Example Walkthrough
 -------------------
 
-The complete implementation of roots discovery can be found in the feature examples. It demonstrates a server tool that, when called, asks the client for its roots and returns them as a text summary.
+``examples/features/roots.cpp`` contains a server tool that, when called, asks the client for its roots and returns them as a text summary.
 
 .. literalinclude:: ../../examples/features/roots.cpp
    :language: cpp

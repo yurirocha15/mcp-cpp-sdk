@@ -189,7 +189,7 @@ carries none: the server removes it from the question it sends.
 Client-side Handling
 --------------------
 
-Clients must register a handler to respond to elicitation requests. The ``mcp::Client`` class provides a convenience method ``on_elicitation()`` for this purpose.
+Clients must register a handler to respond to elicitation requests, with ``mcp::Client::on_elicitation()``.
 
 .. literalinclude:: ../../examples/features/elicitation.cpp
    :language: cpp
@@ -205,8 +205,6 @@ The ``ElicitResult`` returned by the client contains an ``action`` field of type
 - ``ElicitAction::eAccept``: The user provided the requested information or confirmed the action. For form-based elicitation, the ``content`` field will contain the submitted data.
 - ``ElicitAction::eDecline``: The user explicitly refused to provide the information.
 - ``ElicitAction::eCancel``: The user dismissed the request without making a choice (e.g., closed a dialog).
-
-The server should handle each of these cases to ensure a graceful user experience.
 
 .. code-block:: cpp
 

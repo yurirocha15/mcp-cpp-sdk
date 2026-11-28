@@ -1,9 +1,9 @@
 Specification Support
 =====================
 
-This page lists what the Model Context Protocol specification defines and which
-parts the SDK implements, as a server and as a client. It follows protocol
-revision 2026-07-28. The older revisions 2025-11-25, 2025-06-18, 2025-03-26 and
+The SDK follows protocol revision 2026-07-28. The tables list what the Model
+Context Protocol specification defines and which parts the SDK implements, as a
+server and as a client. The older revisions 2025-11-25, 2025-06-18, 2025-03-26 and
 2024-11-05 are served on the same transports; :doc:`guides/older-protocols`
 explains how a client and a server choose between them.
 

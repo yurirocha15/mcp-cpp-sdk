@@ -18,8 +18,8 @@ contain the individual scenario checks, fixture logs, runner logs, source
 revision, and an aggregate scenario-level summary. A green job means the
 baseline did not drift; it does not mean that an SDK tier has been achieved.
 
-The baseline must be regenerated only after reviewing the complete runner
-output. Updating it to hide an uninvestigated regression is not acceptable.
+Regenerate the baseline only after reviewing the complete runner output, never to
+hide an uninvestigated regression.
 
 ## Skills scenarios
 

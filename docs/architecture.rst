@@ -1,13 +1,8 @@
 Architecture
 ============
 
-This document provides an overview of the mcp-cpp-sdk architecture, including
-high-level design principles, component structure, and key design decisions.
-
 Design Principles
 -----------------
-
-The mcp-cpp-sdk is built on several core design principles:
 
 Compiled library boundaries
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -32,8 +27,6 @@ This design:
 
 RAII and Value Semantics
 ^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The SDK follows modern C++ best practices:
 
 * **RAII**: Resources (sockets, timers) are owned by objects and cleaned up automatically
 * **Stable ownership**: ``Server`` and ``Client`` are non-copyable and
@@ -65,8 +58,6 @@ covers async mode.
 Type Safety
 ^^^^^^^^^^^
 
-The SDK emphasizes compile-time safety:
-
 * **Concepts**: ``JsonSerializable`` concept ensures types are JSON-compatible
 * **Strong typing**: Protocol types are structs, not raw JSON
 * **Template metaprogramming**: Handler signatures validated at compile time
@@ -76,8 +67,6 @@ The SDK emphasizes compile-time safety:
 
 Component Overview
 ------------------
-
-The SDK is organized into several key components:
 
 Server
 ^^^^^^
@@ -113,7 +102,7 @@ Client
 
 **Key responsibilities**:
 
-* Request/response correlation (JSON-RPC id matching) via ``RequestId`` — a type-safe wrapper for JSON-RPC request identifiers (string or integer)
+* Request/response correlation (JSON-RPC id matching) via ``RequestId``, a type-safe wrapper for JSON-RPC request identifiers (string or integer)
 * Reverse RPC: the handlers set with ``on_elicitation()``, ``on_sampling()``
   and ``on_roots_list()`` answer the server's requests for elicitation,
   sampling and roots
@@ -222,7 +211,7 @@ The protocol headers expose MCP message types in the ``mcp`` namespace:
 * Response types: ``DiscoverResult``, ``InitializeResult`` (older revisions), ``ListToolsResult``, ``CallToolResult``, etc.
 * Notification types: ``InitializedNotification``, ``ProgressNotification``, etc.
 * Capability structs: ``ServerCapabilities``, ``ClientCapabilities``
-* ``RequestId`` — a named wrapper for JSON-RPC request identifiers (string or integer), replacing raw ``std::variant`` usage
+* ``RequestId``: a named wrapper for JSON-RPC request identifiers (string or integer), replacing raw ``std::variant`` usage
 
 All types support JSON serialization via nlohmann_json. Protocol types are
 organized into focused sub-headers (``capabilities.hpp``, ``content.hpp``,
@@ -273,9 +262,6 @@ puts the protocol version and client capabilities in the request's ``_meta``,
 and no ``initialize`` request precedes it. If the handler asks the client a
 question in step 8, the server answers with an ``input_required`` result and
 the client sends the request again with the answer.
-
-This flow demonstrates the clean separation between protocol layer, transport
-layer, and application logic.
 
 Design Decisions
 ----------------
@@ -339,7 +325,7 @@ Why Multiple Handler Signatures?
 
 Supporting 4 handler signatures (sync/async × with/without context) provides flexibility:
 
-* **Async with context**: Most powerful, enables logging and reverse RPC
+* **Async with context**: Enables logging and reverse RPC
 * **Async without context**: Simpler for pure computation
 * **Sync with context**: For quick operations that need logging
 * **Sync without context**: Simplest possible handler
@@ -397,8 +383,6 @@ configuration; they are not a universal SDK throughput guarantee.
 
 Extensibility
 -------------
-
-The SDK is designed for extension:
 
 * **Custom transports**: Implement ``ITransport`` (e.g., for HTTP/2)
 * **Custom serialization**: Provide ``to_json``/``from_json`` for your types

@@ -1,23 +1,19 @@
 Testing MCP Applications
 ========================
 
-This guide shows how to test MCP servers and clients that you build using the mcp-cpp-sdk. The SDK provides specialized tools and patterns to make testing asynchronous, bidirectional communication straightforward and deterministic.
-
 Overview
 --------
 
-When testing your MCP applications, you should focus on three levels of verification:
+Tests of an MCP application work on three levels:
 
 1.  **Unit Tests**: Testing individual tool handlers, resource providers, or middleware in isolation.
 2.  **Integration Tests**: Testing the interaction between your Server and a Client using in-memory communication.
 3.  **End-to-End (E2E) Tests**: Testing the full stack, including real I/O (Stdio, HTTP) and external dependencies.
 
-This guide focuses primarily on Integration and E2E testing using the built-in :cpp:class:`mcp::MemoryTransport`.
-
 MemoryTransport for Testing
 ---------------------------
 
-The :cpp:class:`mcp::MemoryTransport` is an in-process, bidirectional transport that allows a Server and a Client to communicate without any network or process overhead. It's the recommended way to write fast, reliable integration tests.
+The :cpp:class:`mcp::MemoryTransport` is an in-process, bidirectional transport that allows a Server and a Client to communicate without any network or process overhead. Use it for fast integration tests.
 
 Key features of MemoryTransport:
 
@@ -29,7 +25,7 @@ Key features of MemoryTransport:
 Using make_memory_transport_pair()
 ------------------------------------
 
-To use MemoryTransport, you should always use the helper function :cpp:func:`mcp::make_memory_transport_pair`. This function creates two connected transport instances where messages written to one are immediately available to the other.
+Create a MemoryTransport with the helper :cpp:func:`mcp::make_memory_transport_pair`, which returns two connected transport instances: messages written to one are available to the other.
 
 .. literalinclude:: ../../examples/features/transport_memory.cpp
    :language: cpp
@@ -39,7 +35,7 @@ To use MemoryTransport, you should always use the helper function :cpp:func:`mcp
 Testing Patterns
 ----------------
 
-Integration testing typically follows a "loopback" pattern where both the server and client run in the same process, often within the same `io_context`. This approach is highly efficient because it eliminates the latency of external networks or process communication while still exercising the full MCP protocol logic.
+Integration testing typically follows a "loopback" pattern where both the server and client run in the same process, often within the same `io_context`. This approach avoids the latency of external networks and processes while still exercising the full MCP protocol logic.
 
 Loopback Test Pattern
 ~~~~~~~~~~~~~~~~~~~~~
@@ -54,7 +50,7 @@ A typical loopback test follows these steps:
 6.  Spawn a separate coroutine to execute client requests, using `co_await` to wait for responses, and then use your testing framework (like GoogleTest) to verify the results.
 7.  Run the `io_context` until all work is complete or a timeout occurs.
 
-Here is a simplified example of this pattern. A default ``Client`` and a default
+A default ``Client`` and a default
 ``Server`` speak protocol revision 2026-07-28 with each other, so the test
 needs no handshake of its own: ``connect()`` sends one ``server/discover``
 request. The test includes ``<mcp/core/async.hpp>``, ``<mcp/mcp.hpp>``,
@@ -128,9 +124,7 @@ as a 2026-07-28 request.
 Writing Scripted Tests
 ----------------------
 
-Scripted tests are a way to verify a complex sequence of interactions between a client and a server. Since the SDK is built on coroutines, you can write tests that look like synchronous code but execute asynchronously. This makes the tests easy to read and maintain.
-
-When writing scripted tests, consider the following:
+Scripted tests verify a sequence of interactions between a client and a server. Since the SDK is built on coroutines, such tests look like synchronous code but execute asynchronously.
 
 - **State Management**: Ensure that your server is fully initialized before the client starts sending requests. A common pattern is to include a small delay or use a signal to indicate server readiness.
 - **Concurrent Operations**: You can test how the server handles multiple simultaneous requests by spawning multiple client coroutines.
@@ -166,7 +160,7 @@ When writing scripted tests, consider the following:
 E2E Testing Patterns
 --------------------
 
-For full E2E tests, you can use real transports like :cpp:class:`mcp::StdioTransport` or :cpp:class:`mcp::HttpClientTransport`. These tests are essential for verifying that your server correctly handles serialization, platform-specific I/O, and real-world networking conditions.
+Full E2E tests use real transports such as :cpp:class:`mcp::StdioTransport` or :cpp:class:`mcp::HttpClientTransport`. They verify that your server correctly handles serialization, platform-specific I/O, and real-world networking conditions.
 
 Key considerations for E2E tests:
 
@@ -186,14 +180,14 @@ When running E2E tests in CI, prefer MemoryTransport for most logic verification
 Mocking and Stubbing
 --------------------
 
-Because the SDK uses interfaces for transports, you can easily mock :cpp:class:`mcp::ITransport` to simulate network errors, timeouts, or malformed protocol messages. This allows you to test edge cases that are difficult to trigger with the standard transports.
+Because the SDK uses interfaces for transports, you can mock :cpp:class:`mcp::ITransport` to simulate network errors, timeouts, or malformed protocol messages. This allows you to test edge cases that are difficult to trigger with the standard transports.
 
-For tool handlers, you can pass mock dependencies into your lambda captures or function objects to verify that tools interact with your business logic correctly. This is particularly useful for testing tools that interact with databases, external APIs, or the filesystem.
+For tool handlers, you can pass mock dependencies into your lambda captures or function objects to verify that tools interact with your business logic correctly.
 
 CI Integration
 --------------
 
-MCP tests can be integrated into any standard C++ CI pipeline. Since the SDK relies on Boost.Asio and C++20, ensure your CI environment has a compatible compiler (GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022) and the necessary libraries installed.
+The SDK relies on Boost.Asio and C++20, so the CI environment needs a compatible compiler (GCC 11+, Clang 14+, AppleClang 15+, or MSVC 2022) and the necessary libraries.
 
 We recommend running tests under sanitizers (ASan, UBSan) to catch memory leaks or undefined behavior in your asynchronous code.
 
@@ -216,4 +210,4 @@ Best Practices
 - **Verify Error Paths**: Don't just test the happy path. Use MemoryTransport to verify how your client handles server-side exceptions, invalid tool arguments, or resource not found errors.
 - **Keep Tests Small and Focused**: Each integration test should focus on a single feature, tool, or specific interaction flow. This makes it easier to identify the cause of a failure.
 - **Clean Up Resources**: Ensure `io_context::stop()` is called or all pending work is finished so your test binary exits cleanly.
-- **Log Failures**: Use the `Context::log_*` methods to capture server-side state during test runs, which can be invaluable when debugging failures in headless CI environments.
+- **Log Failures**: Use the `Context::log_*` methods to capture server-side state during test runs, which helps when debugging failures in headless CI environments.

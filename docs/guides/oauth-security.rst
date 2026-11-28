@@ -1,7 +1,7 @@
 OAuth Security and Deployment
 ==============================
 
-Deploying OAuth with the mcp-cpp-sdk requires careful attention to token management, network security, and issuer binding. This guide covers the operational controls and design rationale that developers and operators must understand to deploy OAuth safely.
+Deploying OAuth with the mcp-cpp-sdk involves token management, network security and issuer binding.
 
 Token Persistence and Storage
 ------------------------------
@@ -44,7 +44,7 @@ Never log access tokens, refresh tokens, authorization codes, client secrets, or
 Credential-to-Issuer Binding
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The :cpp:class:`mcp::auth::ClientCredentialStore` is **deliberately separate** from :cpp:class:`mcp::auth::TokenStore` because they use different storage keys:
+The :cpp:class:`mcp::auth::ClientCredentialStore` is deliberately separate from :cpp:class:`mcp::auth::TokenStore` because they use different storage keys:
 
 - **TokenStore** is keyed by MCP server URL.
 - **ClientCredentialStore** is keyed by authorization-server issuer.
@@ -97,7 +97,7 @@ The Class That Applies These Controls
 
 Everything above describes controls rather than the code that enforces them. :cpp:class:`mcp::auth::OAuthAuthorizationManager` is that code, and the only supported way to act on a ``WWW-Authenticate`` challenge. It applies the fetch policy to every request it makes, binds the issuer byte-for-byte to the metadata document it was read from, generates and checks a cryptographic ``state``, applies RFC 9207 ``iss`` validation before any ``error`` field in the response is read, carries S256 PKCE, and sends the RFC 8707 ``resource`` indicator into the code exchange.
 
-Composing :cpp:class:`mcp::auth::OAuthDiscoveryClient` and :cpp:func:`mcp::auth::OAuthHttpClient::exchange_code` into your own flow compiles and appears to work while applying **none** of them. That is the failure mode this guide exists to prevent: the fetch policy alone governs which targets are contacted, and says nothing about whether what comes back is bound to the issuer that was asked for.
+Composing :cpp:class:`mcp::auth::OAuthDiscoveryClient` and :cpp:func:`mcp::auth::OAuthHttpClient::exchange_code` into your own flow compiles and appears to work while applying none of them.
 
 Worked Flow
 ~~~~~~~~~~~
@@ -119,12 +119,12 @@ See :doc:`/concepts/oauth` for the full API reference and for what the low-level
 Metadata-Fetch Policy and Origin Validation
 --------------------------------------------
 
-Every OAuth metadata fetch — challenge-supplied `resource_metadata` URLs, protected-resource discovery, authorization-server discovery, and token-endpoint requests derived from discovered metadata — is an outbound-request primitive controlled by the :cpp:struct:`mcp::auth::MetadataFetchPolicy`.
+Every OAuth metadata fetch (challenge-supplied `resource_metadata` URLs, protected-resource discovery, authorization-server discovery, and token-endpoint requests derived from discovered metadata) is an outbound-request primitive controlled by the :cpp:struct:`mcp::auth::MetadataFetchPolicy`.
 
 Policy Default Behavior
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-A default-constructed policy **denies every origin**: :cpp:member:`mcp::auth::MetadataFetchPolicy::allowed_origins` is empty, and an origin not explicitly listed is refused **before host resolution**. When the URL is refused, no socket is opened and no DNS lookup occurs.
+A default-constructed policy **denies every origin**: :cpp:member:`mcp::auth::MetadataFetchPolicy::allowed_origins` is empty, and an origin not explicitly listed is refused before host resolution. When the URL is refused, no socket is opened and no DNS lookup occurs.
 
 .. code-block:: cpp
 
@@ -145,12 +145,12 @@ List the exact origins your deployment intends to contact:
        "https://protected-resource.example.org"
    };
 
-Comparison canonicalizes scheme and host case, a trailing run of host dots, a strictly-numeric explicit port that equals the scheme's default (``:443`` for ``https``, ``:80`` for ``http`` — so ``:00443`` and ``:0443`` both canonicalize the same as no port at all), and an IP literal's textual form (an expanded and a compressed IPv6 spelling of the same address compare equal). A non-default port and a genuinely different host still distinguish origins exactly. An allow-list entry that carries a path, query or fragment after the authority (e.g. ``"https://as.test/realms/foo"``) is not a bare origin and matches nothing.
+Comparison canonicalizes scheme and host case, a trailing run of host dots, a strictly-numeric explicit port that equals the scheme's default (``:443`` for ``https``, ``:80`` for ``http``, so ``:00443`` and ``:0443`` both canonicalize the same as no port at all), and an IP literal's textual form (an expanded and a compressed IPv6 spelling of the same address compare equal). A non-default port and a genuinely different host still distinguish origins exactly. An allow-list entry that carries a path, query or fragment after the authority (e.g. ``"https://as.test/realms/foo"``) is not a bare origin and matches nothing.
 
 Deny List Always Wins
 ~~~~~~~~~~~~~~~~~~~~~
 
-The deny list is consulted **before** the allow list. An origin in both lists is refused:
+The deny list is consulted before the allow list. An origin in both lists is refused:
 
 .. code-block:: cpp
 
@@ -187,15 +187,15 @@ The callback:
 
 - **Cannot relax scheme validation**: it cannot permit plain `http://` when the policy enforces HTTPS.
 - **Cannot relax address validation**: it cannot permit loopback, private ranges, link-local, multicast, or reserved addresses after they have been rejected by address classification.
-- Runs **after** the deny list, so denied origins stay denied.
-- Runs **before** host resolution, so a rejected origin never results in a socket opening.
+- Runs after the deny list, so denied origins stay denied.
+- Runs before host resolution, so a rejected origin never results in a socket opening.
 
 Metadata URLs named by a protected resource are attacker-influenced input; the callback implements the rule that would otherwise be written as a complete allow list. Do not use it as a blanket escape hatch.
 
 Issuer Comparison and Canonical Form
 -------------------------------------
 
-When an authorization server advertises support for RFC 9207 `iss`, the SDK validates that the issuer in the authorization response matches the issuer recorded from the selected authorization server's metadata. This comparison is **a plain byte-for-byte string equality check**: no canonicalization is performed.
+When an authorization server advertises support for RFC 9207 `iss`, the SDK validates that the issuer in the authorization response matches the issuer recorded from the selected authorization server's metadata. This comparison is a plain byte-for-byte string equality check: no canonicalization is performed.
 
 Why No Canonicalization
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -210,7 +210,7 @@ String equality without URL normalization might seem unsafe. Consider this threa
 
 By comparing only the byte sequence as written, the SDK ensures that:
 
-- An issuer URL is only accepted if it matches **exactly** what was advertised in the trusted metadata document.
+- An issuer URL is only accepted if it matches exactly what was advertised in the trusted metadata document.
 - Hostname canonicalization, default-port elision, trailing-slash normalization, or percent-encoding variations cannot defeat the binding.
 - No DNS-like resolution step can make two different issuer URLs appear equivalent.
 
@@ -233,7 +233,7 @@ Once enabled:
 
 - Plain `http://` schemes are accepted for loopback addresses (127.0.0.1, ::1).
 - Loopback addresses themselves are unblocked (they are otherwise refused as private ranges).
-- This flag does **not** relax any other control: link-local, private non-loopback, multicast, reserved, or address-based denials still apply. Redirect chains, response sizes, and origin checks remain enforced.
+- This flag does not relax any other control: link-local, private non-loopback, multicast, reserved, or address-based denials still apply. Redirect chains, response sizes, and origin checks remain enforced.
 - It is never enabled implicitly; an operator must explicitly set it to `true`.
 
 If you are integrating with the MCP conformance suite or a local test server, enable this flag only in the test or development configuration, never in production deployments.
@@ -259,7 +259,7 @@ Addresses written as IP literals in the URL are classified without any DNS looku
 Resolve-Then-Pin
 ~~~~~~~~~~~~~~~~
 
-When a hostname must be resolved, the SDK performs a single lookup, classifies each resolved address, and connects only to addresses that pass the check. Critically, **addresses obtained from that single resolution are pinned for the connection**: a second resolution of the same hostname cannot redirect an established fetch, preventing DNS-rebinding attacks where:
+When a hostname must be resolved, the SDK performs a single lookup, classifies each resolved address, and connects only to addresses that pass the check. The addresses obtained from that single resolution are pinned for the connection: a second resolution of the same hostname cannot redirect an established fetch, preventing DNS-rebinding attacks where:
 
 1. First lookup of `attacker.com` returns a public IP.
 2. Metadata fetch begins to that IP.

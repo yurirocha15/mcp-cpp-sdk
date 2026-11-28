@@ -1,8 +1,8 @@
 Converting to Async Mode
 ========================
 
-This guide takes a server and a client written in sync mode and converts them
-to async mode. The server keeps notes: a tool adds one, a resource lists them
+A server and a client written in sync mode are converted to async mode. The
+server keeps notes: a tool adds one, a resource lists them
 and tells its subscribers when they change, and a prompt asks for a summary.
 The client subscribes to the notes, adds one, waits for the change, then reads
 the notes and gets the prompt. Both talk over stdio. :doc:`async-mode` describes

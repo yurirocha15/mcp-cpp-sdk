@@ -61,7 +61,7 @@ mode and with ``co_await`` in async mode:
 Basic Tool Registration
 -----------------------
 
-The simplest way to register a tool is with a synchronous handler that takes
+A tool can be registered with a synchronous handler that takes
 `nlohmann::json` and returns `nlohmann::json`. A returned object made only of
 ``CallToolResult`` members (``content``, ``structuredContent``, ``isError``,
 ``_meta``) that decodes as one is sent as the result, as in the example below.
@@ -95,21 +95,20 @@ whose only member is an empty ``content`` array is treated as data and wrapped.
 Typed Handlers
 --------------
 
-For better type safety and cleaner code, you can use custom C++ structs for
-tool input and output. Any type that implements `to_json` and `from_json`
-(using `NLOHMANN_DEFINE_TYPE_INTRUSIVE` or manual implementation) can be used.
+Custom C++ structs can serve as tool input and output. Any type that implements
+`to_json` and `from_json` (using `NLOHMANN_DEFINE_TYPE_INTRUSIVE` or manual
+implementation) can be used.
 
-Using typed handlers provides several advantages:
+Typed handlers have several advantages:
 
-1. **Automatic Validation**: The SDK automatically deserializes the incoming
-   JSON into your struct, validating the presence and types of required fields.
-2. **Type Safety**: Your handler logic works with native C++ types rather than
+1. **Validation**: The SDK deserializes the incoming JSON into the struct,
+   validating the presence and types of required fields.
+2. **Type safety**: The handler works with native C++ types rather than
    dynamic JSON objects.
-3. **Self-Documentation**: The input and output structures serve as clear
-   documentation of the tool's interface.
+3. **Self-documentation**: The input and output structures document the tool's
+   interface.
 
-The following example demonstrates defining input and output structures for a
-calculator tool:
+The input and output structures of a calculator tool:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
@@ -125,9 +124,8 @@ You then register the tool by providing these types as template arguments to
    :end-before: // Tool: greet
    :dedent: 8
 
-When using typed handlers, the SDK uses the template parameters to automatically
-wrap your handler in a layer that performs the conversion between `nlohmann::json`
-and your custom types.
+The SDK uses the template parameters to wrap the handler in a layer that converts
+between `nlohmann::json` and the custom types.
 
 Async Handlers with Context
 ---------------------------
@@ -136,15 +134,12 @@ Many tools need to perform asynchronous work, such as network requests or
 long-running computations. `mcp-cpp-sdk` supports coroutine-based handlers
 returning `mcp::Task<T>`.
 
-Additionally, handlers can accept a `mcp::Context&` parameter to access
+Handlers can also accept a `mcp::Context&` parameter to access
 server-level features:
 
 - **Logging**: Send real-time logs back to the client.
 - **Progress Reporting**: Inform the client about long-running task status.
 - **Cancellation**: Check if the client has requested to abort the task.
-
-The following example shows a tool that logs information and performs an
-asynchronous operation:
 
 .. literalinclude:: ../../examples/servers/stdio/server_stdio.cpp
    :language: cpp
@@ -155,8 +150,7 @@ asynchronous operation:
 Progress and Cancellation
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For tasks that take a significant amount of time, it is good practice to
-report progress and periodically check for cancellation requests.
+A long-running tool can report progress and check for cancellation requests.
 
 .. literalinclude:: ../../examples/features/progress_cancellation.cpp
    :language: cpp
@@ -184,8 +178,6 @@ There are two primary ways to handle errors in tool handlers:
    field is ``true``. ``add_raw_tool()`` provides the equivalent low-level JSON
    escape hatch with runtime validation.
 
-The following example demonstrates both patterns:
-
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
    :start-after: // ========== TOOL REGISTRATION ==========
@@ -194,8 +186,8 @@ The following example demonstrates both patterns:
 
 Use ``isError: true`` when the tool completed normally but needs to report an
 application-level failure back to the client. Either way the client receives a
-normal ``tools/call`` result and the session stays open. This is a critical
-distinction:
+normal ``tools/call`` result and the session stays open. The two kinds of error
+differ:
 
 - **Protocol Errors**: Issues like malformed JSON, invalid method names, or
   disconnected transports cause JSON-RPC level errors.
@@ -206,13 +198,9 @@ distinction:
 Tool Output Schema
 ------------------
 
-In addition to the input schema, you can provide an optional `outputSchema`.
-This allows clients to understand the structure of the data returned by the
-tool, enabling better integration with typed systems or UI rendering.
-
-When an ``outputSchema`` is provided, the SDK includes it in the tool definition sent to clients.
-The schema is advertised as ``outputSchema`` in the tool's metadata, enabling clients to understand
-the structure of the tool's output. A tool with an ``outputSchema`` must return
+A tool can provide an optional `outputSchema` in addition to the input schema.
+The SDK advertises it in the tool definition, so clients know the structure of
+the tool's output. A tool with an ``outputSchema`` must return
 ``structuredContent`` (unless the result is an error), and that content must conform to the
 schema; otherwise the call fails with a JSON-RPC error (see `Schema Validation`_).
 
@@ -236,10 +224,8 @@ schema; otherwise the call fails with a JSON-RPC error (see `Schema Validation`_
 Structured Content
 ------------------
 
-While simple tools can return raw JSON, more complex tools might want to
-return structured content blocks (text, images, or embedded resources).
-The `mcp::CallToolResult` structure provides a standard way to return multiple
-content blocks.
+A tool can return structured content blocks (text, images, or embedded
+resources) in a `mcp::CallToolResult`, which holds multiple content blocks.
 
 .. literalinclude:: ../../examples/features/error_handling.cpp
    :language: cpp
