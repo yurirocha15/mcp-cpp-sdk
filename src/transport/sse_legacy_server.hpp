@@ -1,6 +1,7 @@
 #pragma once
 
 #include "mcp/detail/net/connection.hpp"
+#include "mcp/detail/transport/http_limits.hpp"
 #include "mcp/detail/transport/incoming_request.hpp"
 #include "mcp/detail/transport/session_pipe.hpp"
 
@@ -34,13 +35,15 @@ namespace mcp::detail {
 class LegacySseSession {
    public:
     /// @param max_messages How many messages may wait for the stream; a session past it ends.
-    /// @param max_bytes How many bytes of messages may wait for the stream; one message is always
-    ///        accepted, however large.
+    /// @param max_bytes How many bytes of messages may wait for the stream or be in a write to it;
+    ///        a message is always accepted while none is held, however large.
+    /// @param budget The listener-wide byte budget those bytes are also charged to, with its limit;
+    ///        a message it cannot hold ends the session. It must outlive release_budget().
     /// @param stream_executor The strand of the connection that writes the stream, which the
     ///        session wakes through signal().
     LegacySseSession(std::string session_id, std::string session_principal,
                      const boost::asio::any_io_executor& stream_executor, std::size_t max_messages,
-                     std::size_t max_bytes);
+                     std::size_t max_bytes, std::atomic<std::size_t>& budget, std::size_t budget_limit);
 
     /// The opaque id the client names in the query of its POSTs.
     const std::string id;
@@ -66,10 +69,20 @@ class LegacySseSession {
 
     struct Batch {
         std::vector<std::string> messages;
+        /// What the messages count for until written() is told they were written.
+        std::size_t bytes{0};
         bool ended{false};
     };
-    /// The queued messages, which the caller now owns, and whether the session ended.
+    /// The queued messages, which the caller now owns, and whether the session ended. The bytes of
+    /// the batch stay counted against the limits until written().
     Batch take();
+
+    /// Gives back the @p bytes of a batch whose write finished, or failed.
+    void written(std::size_t bytes);
+
+    /// Gives back what the session holds of the byte budget and refuses further messages. Called
+    /// before the budget goes away.
+    void release_budget();
 
    private:
     void wake() const;
@@ -79,6 +92,9 @@ class LegacySseSession {
     std::mutex mutex_;
     std::deque<std::string> queue_;
     std::size_t queued_bytes_{0};
+    /// The bytes of the batches taken and not yet written.
+    std::size_t in_flight_bytes_{0};
+    BudgetLease budget_lease_;  // guarded by mutex_
     bool ended_{false};
     const std::shared_ptr<boost::asio::steady_timer> signal_;
 };
@@ -95,6 +111,9 @@ class LegacySseSessions {
         std::size_t max_sessions{0};
         std::size_t max_messages{0};
         std::size_t max_bytes{0};
+        /// The listener-wide byte budget and its limit.
+        std::atomic<std::size_t>* budget{nullptr};
+        std::size_t budget_limit{0};
     };
 
     /// Opens a session whose Server will run on a strand of @p executor of its own; start() runs

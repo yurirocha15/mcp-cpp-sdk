@@ -1071,8 +1071,10 @@ struct StreamableHttpSessionManager::Impl {
         {
             std::scoped_lock lock(configuration_mutex_);
             max_sessions = session_limits.max_sessions;
-            limits.max_bytes = connection_limits_.max_request_bytes;
+            limits.budget_limit = connection_limits_.max_request_bytes;
         }
+        limits.budget = &budget_.bytes;
+        limits.max_bytes = stream_options_.max_queued_bytes;
         limits.max_messages = stream_options_.max_queued_notifications;
         std::shared_ptr<detail::LegacySseSession> session;
         {

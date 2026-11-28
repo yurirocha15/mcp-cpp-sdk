@@ -464,8 +464,11 @@ class MCP_API StreamableHttpSessionManager {
      * none, is answered 404 without saying which. Only the revisions before 2026-07-28 are served:
      * initialize negotiates at most 2025-11-25, and a request of 2026-07-28 is answered 400. A
      * session whose stream falls more than StreamOptions::max_queued_notifications messages, or
-     * HttpConnectionLimits::max_request_bytes bytes, behind ends. The first session a Server
-     * serves reports DeprecatedFeature::eHttpSse to that Server's deprecation handler.
+     * StreamOptions::max_queued_bytes bytes, behind ends, and so does one whose queued bytes the
+     * listener-wide HttpConnectionLimits::max_request_bytes budget cannot hold. The bytes of the
+     * batch being written count until the write ends, and a message is always queued while none
+     * is held, as far as the budget allows. The first session a Server serves reports
+     * DeprecatedFeature::eHttpSse to that Server's deprecation handler.
      *
      * @throws std::invalid_argument If a path does not start with `/`, holds `?`, `#` or a space,
      *         or both paths are the same.

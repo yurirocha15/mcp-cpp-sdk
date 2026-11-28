@@ -1169,6 +1169,109 @@ TEST_F(LegacySseTransportTest, SessionLimitsCountTheSessionsOfBothTransports) {
     }
 }
 
+namespace {
+
+struct UnreadStreamOutcome {
+    /// The POSTs the server answered 202.
+    int accepted{0};
+    /// The `message` events the stream carried when it was read afterwards, up to the number of
+    /// answers that were expected.
+    int carried{0};
+};
+
+/// Posts @p posts echo calls of @p payload_bytes each to a session whose stream is not read, then
+/// reads the stream.
+UnreadStreamOutcome post_to_an_unread_stream(ManagerHarness& harness, int posts,
+                                             std::size_t payload_bytes) {
+    UnreadStreamOutcome outcome;
+    SseStream stream(harness.port());
+    const auto endpoint = stream.endpoint();
+    EXPECT_EQ(
+        raw_request(harness.port(), http::verb::post, endpoint, initialize_request(1).dump()).status,
+        202U);
+    EXPECT_EQ(raw_request(harness.port(), http::verb::post, endpoint,
+                          json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}.dump())
+                  .status,
+              202U);
+    const std::string payload(payload_bytes, 'x');
+    for (int post = 0; post < posts; ++post) {
+        const json call = {{"jsonrpc", "2.0"},
+                           {"id", 10 + post},
+                           {"method", "tools/call"},
+                           {"params", {{"name", "echo"}, {"arguments", {{"message", payload}}}}}};
+        outcome.accepted +=
+            raw_request(harness.port(), http::verb::post, endpoint, call.dump()).status == 202U ? 1 : 0;
+    }
+    // The initialize answer and one answer per accepted call, were none left out.
+    while (outcome.carried < outcome.accepted + 1) {
+        const auto event = stream.next();
+        if (!event) {
+            break;
+        }
+        outcome.carried += event->name == "message" ? 1 : 0;
+    }
+    return outcome;
+}
+
+}  // namespace
+
+// What a stream has queued counts against the listener's budget, so POSTs whose answers the
+// stream cannot take are refused once the budget is full.
+TEST_F(LegacySseTransportTest, AnUnreadStreamQueueIsChargedToTheListenersByteBudget) {
+    constexpr int g_posts = 200;
+    ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
+        mcp::HttpConnectionLimits limits;
+        limits.max_request_bytes = std::size_t{4} * 1024 * 1024;
+        manager.set_connection_limits(limits);
+        mcp::StreamOptions options;
+        options.max_queued_bytes = std::size_t{64} * 1024 * 1024;
+        manager.set_stream_options(options);
+    });
+    const auto outcome = post_to_an_unread_stream(harness, g_posts, std::size_t{256} * 1024);
+    EXPECT_LT(outcome.accepted, g_posts);
+}
+
+TEST_F(LegacySseTransportTest, AnUnreadStreamEndsWhenItsQueueOutgrowsMaxQueuedBytes) {
+    constexpr int g_posts = 200;
+    ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
+        mcp::StreamOptions options;
+        options.max_queued_bytes = std::size_t{512} * 1024;
+        manager.set_stream_options(options);
+    });
+    const auto outcome = post_to_an_unread_stream(harness, g_posts, std::size_t{256} * 1024);
+    EXPECT_LT(outcome.carried, outcome.accepted + 1);
+}
+
+TEST_F(LegacySseTransportTest, AReadStreamKeepsEveryAnswerWithinTheSameLimits) {
+    constexpr int g_posts = 20;
+    ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
+        mcp::HttpConnectionLimits limits;
+        limits.max_request_bytes = std::size_t{4} * 1024 * 1024;
+        manager.set_connection_limits(limits);
+    });
+    SseStream stream(harness.port());
+    const auto endpoint = stream.endpoint();
+    ASSERT_EQ(
+        raw_request(harness.port(), http::verb::post, endpoint, initialize_request(1).dump()).status,
+        202U);
+    ASSERT_TRUE(stream.next().has_value());
+    ASSERT_EQ(raw_request(harness.port(), http::verb::post, endpoint,
+                          json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}.dump())
+                  .status,
+              202U);
+    const std::string payload(std::size_t{256} * 1024, 'x');
+    for (int post = 0; post < g_posts; ++post) {
+        const json call = {{"jsonrpc", "2.0"},
+                           {"id", 10 + post},
+                           {"method", "tools/call"},
+                           {"params", {{"name", "echo"}, {"arguments", {{"message", payload}}}}}};
+        ASSERT_EQ(raw_request(harness.port(), http::verb::post, endpoint, call.dump()).status, 202U);
+        const auto event = stream.next();
+        ASSERT_TRUE(event.has_value());
+        EXPECT_EQ(event->name, "message");
+    }
+}
+
 TEST_F(LegacySseTransportTest, ASessionEndsWhenItsClientLeaves) {
     ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
         mcp::StreamOptions options;

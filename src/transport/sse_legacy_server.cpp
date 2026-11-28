@@ -67,11 +67,13 @@ struct StreamState {
 
 LegacySseSession::LegacySseSession(std::string session_id, std::string session_principal,
                                    const boost::asio::any_io_executor& stream_executor,
-                                   std::size_t max_messages, std::size_t max_bytes)
+                                   std::size_t max_messages, std::size_t max_bytes,
+                                   std::atomic<std::size_t>& budget, std::size_t budget_limit)
     : id(std::move(session_id)),
       principal(std::move(session_principal)),
       max_messages_(max_messages),
       max_bytes_(max_bytes),
+      budget_lease_(budget, budget_limit),
       signal_(std::make_shared<boost::asio::steady_timer>(stream_executor)) {
     signal_->expires_at(std::chrono::steady_clock::time_point::max());
 }
@@ -86,13 +88,16 @@ void LegacySseSession::push(std::string message) {
         if (ended_) {
             return;
         }
+        const auto size = message.size();
+        const auto held = queued_bytes_ + in_flight_bytes_;
         if (queue_.size() >= max_messages_ ||
-            (!queue_.empty() && queued_bytes_ + message.size() > max_bytes_)) {
+            (held != 0 && (held > max_bytes_ || size > max_bytes_ - held)) ||
+            !budget_lease_.grow_to(held + size)) {
             // A client that does not read its stream cannot be left to make the server hold what
             // it sends; the stream ends and the client opens another.
             ended_ = true;
         } else {
-            queued_bytes_ += message.size();
+            queued_bytes_ += size;
             queue_.push_back(std::move(message));
         }
     }
@@ -115,9 +120,28 @@ LegacySseSession::Batch LegacySseSession::take() {
         batch.messages.push_back(std::move(message));
     }
     queue_.clear();
-    queued_bytes_ = 0;
+    batch.bytes = std::exchange(queued_bytes_, 0);
+    in_flight_bytes_ += batch.bytes;
     batch.ended = ended_;
     return batch;
+}
+
+void LegacySseSession::written(std::size_t bytes) {
+    std::scoped_lock lock(mutex_);
+    in_flight_bytes_ -= std::min(bytes, in_flight_bytes_);
+    budget_lease_.shrink_to(queued_bytes_ + in_flight_bytes_);
+}
+
+void LegacySseSession::release_budget() {
+    {
+        std::scoped_lock lock(mutex_);
+        ended_ = true;
+        queue_.clear();
+        queued_bytes_ = 0;
+        in_flight_bytes_ = 0;
+        budget_lease_.release();
+    }
+    wake();
 }
 
 LegacySseSessions::LegacySseSessions(LegacySseOptions options) : options_(std::move(options)) {}
@@ -125,9 +149,9 @@ LegacySseSessions::LegacySseSessions(LegacySseOptions options) : options_(std::m
 std::shared_ptr<LegacySseSession> LegacySseSessions::open(
     const boost::asio::any_io_executor& executor, const boost::asio::any_io_executor& stream_executor,
     std::string principal, const Limits& limits) {
-    auto session =
-        std::make_shared<LegacySseSession>(generate_secure_session_id(), std::move(principal),
-                                           stream_executor, limits.max_messages, limits.max_bytes);
+    auto session = std::make_shared<LegacySseSession>(
+        generate_secure_session_id(), std::move(principal), stream_executor, limits.max_messages,
+        limits.max_bytes, *limits.budget, limits.budget_limit);
     // The server and its endpoint share a strand of the session's own, as a session of the
     // Streamable HTTP transport has.
     session->server_strand = make_strand_executor(executor);
@@ -186,6 +210,7 @@ void LegacySseSessions::remove(const std::string& id) {
         sessions_.erase(found);
     }
     session->end();
+    session->release_budget();
     session->pipe->close();
 }
 
@@ -198,6 +223,7 @@ void LegacySseSessions::close() {
     }
     for (const auto& entry : sessions) {
         entry.second->end();
+        entry.second->release_budget();
         entry.second->pipe->close();
     }
 }
@@ -293,9 +319,12 @@ Task<void> LegacySseSessions::serve(Connection& stream, const IncomingRequest& r
             for (const auto& message : batch.messages) {
                 append_event(state->text, sse_constants::g_EVENT_MESSAGE, message);
             }
+            // The text holds the batch from here on.
+            std::vector<std::string>().swap(batch.messages);
             co_await boost::asio::async_write(
                 stream, http::make_chunk(boost::asio::buffer(state->text)),
                 boost::asio::redirect_error(boost::asio::use_awaitable, error));
+            session->written(batch.bytes);
             if (error) {
                 co_return;
             }
