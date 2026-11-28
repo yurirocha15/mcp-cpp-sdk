@@ -829,11 +829,13 @@ beyond calling the ``BearerTokenValidator`` the application supplies, so an
 authorization server and the token verification behind that callback remain the
 deployment's own.
 
-The client passes every OAuth scenario of the official conformance suite: the
-protected-resource metadata variants, CIMD and pre-registration, scope
-selection and step-up, and the ``basic``, ``post`` and ``none``
+The client passes every OAuth scenario of the 2025-11-25 conformance suite that
+CI runs: the protected-resource metadata variants, CIMD and pre-registration,
+scope selection and step-up, and the ``basic``, ``post`` and ``none``
 token-endpoint authentication scenarios. ``conformance/expected-failures.yml``
-lists the scenarios the SDK does not pass yet.
+lists the scenarios the SDK does not pass yet. DPoP and workload identity
+federation, open extension proposals, are not implemented (see
+:doc:`/spec-support`).
 
 Cross-references
 ----------------

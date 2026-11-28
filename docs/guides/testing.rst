@@ -203,8 +203,10 @@ Example GitHub Action snippet:
 
     - name: Build and Test
       run: |
-        python scripts/build.py --test --sanitize
-        cd build/release && ctest --output-on-failure
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+        cmake --build build
+        ctest --test-dir build --output-on-failure
 
 Best Practices
 --------------

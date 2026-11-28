@@ -306,7 +306,7 @@ A hardened integration might configure:
    };
 
    // Temporary block during incident
-   policy.denied_origins = {"https://accounts.example.com:8080"};
+   policy.denied_origins = {"https://auth-backup.example.com"};
 
    // For discovered protected-resource metadata that names
    // authorization servers not in the allow list, require explicit

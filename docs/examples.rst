@@ -8,7 +8,7 @@ directory.
 Overview
 --------
 
-The SDK builds nine core examples plus 16 specialized feature examples:
+The SDK builds nine core examples plus 18 specialized feature examples:
 
 1. **server_stdio** - Full-featured MCP server over stdio
 2. **server_simple** - Minimal MCP server over stdio
@@ -48,14 +48,14 @@ URL:
 Feature Examples
 ----------------
 
-The ``examples/features/`` directory contains 16 specialized examples. They use
+The ``examples/features/`` directory contains 18 specialized examples. They use
 small, self-contained setups to demonstrate individual capabilities; some use
 in-memory loopback and others exercise local network transports.
 
 1. **progress_cancellation** - Real-time progress updates and request cancellation
 2. **notifications_subscriptions** - Server-to-client notifications and subscription handling
 3. **middleware** - Intercepting and processing requests via a middleware chain
-4. **completions** - Argument completion suggestions for tools
+4. **completions** - Argument completion suggestions
 5. **pagination** - Handling large lists via cursor-based pagination
 6. **elicitation** - Server-initiated information requests (input forms)
 7. **roots** - Declaring and discovering client-side root URIs
@@ -71,6 +71,10 @@ in-memory loopback and others exercise local network transports.
     ``ping()`` and ``resources/subscribe``
 16. **stdio_launch** - ``StdioClientTransport`` and ``StdioClientSession``: launching a server process,
     capturing its standard error, shutting it down and restarting it
+17. **tls_client** - An HTTPS client with the system's or a private certificate authority, through
+    the proxy the environment names (see :doc:`guides/tls`)
+18. **tls_server** - ``run_http()`` serving https, with mutual TLS when given a client
+    certificate authority
 
 These examples are non-interactive and designed to be run as part of a
 test suite or to understand specific API patterns.

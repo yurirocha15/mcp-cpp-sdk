@@ -41,6 +41,9 @@ cd benchmark
 # Run the language baselines as a diagnostic (not a publishable ranking).
 ./run.sh baseline
 
+# Run the comparable C++ SDKs and the language baselines in one run.
+./run.sh all
+
 # Run the C++ SDKs, ours-coroutines, ours-sync, their TCP_NODELAY builds, and the
 # language baselines in one counterbalanced run.
 ./run.sh full
@@ -89,17 +92,17 @@ requires an explicit action.
 
 | Benchmark name | SDK | Host port |
 |---|---|---:|
-| `ours-comparable-stateful`, `ours-comparable-stateless` | this SDK | 8089 |
+| `ours-comparable-stateful`, `ours-comparable-stateless`, `ours-comparable-modern` | this SDK | 8089 |
 | `hkr04` | hkr04/cpp-mcp | 8084 |
 | `fastmcpp` | FastMCPP | 8085 |
-| `cxxmcp` | cxxmcp | 8086 |
+| `cxxmcp`, `cxxmcp-modern` | cxxmcp | 8086 |
 | `neumann` | Neumann-Labs/mcp-cpp | 8087 |
 
-`ours-coroutines-stateful` and `ours-coroutines-stateless` (host port 8098) are not part of `cpp-sdks`. It is a second build
-of this SDK's adapter whose tool handlers are C++20 coroutines; see
-[Coroutine workload](#coroutine-workload). Select it by name or through `full`.
+`ours-coroutines-stateful`, `ours-coroutines-stateless` and `ours-coroutines-modern` (host port 8098) are not part of
+`cpp-sdks`. They run a second build of this SDK's adapter whose tool handlers are C++20 coroutines; see
+[Coroutine workload](#coroutine-workload). Select them by name or through `full`.
 
-`ours-sync-stateful` and `ours-sync-stateless` (host port 8099) are not part of `cpp-sdks`
+`ours-sync-stateful`, `ours-sync-stateless` and `ours-sync-modern` (host port 8099) are not part of `cpp-sdks`
 either. They serve the shared workload through this SDK's sync mode; see
 [Sync mode workload](#sync-mode-workload). Select them by name or through `full`.
 
@@ -314,6 +317,8 @@ created. It reads these environment variables, which `run.sh` sets for each cell
 | `BENCHMARK_WARMUP_DURATION` | `60s` | Warmup load |
 | `BENCHMARK_MEASURE_DURATION` | `5m` | Measurement load |
 | `OUTPUT_PATH` | `<SERVER_NAME>_<mode>_summary.json` | Summary file |
+| `EXPECTED_PROTOCOL_VERSION` | unset | Revision the run expects the server to negotiate, recorded in the summary |
+| `BENCHMARK_CONTRACT` | `upstream-v2-strict-mcp-v1` | Eligibility contract recorded in the summary; any other value is refused |
 
 To measure one cell of it, name its key:
 

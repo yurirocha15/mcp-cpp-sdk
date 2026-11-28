@@ -25,7 +25,7 @@ If you have Node.js installed, you can run it without installation:
 
    npx @modelcontextprotocol/inspector /path/to/your/repo/build/release/example-server-stdio
 
-The inspector will launch a local web server (usually at ``http://localhost:3000``)
+The inspector will launch a local web server (by default at ``http://localhost:6274``)
 where you can see your server's capabilities and trigger its tools.
 
 Using our Interactive Client

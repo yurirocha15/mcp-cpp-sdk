@@ -323,11 +323,13 @@ Advanced: Context Internal Architecture
 
 While most developers will only use the public API of ``Context``, understanding its internal structure can help when debugging or extending the SDK.
 
-The ``Context`` holds:
+The ``Context`` holds, among other things:
+
 *   A reference to the ``ITransport`` for sending notifications.
 *   A ``RequestSender`` (a functional wrapper) for performing reverse RPC.
 *   A shared atomic flag for cancellation.
 *   A ``ProgressToken`` extracted from the request's metadata.
+*   The request's ``_meta`` fields and its principal.
 
 This architecture ensures that ``Context`` is lightweight and efficient to pass around, while providing a rich set of capabilities.
 
@@ -339,8 +341,8 @@ request (protocol version, client capabilities, client info, log level, and the
 whole ``_meta`` object), and a null pointer for a request of an older revision.
 ``ctx.principal()`` says who sent a request. Over HTTP it is the principal that a
 bearer token validator named in its ``TokenValidation`` result, or ``h:``
-followed by the hex SHA-256 of the ``Authorization`` header, or empty when there
-is none. It is empty for stdio, WebSocket and memory transports, and for the
+followed by the hex SHA-256 of the bearer token (of the whole ``Authorization``
+header when it holds no bearer token), or empty when there is none. It is empty for stdio, WebSocket and memory transports, and for the
 requests of a ``StreamableHttpSessionManager`` session of an older revision,
 which are attributed to the session.
 

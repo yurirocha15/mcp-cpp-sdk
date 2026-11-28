@@ -143,7 +143,8 @@ server serves:
    server.set_protocol_policy(recent);
 
 Set the policy before the server serves its first request.
-``set_protocol_policy()`` throws ``std::logic_error`` afterwards, and
+``set_protocol_policy()`` throws ``std::logic_error`` afterwards for a policy that
+differs from the one in effect, and
 ``std::invalid_argument`` for a policy that serves neither era, serves legacy
 clients with an empty ``legacy_versions``, or names a version that is not a
 legacy one (``ServerProtocolPolicy::validate()`` makes the same check).

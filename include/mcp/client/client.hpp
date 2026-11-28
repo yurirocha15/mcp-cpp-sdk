@@ -320,7 +320,8 @@ class MCP_API Client {
     /**
      * @brief List available tools from the server.
      *
-     * Tools whose schemas cannot be used are left out (see ClientOptions::validate_tool_schemas).
+     * Lists every tool the server names, and reports an output schema that cannot be used through
+     * ClientOptions::on_tool_schema_error (see ClientOptions::validate_tool_schemas).
      *
      * @param cursor Optional pagination cursor.
      * @param request_options Per-request options, such as a deadline or a CancellationToken.

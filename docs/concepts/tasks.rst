@@ -310,10 +310,9 @@ with ``g_MISSING_REQUIRED_CLIENT_CAPABILITY``. Progress and log notifications ar
 not carried on the stream. Right after the acknowledgment the stream carries the
 state each honored task has at that moment, and then its changes, so a task that
 finishes while the stream opens is not missed. A client may still receive a state
-it already knows. Tasks work
-without streams, by polling, where the transport has none: ``HttpServerTransport``
-answers ``subscriptions/listen`` with ``g_METHOD_NOT_FOUND``, see
-:doc:`subscriptions`.
+it already knows. Tasks also work
+without a stream, by polling, for a client that does not open one; see
+:doc:`subscriptions` for the transports that carry it.
 
 HTTP
 ----

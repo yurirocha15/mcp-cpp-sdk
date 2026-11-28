@@ -18,7 +18,7 @@ Features
 * **Protocol revision 2026-07-28**: Sessionless requests, ``server/discover``, cache hints, multi round-trip requests and ``subscriptions/listen``, with the older revisions served on the same transports
 * **Broad MCP surface**: Tools, resources, prompts, sampling, roots, progress, and notifications
 * **Conformance tested**: The official MCP suites run in CI, with known gaps listed
-* **Authentication building blocks**: Experimental OAuth helpers and HTTP bearer validation
+* **Authentication**: An OAuth client and HTTP bearer validation
 * **Optional extensions**: MCP Apps, Skills, OAuth client credentials and enterprise-managed authorization, each off until the application opts in (:doc:`concepts/extensions`)
 
 Quick Links
