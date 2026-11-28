@@ -583,7 +583,7 @@ void Client::Impl::dispatch_message(const std::shared_ptr<Impl>& state, const st
         }
 
         if (has_id && !has_method) {
-            dispatch_response(state, json_message);
+            dispatch_response(state, std::move(json_message));
         } else if (has_id && has_method) {
             // dispatch_incoming_request is detached, so anything that throws inside it is
             // swallowed and the peer never hears back. Reject an unusable id here, where the
@@ -632,8 +632,7 @@ void Client::Impl::report_protocol_error(const std::shared_ptr<Impl>& state, int
     }
 }
 
-void Client::Impl::dispatch_response(const std::shared_ptr<Impl>& state,
-                                     const nlohmann::json& json_message) {
+void Client::Impl::dispatch_response(const std::shared_ptr<Impl>& state, nlohmann::json json_message) {
     const auto& id = json_message.at("id");
     if (!detail::is_request_id(id)) {
         return;
@@ -676,7 +675,7 @@ void Client::Impl::dispatch_response(const std::shared_ptr<Impl>& state,
             };
         }
     } else {
-        iter->second->result = json_message.at("result");
+        iter->second->result = std::move(json_message.at("result"));
     }
 
     iter->second->completed = true;

@@ -739,8 +739,7 @@ struct Client::Impl {
     static void report_protocol_error(const std::shared_ptr<Impl>& state, int code,
                                       std::string message);
 
-    static void dispatch_response(const std::shared_ptr<Impl>& state,
-                                  const nlohmann::json& json_message);
+    static void dispatch_response(const std::shared_ptr<Impl>& state, nlohmann::json json_message);
 
     static void dispatch_notification(const std::shared_ptr<Impl>& state,
                                       const nlohmann::json& json_message);

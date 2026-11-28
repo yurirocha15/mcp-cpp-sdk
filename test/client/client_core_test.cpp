@@ -695,6 +695,49 @@ TEST_F(ClientCoreTest, MultipleRequestsDispatchCorrectly) {
     EXPECT_EQ(client.pending_request_count(), 0);
 }
 
+TEST_F(ClientCoreTest, ALargeResultOfManySmallValuesArrivesWhole) {
+    nlohmann::json expected = {{"values", nlohmann::json::array()}, {"rows", nlohmann::json::array()}};
+    for (int value = 0; value < 100000; ++value) {
+        expected["values"].push_back(value);
+    }
+    for (int row = 0; row < 1000; ++row) {
+        expected["rows"].push_back({{"row", row}, {"name", "row-" + std::to_string(row)}});
+    }
+
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
+    auto* raw_transport = transport.get();
+    raw_transport->set_on_write([raw_transport, &expected](std::string_view msg) {
+        auto json_msg = nlohmann::json::parse(msg);
+        if (json_msg.contains("id")) {
+            auto id = json_msg["id"].get<std::string>();
+            const auto& answer =
+                json_msg.value("method", "") == "initialize" ? make_initialize_result() : expected;
+            raw_transport->enqueue_message(make_result_response(id, answer).dump());
+        }
+    });
+
+    mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
+
+    nlohmann::json first;
+    nlohmann::json second;
+    mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
+        mcp::Implementation info;
+        info.name = "test-client";
+        info.version = "0.1";
+        co_await client.connect(std::move(info), mcp::ClientCapabilities{});
+
+        first = co_await client.send_request("test/large", std::nullopt);
+        second = co_await client.send_request("test/large", std::nullopt);
+        raw_transport->close();
+    });
+
+    io_ctx_.run();
+
+    EXPECT_EQ(first, expected);
+    EXPECT_EQ(second, expected);
+    EXPECT_EQ(client.pending_request_count(), 0);
+}
+
 TEST_F(ClientCoreTest, ReadLoopIgnoresServerNotifications) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();
