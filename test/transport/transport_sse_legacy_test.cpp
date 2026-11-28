@@ -353,7 +353,8 @@ class ScriptedPeer {
         write_chunk("event: " + name + "\ndata: " + data + "\n\n");
     }
 
-    /// Ends the stream the way a server that closes it does.
+    /// Ends the stream the way a server that closes it does. The socket closes in stop(), after
+    /// the thread that reads it has returned.
     void end_stream() {
         std::shared_ptr<asio::ip::tcp::socket> stream;
         {
@@ -364,7 +365,6 @@ class ScriptedPeer {
             boost::system::error_code ignored;
             asio::write(*stream, asio::buffer(std::string_view("0\r\n\r\n")), ignored);
             stream->shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
-            stream->close(ignored);
         }
     }
 
@@ -385,12 +385,16 @@ class ScriptedPeer {
             sockets = sockets_;
             threads.swap(connection_threads_);
         }
+        // shutdown() ends a read that a connection thread is blocked in; a socket closes only
+        // after the threads that use it have returned.
         for (const auto& socket : sockets) {
             socket->shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
-            socket->close(ignored);
         }
         for (auto& thread : threads) {
             thread.join();
+        }
+        for (const auto& socket : sockets) {
+            socket->close(ignored);
         }
     }
 
