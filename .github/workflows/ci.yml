@@ -37,6 +37,7 @@ jobs:
       windows_package: ${{ steps.classify.outputs.windows_package }}
       conformance: ${{ steps.classify.outputs.conformance }}
       conformance_guards: ${{ steps.classify.outputs.conformance_guards }}
+      docs: ${{ steps.classify.outputs.docs }}
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -830,6 +831,16 @@ jobs:
     if: needs.changes.outputs.conformance_guards == 'true'
     uses: ./.github/workflows/conformance-guards.yml
 
+  docs:
+    # The documentation build and the feature matrix check (docs-build.yml), called here so that a
+    # failure fails the CI result. docs.yml builds the same pages again and deploys them from main.
+    name: Documentation
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    uses: ./.github/workflows/docs-build.yml
+    with:
+      publish: false
+
   result:
     # The one check main requires. A job skipped because nothing it reads changed passes; a failed
     # or cancelled job fails this one.
@@ -854,6 +865,7 @@ jobs:
       - windows-package
       - conformance
       - conformance-guards
+      - docs
     runs-on: ubuntu-slim
     permissions: {}
 

@@ -21,9 +21,9 @@ for them, and CHANGELOG.md, whose entries they check and from which the release
 notes are written.
 
 ci.yml calls conformance.yml and conformance-guards.yml as its conformance and
-conformance_guards jobs, so they count for the CI result. conformance-alpha.yml and
-docs.yml filter their own triggers with `paths:`, and CodeQL is GitHub's default
-setup, which has no path filter.
+conformance_guards jobs, and docs-build.yml as its docs job, so they count for the CI result.
+conformance-alpha.yml and docs.yml (which calls docs-build.yml and deploys the site) filter their
+own triggers with `paths:`, and CodeQL is GitHub's default setup, which has no path filter.
 
 Prints one ``job=true|false`` line per job for ``$GITHUB_OUTPUT``. Any doubt (no
 base commit, a git failure, a file no list names) answers ``true`` for every job
@@ -42,7 +42,7 @@ from release.version_bump import PINS  # noqa: E402
 
 # ci.yml defines every job, so a change to it needs them all.
 CI_WORKFLOW = ".github/workflows/ci.yml"
-# Paths that no job in ci.yml reads. docs.yml reads docs/; conformance/ is read by the conformance job.
+# Paths that no job in ci.yml reads.
 NO_JOB_PATTERNS = (
     "*.md",
     ".clang-format",
@@ -54,7 +54,6 @@ NO_JOB_PATTERNS = (
     ".gitignore",
     ".pre-commit-config.yaml",
     "Makefile",
-    "docs/*",
 )
 LIBRARY = (
     "CMakeLists.txt",
@@ -179,13 +178,34 @@ JOB_INPUTS = {
     # conformance-guards.yml: guard scripts over the workflows, the runner pin and the SDK sources.
     "conformance_guards": (
         ".github/workflows/*",
-        "conformance/run.sh",
+        "conformance/expected-failures-alpha.yml",
+        # run.sh and the alpha harness, whose name the guard keeps out of scripts/.
+        "conformance/run*.sh",
+        "conformance/runner-alpha/package-lock.json",
+        "conformance/runner-alpha/package.json",
         "conformance/runner/package.json",
         "include/*",
         "scripts/*",
         "src/*",
         # check_deprecations.py reads the test names of the deprecation registry.
         "test/*.cpp",
+    ),
+    # docs-build.yml: the feature matrix check and the Doxygen and Sphinx build. build.py --docs also
+    # compiles the library, which the build jobs check; the pages come from the headers, docs/ and
+    # the examples they include.
+    "docs": (
+        ".github/workflows/docs-build.yml",
+        "CMakeLists.txt",
+        "VERSION",
+        "cmake/*",
+        "conanfile.py",
+        "docs/*",
+        "examples/*",
+        "include/*",
+        "scripts/build.py",
+        "scripts/check_feature_matrix.py",
+        "scripts/gen_feature_matrix.py",
+        "scripts/init.py",
     ),
     "powershell": ("scripts/release/*.ps1",),
     "package_core": PACKAGE_CORE + (
