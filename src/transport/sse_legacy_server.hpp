@@ -141,12 +141,13 @@ class LegacySseSessions {
     [[nodiscard]] static std::optional<std::string> session_id_of(std::string_view target);
 
     /// Writes the event stream of @p session to @p stream: the `endpoint` event, then the
-    /// session's messages as `message` events, with a comment every @p keepalive. Returns when the
-    /// session ends or a write fails, and forgets the session. The connection does not carry
-    /// another request afterwards.
+    /// session's messages as `message` events, with a comment every @p keepalive. The request's
+    /// @p slot is given back once the response head is written, so that an open stream holds none.
+    /// Returns when the session ends or a write fails, and forgets the session. The connection
+    /// does not carry another request afterwards.
     Task<void> serve(Connection& stream, const IncomingRequest& request,
                      std::shared_ptr<LegacySseSession> session, std::chrono::milliseconds keepalive,
-                     const std::atomic<bool>& closed);
+                     const std::atomic<bool>& closed, BudgetLease& slot);
 
    private:
     LegacySseOptions options_;

@@ -788,14 +788,14 @@ struct StreamableHttpSessionManager::Impl {
                 continue;
             }
             if (auto* legacy = std::get_if<2>(&reply)) {
-                if (!co_await serve_legacy_stream(stream, request, *legacy)) {
+                if (!co_await serve_legacy_stream(stream, request, *legacy, slot)) {
                     break;
                 }
                 continue;
             }
             if (auto* sse_session = std::get_if<3>(&reply)) {
                 co_await legacy_sse_->serve(stream, request, *sse_session,
-                                            stream_options_.keepalive_interval, closed);
+                                            stream_options_.keepalive_interval, closed, slot);
                 break;
             }
             auto& response = std::get<0>(reply);
@@ -1314,7 +1314,8 @@ struct StreamableHttpSessionManager::Impl {
     ///
     /// @return Whether the connection may carry another request.
     Task<bool> serve_legacy_stream(Connection& stream, const detail::IncomingRequest& request,
-                                   std::shared_ptr<detail_session_mgr::LegacyStream> legacy) const {
+                                   std::shared_ptr<detail_session_mgr::LegacyStream> legacy,
+                                   detail::BudgetLease& slot) const {
         auto& session = *legacy->session;
         const bool get_stream = legacy->request_key.empty();
         SseEventList events = std::move(legacy->replay);
@@ -1409,6 +1410,11 @@ struct StreamableHttpSessionManager::Impl {
                 }
                 stream_open = true;
                 wrote = true;
+                if (get_stream) {
+                    // An open GET stream is bounded by the connection and session limits, not by
+                    // the requests in flight.
+                    slot.release();
+                }
             }
 
             if (!events.empty()) {

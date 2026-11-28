@@ -145,7 +145,10 @@ unchanged. A ``subscriptions/listen`` stream ends instead, with its closing
 result, so that the client reconnects and lists again.
 
 A request holds its place under ``HttpConnectionLimits::max_requests`` and
-``max_request_bytes`` until its answer or stream has ended, and the connection
+``max_request_bytes`` until its answer or stream has ended. A GET event stream
+gives back its ``max_requests`` place once its response head is written, so the
+streams that are open are bounded by ``max_connections`` and
+``SessionLimits::max_sessions``, not by ``max_requests``. The connection
 is closed when the client does not take a write within ``request_read_timeout``.
 ``set_stream_options()`` sets the keep-alive and probe intervals and the limits
 on queued notifications, and ``stream_stats()`` counts what the streams did. ``set_json_only(true)`` keeps

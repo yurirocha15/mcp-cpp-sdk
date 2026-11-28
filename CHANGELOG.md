@@ -43,6 +43,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - Over Streamable HTTP, a message for a 2025-11-25 or earlier session that
   belongs to no request waits for the session's next GET stream when none is
   open and no POST waits, up to the queue limit.
+- An open GET event stream gives back its `HttpConnectionLimits::max_requests`
+  place once its response head is written; `max_connections` and the session
+  limit bound open streams.
 
 ### Deprecated
 

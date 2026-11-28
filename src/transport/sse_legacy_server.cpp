@@ -282,7 +282,7 @@ class SessionRemoval {
 Task<void> LegacySseSessions::serve(Connection& stream, const IncomingRequest& request,
                                     std::shared_ptr<LegacySseSession> session,
                                     std::chrono::milliseconds keepalive,
-                                    const std::atomic<bool>& closed) {
+                                    const std::atomic<bool>& closed, BudgetLease& slot) {
     const SessionRemoval removal(*this, session);
     auto state = std::make_shared<StreamState>();
     state->header = http::response<http::empty_body>{http::status::ok, request.version()};
@@ -302,6 +302,8 @@ Task<void> LegacySseSessions::serve(Connection& stream, const IncomingRequest& r
     if (error) {
         co_return;
     }
+    // An open stream is bounded by the connection and session limits, not by the requests in flight.
+    slot.release();
 
     append_event(state->text, sse_constants::g_EVENT_ENDPOINT,
                  options_.message_path + "?" + std::string(sse_constants::g_SESSION_ID_PARAMETER) +

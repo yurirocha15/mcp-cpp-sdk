@@ -1272,6 +1272,78 @@ TEST_F(LegacySseTransportTest, AReadStreamKeepsEveryAnswerWithinTheSameLimits) {
     }
 }
 
+// An open event stream gives its place under max_requests back, so streams do not lock out POSTs.
+TEST_F(LegacySseTransportTest, OpenStreamsDoNotHoldRequestSlots) {
+    ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
+        mcp::HttpConnectionLimits limits;
+        limits.max_requests = 2;
+        manager.set_connection_limits(limits);
+    });
+    std::vector<std::unique_ptr<SseStream>> streams;
+    std::string endpoint;
+    for (int index = 0; index < 4; ++index) {
+        streams.push_back(std::make_unique<SseStream>(harness.port()));
+        ASSERT_EQ(streams.back()->status(), 200U);
+        const auto target = streams.back()->endpoint();
+        endpoint = endpoint.empty() ? target : endpoint;
+    }
+    EXPECT_EQ(
+        raw_request(harness.port(), http::verb::post, endpoint, initialize_request(1).dump()).status,
+        202U);
+}
+
+// A Streamable HTTP GET stream gives its place under max_requests back as well.
+TEST_F(LegacySseTransportTest, OpenStreamableGetStreamsDoNotHoldRequestSlots) {
+    ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
+        mcp::HttpConnectionLimits limits;
+        limits.max_requests = 2;
+        manager.set_connection_limits(limits);
+    });
+    const std::string accept = "application/json, text/event-stream";
+    // The session id is in a header, which raw_request does not return: read it with a request of
+    // its own.
+    std::vector<std::string> session_ids;
+    for (int index = 0; index < 3; ++index) {
+        asio::io_context io;
+        auto socket = connect_to(io, harness.port());
+        http::request<http::string_body> request{http::verb::post, "/mcp", 11};
+        request.set(http::field::host, "127.0.0.1:" + std::to_string(harness.port()));
+        request.set(http::field::accept, accept);
+        request.set(http::field::content_type, "application/json");
+        request.set(http::field::connection, "close");
+        request.body() = initialize_request(1).dump();
+        request.prepare_payload();
+        http::write(socket, request);
+        beast::flat_buffer buffer;
+        http::response<http::string_body> response;
+        http::read(socket, buffer, response);
+        ASSERT_EQ(response.result_int(), 200U);
+        session_ids.emplace_back(response["Mcp-Session-Id"]);
+    }
+    std::vector<std::unique_ptr<SseStream>> streams;
+    for (const auto& id : session_ids) {
+        const Headers headers{{"Mcp-Session-Id", id}, {"MCP-Protocol-Version", "2025-11-25"}};
+        ASSERT_EQ(
+            raw_request(
+                harness.port(), http::verb::post, "/mcp",
+                json{{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}}.dump(),
+                {{"Mcp-Session-Id", id}, {"MCP-Protocol-Version", "2025-11-25"}, {"Accept", accept}})
+                .status,
+            202U);
+        streams.push_back(std::make_unique<SseStream>(harness.port(), headers, "/mcp"));
+        ASSERT_EQ(streams.back()->status(), 200U);
+        // The priming event follows the point where the stream gives its place back.
+        ASSERT_TRUE(streams.back()->next().has_value());
+    }
+    const json ping = {{"jsonrpc", "2.0"}, {"id", 7}, {"method", "ping"}};
+    EXPECT_EQ(raw_request(harness.port(), http::verb::post, "/mcp", ping.dump(),
+                          {{"Mcp-Session-Id", session_ids[0]},
+                           {"MCP-Protocol-Version", "2025-11-25"},
+                           {"Accept", accept}})
+                  .status,
+              200U);
+}
+
 TEST_F(LegacySseTransportTest, ASessionEndsWhenItsClientLeaves) {
     ManagerHarness harness([](mcp::StreamableHttpSessionManager& manager) {
         mcp::StreamOptions options;
