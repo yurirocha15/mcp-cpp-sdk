@@ -260,8 +260,12 @@ inline constexpr std::size_t g_READ_CHUNK_BYTES = 8192;
 /// First status code of an error response (400 Bad Request).
 inline constexpr int g_STATUS_BAD_REQUEST = 400;
 
-/// The most a single response body or SSE line may hold before the exchange is abandoned.
-inline constexpr std::size_t g_MAX_MODERN_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
+/// The default for the most one response body, SSE line or SSE event may hold before the exchange
+/// is abandoned.
+inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
+
+/// What an SSE data line carries besides its data: the field name and one space ("data: ").
+inline constexpr std::size_t g_SSE_FIELD_NAME_SLACK_BYTES = 6;
 
 /// How many times one request's event stream is resumed after it ends without the response.
 inline constexpr int g_MAX_STREAM_RESUMES = 3;

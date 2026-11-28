@@ -268,6 +268,13 @@ the server-selected protocol version on subsequent session requests and
 best-effort DELETE teardown, including when the initialize response arrived in
 an SSE event.
 
+``HttpClientTransport`` accepts a JSON response body, an SSE line and the data of an SSE event
+of up to 16 MiB; a larger one fails the request. ``set_max_message_bytes()`` changes
+that limit, for a server whose results are larger or a client that wants a smaller bound. It
+applies to every read, and a chunked body counts by its decoded size. The answers to
+initialize are read whole, so for them the limit holds the body, an SSE answer's framing
+included. Through ``HttpEndpointOptions::configure`` it is set before the client connects.
+
 A request of protocol revision 2026-07-28 needs no session. ``HttpClientTransport``
 sends it as a POST of its own, with the ``MCP-Protocol-Version``, ``Mcp-Method``
 and ``Mcp-Name`` headers (and ``Mcp-Param-*`` headers for tools that ask for

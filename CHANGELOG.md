@@ -9,6 +9,8 @@ Versioning; a `0.x` version is a stable release unless its version has an
 ### Added
 
 - The Chocolatey package has an icon.
+- `HttpClientTransport::set_max_message_bytes()` sets the largest response body,
+  SSE line or SSE event the client accepts, 16 MiB by default.
 
 ### Changed
 

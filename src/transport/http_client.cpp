@@ -65,8 +65,10 @@ namespace {
 class SseDecoder {
    public:
     SseDecoder() = default;
-    /// A decoder for a stream resumed after the event @p last_id.
-    explicit SseDecoder(std::string last_id) : last_id_(last_id), id_buffer_(std::move(last_id)) {}
+    /// A decoder that refuses a line or the data of an event longer than @p max_bytes, for a stream
+    /// resumed after the event @p last_id when one is given.
+    explicit SseDecoder(std::size_t max_bytes, std::string last_id = {})
+        : max_bytes_(max_bytes), last_id_(last_id), id_buffer_(std::move(last_id)) {}
 
     /// The id of the last whole event that named one, which a resume sends as Last-Event-ID.
     [[nodiscard]] const std::string& last_id() const { return last_id_; }
@@ -88,7 +90,10 @@ class SseDecoder {
             }
             if (symbol != '\n' && symbol != '\r') {
                 line_.push_back(symbol);
-                if (line_.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
+                // A data line may hold the field name besides data of the largest size; consume_line()
+                // holds every other line to the limit.
+                if (line_.size() >
+                    max_bytes_ + mcp::detail::constants::http_client::g_SSE_FIELD_NAME_SLACK_BYTES) {
                     throw TransportError(TransportError::Kind::eProtocol,
                                          "An SSE line from the server is too long");
                 }
@@ -113,6 +118,9 @@ class SseDecoder {
                 payload_.clear();
                 carried_anything_ = true;
             }
+        } else if (!line_.starts_with("data:") && line_.size() > max_bytes_) {
+            throw TransportError(TransportError::Kind::eProtocol,
+                                 "An SSE line from the server is too long");
         } else if (const auto id = field_value("id:")) {
             const std::string_view value = *id;
             // An id holding NUL is ignored, as the SSE standard has it.
@@ -128,8 +136,7 @@ class SseDecoder {
             }
         } else if (const auto data = field_value("data:")) {
             const std::string_view value = *data;
-            if (payload_.size() + value.size() + 1 >
-                mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
+            if (payload_.size() + (payload_.empty() ? 0 : 1) + value.size() > max_bytes_) {
                 throw TransportError(TransportError::Kind::eProtocol,
                                      "An SSE event from the server is too long");
             }
@@ -158,6 +165,7 @@ class SseDecoder {
     /// Longest `retry` value read, in digits: past this the field is ignored.
     static constexpr std::size_t g_max_retry_digits = 9;
 
+    std::size_t max_bytes_ = mcp::detail::constants::http_client::g_DEFAULT_MAX_MESSAGE_BYTES;
     std::string line_;
     std::string payload_;
     std::string last_id_;
@@ -216,6 +224,8 @@ struct ModernCall {
     // Held here, not in the coroutine's frame: GCC 11 mishandles a std::string that lives across
     // a suspension point there.
     SseDecoder decoder;
+    /// The largest message the call reads, as set when the call opened.
+    std::size_t max_message_bytes{mcp::detail::constants::http_client::g_DEFAULT_MAX_MESSAGE_BYTES};
     std::string response_body;
     beast::flat_buffer buffer;
     std::unique_ptr<http::response_parser<http::buffer_body>> parser;
@@ -616,7 +626,8 @@ struct HttpClientTransport::Impl {
     /// The terms of the initialize result @p response carries for the initialize @p sent, as
     /// JSON or in an event, or nullopt when it carries none.
     static std::optional<nlohmann::json> initialize_terms(const StringResponse& response,
-                                                          const std::string& sent) {
+                                                          const std::string& sent,
+                                                          std::size_t max_message_bytes) {
         const auto request = detail::parse_peer_json(sent);
         if (!request.is_object() || !request.contains("id")) {
             return std::nullopt;
@@ -634,7 +645,7 @@ struct HttpClientTransport::Impl {
             return std::nullopt;
         }
         if (starts_with(std::string(content_type->value()), "text/event-stream")) {
-            SseDecoder decoder;
+            SseDecoder decoder(max_message_bytes);
             for (const auto& event : decoder.feed(response.body())) {
                 if (auto terms = answers(event)) {
                     return terms;
@@ -652,7 +663,8 @@ struct HttpClientTransport::Impl {
         if (state->session_terms.is_null()) {
             return false;
         }
-        const auto terms = initialize_terms(response, sent);
+        const auto terms =
+            initialize_terms(response, sent, max_message_bytes.load(std::memory_order_relaxed));
         return terms && *terms != state->session_terms;
     }
 
@@ -729,7 +741,7 @@ struct HttpClientTransport::Impl {
         }
 
         if (starts_with(content_type_header, "text/event-stream")) {
-            SseDecoder decoder;
+            SseDecoder decoder(max_message_bytes.load(std::memory_order_relaxed));
             auto events = decoder.feed(response.body());
             remember_last_event_id(decoder);
             for (auto& event : events) {
@@ -1274,13 +1286,22 @@ struct HttpClientTransport::Impl {
             }
 
             beast::flat_buffer response_buffer;
-            StringResponse response;
+            // The parser counts the decoded body, so a chunked one is held to the limit as well. A
+            // numeric limit, not boost::none, which Boost 1.74 lacks.
+            http::response_parser<http::string_body> parser;
+            parser.body_limit(
+                static_cast<std::uint64_t>(impl->max_message_bytes.load(std::memory_order_relaxed)));
             try {
-                co_await http::async_read(stream, response_buffer, response, net::use_awaitable);
+                co_await http::async_read(stream, response_buffer, parser, net::use_awaitable);
             } catch (const boost::system::system_error& error) {
                 impl->throw_if_tls_failure(stream, error.code());
+                if (error.code() == http::error::body_limit) {
+                    throw TransportError(TransportError::Kind::eProtocol,
+                                         "The server's response is too large");
+                }
                 throw;
             }
+            StringResponse response = parser.release();
             deadline.reset();
             if (!response.keep_alive()) {
                 // The server closes the connection after this response (RFC 9112 section 9.6), so
@@ -1582,7 +1603,8 @@ struct HttpClientTransport::Impl {
         auto& shared = *impl->state;
         call->stream.reset();
         call->final_message.reset();
-        call->decoder = SseDecoder(call->last_event_id);
+        call->max_message_bytes = impl->max_message_bytes.load(std::memory_order_relaxed);
+        call->decoder = SseDecoder(call->max_message_bytes, call->last_event_id);
         call->content_type.clear();
         call->challenge.clear();
         call->response_body.clear();
@@ -1716,11 +1738,11 @@ struct HttpClientTransport::Impl {
                     impl->accept_stream_message(*call, std::move(text));
                 }
             } else {
-                body.append(piece);
-                if (body.size() > mcp::detail::constants::http_client::g_MAX_MODERN_MESSAGE_BYTES) {
+                if (body.size() + piece.size() > call->max_message_bytes) {
                     throw TransportError(TransportError::Kind::eProtocol,
                                          "The server's response is too large");
                 }
+                body.append(piece);
             }
         }
 
@@ -1976,6 +1998,9 @@ struct HttpClientTransport::Impl {
 
     net::strand<net::any_io_executor> strand;
     std::shared_ptr<SharedState> state;
+    /// The most bytes of one message a read accepts; zero accepts only empty bodies.
+    std::atomic<std::size_t> max_message_bytes{
+        mcp::detail::constants::http_client::g_DEFAULT_MAX_MESSAGE_BYTES};
     /// Zero means no limit.
     std::atomic<std::chrono::milliseconds::rep> response_timeout_ms{
         mcp::detail::constants::http_client::g_DEFAULT_RESPONSE_TIMEOUT.count()};
@@ -2030,6 +2055,10 @@ void HttpClientTransport::set_response_timeout(std::chrono::milliseconds timeout
         std::chrono::steady_clock::duration::max() / 2);
     impl_->response_timeout_ms.store(timeout > longest ? 0 : timeout.count(),
                                      std::memory_order_relaxed);
+}
+
+void HttpClientTransport::set_max_message_bytes(std::size_t bytes) {
+    impl_->max_message_bytes.store(bytes, std::memory_order_relaxed);
 }
 
 void HttpClientTransport::set_reinitialize_on_expired_session(bool enabled) {
