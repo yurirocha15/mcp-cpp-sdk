@@ -2,7 +2,8 @@
 
 ## Reporting a vulnerability
 
-Use **Report a vulnerability** in this repository's GitHub **Security** tab.
+Report it privately with the
+[vulnerability report form](https://github.com/yurirocha15/mcp-cpp-sdk/security/advisories/new).
 Do not open a public issue for suspected vulnerabilities, leaked credentials,
 release-signing problems, or package-supply-chain incidents.
 
@@ -18,4 +19,4 @@ Each GitHub Release publishes its source archives, checksums, manifest and SBOMs
 with signatures you can verify.
 
 If release integrity is in doubt, stop installing the affected version and
-report it privately through GitHub Security Advisories.
+report it privately with the same form.
