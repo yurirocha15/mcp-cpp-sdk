@@ -108,7 +108,27 @@ The following example demonstrates a complete client-side loop that retrieves al
 .. literalinclude:: ../../examples/features/pagination.cpp
    :language: cpp
    :start-after: // ========== PAGINATION LOOP ==========
-   :end-before: // ========== CLEANUP ==========
+   :end-before: // docs-begin: paginate-resources
+
+Listing Resources and Prompts
+-----------------------------
+
+``resources/list`` and ``prompts/list`` are paged the same way, with the page
+size ``set_page_size()`` sets, so the loop above works for ``list_resources()``
+and ``list_prompts()`` too. In sync mode each call is ``client.sync().list_resources()``
+or ``client.sync().list_prompts()``:
+
+.. literalinclude:: ../../examples/features/pagination.cpp
+   :language: cpp
+   :start-after: docs-begin: paginate-resources
+   :end-before: docs-end: paginate-resources
+   :dedent: 20
+
+.. literalinclude:: ../../examples/features/pagination.cpp
+   :language: cpp
+   :start-after: docs-begin: paginate-prompts
+   :end-before: docs-end: paginate-prompts
+   :dedent: 20
 
 Pagination Best Practices
 -------------------------

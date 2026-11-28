@@ -388,19 +388,19 @@ endpoint above apply, and a session serves only the principal that opened it.
 ``SessionLimits::max_sessions`` also bounds these sessions, which last as long
 as their streams. The server side in sync and async mode:
 
-.. code-block:: cpp
+.. literalinclude:: ../../examples/features/legacy_sse.cpp
+   :language: cpp
    :caption: Sync mode
+   :start-after: docs-begin: legacy-sse-server
+   :end-before: docs-end: legacy-sse-server
+   :dedent: 4
 
-   server.run_http("127.0.0.1", 8080, [](mcp::StreamableHttpSessionManager& http) {
-       http.set_legacy_sse({});
-   });
-
-.. code-block:: cpp
+.. literalinclude:: ../../examples/features/legacy_sse.cpp
+   :language: cpp
    :caption: Async mode
-
-   mcp::StreamableHttpSessionManager manager(io.get_executor(), "127.0.0.1", 8080, server);
-   manager.set_legacy_sse({.sse_path = "/events", .message_path = "/inbox"});
-   boost::asio::co_spawn(io, manager.listen(), boost::asio::detached);
+   :start-after: docs-begin: legacy-sse-async-server
+   :end-before: docs-end: legacy-sse-async-server
+   :dedent: 4
 
 ``Endpoint::legacy_sse(url)`` connects a ``Client`` in sync mode; in async mode
 the application gives the ``Client`` a ``LegacySseClientTransport`` on its own
@@ -409,20 +409,19 @@ the stream's URL, and refuses one on another scheme, host or port. Its TLS,
 proxy and bearer token settings are those of ``HttpClientTransport``
 (:doc:`/guides/tls`).
 
-.. code-block:: cpp
+.. literalinclude:: ../../examples/features/legacy_sse.cpp
+   :language: cpp
    :caption: Sync mode
+   :start-after: docs-begin: legacy-sse-client
+   :end-before: docs-end: legacy-sse-client
+   :dedent: 8
 
-   mcp::Client client(mcp::Endpoint::legacy_sse("http://127.0.0.1:8080/sse"));
-   client.sync().connect("my-client", "1.0.0");
-
-.. code-block:: cpp
+.. literalinclude:: ../../examples/features/legacy_sse.cpp
+   :language: cpp
    :caption: Async mode
-
-   auto transport = std::make_shared<mcp::LegacySseClientTransport>(
-       io.get_executor(), "http://127.0.0.1:8080/sse");
-   transport->set_bearer_token_provider([] { return std::string("token"); });
-   mcp::Client client(transport, io.get_executor());
-   co_await client.connect("my-client", "1.0.0");
+   :start-after: docs-begin: legacy-sse-async-client
+   :end-before: docs-end: legacy-sse-async-client
+   :dedent: 4
 
 WebSocket Transport
 -------------------

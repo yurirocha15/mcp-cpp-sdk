@@ -68,6 +68,7 @@ docs/_build/
 
 # Conformance runner dependencies and local evidence
 conformance/runner/node_modules/
+conformance/runner-alpha/node_modules/
 conformance/results/
 
 # Benchmark build artifacts

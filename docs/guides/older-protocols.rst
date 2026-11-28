@@ -110,6 +110,30 @@ modern session the client does not send ``initialize``, ``ping``,
 all: the call throws ``McpError`` with ``g_METHOD_NOT_FOUND`` and a message that
 names the protocol version.
 
+In a legacy session they are ordinary client calls: coroutines in async mode,
+and ``client.sync().ping()``, ``client.sync().subscribe_resource()`` and so on in
+sync mode. ``set_log_level()`` is deprecated with logging itself (see
+:doc:`deprecations`). The server's ``on_subscribe()`` and ``on_unsubscribe()``
+callbacks see each subscription:
+
+.. literalinclude:: ../../examples/features/legacy_protocols.cpp
+   :language: cpp
+   :start-after: docs-begin: legacy-subscribe
+   :end-before: docs-end: legacy-subscribe
+   :dedent: 4
+
+.. literalinclude:: ../../examples/features/legacy_protocols.cpp
+   :language: cpp
+   :start-after: docs-begin: legacy-unsubscribe
+   :end-before: docs-end: legacy-unsubscribe
+   :dedent: 4
+
+.. literalinclude:: ../../examples/features/legacy_protocols.cpp
+   :language: cpp
+   :start-after: docs-begin: legacy-set-level
+   :end-before: docs-end: legacy-set-level
+   :dedent: 4
+
 Limiting the Protocols a Server Serves
 --------------------------------------
 

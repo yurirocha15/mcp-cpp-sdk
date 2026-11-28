@@ -292,7 +292,7 @@ use at run time; :doc:`guides/deprecations` shows both and how to turn them off.
      - Pass directories or files through tool parameters, resource URIs or
        server configuration.
      - ``Context::request_roots()``, ``Client::set_roots()``,
-       ``Client::on_roots_list()``
+       ``Client::on_roots_list()``, ``Server::on_roots_list_changed()``
    * - Sampling
      - SEP-2577, 2026-07-28
      - Integrate directly with LLM provider APIs.

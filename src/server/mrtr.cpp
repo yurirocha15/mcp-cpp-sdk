@@ -43,8 +43,45 @@ bool is_generated_key(std::string_view key) {
     });
 }
 
-/// Wakes the request waiting for the entry. Posted, so that questions other coroutines of the
-/// handler ask in the same turn of the strand join the round.
+void try_park(const std::shared_ptr<MrtrEntry>& entry);
+
+/// Looks again, after a wait, whether the handler has asked every question of the round.
+void wait_to_park(const std::shared_ptr<MrtrEntry>& entry) {
+    if (entry->settle_waiting) {
+        return;
+    }
+    entry->settle_waiting = true;
+    entry->settle_delay =
+        entry->settle_delay.count() == 0
+            ? mcp::detail::constants::mrtr::g_SETTLE_POLL_FIRST
+            : std::min(entry->settle_delay * 2, mcp::detail::constants::mrtr::g_SETTLE_POLL_MAX);
+    entry->settle_timer.expires_after(entry->settle_delay);
+    entry->settle_timer.async_wait([entry](const boost::system::error_code&) {
+        entry->settle_waiting = false;
+        try_park(entry);
+    });
+}
+
+/// Wakes the request waiting for the entry once every part of the handler waits: no code of the
+/// handler runs or waits to run on its executor, and each question it has open is in this round.
+/// A handler on the handler executor runs and asks from other threads, so until then this looks
+/// again after a wait.
+void try_park(const std::shared_ptr<MrtrEntry>& entry) {
+    if (entry->event != MrtrEntry::Event::ePending || entry->requests.empty() || entry->abandoned) {
+        return;
+    }
+    if (!entry->activity->settled(entry->requests.size())) {
+        wait_to_park(entry);
+        return;
+    }
+    entry->settle_delay = {};
+    entry->event = MrtrEntry::Event::eParked;
+    entry->event_signal.cancel();
+}
+
+/// Parks the request once the handler has asked every question of the round (see try_park()).
+/// Posted, so that questions other coroutines of the handler ask in the same turn of the strand
+/// join the round.
 void schedule_park(const std::shared_ptr<MrtrEntry>& entry) {
     if (entry->park_scheduled) {
         return;
@@ -52,11 +89,7 @@ void schedule_park(const std::shared_ptr<MrtrEntry>& entry) {
     entry->park_scheduled = true;
     boost::asio::post(entry->strand, [entry] {
         entry->park_scheduled = false;
-        if (entry->event == MrtrEntry::Event::ePending && !entry->requests.empty() &&
-            !entry->abandoned) {
-            entry->event = MrtrEntry::Event::eParked;
-            entry->event_signal.cancel();
-        }
+        try_park(entry);
     });
 }
 
@@ -292,7 +325,8 @@ MrtrEntry::MrtrEntry(const boost::asio::any_io_executor& executor,
       cancelled(std::move(cancelled_flag)),
       counters(std::move(shared_counters)),
       event_signal(strand),
-      resume_signal(strand) {
+      resume_signal(strand),
+      settle_timer(strand) {
     // Never changed again: changing it would cancel the waits of every request for input.
     resume_signal.expires_at(std::chrono::steady_clock::time_point::max());
 }

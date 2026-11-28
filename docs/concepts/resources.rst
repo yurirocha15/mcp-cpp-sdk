@@ -92,6 +92,29 @@ For more complex resources, you can use the structured protocol types:
    :linenos:
    :caption: Example of a structured static resource registration.
 
+Binary Resources
+----------------
+
+A resource whose content is not text returns a ``BlobResourceContents``. Its
+``blob`` is the base64-encoded bytes, which the handler supplies, and its
+``mimeType`` says what they are:
+
+.. literalinclude:: ../../examples/features/rich_content.cpp
+   :language: cpp
+   :start-after: docs-begin: binary-resource
+   :end-before: docs-end: binary-resource
+   :dedent: 4
+
+A client tells the two kinds of contents apart by the alternative of
+``ReadResourceResult::contents`` that each entry holds. The call is
+``client.sync().read_resource()`` in sync mode:
+
+.. literalinclude:: ../../examples/features/rich_content.cpp
+   :language: cpp
+   :start-after: docs-begin: binary-resource-client
+   :end-before: docs-end: binary-resource-client
+   :dedent: 4
+
 Resource Templates
 ------------------
 

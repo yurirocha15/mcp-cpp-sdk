@@ -112,7 +112,8 @@
             "declarations": [
                 "include/mcp/core/context.hpp:request_roots",
                 "include/mcp/client/client.hpp:set_roots",
-                "include/mcp/client/client.hpp:on_roots_list"
+                "include/mcp/client/client.hpp:on_roots_list",
+                "include/mcp/server/server.hpp:on_roots_list_changed"
             ],
             "runtime_only": [],
             "exemptions": [

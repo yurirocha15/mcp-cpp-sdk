@@ -27,6 +27,7 @@ LIBRARY_JOBS = {"code", "conan", "lint"}
 # src/ and include/ are also read by the conformance fixtures and the guard scripts.
 SOURCE_JOBS = LIBRARY_JOBS | {"conformance", "conformance_guards"}
 GUARDS = {"conformance_guards"}
+DOCS = {"docs"}
 # Release modules each job starts, directly or through a script in scripts/release/.
 ENTRY_MODULES = {
     "package_core": ("release/construct_core.py",),
@@ -112,7 +113,7 @@ class ClassifierTests(unittest.TestCase):
         return jobs
 
     def test_files_no_job_reads_run_nothing(self) -> None:
-        for path in ("docs/index.rst", "examples/README.md", "release/README.md",
+        for path in ("examples/README.md", "release/README.md",
                      ".github/ISSUE_TEMPLATE/bug.yml", ".clang-format", "Makefile",
                      "conformance/README.md"):
             for event in ("pull_request", "push"):
@@ -128,12 +129,42 @@ class ClassifierTests(unittest.TestCase):
                 with self.subTest(path=path, event=event):
                     self.assertEqual(self.jobs_for_change(path, event), jobs)
 
-    def test_docs_only_change_runs_no_conformance_job(self) -> None:
+    def test_alpha_runner_files_run_the_conformance_jobs(self) -> None:
+        for path, jobs in (("conformance/runner-alpha/package-lock.json",
+                            {"conformance", "conformance_guards"}),
+                           ("conformance/runner-alpha/package.json",
+                            {"conformance", "conformance_guards"}),
+                           ("conformance/expected-failures-alpha.yml", {"conformance", "conformance_guards"}),
+                           (".github/workflows/conformance-alpha.yml",
+                            {"release", "conformance_guards"})):
+            for event in ("pull_request", "push"):
+                with self.subTest(path=path, event=event):
+                    self.assertEqual(self.jobs_for_change(path, event), jobs)
+
+    def test_docs_only_change_runs_the_docs_job_alone(self) -> None:
         self.write("docs/index.rst", "Index, edited\n")
         self.write("docs/guide.rst", GUIDE + "\nMore prose.\n")
-        jobs = self.jobs("pull_request", self.commit())
-        self.assertNotIn("conformance", jobs)
-        self.assertNotIn("conformance_guards", jobs)
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                jobs = self.jobs(event, self.commit())
+                self.assertEqual(jobs, DOCS)
+                self.assertNotIn("conformance", jobs)
+                self.assertNotIn("conformance_guards", jobs)
+
+    def test_docs_job_reads_the_docs_inputs(self) -> None:
+        for path, jobs in (("docs/index.rst", DOCS),
+                           ("include/mcp/sdk.hpp", SOURCE_JOBS | DOCS),
+                           ("examples/features/pagination.cpp", {"code", "lint"} | DOCS),
+                           ("scripts/check_feature_matrix.py", {"release"} | GUARDS | DOCS),
+                           ("scripts/gen_feature_matrix.py", {"release"} | GUARDS | DOCS),
+                           (".github/workflows/docs-build.yml", {"release"} | GUARDS | DOCS)):
+            with self.subTest(path=path):
+                self.assertEqual(self.jobs_for_change(path), jobs)
+
+    def test_source_outside_the_docs_inputs_skips_the_docs_job(self) -> None:
+        for path in ("src/main.cpp", "test/core/protocol_test.cpp", "conformance/run.sh"):
+            with self.subTest(path=path):
+                self.assertNotIn("docs", self.jobs_for_change(path))
 
     def test_readme_prose_runs_nothing(self) -> None:
         self.write("README.md", README.replace("Prose.", "Better prose."))
@@ -151,37 +182,37 @@ class ClassifierTests(unittest.TestCase):
         self.assertEqual(self.jobs("pull_request", self.commit()), {"release"})
         self.write("docs/installation/windows.rst", "choco install mcp-cpp-sdk --version=9.9.9\n")
         pinned = self.commit()
-        self.assertEqual(self.jobs("pull_request", pinned), {"release"})
+        self.assertEqual(self.jobs("pull_request", pinned), {"release"} | DOCS)
         self.write("docs/installation/windows.rst", "choco install mcp-cpp-sdk --version=9.9.9\n\nProse.\n")
-        self.assertEqual(self.jobs("pull_request", self.commit(), base=pinned), set())
+        self.assertEqual(self.jobs("pull_request", self.commit(), base=pinned), DOCS)
 
     def test_changelog_runs_the_release_checks(self) -> None:
         for event in ("pull_request", "push"):
             with self.subTest(event=event):
                 self.assertEqual(self.jobs_for_change("CHANGELOG.md", event), {"release"})
 
-    def test_doc_prose_and_code_run_nothing(self) -> None:
+    def test_doc_prose_and_code_run_the_docs_job_alone(self) -> None:
         self.write("docs/guide.rst",
                    GUIDE.replace("Prose.", "Better prose.").replace("ping", "close")
                    .replace("return 0;", "return 1;"))
         self.write("docs/other.rst", GUIDE)
-        self.assertEqual(self.jobs("pull_request", self.commit()), set())
+        self.assertEqual(self.jobs("pull_request", self.commit()), DOCS)
 
-    def test_removed_doc_page_runs_nothing(self) -> None:
+    def test_removed_doc_page_runs_the_docs_job_alone(self) -> None:
         self.git("rm", "-q", "docs/index.rst")
-        self.assertEqual(self.jobs("pull_request", self.commit()), set())
+        self.assertEqual(self.jobs("pull_request", self.commit()), DOCS)
 
     def test_pull_request_runs_only_the_jobs_reading_the_path(self) -> None:
         expected = {
             "src/main.cpp": SOURCE_JOBS,
-            "include/mcp/sdk.hpp": SOURCE_JOBS,
+            "include/mcp/sdk.hpp": SOURCE_JOBS | DOCS,
             "test/core/protocol_test.cpp": {"code"} | GUARDS,
             "test/data/json-schema/suite.json": {"code", "release"},
             "test/include/support/pipe_stream.hpp": {"code"},
             "test/perf/schema_workload.cpp": {"code"} | GUARDS,
             "scripts/schema_ir_gate.py": {"release"} | GUARDS,
-            "examples/features/pagination.cpp": {"code", "lint"},
-            "examples/sync/minimal_server.cpp": {"code", "lint", "readme"},
+            "examples/features/pagination.cpp": {"code", "lint"} | DOCS,
+            "examples/sync/minimal_server.cpp": {"code", "lint", "readme"} | DOCS,
             "scripts/check_readme_snippets.py": {"code", "readme", "release"} | GUARDS,
             "scripts/run_examples.py": {"code", "release"} | GUARDS,
             "test_package/conanfile.py": {"conan"} | PACKAGES,
@@ -205,10 +236,10 @@ class ClassifierTests(unittest.TestCase):
             "packaging/targets.json": {"release"} | PACKAGES,
             "release/construct_core.py": {"release"} | PACKAGES,
             "scripts/package_build.py": {"release"} | PACKAGES | GUARDS,
-            "CMakeLists.txt": LIBRARY_JOBS | {"release", "package_core", "conformance"},
-            "cmake/config.cmake.in": LIBRARY_JOBS | {"package_core", "conformance"},
-            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release", "package_core", "conformance"},
-            "VERSION": LIBRARY_JOBS | {"release", "conformance"} | PACKAGES,
+            "CMakeLists.txt": LIBRARY_JOBS | DOCS | {"release", "package_core", "conformance"},
+            "cmake/config.cmake.in": LIBRARY_JOBS | DOCS | {"package_core", "conformance"},
+            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | DOCS | {"release", "package_core", "conformance"},
+            "VERSION": LIBRARY_JOBS | DOCS | {"release", "conformance"} | PACKAGES,
             ".github/workflows/ci.yml": PULL_REQUEST_JOBS,
         }
         for path, jobs in expected.items():
@@ -232,10 +263,10 @@ class ClassifierTests(unittest.TestCase):
             "packaging/targets.json": {"release"} | PACKAGES,
             "release/construct_core.py": {"release"} | PACKAGES,
             "scripts/package_build.py": {"release"} | PACKAGES | GUARDS,
-            "CMakeLists.txt": LIBRARY_JOBS | {"release", "conformance"} | PACKAGES,
-            "cmake/config.cmake.in": LIBRARY_JOBS | {"conformance"} | PACKAGES,
-            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | {"release", "conformance"} | PACKAGES,
-            "VERSION": LIBRARY_JOBS | {"release", "conformance"} | PACKAGES,
+            "CMakeLists.txt": LIBRARY_JOBS | DOCS | {"release", "conformance"} | PACKAGES,
+            "cmake/config.cmake.in": LIBRARY_JOBS | DOCS | {"conformance"} | PACKAGES,
+            "conanfile.py": (LIBRARY_JOBS - {"lint"}) | DOCS | {"release", "conformance"} | PACKAGES,
+            "VERSION": LIBRARY_JOBS | DOCS | {"release", "conformance"} | PACKAGES,
             ".github/workflows/ci.yml": ALL_JOBS,
         }
         for path, jobs in expected.items():
@@ -244,7 +275,7 @@ class ClassifierTests(unittest.TestCase):
 
     def test_other_events_also_package_source(self) -> None:
         for path, jobs in (("src/main.cpp", SOURCE_JOBS), ("test/core/protocol_test.cpp", {"code"} | GUARDS),
-                           ("examples/features/pagination.cpp", {"code", "lint"}),
+                           ("examples/features/pagination.cpp", {"code", "lint"} | DOCS),
                            ("LICENSE", {"conan"})):
             with self.subTest(path=path):
                 self.assertEqual(self.jobs_for_change(path, "push"), jobs | PACKAGES)
@@ -261,7 +292,8 @@ class ClassifierTests(unittest.TestCase):
         self.write("docs/index.rst", "Index, edited\n")
         self.write("benchmark/run.sh", "true\n")
         self.write("src/main.cpp", "int y;\n")
-        self.assertEqual(self.jobs("pull_request", self.commit()), SOURCE_JOBS | {"benchmark"})
+        self.assertEqual(self.jobs("pull_request", self.commit()),
+                         SOURCE_JOBS | {"benchmark"} | DOCS)
 
     def test_a_file_no_list_names_runs_every_job(self) -> None:
         self.assertEqual(self.jobs_for_change("new-directory/file.txt", "push"), ALL_JOBS)
@@ -271,7 +303,7 @@ class ClassifierTests(unittest.TestCase):
         self.write("docs/index.rst", "Index, edited\n")
         head = self.commit()
         self.assertEqual(self.jobs("workflow_dispatch", head), ALL_JOBS)
-        self.assertEqual(self.jobs("pull_request", head), set())
+        self.assertEqual(self.jobs("pull_request", head), DOCS)
 
     def test_doubt_runs_every_job(self) -> None:
         head = self.git("rev-parse", "HEAD")
@@ -358,7 +390,7 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(needed, declared - {"result"})
 
     def test_called_workflows_have_no_triggers_of_their_own(self) -> None:
-        for workflow in ("conformance.yml", "conformance-guards.yml"):
+        for workflow in ("conformance.yml", "conformance-guards.yml", "docs-build.yml"):
             text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
             with self.subTest(workflow=workflow):
                 self.assertIn("\n  workflow_call:\n", text)
@@ -374,11 +406,19 @@ class RepositoryTests(unittest.TestCase):
         conformance.discard(".github/workflows/conformance.yml")
         self.assertEqual(alpha, conformance)
 
+    def test_docs_workflow_reads_what_the_docs_job_reads(self) -> None:
+        blocks = self.workflow_paths("docs.yml")
+        self.assertEqual(len(blocks), 1)
+        deploy = {pattern.replace("**", "*") for pattern in blocks[0]}
+        deploy.discard(".github/workflows/docs.yml")
+        docs = set(ci_changes.JOB_INPUTS["docs"])
+        self.assertEqual(deploy, docs)
+
     def test_workflow_path_filters_name_tracked_files(self) -> None:
-        for workflow in ("conformance-alpha.yml", "docs.yml"):
+        for workflow, event_count in (("conformance-alpha.yml", 2), ("docs.yml", 1)):
             blocks = self.workflow_paths(workflow)
-            self.assertEqual(len(blocks), 2, workflow)
-            self.assertEqual(blocks[0], blocks[1], workflow)
+            self.assertEqual(len(blocks), event_count, workflow)
+            self.assertEqual(blocks[0], blocks[-1], workflow)
             for pattern in blocks[0]:
                 with self.subTest(workflow=workflow, pattern=pattern):
                     self.assertTrue(

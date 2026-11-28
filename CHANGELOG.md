@@ -29,6 +29,16 @@ Versioning; a `0.x` version is a stable release unless its version has an
   no protected resource metadata, unless `legacy_discovery_fallback` is false.
 - `Endpoint::legacy_sse()` and `StreamableHttpSessionManager::set_legacy_sse()`
   speak the deprecated HTTP+SSE transport of 2024-11-05 as client and server.
+- `Server::on_roots_list_changed()`, deprecated with Roots, reports each
+  `notifications/roots/list_changed` that a client of 2025-11-25 or earlier
+  sends.
+- `examples/features/` shows image, audio and embedded-resource content, binary
+  resources, URL-mode elicitation, the HTTP+SSE transport, resource-template
+  completion and roots changes.
+- The documentation has a feature matrix that links each tier-assessment feature
+  to its API reference, guide and example.
+- `CONTRIBUTING.md` points to the contributing guide, and `MAINTENANCE.md`
+  commits to an SDK release within 30 days of each specification release.
 
 ### Changed
 
@@ -55,6 +65,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The HTTP+SSE transport (`LegacySseClientTransport`, `Endpoint::legacy_sse()`
   and `set_legacy_sse()`) carries `[[deprecated]]`; the specification deprecates
   it.
+
+### Fixed
+
+- Questions a 2026-07-28 handler asks at the same time share one
+  `input_required` result also on the handler executor, where one asked a moment
+  later could miss the round.
 
 ### Migrating from 0.4.0
 

@@ -1061,6 +1061,17 @@ if(BUILD_EXAMPLES)
                  examples/features/legacy_protocols.cpp)
   target_link_libraries(example-feature-legacy-protocols PRIVATE mcp-cpp-sdk)
 
+  add_executable(example-feature-rich-content
+                 examples/features/rich_content.cpp)
+  target_link_libraries(example-feature-rich-content PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-url-elicitation
+                 examples/features/url_elicitation.cpp)
+  target_link_libraries(example-feature-url-elicitation PRIVATE mcp-cpp-sdk)
+
+  add_executable(example-feature-legacy-sse examples/features/legacy_sse.cpp)
+  target_link_libraries(example-feature-legacy-sse PRIVATE mcp-cpp-sdk)
+
   # Benchmark targets
   add_executable(example-benchmark-stdio examples/benchmark/benchmark_stdio.cpp)
   target_link_libraries(example-benchmark-stdio PRIVATE mcp-cpp-sdk)
@@ -1107,7 +1118,9 @@ if(BUILD_EXAMPLES)
       example-feature-progress-cancellation
       example-feature-middleware
       example-feature-roots
-      example-feature-modern-client)
+      example-feature-modern-client
+      example-feature-legacy-protocols
+      example-feature-legacy-sse)
   get_directory_property(MCP_CPP_SDK_EXAMPLE_TARGETS BUILDSYSTEM_TARGETS)
   list(FILTER MCP_CPP_SDK_EXAMPLE_TARGETS INCLUDE REGEX "^example-")
   list(REMOVE_ITEM MCP_CPP_SDK_EXAMPLE_TARGETS example-debugger-server)

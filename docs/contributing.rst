@@ -269,6 +269,37 @@ CMake, CTest and the release tooling's tests in one image:
    # Cap the container on a workstation
    python scripts/distro_build.py el-9-x86_64 --jobs 4 --docker-arg=--memory=12g
 
+Which CI Jobs Run
+^^^^^^^^^^^^^^^^^
+
+Each job of ``.github/workflows/ci.yml`` runs only when a file it reads changed;
+``scripts/ci_changes.py`` lists those files per job. A skipped job passes, and
+the ``CI result`` check, the one check ``main`` requires, fails when any job that
+ran fails. Besides the build, lint and package jobs, the CI workflow calls three
+reusable workflows, so a failure in one of them blocks a merge:
+
+* ``conformance.yml`` runs the pinned official conformance runner against the
+  conformance fixtures (``npm ci --ignore-scripts --prefix conformance/runner``,
+  then ``bash conformance/run.sh``). The runner version and its dependencies
+  come from ``conformance/runner/package-lock.json``.
+* ``conformance-guards.yml`` runs the repository guard scripts and their tests.
+* ``docs-build.yml`` checks the feature matrix and builds the Doxygen and Sphinx
+  documentation. A change to ``docs/``, ``examples/`` or ``include/`` runs it.
+  ``docs.yml`` calls the same workflow on ``main`` and deploys the site.
+
+``conformance-alpha.yml`` is separate and advisory: it runs the alpha channel of
+the runner, installed from ``conformance/runner-alpha/package-lock.json``, for
+the requirement sets ``2026-07-28`` and ``2025-11-25`` against
+``conformance/expected-failures-alpha.yml``. Its job cannot fail the workflow and
+no other job waits for it.
+
+Every workflow named here except ``docs-build.yml`` also runs by hand on any
+branch. A manual run of ``docs.yml`` deploys the site only from ``main``.
+
+When a job starts reading a file that its patterns in ``scripts/ci_changes.py``
+do not match, add the file there. ``scripts/test_ci_changes.py`` fails when a
+tracked file matches neither a job nor the list of files that no job reads.
+
 Pull Request Process
 --------------------
 

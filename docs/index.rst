@@ -49,6 +49,7 @@ Quick Links
    concepts/index
    guides/index
    spec-support
+   feature-matrix
    integrations/client-apps
    api/index
 

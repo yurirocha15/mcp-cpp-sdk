@@ -11,6 +11,12 @@ from pathlib import Path
 
 TIMESTAMP_SUFFIX = re.compile(r"-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$")
 
+# The suites whose scenarios are the scored set of the pinned runner at the tested revision.
+SCORED_SUITES = ("server", "client")
+# The suites the runner holds apart from that set. They are reported next to it and never mixed
+# into its rows.
+REPORTED_SUITES = ("server-pending", "client-backcompat")
+
 EXPECTED_SCENARIOS = {
     "server": {
         "completion-complete",
@@ -176,6 +182,8 @@ def main() -> None:
             "client": args.client_status,
             "client-backcompat": args.client_backcompat_status,
         },
+        "scored_suites": list(SCORED_SUITES),
+        "reported_suites": list(REPORTED_SUITES),
         "suites": suites,
     }
 
@@ -184,6 +192,17 @@ def main() -> None:
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
 
+    def row(suite: str) -> str:
+        result = suites[suite]
+        return (
+            f"| {suite} | {result['passed']} | {result['total']} | "
+            f"{result['pass_rate_percent']}% | {summary['runner_exit_status'][suite]} |"
+        )
+
+    table_header = [
+        "| Suite | Passed scenarios | Total scenarios | Pass rate | Runner status |",
+        "|---|---:|---:|---:|---:|",
+    ]
     markdown = [
         "# MCP conformance regression baseline",
         "",
@@ -191,20 +210,24 @@ def main() -> None:
         "it does not mean that an MCP SDK tier has been achieved. The pass rate follows the",
         "tier-check convention: warnings do not fail a scenario, while missing evidence does.",
         "The runner status comes from the runner's baseline check, which also fails a scenario",
-        "on a warning. The server-pending row is the runner's pending suite, which no tier",
-        "counts; its status also covers check_pending_sse.py. The client-backcompat row is",
-        "the 2025-03-26 authorization scenarios, which run without a --spec-version filter.",
+        "on a warning.",
         "",
-        "| Suite | Passed scenarios | Total scenarios | Pass rate | Runner status |",
-        "|---|---:|---:|---:|---:|",
+        "## Scored scenarios (server active suite and client core suite, "
+        f"protocol {metadata['protocol_version']})",
+        "",
+        *table_header,
+        *(row(suite) for suite in SCORED_SUITES),
+        "",
+        "## Reported scenarios (not part of the scored set above)",
+        "",
+        "The server-pending row is the runner's pending suite, which no tier counts; its",
+        "status also covers check_pending_sse.py. The client-backcompat row is the 2025-03-26",
+        "authorization scenarios, which run without a --spec-version filter.",
+        "",
+        *table_header,
+        *(row(suite) for suite in REPORTED_SUITES),
+        "",
     ]
-    for suite in ("server", "server-pending", "client", "client-backcompat"):
-        result = suites[suite]
-        markdown.append(
-            f"| {suite} | {result['passed']} | {result['total']} | "
-            f"{result['pass_rate_percent']}% | {summary['runner_exit_status'][suite]} |"
-        )
-    markdown.append("")
     (args.output_dir / "summary.md").write_text("\n".join(markdown), encoding="utf-8")
 
 

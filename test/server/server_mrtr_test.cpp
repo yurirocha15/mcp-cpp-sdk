@@ -11,9 +11,13 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <chrono>
+#include <exception>
 #include <functional>
 #include <mcp/core/constants.hpp>
 #include <memory>
@@ -22,6 +26,8 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -2414,6 +2420,169 @@ TEST_F(MrtrWithoutMiddlewareTest, ListedToolsMatchTheOnesBuiltPageByPage) {
     ASSERT_GE(collected.size(), 5u);
     EXPECT_EQ(listed["result"]["tools"], json(collected));
     EXPECT_EQ(listed["result"]["tools"][0]["name"], "ask");
+}
+
+/// Runs @p operands at the same time on the calling coroutine's executor and returns their results
+/// in order, as the `&&` of Boost.Asio's awaitable operators does, which Boost 1.74 lacks. The
+/// executor of the handlers that call it is a strand, so the operands' completions do not race.
+/// The first exception is rethrown once every operand has ended.
+mcp::Task<std::vector<mcp::ElicitResult>> await_together(
+    std::vector<mcp::Task<mcp::ElicitResult>> operands) {
+    struct State {
+        State(const asio::any_io_executor& executor, std::size_t count)
+            : done(executor), results(count), remaining(count) {
+            done.expires_at(asio::steady_timer::time_point::max());
+        }
+        asio::steady_timer done;
+        std::vector<std::optional<mcp::ElicitResult>> results;
+        std::exception_ptr failure;
+        std::size_t remaining;
+    };
+    const auto executor = co_await asio::this_coro::executor;
+    auto state = std::make_shared<State>(executor, operands.size());
+    for (std::size_t index = 0; index < operands.size(); ++index) {
+        asio::co_spawn(executor, std::move(operands[index]),
+                       [state, index](const std::exception_ptr& error, mcp::ElicitResult result) {
+                           if (error) {
+                               if (!state->failure) {
+                                   state->failure = error;
+                               }
+                           } else {
+                               state->results[index] = std::move(result);
+                           }
+                           if (--state->remaining == 0) {
+                               state->done.cancel();
+                           }
+                       });
+    }
+    while (state->remaining != 0) {
+        boost::system::error_code ignored;
+        co_await state->done.async_wait(asio::redirect_error(asio::use_awaitable, ignored));
+    }
+    if (state->failure) {
+        std::rethrow_exception(state->failure);
+    }
+    std::vector<mcp::ElicitResult> results;
+    for (auto& result : state->results) {
+        results.push_back(std::move(*result));
+    }
+    co_return results;
+}
+
+/// A server with a tool that asks three questions at once, whose handlers run on @p pool when
+/// one is given. Each operand after the first does work before it asks: the second blocks its
+/// thread, as a synchronous deprecation notice does, and the third first goes back to its
+/// executor twice.
+std::unique_ptr<mcp::Server> make_together_server(asio::thread_pool* pool,
+                                                  std::optional<mcp::MrtrOptions> options) {
+    mcp::ServerCapabilities caps;
+    caps.tools = mcp::ServerCapabilities::ToolsCapability{};
+    auto server = std::make_unique<mcp::Server>(mcp::Implementation{"mrtr-together", "1.0"}, caps);
+    if (pool != nullptr) {
+        server->set_handler_executor(pool->get_executor());
+    }
+    if (options) {
+        server->set_mrtr_options(std::move(*options));
+    }
+    server->add_tool<json, json>(
+        "ask_together", "Asks three questions at once", json{{"type", "object"}},
+        [](mcp::Context& ctx, json /*args*/) -> mcp::Task<json> {
+            // A lazy coroutine keeps its reference parameter: the question must outlive it.
+            const auto question = form_elicitation("A?").get<mcp::ElicitRequestParams>();
+            std::vector<mcp::Task<mcp::ElicitResult>> operands;
+            operands.push_back(ctx.elicit(question));
+            operands.push_back([](mcp::Context* context) -> mcp::Task<mcp::ElicitResult> {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                co_return co_await context->elicit(form_elicitation("B?"));
+            }(&ctx));
+            operands.push_back([](mcp::Context* context) -> mcp::Task<mcp::ElicitResult> {
+                auto executor = co_await asio::this_coro::executor;
+                co_await asio::post(executor, asio::use_awaitable);
+                co_await asio::post(executor, asio::use_awaitable);
+                co_return co_await context->elicit(form_elicitation("C?"));
+            }(&ctx));
+            const auto answers = co_await await_together(std::move(operands));
+            co_return json{{"a", answers.at(0).content->value("name", "")},
+                           {"b", answers.at(1).content->value("name", "")},
+                           {"c", answers.at(2).content->value("name", "")}};
+        });
+    return server;
+}
+
+mcp::Task<json> send_to_server(mcp::Server* server, json request) {
+    mcp::RequestContext context;
+    const auto wire = co_await server->dispatch_request_direct(std::move(request), std::move(context));
+    co_return json::parse(wire);
+}
+
+/// Calls the tool of make_together_server() and answers each round's questions with their
+/// messages. Returns the number of questions of the first round and the last response.
+std::pair<std::size_t, json> ask_together(bool on_pool, std::optional<mcp::MrtrOptions> options) {
+    asio::thread_pool pool(2);
+    asio::io_context io_ctx;
+    auto server = make_together_server(on_pool ? &pool : nullptr, std::move(options));
+    std::size_t first_round = 0;
+    json last;
+    mcp_test::spawn_detached(io_ctx, [&]() -> mcp::Task<void> {
+        const auto request = call_tool(1, "ask_together");
+        auto response = co_await send_to_server(server.get(), request);
+        first_round = response["result"]["inputRequests"].size();
+        int id = 2;
+        while (response.contains("result") && response["result"]["resultType"] == "input_required" &&
+               id < 10) {
+            json answers = json::object();
+            for (const auto& [key, input] : response["result"]["inputRequests"].items()) {
+                answers[key] = accept(input["params"]["message"].get<std::string>());
+            }
+            auto again = retry(request, id++, response["result"]["requestState"], answers);
+            response = co_await send_to_server(server.get(), std::move(again));
+        }
+        last = response;
+        io_ctx.stop();
+    });
+    io_ctx.run();
+    server.reset();
+    return {first_round, last};
+}
+
+mcp::MrtrOptions sealed_with_one_key() {
+    mcp::MrtrOptions options;
+    options.state_mode = mcp::MrtrStateMode::eSealed;
+    options.sealing_keys = {std::string(32, 'a')};
+    return options;
+}
+
+// A handler on the handler executor asks from the pool's threads, and a question can reach the
+// request after the first one has. The request waits until no part of the handler runs and every
+// question it has open is in the round, so the three questions share the first round.
+TEST(MrtrHandlerExecutorTest, QuestionsAskedTogetherShareOneRound) {
+    const auto [first_round, last] = ask_together(true, std::nullopt);
+    EXPECT_EQ(first_round, 3u) << last;
+    EXPECT_EQ(last["result"]["structuredContent"], (json{{"a", "A?"}, {"b", "B?"}, {"c", "C?"}}))
+        << last;
+}
+
+TEST(MrtrHandlerExecutorTest, SealedQuestionsAskedTogetherShareOneRound) {
+    const auto [first_round, last] = ask_together(true, sealed_with_one_key());
+    EXPECT_EQ(first_round, 3u) << last;
+    EXPECT_EQ(last["result"]["structuredContent"], (json{{"a", "A?"}, {"b", "B?"}, {"c", "C?"}}))
+        << last;
+}
+
+// On the request's strand, the third question's operand goes back to the executor before it
+// asks, while the request looks at the first two; the request waits for that work.
+TEST(MrtrHandlerExecutorTest, QuestionsAskedTogetherOnTheRequestStrandShareOneRound) {
+    const auto [first_round, last] = ask_together(false, std::nullopt);
+    EXPECT_EQ(first_round, 3u) << last;
+    EXPECT_EQ(last["result"]["structuredContent"], (json{{"a", "A?"}, {"b", "B?"}, {"c", "C?"}}))
+        << last;
+}
+
+TEST(MrtrHandlerExecutorTest, SealedQuestionsAskedTogetherOnTheRequestStrandShareOneRound) {
+    const auto [first_round, last] = ask_together(false, sealed_with_one_key());
+    EXPECT_EQ(first_round, 3u) << last;
+    EXPECT_EQ(last["result"]["structuredContent"], (json{{"a", "A?"}, {"b", "B?"}, {"c", "C?"}}))
+        << last;
 }
 
 }  // namespace

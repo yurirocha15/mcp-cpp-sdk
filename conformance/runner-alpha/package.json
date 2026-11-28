@@ -1,0 +1,11 @@
+{
+    "name": "mcp-cpp-sdk-conformance-runner-alpha",
+    "private": true,
+    "version": "0.0.0",
+    "engines": {
+        "node": ">=20"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/conformance": "0.2.0-alpha.12"
+    }
+}

@@ -172,15 +172,11 @@ URL-based Elicitation
 
 URL-based elicitation (``ElicitRequestURLParams``) is used when the user needs to perform an action on an external website, such as completing an OAuth flow or verifying their identity.
 
-.. code-block:: cpp
-
-   ElicitRequestURLParams url_params;
-   url_params.mode = "url";
-   url_params.message = "Please sign in to continue";
-   url_params.url = "https://auth.example.com/login?id=123";
-   url_params.elicitationId = "login-flow-456";
-
-   auto result = co_await ctx.elicit(url_params);
+.. literalinclude:: ../../examples/features/url_elicitation.cpp
+   :language: cpp
+   :start-after: docs-begin: url-tool
+   :end-before: docs-end: url-tool
+   :dedent: 4
 
 ``elicitationId`` is optional. For a session of an earlier revision,
 ``ctx.elicit()`` generates one when you leave it unset. A 2026-07-28 question
@@ -213,6 +209,18 @@ A client receives the notifications with ``Client::on_elicitation_complete()``,
 once for each URL elicitation it was sent. It ignores a notification that names
 an id it did not receive or was already told of, as the specification asks.
 
+.. literalinclude:: ../../examples/features/url_elicitation.cpp
+   :language: cpp
+   :start-after: docs-begin: url-client
+   :end-before: docs-end: url-client
+   :dedent: 4
+
+.. literalinclude:: ../../examples/features/url_elicitation.cpp
+   :language: cpp
+   :start-after: docs-begin: url-server-complete
+   :end-before: docs-end: url-server-complete
+   :dedent: 4
+
 Requiring a URL elicitation first
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -226,9 +234,26 @@ them. A session of an earlier revision and a 2026-07-28 request get what any
 other exception gives, and so does an ``elicitationId`` that another session
 has in progress.
 
+A handler throws it like this:
+
+.. literalinclude:: ../../examples/features/url_elicitation.cpp
+   :language: cpp
+   :start-after: docs-begin: url-required
+   :end-before: docs-end: url-required
+   :dedent: 4
+
 On the client the request throws ``McpError``. ``url_elicitations_required()``
 returns the elicitations it lists, and ``on_elicitation_complete()`` reports
 each completion, after which the request can be sent again.
+
+.. literalinclude:: ../../examples/features/url_elicitation.cpp
+   :language: cpp
+   :start-after: docs-begin: url-required-client
+   :end-before: docs-end: url-required-client
+   :dedent: 4
+
+In sync mode the calls go through ``client.sync()``; the handler of
+``on_elicitation()`` is a coroutine in both modes.
 
 Client-side Handling
 --------------------

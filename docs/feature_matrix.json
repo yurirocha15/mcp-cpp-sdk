@@ -1,0 +1,744 @@
+{
+    "features": [
+        {
+            "id": 1,
+            "name": "Tools - listing",
+            "method": "tools/list",
+            "status": "implemented",
+            "api": [
+                "list_tools"
+            ],
+            "guide": "concepts/tools#using-tools",
+            "example": {
+                "file": "examples/clients/stdio/client_stdio.cpp",
+                "marker": "// list_tools"
+            },
+            "reason": null
+        },
+        {
+            "id": 2,
+            "name": "Tools - calling",
+            "method": "tools/call",
+            "status": "implemented",
+            "api": [
+                "call_tool"
+            ],
+            "guide": "concepts/tools#basic-tool-registration",
+            "example": {
+                "file": "examples/clients/stdio/client_stdio.cpp",
+                "marker": "// call_tool with typed arguments"
+            },
+            "reason": null
+        },
+        {
+            "id": 3,
+            "name": "Tools - text results",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "TextContent",
+                "make_tool_text_result"
+            ],
+            "guide": "concepts/tools#result-content",
+            "example": {
+                "file": "examples/features/rich_content.cpp",
+                "marker": "docs-begin: rich-tool"
+            },
+            "reason": null
+        },
+        {
+            "id": 4,
+            "name": "Tools - image results",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "ImageContent"
+            ],
+            "guide": "concepts/tools#result-content",
+            "example": {
+                "file": "examples/features/rich_content.cpp",
+                "marker": "docs-begin: rich-tool"
+            },
+            "reason": null
+        },
+        {
+            "id": 5,
+            "name": "Tools - audio results",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "AudioContent"
+            ],
+            "guide": "concepts/tools#result-content",
+            "example": {
+                "file": "examples/features/rich_content.cpp",
+                "marker": "docs-begin: rich-tool"
+            },
+            "reason": null
+        },
+        {
+            "id": 6,
+            "name": "Tools - embedded resources",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "EmbeddedResource"
+            ],
+            "guide": "concepts/tools#result-content",
+            "example": {
+                "file": "examples/features/rich_content.cpp",
+                "marker": "docs-begin: rich-tool"
+            },
+            "reason": null
+        },
+        {
+            "id": 7,
+            "name": "Tools - error handling",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "make_tool_error_result"
+            ],
+            "guide": "concepts/tools#error-handling",
+            "example": {
+                "file": "examples/features/error_handling.cpp",
+                "marker": "TEST 2: Handle error JSON response"
+            },
+            "reason": null
+        },
+        {
+            "id": 8,
+            "name": "Tools - change notifications",
+            "method": "notifications/tools/list_changed",
+            "status": "implemented",
+            "api": [
+                "notify_tools_list_changed"
+            ],
+            "guide": "concepts/subscriptions#list-change-notifications",
+            "example": {
+                "file": "examples/features/notifications_subscriptions.cpp",
+                "marker": "co_await server.notify_tools_list_changed();"
+            },
+            "reason": null
+        },
+        {
+            "id": 9,
+            "name": "Resources - listing",
+            "method": "resources/list",
+            "status": "implemented",
+            "api": [
+                "list_resources"
+            ],
+            "guide": "concepts/pagination#listing-resources-and-prompts",
+            "example": {
+                "file": "examples/features/pagination.cpp",
+                "marker": "docs-begin: paginate-resources"
+            },
+            "reason": null
+        },
+        {
+            "id": 10,
+            "name": "Resources - reading text",
+            "method": "resources/read",
+            "status": "implemented",
+            "api": [
+                "read_resource",
+                "TextResourceContents"
+            ],
+            "guide": "concepts/resources#static-resources",
+            "example": {
+                "file": "examples/clients/stdio/client_stdio.cpp",
+                "marker": "// read_resource"
+            },
+            "reason": null
+        },
+        {
+            "id": 11,
+            "name": "Resources - reading binary",
+            "method": "resources/read",
+            "status": "implemented",
+            "api": [
+                "BlobResourceContents"
+            ],
+            "guide": "concepts/resources#binary-resources",
+            "example": {
+                "file": "examples/features/rich_content.cpp",
+                "marker": "docs-begin: binary-resource"
+            },
+            "reason": null
+        },
+        {
+            "id": 12,
+            "name": "Resources - templates",
+            "method": "resources/templates/list",
+            "status": "implemented",
+            "api": [
+                "list_resource_templates"
+            ],
+            "guide": "concepts/resources#resource-templates",
+            "example": {
+                "file": "examples/clients/stdio/client_stdio.cpp",
+                "marker": "// list_resource_templates"
+            },
+            "reason": null
+        },
+        {
+            "id": 13,
+            "name": "Resources - template reading",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "add_resource_template"
+            ],
+            "guide": "concepts/resources#resource-templates",
+            "example": {
+                "file": "examples/servers/stdio/server_stdio.cpp",
+                "marker": "// Resource template: users://{user_id}/profile"
+            },
+            "reason": null
+        },
+        {
+            "id": 14,
+            "name": "Resources - subscribing",
+            "method": "resources/subscribe",
+            "status": "implemented",
+            "api": [
+                "subscribe_resource"
+            ],
+            "guide": "guides/older-protocols#methods-that-exist-only-in-legacy-sessions",
+            "example": {
+                "file": "examples/features/legacy_protocols.cpp",
+                "marker": "docs-begin: legacy-subscribe"
+            },
+            "reason": null
+        },
+        {
+            "id": 15,
+            "name": "Resources - unsubscribing",
+            "method": "resources/unsubscribe",
+            "status": "implemented",
+            "api": [
+                "unsubscribe_resource"
+            ],
+            "guide": "guides/older-protocols#methods-that-exist-only-in-legacy-sessions",
+            "example": {
+                "file": "examples/features/legacy_protocols.cpp",
+                "marker": "docs-begin: legacy-unsubscribe"
+            },
+            "reason": null
+        },
+        {
+            "id": 16,
+            "name": "Resources - change notifications",
+            "method": "notifications/resources/list_changed",
+            "status": "implemented",
+            "api": [
+                "notify_resources_list_changed"
+            ],
+            "guide": "concepts/resources#resource-change-notifications",
+            "example": {
+                "file": "examples/features/notifications_subscriptions.cpp",
+                "marker": "co_await server.notify_resources_list_changed();"
+            },
+            "reason": null
+        },
+        {
+            "id": 17,
+            "name": "Prompts - listing",
+            "method": "prompts/list",
+            "status": "implemented",
+            "api": [
+                "list_prompts"
+            ],
+            "guide": "concepts/pagination#listing-resources-and-prompts",
+            "example": {
+                "file": "examples/features/pagination.cpp",
+                "marker": "docs-begin: paginate-prompts"
+            },
+            "reason": null
+        },
+        {
+            "id": 18,
+            "name": "Prompts - getting simple",
+            "method": "prompts/get",
+            "status": "implemented",
+            "api": [
+                "get_prompt",
+                "add_text_prompt"
+            ],
+            "guide": "concepts/prompts#using-prompts",
+            "example": {
+                "file": "examples/sync/client.cpp",
+                "marker": "// Prompts."
+            },
+            "reason": null
+        },
+        {
+            "id": 19,
+            "name": "Prompts - getting with arguments",
+            "method": "prompts/get",
+            "status": "implemented",
+            "api": [
+                "get_prompt",
+                "PromptArgument"
+            ],
+            "guide": "concepts/prompts#parameterized-prompts-and-arguments",
+            "example": {
+                "file": "examples/clients/stdio/client_stdio.cpp",
+                "marker": "// get_prompt"
+            },
+            "reason": null
+        },
+        {
+            "id": 20,
+            "name": "Prompts - embedded resources",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "EmbeddedResource",
+                "PromptMessage"
+            ],
+            "guide": "concepts/prompts#content-blocks",
+            "example": {
+                "file": "examples/features/rich_content.cpp",
+                "marker": "docs-begin: rich-prompt"
+            },
+            "reason": null
+        },
+        {
+            "id": 21,
+            "name": "Prompts - image content",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "ImageContent",
+                "PromptMessage"
+            ],
+            "guide": "concepts/prompts#content-blocks",
+            "example": {
+                "file": "examples/features/rich_content.cpp",
+                "marker": "docs-begin: rich-prompt"
+            },
+            "reason": null
+        },
+        {
+            "id": 22,
+            "name": "Prompts - change notifications",
+            "method": "notifications/prompts/list_changed",
+            "status": "implemented",
+            "api": [
+                "notify_prompts_list_changed"
+            ],
+            "guide": "concepts/prompts#prompt-list-change-notifications",
+            "example": {
+                "file": "examples/features/notifications_subscriptions.cpp",
+                "marker": "co_await server.notify_prompts_list_changed();"
+            },
+            "reason": null
+        },
+        {
+            "id": 23,
+            "name": "Sampling - creating messages",
+            "method": "sampling/createMessage",
+            "status": "implemented",
+            "api": [
+                "sample_llm",
+                "on_sampling"
+            ],
+            "guide": "concepts/context#sampling-reverse-rpc",
+            "example": {
+                "file": "examples/sync/server.cpp",
+                "marker": "// Sampling:"
+            },
+            "reason": null
+        },
+        {
+            "id": 24,
+            "name": "Elicitation - form mode",
+            "method": "elicitation/create",
+            "status": "implemented",
+            "api": [
+                "ElicitRequestFormParams"
+            ],
+            "guide": "concepts/elicitation#form-based-elicitation",
+            "example": {
+                "file": "examples/features/elicitation.cpp",
+                "marker": "ElicitRequestFormParams form_params;"
+            },
+            "reason": null
+        },
+        {
+            "id": 25,
+            "name": "Elicitation - URL mode",
+            "method": "elicitation/create (mode: \"url\")",
+            "status": "implemented",
+            "api": [
+                "ElicitRequestURLParams",
+                "UrlElicitationRequired"
+            ],
+            "guide": "concepts/elicitation#url-based-elicitation",
+            "example": {
+                "file": "examples/features/url_elicitation.cpp",
+                "marker": "docs-begin: url-tool"
+            },
+            "reason": null
+        },
+        {
+            "id": 26,
+            "name": "Elicitation - schema validation",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "ElicitationSchema",
+                "ElicitationContentError"
+            ],
+            "guide": "concepts/elicitation#validating-the-answer",
+            "example": {
+                "file": "examples/features/elicitation.cpp",
+                "marker": "Context::elicit() has checked the content against the schema"
+            },
+            "reason": null
+        },
+        {
+            "id": 27,
+            "name": "Elicitation - default values",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "BooleanSchema",
+                "defaultValue"
+            ],
+            "guide": "concepts/elicitation#typed-schemas",
+            "example": {
+                "file": "examples/features/elicitation.cpp",
+                "marker": ".defaultValue = \"medium\","
+            },
+            "reason": null
+        },
+        {
+            "id": 28,
+            "name": "Elicitation - enum values",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "TitledEnumSchema",
+                "MultiSelectEnumSchema"
+            ],
+            "guide": "concepts/elicitation#typed-schemas",
+            "example": {
+                "file": "examples/features/elicitation.cpp",
+                "marker": "TitledEnumSchema{"
+            },
+            "reason": null
+        },
+        {
+            "id": 29,
+            "name": "Elicitation - complete notification",
+            "method": "notifications/elicitation/complete",
+            "status": "implemented",
+            "api": [
+                "notify_elicitation_complete",
+                "on_elicitation_complete"
+            ],
+            "guide": "concepts/elicitation#completing-a-url-elicitation",
+            "example": {
+                "file": "examples/features/url_elicitation.cpp",
+                "marker": "docs-begin: url-server-complete"
+            },
+            "reason": null
+        },
+        {
+            "id": 30,
+            "name": "Roots - listing",
+            "method": "roots/list",
+            "status": "implemented",
+            "api": [
+                "request_roots",
+                "on_roots_list"
+            ],
+            "guide": "concepts/roots#using-roots",
+            "example": {
+                "file": "examples/features/roots.cpp",
+                "marker": "co_await ctx.request_roots()"
+            },
+            "reason": null
+        },
+        {
+            "id": 31,
+            "name": "Roots - change notifications",
+            "method": "notifications/roots/list_changed",
+            "status": "implemented",
+            "api": [
+                "set_roots",
+                "on_roots_list_changed"
+            ],
+            "guide": "concepts/roots#roots-change-notifications",
+            "example": {
+                "file": "examples/features/roots.cpp",
+                "marker": "docs-begin: roots-changed"
+            },
+            "reason": null
+        },
+        {
+            "id": 32,
+            "name": "Logging - sending log messages",
+            "method": "notifications/message",
+            "status": "implemented",
+            "api": [
+                "log_info"
+            ],
+            "guide": "concepts/context#logging",
+            "example": {
+                "file": "examples/sync/server.cpp",
+                "marker": "// Logging and progress."
+            },
+            "reason": null
+        },
+        {
+            "id": 33,
+            "name": "Logging - setting level",
+            "method": "logging/setLevel",
+            "status": "implemented",
+            "api": [
+                "set_log_level"
+            ],
+            "guide": "guides/older-protocols#methods-that-exist-only-in-legacy-sessions",
+            "example": {
+                "file": "examples/features/legacy_protocols.cpp",
+                "marker": "docs-begin: legacy-set-level"
+            },
+            "reason": null
+        },
+        {
+            "id": 34,
+            "name": "Completions - resource argument",
+            "method": "completion/complete",
+            "status": "implemented",
+            "api": [
+                "ResourceTemplateReference"
+            ],
+            "guide": "concepts/completions#resource-template-completions",
+            "example": {
+                "file": "examples/features/completions.cpp",
+                "marker": "docs-begin: completion-resource-client"
+            },
+            "reason": null
+        },
+        {
+            "id": 35,
+            "name": "Completions - prompt argument",
+            "method": "completion/complete",
+            "status": "implemented",
+            "api": [
+                "PromptReference",
+                "set_completion_provider"
+            ],
+            "guide": "concepts/completions#using-completions",
+            "example": {
+                "file": "examples/features/completions.cpp",
+                "marker": "Test 1: Complete language argument"
+            },
+            "reason": null
+        },
+        {
+            "id": 36,
+            "name": "Ping",
+            "method": "ping",
+            "status": "implemented",
+            "api": [
+                "ping"
+            ],
+            "guide": "guides/older-protocols#methods-that-exist-only-in-legacy-sessions",
+            "example": {
+                "file": "examples/features/legacy_protocols.cpp",
+                "marker": "co_await client.ping();"
+            },
+            "reason": null
+        },
+        {
+            "id": 37,
+            "name": "Streamable HTTP transport (client)",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "HttpClientTransport"
+            ],
+            "guide": "concepts/transports#http-transport-network",
+            "example": {
+                "file": "examples/features/http_server_convenience.cpp",
+                "marker": "CLIENT SIDE"
+            },
+            "reason": null
+        },
+        {
+            "id": 38,
+            "name": "Streamable HTTP transport (server)",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "run_http",
+                "StreamableHttpSessionManager"
+            ],
+            "guide": "concepts/transports#http-transport-network",
+            "example": {
+                "file": "examples/features/http_server_convenience.cpp",
+                "marker": "CONVENIENCE SETUP"
+            },
+            "reason": null
+        },
+        {
+            "id": 39,
+            "name": "SSE transport - legacy (client)",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "LegacySseClientTransport",
+                "legacy_sse"
+            ],
+            "guide": "concepts/transports#http-sse-transport-deprecated",
+            "example": {
+                "file": "examples/features/legacy_sse.cpp",
+                "marker": "docs-begin: legacy-sse-client"
+            },
+            "reason": null
+        },
+        {
+            "id": 40,
+            "name": "SSE transport - legacy (server)",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "set_legacy_sse"
+            ],
+            "guide": "concepts/transports#http-sse-transport-deprecated",
+            "example": {
+                "file": "examples/features/legacy_sse.cpp",
+                "marker": "docs-begin: legacy-sse-server"
+            },
+            "reason": null
+        },
+        {
+            "id": 41,
+            "name": "stdio transport (client)",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "StdioClientTransport"
+            ],
+            "guide": "concepts/transports#stdio-transport-local",
+            "example": {
+                "file": "examples/clients/stdio/client_stdio.cpp",
+                "marker": "The transport starts the server process at once"
+            },
+            "reason": null
+        },
+        {
+            "id": 42,
+            "name": "stdio transport (server)",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "StdioTransport"
+            ],
+            "guide": "concepts/transports#stdio-transport-local",
+            "example": {
+                "file": "examples/servers/stdio/server_stdio.cpp",
+                "marker": "std::make_shared<StdioTransport>"
+            },
+            "reason": null
+        },
+        {
+            "id": 43,
+            "name": "Progress notifications",
+            "method": "notifications/progress",
+            "status": "implemented",
+            "api": [
+                "report_progress"
+            ],
+            "guide": "concepts/context#progress-reporting",
+            "example": {
+                "file": "examples/features/progress_cancellation.cpp",
+                "marker": "Create CallToolParams with progress token"
+            },
+            "reason": null
+        },
+        {
+            "id": 44,
+            "name": "Cancellation",
+            "method": "notifications/cancelled",
+            "status": "implemented",
+            "api": [
+                "is_cancelled",
+                "CancellationToken"
+            ],
+            "guide": "concepts/context#cancellation",
+            "example": {
+                "file": "examples/features/progress_cancellation.cpp",
+                "marker": "only the first cancel() has an effect"
+            },
+            "reason": null
+        },
+        {
+            "id": 45,
+            "name": "Pagination",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "set_page_size"
+            ],
+            "guide": "concepts/pagination#using-pagination",
+            "example": {
+                "file": "examples/features/pagination.cpp",
+                "marker": "PAGINATION LOOP"
+            },
+            "reason": null
+        },
+        {
+            "id": 46,
+            "name": "Capability negotiation",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "ServerCapabilities",
+                "ClientCapabilities"
+            ],
+            "guide": "concepts/protocol#discovery",
+            "example": {
+                "file": "examples/features/notifications_subscriptions.cpp",
+                "marker": "A list-changed notification is honored only for a capability"
+            },
+            "reason": null
+        },
+        {
+            "id": 47,
+            "name": "Protocol version negotiation",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "ClientProtocol",
+                "ServerProtocolPolicy"
+            ],
+            "guide": "guides/older-protocols#choosing-a-protocol-on-the-client",
+            "example": {
+                "file": "examples/features/legacy_protocols.cpp",
+                "marker": "The default automatic() probes with server/discover"
+            },
+            "reason": null
+        },
+        {
+            "id": 48,
+            "name": "JSON Schema 2020-12 support",
+            "method": null,
+            "status": "implemented",
+            "api": [
+                "CompiledSchema"
+            ],
+            "guide": "concepts/tools#schema-validation",
+            "example": {
+                "file": "examples/features/schema_validation.cpp",
+                "marker": "REGISTRATION"
+            },
+            "reason": null
+        }
+    ]
+}

@@ -146,33 +146,30 @@ is the standard way to provide instructions or context to the LLM.
    text.text = "Review this code...";
    msg.content = std::move(text);
 
-Image Content
-^^^^^^^^^^^^^
+Image and Resource Content
+^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For multimodal models, you can also include images in your prompts. This is
-done by providing base64 encoded image data and its MIME type.
+For multimodal models, a message can hold an ``ImageContent``, whose ``data`` is
+the base64-encoded image and whose ``mimeType`` says what it is. A message can
+also hold an ``EmbeddedResource``, which includes the contents of a resource, so
+that dynamic content from the server reaches the conversation. A message holds
+one block, so each one goes in a message of its own:
 
-.. code-block:: cpp
+.. literalinclude:: ../../examples/features/rich_content.cpp
+   :language: cpp
+   :start-after: docs-begin: rich-prompt
+   :end-before: docs-end: rich-prompt
+   :dedent: 4
 
-   ImageContent image;
-   image.data = "base64_encoded_image_data";
-   image.mimeType = "image/png";
-   msg.content = std::move(image);
+A client reads the blocks by the alternative of ``ContentBlock`` that each
+message holds, in sync mode as in async mode; the call is
+``client.sync().get_prompt()`` in sync mode:
 
-Resource Content
-^^^^^^^^^^^^^^^^
-
-Prompts can also reference resources directly. This allows you to include
-dynamic content from your server's resources in the prompt response.
-
-.. code-block:: cpp
-
-   TextResourceContents contents;
-   contents.uri = "mcp://system/config";
-   contents.text = "System configuration data...";
-   EmbeddedResource resource;
-   resource.resource = std::move(contents);
-   msg.content = std::move(resource);
+.. literalinclude:: ../../examples/features/rich_content.cpp
+   :language: cpp
+   :start-after: docs-begin: rich-prompt-client
+   :end-before: docs-end: rich-prompt-client
+   :dedent: 4
 
 Advanced Registration
 ---------------------

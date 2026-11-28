@@ -94,6 +94,27 @@ Clients can request completions by calling ``client.complete()``. This is typica
    :end-before: // Test 2: Complete framework argument with "R"
    :dedent: 20
 
+Resource Template Completions
+-----------------------------
+
+A client completes the argument of a resource template with a
+``ResourceTemplateReference``, which names the template's URI template. The
+provider tells the references apart by the alternative of ``params.ref``:
+
+.. literalinclude:: ../../examples/features/completions.cpp
+   :language: cpp
+   :start-after: docs-begin: completion-resource-server
+   :end-before: docs-end: completion-resource-server
+   :dedent: 12
+
+The client asks the same way as for a prompt, with the reference of the template:
+
+.. literalinclude:: ../../examples/features/completions.cpp
+   :language: cpp
+   :start-after: docs-begin: completion-resource-client
+   :end-before: docs-end: completion-resource-client
+   :dedent: 20
+
 Example Walkthrough
 -------------------
 

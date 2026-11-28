@@ -14,8 +14,10 @@
 #include <functional>
 #include <mcp/core/constants.hpp>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace roots_test {
 
@@ -307,6 +309,66 @@ TEST_F(RootsTest, ClientSetRootsWithNotifySendsNotification) {
         }
     }
     EXPECT_TRUE(found_notification);
+}
+
+/// Serves @p messages to @p server over a scripted session and returns once the server has answered
+/// the ping "req-1" that follows them.
+void serve_then_ping(boost::asio::io_context& io_ctx, mcp::Server& server,
+                     const std::vector<nlohmann::json>& messages) {
+    auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
+    auto* raw_transport = transport.get();
+    raw_transport->set_on_write([raw_transport](std::string_view msg) {
+        if (nlohmann::json::parse(msg).value("id", "") == "req-1") {
+            raw_transport->close();
+        }
+    });
+    for (const auto& message : messages) {
+        raw_transport->enqueue_message(message.dump());
+    }
+    raw_transport->enqueue_message(
+        nlohmann::json{{"jsonrpc", "2.0"}, {"id", "req-1"}, {"method", "ping"}}.dump());
+    mcp_test::spawn_detached(
+        io_ctx, [&]() -> mcp::Task<void> { co_await server.run(transport, io_ctx.get_executor()); });
+    io_ctx.run();
+}
+
+nlohmann::json roots_list_changed() {
+    return {{"jsonrpc", "2.0"}, {"method", "notifications/roots/list_changed"}};
+}
+
+// The callback hears the notification of an initialized session, and not one sent before the
+// session was initialized.
+TEST_F(RootsTest, ServerObservesRootsListChangedOfAnInitializedSession) {
+    mcp::Server server("test-server", "1.0");
+    int calls = 0;
+    std::string principal = "unset";
+    server.on_roots_list_changed([&calls, &principal](std::string_view sender) {
+        ++calls;
+        principal = sender;
+    });
+
+    serve_then_ping(io_ctx_, server,
+                    {roots_list_changed(), make_initialize_request("init"),
+                     make_initialized_notification(), roots_list_changed()});
+
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(principal, "");
+}
+
+TEST_F(RootsTest, ExceptionFromTheRootsCallbackIsIgnored) {
+    mcp::Server server("test-server", "1.0");
+    int calls = 0;
+    server.on_roots_list_changed([&calls](std::string_view) {
+        ++calls;
+        throw std::runtime_error("callback failure");
+    });
+
+    serve_then_ping(io_ctx_, server,
+                    {make_initialize_request("init"), make_initialized_notification(),
+                     roots_list_changed(), roots_list_changed()});
+
+    // The session went on to the second notification and to the ping that ends the run.
+    EXPECT_EQ(calls, 2);
 }
 
 }  // namespace roots_test

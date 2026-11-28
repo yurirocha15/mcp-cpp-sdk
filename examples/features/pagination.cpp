@@ -3,10 +3,11 @@
 ///
 /// This example shows:
 /// - Server-side pagination: set_page_size() to limit items per response
-/// - Server registering many tools (10+)
+/// - Server registering many tools (10+), resources and prompts
 /// - Client-side pagination: fetching first page, then using cursor for subsequent pages
 /// - Loopback pattern with MemoryTransport for in-process communication
 /// - Handling nextCursor in list results
+/// - The same loop for resources/list and prompts/list
 /// - Server::set_cache_hints(): the ttlMs and cacheScope hints each page carries in a
 ///   2026-07-28 session
 
@@ -23,6 +24,8 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace asio = boost::asio;
@@ -37,6 +40,8 @@ int main() {
         // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
+        server_caps.resources = ServerCapabilities::ResourcesCapability{};
+        server_caps.prompts = ServerCapabilities::PromptsCapability{};
 
         Implementation server_info;
         server_info.name = "pagination-server";
@@ -84,6 +89,18 @@ int main() {
         }
 
         std::cout << "[Server] Registered 12 tools\n";
+
+        // The page size applies to resources/list and prompts/list as well.
+        for (int i = 1; i <= 7; ++i) {
+            server.add_text_resource("mcp://pages/" + std::to_string(i), "page " + std::to_string(i),
+                                     [i] { return "Page " + std::to_string(i); });
+        }
+        for (int i = 1; i <= 5; ++i) {
+            server.add_text_prompt(
+                "prompt_" + std::to_string(i), "Prompt number " + std::to_string(i), {},
+                [i](const Server::PromptArguments&) { return "Prompt " + std::to_string(i); });
+        }
+        std::cout << "[Server] Registered 7 resources and 5 prompts\n";
 
         // ========== CLIENT SETUP ==========
         Implementation client_info;
@@ -171,6 +188,35 @@ int main() {
 
                     std::cout << "\n[Client] Pagination complete! Total tools fetched: " << total_tools
                               << "\n";
+
+                    // docs-begin: paginate-resources
+                    // resources/list pages the same way as tools/list.
+                    std::optional<std::string> resource_cursor;
+                    int total_resources = 0;
+                    do {
+                        auto page = co_await client.list_resources(resource_cursor);
+                        total_resources += static_cast<int>(page.resources.size());
+                        std::cout << "[Client] Resources page: " << page.resources.size() << " items\n";
+                        resource_cursor = page.nextCursor;
+                    } while (resource_cursor);
+                    // docs-end: paginate-resources
+
+                    // docs-begin: paginate-prompts
+                    // So does prompts/list.
+                    std::optional<std::string> prompt_cursor;
+                    int total_prompts = 0;
+                    do {
+                        auto page = co_await client.list_prompts(prompt_cursor);
+                        total_prompts += static_cast<int>(page.prompts.size());
+                        std::cout << "[Client] Prompts page: " << page.prompts.size() << " items\n";
+                        prompt_cursor = page.nextCursor;
+                    } while (prompt_cursor);
+                    // docs-end: paginate-prompts
+                    std::cout << "[Client] Total resources: " << total_resources
+                              << ", total prompts: " << total_prompts << "\n";
+                    if (total_tools != 12 || total_resources != 7 || total_prompts != 5) {
+                        throw std::runtime_error("a list was not paged completely");
+                    }
 
                     // ========== CLEANUP ==========
                     std::cout << "[Client] Closing connection\n";

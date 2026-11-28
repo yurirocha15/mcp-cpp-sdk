@@ -1096,6 +1096,27 @@ class MCP_API Server {
     void on_listen(ListenHandler handler);
 
     /**
+     * @brief Register a callback for the notifications/roots/list_changed that clients send.
+     *
+     * @deprecated Protocol revision 2026-07-28 deprecates roots (SEP-2577); the specification may
+     * remove it in the first revision released on or after 2027-07-28. See the Deprecations guide.
+     *
+     * @details A client that declared `roots.listChanged` sends the notification when its roots
+     * change, in a session of 2025-11-25 or earlier; revision 2026-07-28 has no such notification.
+     * The callback receives the principal of the session that sent it, as Context::principal()
+     * gives it, and runs on the thread that serves that session, once for each notification after
+     * the session is initialized. An exception it throws is ignored. A handler that needs the new
+     * roots asks for them with Context::request_roots().
+     *
+     * @param handler The callback; an empty one removes it.
+     */
+    MCP_DEPRECATED(
+        "SEP-2577: Roots is deprecated since protocol revision 2026-07-28; earliest "
+        "removal: first revision released on or after 2027-07-28; pass directories or files "
+        "through tool parameters, resource URIs or server configuration")
+    void on_roots_list_changed(std::function<void(std::string_view principal)> handler);
+
+    /**
      * @brief Get the currently active server log level.
      *
      * @deprecated Protocol revision 2026-07-28 deprecates logging (SEP-2577); the specification may

@@ -12,12 +12,14 @@
 
 #include <mcp/protocol/request_meta.hpp>
 
+#include "mcp/detail/async/input_activity.hpp"
 #include "mcp/detail/server/sealed_state.hpp"
 
 #include <atomic>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/strand.hpp>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -110,6 +112,14 @@ class MrtrEntry {
     std::uint64_t round{0};
     bool abandoned{false};
     bool park_scheduled{false};
+    /// What the handler does, from which the request tells that the handler has asked every
+    /// question of the round. Shared with the handler's Context and executor, which count in it
+    /// from their own threads.
+    std::shared_ptr<InputActivity> activity = std::make_shared<InputActivity>();
+    /// Waits before the request looks again whether the handler has asked every question.
+    boost::asio::steady_timer settle_timer;
+    std::chrono::milliseconds settle_delay{0};
+    bool settle_waiting{false};
     std::uint64_t next_key{0};
     /// The keys handlers chose for their questions in this run, across rounds.
     std::set<std::string> named_keys;

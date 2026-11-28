@@ -1,0 +1,61 @@
+name: Documentation build
+
+on:
+  # ci.yml calls this workflow when a file the docs read changed (scripts/ci_changes.py), so a
+  # failure fails the CI result; docs.yml calls it with `publish` set and deploys the pages.
+  workflow_call:
+    inputs:
+      publish:
+        description: Upload the built site as the Pages artifact.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# No concurrency group: in a called workflow github.workflow is the caller's name, so a group
+# here would equal the caller's own and queue or cancel this run behind it.
+
+jobs:
+  build-docs:
+    name: Build the documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install CMake
+        uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
+        with:
+          cmake-version: '3.25'
+      - name: Restore Conan packages
+        id: conan-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.conan2/p
+          key: ubuntu-latest-conan-docs-${{ hashFiles('conanfile.py', 'conanfile.txt') }}
+          restore-keys: ubuntu-latest-conan-
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y doxygen
+          python3 scripts/init.py --docs
+      - name: Check the feature matrix
+        run: python3 scripts/check_feature_matrix.py
+      - name: Build Doxygen and Sphinx documentation
+        run: python3 scripts/build.py --docs --jobs "$(nproc)"
+      - name: Save Conan packages
+        if: inputs.publish && steps.conan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.conan2/p
+          key: ${{ steps.conan-cache.outputs.cache-primary-key }}
+      - name: Upload Pages artifact
+        if: inputs.publish
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: build/docs/html

@@ -6,7 +6,8 @@
 /// `initialize`. It shows:
 /// - ClientProtocol::pinned() pinning each of the four older revisions, and legacy() pinning
 ///   the newest of them (2025-11-25)
-/// - ping() and resources/subscribe, which exist only in those revisions
+/// - ping(), resources/subscribe, resources/unsubscribe and logging/setLevel, which exist only in
+///   those revisions
 /// - ServerProtocolPolicy and Server::set_protocol_policy(): which revisions a server serves, and
 ///   which versions `initialize` may negotiate
 /// - What a 2026-07-28 session does with the methods that revision removed
@@ -56,6 +57,7 @@ std::shared_ptr<mcp::Server> make_server(const mcp::ServerProtocolPolicy& policy
     mcp::ServerCapabilities::ResourcesCapability resources;
     resources.subscribe = true;
     caps.resources = resources;
+    caps.logging = json::object();
 
     auto server = std::make_shared<mcp::Server>(
         mcp::Implementation{"legacy-protocols-example-server", "1.0.0"}, caps);
@@ -195,8 +197,10 @@ mcp::Task<bool> exercise_subscribe(const asio::any_io_executor& executor) {
 
     co_await client.connect(client_info(), mcp::ClientCapabilities{});
 
+    // docs-begin: legacy-subscribe
     auto subscribing = client.subscribe_resource(g_RESOURCE_URI);
     co_await std::move(subscribing);
+    // docs-end: legacy-subscribe
     ok &= check(subscribed->size() == 1 && subscribed->front() == g_RESOURCE_URI,
                 "resources/subscribe reached Server::on_subscribe");
 
@@ -209,9 +213,19 @@ mcp::Task<bool> exercise_subscribe(const asio::any_io_executor& executor) {
     const bool got_list_changed = co_await wait_for(list_changed, executor);
     ok &= check(got_list_changed, "the session received notifications/tools/list_changed");
 
+    // docs-begin: legacy-unsubscribe
     auto unsubscribing = client.unsubscribe_resource(g_RESOURCE_URI);
     co_await std::move(unsubscribing);
+    // docs-end: legacy-unsubscribe
     ok &= check(unsubscribed->size() == 1, "resources/unsubscribe reached Server::on_unsubscribe");
+
+    // docs-begin: legacy-set-level
+    // The server sends the log messages of a session from this level on.
+    auto setting_level = client.set_log_level(mcp::LoggingLevel::eWarning);
+    co_await std::move(setting_level);
+    // docs-end: legacy-set-level
+    ok &= check(server->get_log_level() == mcp::LoggingLevel::eWarning,
+                "logging/setLevel set the level the server filters with");
     client.close();
     co_return ok;
 }
@@ -266,7 +280,8 @@ mcp::Task<bool> exercise_modern_only_policy(const asio::any_io_executor& executo
     co_return ok;
 }
 
-/// A 2026-07-28 session has no ping and no resources/subscribe; the client says so locally.
+/// A 2026-07-28 session has no ping, resources/subscribe or logging/setLevel; the client says so
+/// locally.
 mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) {
     bool ok = true;
     auto transport = start_server(make_server(mcp::ServerProtocolPolicy{}), executor);
@@ -301,6 +316,16 @@ mcp::Task<bool> exercise_modern_contrast(const asio::any_io_executor& executor) 
         subscribe_failed = error.code() == jsonrpc::g_METHOD_NOT_FOUND;
     }
     ok &= check(subscribe_failed, "resources/subscribe fails with jsonrpc::g_METHOD_NOT_FOUND");
+
+    bool level_failed = false;
+    try {
+        auto setting_level = client.set_log_level(mcp::LoggingLevel::eWarning);
+        co_await std::move(setting_level);
+    } catch (const mcp::McpError& error) {
+        std::cout << "  logging/setLevel: " << error.what() << '\n';
+        level_failed = error.code() == jsonrpc::g_METHOD_NOT_FOUND;
+    }
+    ok &= check(level_failed, "logging/setLevel fails with jsonrpc::g_METHOD_NOT_FOUND");
     client.close();
     co_return ok;
 }

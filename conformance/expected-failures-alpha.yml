@@ -1,0 +1,19 @@
+# Alpha runner: @modelcontextprotocol/conformance 0.2.0-alpha.12
+# Requirement sets: 2026-07-28 and 2025-11-25
+#
+# The runner does not score extension scenarios. These fail because the client
+# has no support for them:
+#   auth/dpop, auth/dpop-nonce: the client sends no DPoP proofs (RFC 9449).
+#   auth/wif-jwt-bearer: the client requests the authorization_code grant, not
+#       urn:ietf:params:oauth:grant-type:jwt-bearer (workload identity federation).
+client:
+  - auth/dpop
+  - auth/dpop-nonce
+  - auth/wif-jwt-bearer
+# The runner counts a warning as a failure here.
+# input-required-result-ignore-extra-params warns: the scenario sends
+# inputResponses on a first call that carries no requestState. The server
+# resumes a request only from the requestState it issued, so that call is a new
+# request and the server asks its question again.
+server:
+  - input-required-result-ignore-extra-params

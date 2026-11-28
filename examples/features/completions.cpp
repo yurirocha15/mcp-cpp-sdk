@@ -6,6 +6,7 @@
 /// - A server that sets up a completion provider handler
 /// - A client that calls complete() to get argument completion suggestions
 /// - The completion flow: client sends partial argument, server returns suggestions
+/// - A completion for the argument of a resource template, named by a ResourceTemplateReference
 
 #include <mcp/client/client.hpp>
 #include <mcp/core/async.hpp>
@@ -20,6 +21,7 @@
 #include <exception>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <variant>
 #include <vector>
@@ -61,6 +63,20 @@ int main() {
                       << params.argument.value << "\n";
 
             CompleteResult result;
+
+            // docs-begin: completion-resource-server
+            // A ResourceTemplateReference names the URI template whose argument is completed.
+            if (const auto* tmpl = std::get_if<ResourceTemplateReference>(&params.ref)) {
+                if (tmpl->uri == "mcp://logs/{node}") {
+                    for (const std::string node : {"web-1", "web-2", "db-1"}) {
+                        if (node.starts_with(params.argument.value)) {
+                            result.completion.values.push_back(node);
+                        }
+                    }
+                }
+                co_return result;
+            }
+            // docs-end: completion-resource-server
 
             // Only the arguments of the code_analyzer prompt have suggestions.
             const auto* prompt = std::get_if<PromptReference>(&params.ref);
@@ -191,6 +207,24 @@ int main() {
                               << " language completions:\n";
                     for (const auto& val : all_lang_result.completion.values) {
                         std::cout << "  - " << val << "\n";
+                    }
+
+                    // Test 4: Complete the argument of a resource template
+                    std::cout << "\n--- Test 4: Node completions for 'web' ---\n";
+                    // docs-begin: completion-resource-client
+                    CompleteParams node_params;
+                    node_params.ref = ResourceTemplateReference{.uri = "mcp://logs/{node}"};
+                    node_params.argument = {.name = "node", .value = "web"};
+
+                    auto node_result = co_await client.complete(node_params);
+                    // docs-end: completion-resource-client
+                    std::cout << "Client: Received " << node_result.completion.values.size()
+                              << " node completions:\n";
+                    for (const auto& val : node_result.completion.values) {
+                        std::cout << "  - " << val << "\n";
+                    }
+                    if (node_result.completion.values.size() != 2) {
+                        throw std::runtime_error("expected two node completions");
                     }
 
                     std::cout << "\nClient: All completion tests completed successfully\n";

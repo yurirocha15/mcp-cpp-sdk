@@ -464,6 +464,12 @@ namespace mrtr {
 /// passes on to the handler.
 inline constexpr std::chrono::milliseconds g_CANCEL_POLL_INTERVAL{50};
 
+/// While the handler of a request still runs or has a question on its way, the request looks
+/// again after this long whether every question of the round is asked; each look that finds the
+/// handler busy doubles the wait, up to g_SETTLE_POLL_MAX.
+inline constexpr std::chrono::milliseconds g_SETTLE_POLL_FIRST{1};
+inline constexpr std::chrono::milliseconds g_SETTLE_POLL_MAX{16};
+
 /// The shortest `requestState` limit (MrtrOptions::max_state_bytes) that set_mrtr_options() accepts.
 /// A state that carries one question, a principal digest and a parameters digest seals to fewer
 /// characters than this, so a smaller limit would fail every question.

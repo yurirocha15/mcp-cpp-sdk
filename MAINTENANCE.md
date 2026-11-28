@@ -39,6 +39,16 @@ suitable for outside contributors may additionally use `good first issue` or
 `.github/labels.yml`; maintainers must apply that manifest to the live
 repository before using it as tier evidence.
 
+## Specification releases
+
+When the specification repository publishes a release, a maintainer opens a
+tracking issue the same day, and an SDK release that supports the new revision
+is published within 30 calendar days. The tracking issue lists the work:
+
+- the protocol version constants and the versions `server/discover` offers;
+- the conformance requirement set CI runs;
+- the rows of `docs/spec-support.rst`.
+
 ## Supported releases
 
 Before `1.0.0`, only the latest minor release receives fixes. Starting with
