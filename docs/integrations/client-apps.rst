@@ -43,20 +43,26 @@ standard input and output, lists its tools, and calls the first one with empty
 arguments, providing an end-to-end "proof of life" for your transport and
 schema logic. Arguments after the server path are passed to the server.
 
-Desktop Client Integrations
----------------------------
+Connecting MCP Clients
+----------------------
 
-Most desktop applications (like IDEs and AI interfaces) use the **stdio transport**
-to launch and communicate with MCP servers.
+Coding agents, IDEs and desktop apps start a local server as a child process and
+talk to it over the **stdio transport**. Each client keeps its servers in its own
+configuration file, and the format differs from client to client.
 
-Claude Desktop
-^^^^^^^^^^^^^^
+`add-mcp <https://github.com/neon-solutions/add-mcp>`_, which runs on Node.js, adds
+the server to clients such as Claude Code, Codex, Cursor, Gemini CLI, OpenCode,
+VS Code and Zed. It finds the clients installed on the machine and asks which ones
+to set up:
 
-To use your C++ MCP server with Claude Desktop, add it to your
-``claude_desktop_config.json`` file.
+.. code-block:: bash
 
-* **macOS**: ``~/Library/Application Support/Claude/claude_desktop_config.json``
-* **Windows**: ``%APPDATA%/Claude/claude_desktop_config.json``
+   npx add-mcp /path/to/your/repo/build/release/example-server-stdio --name my-cpp-server -g
+
+Each argument for the server goes in its own ``--args``.
+
+Clients that read an ``mcpServers`` file, such as Claude Desktop, Cursor and
+Gemini CLI, take this entry:
 
 .. code-block:: json
 
@@ -68,16 +74,6 @@ To use your C++ MCP server with Claude Desktop, add it to your
        }
      }
    }
-
-IDE Plugins (e.g., Cursor, VSCode)
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-For IDEs that support MCP (like Cursor or VSCode via extensions), you can
-typically add a new "MCP Server" in the settings, specifying:
-
-- **Type**: `command` or `stdio`
-- **Command**: Absolute path to your compiled binary.
-- **Args**: Any necessary CLI flags (e.g., `--llama-port=8080`).
 
 Troubleshooting Integrations
 ----------------------------

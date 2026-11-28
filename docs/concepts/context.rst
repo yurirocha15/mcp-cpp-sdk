@@ -226,7 +226,7 @@ Sampling allows the server to request a completion from the LLM via the client. 
 Usage Example
 ~~~~~~~~~~~~~
 
-The server sends a ``sampling/createMessage`` request back to the client. The client (e.g., Claude Desktop) then handles the request, often by prompting the user or using its own internal model.
+The server sends a ``sampling/createMessage`` request back to the client. The client then handles the request, often by prompting the user or using its own internal model.
 
 .. code-block:: cpp
 
