@@ -426,7 +426,8 @@ struct LegacySseClientTransport::Impl {
             http::verb::get, connection_plan->request_target(impl->base.path),
             client_constants::g_VERSION_11};
         impl->set_headers(exchange->request, *connection_plan, exchange->bearer_token_provider);
-        exchange->request.set(http::field::accept, sse_constants::g_CONTENT_TYPE_EVENT_STREAM);
+        exchange->request.set(http::field::accept,
+                              std::string(sse_constants::g_CONTENT_TYPE_EVENT_STREAM));
         exchange->request.set(http::field::cache_control, "no-cache");
 
         // Until the endpoint event arrives; a stream is open for as long as the session lasts.
