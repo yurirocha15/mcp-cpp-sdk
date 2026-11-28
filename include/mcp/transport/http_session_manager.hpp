@@ -26,6 +26,8 @@ namespace detail {
 /// Gives set_custom_request_handler(), declared with the Beast types in
 /// <mcp/transport/http_beast.hpp>, its way into the manager.
 struct CustomRouteAccess;
+/// Gives Server::run_http() its way into the manager.
+struct RunAccess;
 }  // namespace detail
 
 /** @brief What a StreamableHttpSessionManager holds for clients it has not heard from. */
@@ -441,6 +443,33 @@ class MCP_API StreamableHttpSessionManager {
     [[nodiscard]] StreamStats stream_stats() const;
 
     /**
+     * @brief The executor the manager runs on, for building objects that belong on the same
+     *        event loop, such as in Server::run_http()'s configure callback.
+     */
+    [[nodiscard]] Executor get_executor() const;
+
+    /**
+     * @brief Starts a graceful shutdown and waits for the requests being served.
+     *
+     * @details The first call starts the drain, which every call then waits for: the manager
+     * stops accepting connections; a request that begins on a connection that was already open is
+     * answered `503` with `Connection: close`; connections between requests close; the
+     * `subscriptions/listen` streams of 2026-07-28 end as Server::close_subscriptions() ends them,
+     * and so do the standalone GET streams of legacy sessions. The answer to a request whose
+     * headers were already read is still written to its connection. The returned task completes
+     * when no such request remains, or after @p timeout, whichever comes first. A request counts
+     * until its answer is completely written, so a legacy POST whose SSE response waits for its
+     * handler counts, while the streams the drain ends do not.
+     *
+     * The drain does not close the manager: call close() afterwards. Drain is safe to call
+     * more than once and from any thread. Await the task on the manager's executor.
+     *
+     * @param timeout How long to wait at most.
+     * @throws std::invalid_argument If @p timeout is negative.
+     */
+    Task<void> drain(std::chrono::milliseconds timeout);
+
+    /**
      * @brief Close the manager and all sessions.
      *
      * @details The handlers of 2026-07-28 requests that wait for a retry on the modern server are
@@ -457,11 +486,13 @@ class MCP_API StreamableHttpSessionManager {
 
    private:
     friend struct detail::CustomRouteAccess;
+    friend struct detail::RunAccess;
 
     struct Impl;
     static Task<void> listen_impl(std::shared_ptr<Impl> impl);
     static Task<void> listen_as_run(std::shared_ptr<Impl> impl, Task<void> listening);
     static void close_impl(const std::shared_ptr<Impl>& impl);
+    static Task<void> wait_until_drained(std::shared_ptr<Impl> impl, std::chrono::milliseconds timeout);
     std::shared_ptr<Impl> impl_;
 };
 

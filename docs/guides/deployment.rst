@@ -224,6 +224,46 @@ You should handle signals like ``SIGINT`` and ``SIGTERM`` to trigger the shutdow
 
 The :cpp:func:`mcp::graceful_shutdown` function closes the transport (preventing new connections) and starts a watchdog timer. If requests don't finish within the timeout (defined by ``mcp::constants::shutdown::g_TIMEOUT_MS``), it stops the ``io_context`` forcefully. It returns the timer: cancel it once ``Server::run()`` has returned, as the example does, or the pending timer keeps ``io_context::run()`` going until the timeout.
 
+Shutting down ``run_http()``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When ``run_http()`` is ended by a signal, ``server.stop()`` or a failing listener, it drains before it closes,
+so a request being served when the shutdown begins is answered instead of cut off. The steps are:
+
+1. ``on_drain_start`` is called on the event loop.
+2. The endpoint stops accepting connections, closes the ones between requests, and ends the
+   ``subscriptions/listen`` streams and the standalone GET streams of older-protocol sessions. A request that
+   begins on a connection that is still open is answered ``503`` with ``Connection: close``. The answers to
+   the requests being served are still written.
+3. The run waits until no request is being served, for ``drain_timeout`` at most. A request counts until its
+   answer is completely written, so an older-protocol POST whose SSE response waits for its handler counts.
+4. ``on_shutdown`` is awaited. The connections stay open meanwhile, so an answer a handler produces because of
+   it is delivered.
+5. The run waits again until no request is being served.
+6. The endpoint closes, and ``run_http()`` returns once the handlers still running have finished.
+
+``shutdown_timeout``, five seconds unless set, is measured from the start of the shutdown and ends every step at
+once: what is unfinished by then, which includes an ``on_shutdown`` that does not return, is abandoned.
+``drain_timeout`` is half of it unless set, so that ``on_shutdown`` always has time to run.
+
+.. literalinclude:: ../../examples/features/http_server_convenience.cpp
+   :language: cpp
+   :start-after: // ========== SHUTDOWN OPTIONS ==========
+   :end-before: // ========== END SHUTDOWN OPTIONS ==========
+   :dedent: 16
+
+:cpp:struct:`mcp::HttpRunOptions` also takes ``on_start``, which is awaited on the event loop before the server
+listens, so that a client that connects finds what it sets up. An exception it throws runs the shutdown
+steps, without a listener, and ``run_http()`` rethrows it. Once a shutdown has begun, ``run_http()`` returns
+normally, even when ``on_start`` then fails because the shutdown closed what it waited on. ``io_threads`` runs the event loop on more than one
+thread: the coroutine handlers of one server can then run at the same time, which a program with one loop thread
+never had to consider, and ``Server::sync()`` refuses on each of the loop's threads.
+
+A program that runs a :cpp:class:`mcp::StreamableHttpSessionManager` on its own event loop drains it with
+:cpp:func:`mcp::StreamableHttpSessionManager::drain`, which performs step 2 and waits as step 3 does, and then
+calls ``close()``. ``run_http()`` has no asynchronous form: it blocks the calling thread, and the callbacks above
+run on the event loop.
+
 Production Considerations
 -------------------------
 

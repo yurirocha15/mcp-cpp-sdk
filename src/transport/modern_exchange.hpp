@@ -102,6 +102,8 @@ struct ModernExchange : std::enable_shared_from_this<ModernExchange> {
     const std::size_t max_queued_bytes;
     /// Whether the answer may become an SSE stream: the client accepts one over HTTP/1.1.
     const bool streams;
+    /// Whether the request is a subscriptions/listen stream, which stays open until it is ended.
+    bool long_lived{false};
     std::shared_ptr<std::atomic<bool>> cancelled = std::make_shared<std::atomic<bool>>(false);
 
     std::mutex mutex;

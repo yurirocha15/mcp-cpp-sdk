@@ -11,11 +11,19 @@ Versioning; a `0.x` version is a stable release unless its version has an
 - The Chocolatey package has an icon.
 - `HttpClientTransport::set_max_message_bytes()` sets the largest response body,
   SSE line or SSE event the client accepts, 16 MiB by default.
+- `Server::run_http()` takes `HttpRunOptions` (loop threads, `on_start`,
+  `on_drain_start`, `on_shutdown`, drain and shutdown timeouts), and the session
+  manager gains `drain()` and `get_executor()`.
 
 ### Changed
 
 - The documentation moved to [mcp-cpp-sdk.yurirocha.com](https://mcp-cpp-sdk.yurirocha.com/), and links to the old address redirect there.
 - The installation guide has a page for each platform, each with its install, upgrade and uninstall steps.
+
+### Fixed
+
+- `Server::run_http()` now answers the requests being served when it shuts down,
+  within the shutdown timeout, instead of closing their connections at once.
 
 ## [0.4.0] - 2026-11-26
 

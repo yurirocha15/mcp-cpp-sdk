@@ -323,6 +323,14 @@ inline constexpr std::size_t g_MAX_READ_AHEAD = std::size_t{64} * 1024;
 
 }  // namespace modern_exchange
 
+/// Waiting for requests to finish when an HTTP endpoint drains.
+namespace drain {
+
+/// How often the wait looks again at the requests still being served.
+inline constexpr std::chrono::milliseconds g_POLL_INTERVAL = std::chrono::milliseconds(10);
+
+}  // namespace drain
+
 /// Memory for the requests an HTTP server reads.
 namespace http_request {
 

@@ -98,7 +98,20 @@ int main() {
                 //   in a session of its own, with this server's tools
                 // - Answers 2026-07-28 requests with this server
                 // - Manages signal handling for graceful shutdown
-                server.run_http("127.0.0.1", http_port);
+                // ========== SHUTDOWN OPTIONS ==========
+                HttpRunOptions options;
+                // Called on the event loop when the shutdown begins.
+                options.on_drain_start = [] { std::cout << "Server: draining\n"; };
+                // Awaited once the requests being served are answered, or after drain_timeout, to
+                // close what the server uses, such as a database.
+                options.on_shutdown = []() -> Task<void> {
+                    std::cout << "Server: closing resources\n";
+                    co_return;
+                };
+                options.drain_timeout = std::chrono::seconds(2);
+                options.shutdown_timeout = std::chrono::seconds(5);
+                // ========== END SHUTDOWN OPTIONS ==========
+                server.run_http("127.0.0.1", http_port, options);
             } catch (const std::exception& e) {
                 std::cerr << "Server error: " << e.what() << '\n';
             }

@@ -17,6 +17,7 @@
 #include <optional>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace mcp::detail {
 
@@ -38,6 +39,10 @@ class RunControl : public std::enable_shared_from_this<RunControl> {
         Registration& operator=(const Registration&) = delete;
         Registration(Registration&&) = delete;
         Registration& operator=(Registration&&) = delete;
+
+        /// Makes the calling thread one of the run's loop threads, for run_http() with more than
+        /// one: run_blocking() refuses on each of them. The thread that added the run is one.
+        void add_loop_thread();
 
        private:
         std::shared_ptr<RunControl> control_;
@@ -78,7 +83,7 @@ class RunControl : public std::enable_shared_from_this<RunControl> {
      *
      * @details Returns at once when the server is not running, and without waiting further when the
      * run ends before the coroutine has run.
-     * @throws std::logic_error When called on that loop's thread, or when the server runs only
+     * @throws std::logic_error When called on one of that loop's threads, or when the server runs only
      *         through run(), whose executor this cannot tell a waiting thread apart from.
      */
     void run_blocking(const std::function<Task<void>()>& start);
@@ -90,10 +95,12 @@ class RunControl : public std::enable_shared_from_this<RunControl> {
     struct Run {
         std::function<void()> stop;
         std::optional<boost::asio::any_io_executor> loop;
-        std::thread::id thread;
+        /// The threads that run the loop; the one that added the run, then those it added.
+        std::vector<std::thread::id> threads;
     };
 
     void remove(std::uint64_t id);
+    void add_thread(std::uint64_t id);
 
     std::mutex mutex_;
     std::map<std::uint64_t, Run> runs_;

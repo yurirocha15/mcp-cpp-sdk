@@ -10,6 +10,7 @@
 #include <mcp/protocol/protocol.hpp>
 #include <mcp/server/cache_hint.hpp>
 #include <mcp/server/handler.hpp>
+#include <mcp/server/http_run_options.hpp>
 #include <mcp/server/middleware.hpp>
 #include <mcp/server/mrtr_options.hpp>
 #include <mcp/server/protocol_policy.hpp>
@@ -849,7 +850,10 @@ class MCP_API Server {
      * @p configure the endpoint keeps its default settings, so a request carrying an Origin
      * header is answered with 403.
      *
-     * stop() ends the call as SIGINT does, and bound_port() gives the port it listens on.
+     * stop() ends the call as SIGINT does, and bound_port() gives the port it listens on. A
+     * shutdown is graceful: the requests being served when it begins are answered, within
+     * mcp::constants::shutdown::g_TIMEOUT_MS, before the connections close. The overload taking
+     * HttpRunOptions describes the steps and lets a program take part in them.
      *
      * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
      * @param port  TCP port to listen on, or 0 for one the system chooses.
@@ -860,15 +864,35 @@ class MCP_API Server {
                   const std::function<void(StreamableHttpSessionManager&)>& configure = {});
 
     /**
+     * @brief Run the server over HTTP as run_http() above does, with @p options, blocking until
+     *        shutdown.
+     *
+     * @details The options set the number of event loop threads, run code on the event loop
+     * before the server listens and while it shuts down, and bound the shutdown; see
+     * HttpRunOptions for the steps. Exceptions from listening, and from HttpRunOptions::on_start,
+     * are propagated to the caller once the shutdown has run.
+     *
+     * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
+     * @param port  TCP port to listen on, or 0 for one the system chooses.
+     * @param options How to run and shut down.
+     * @throws std::invalid_argument When `options.io_threads` is zero, a timeout is negative,
+     *         `options.drain_timeout` is longer than `options.shutdown_timeout`, or the two are
+     *         equal while `options.on_shutdown` is set; nothing runs.
+     */
+    void run_http(const std::string& host, uint16_t port, const HttpRunOptions& options);
+
+    /**
      * @brief Ends the runs of this server in progress: run_stdio() and run_http() return as they
      *        do on SIGINT, run() closes its transport and completes as it does when the transport
      *        closes, and a StreamableHttpSessionManager constructed with this server closes.
      *
-     * @details May be called from any thread, including from a handler. As on SIGINT, the transport
-     * closes at once, so a request still being served is not answered, and run_stdio() and
-     * run_http() return once the handlers still running have finished, or after
-     * mcp::constants::shutdown::g_TIMEOUT_MS. A synchronous handler that runs on the server's own
-     * loop holds that loop, and with it the deadline, until it returns; one on the
+     * @details May be called from any thread, including from a handler. As on SIGINT, run_stdio()
+     * closes its transport at once, so a request still being served is not answered, and run_stdio()
+     * returns once the handlers still running have finished, or after
+     * mcp::constants::shutdown::g_TIMEOUT_MS. run_http() drains first (see HttpRunOptions): the
+     * requests being served are answered, and it returns once the handlers still running have
+     * finished, or at HttpRunOptions::shutdown_timeout. A synchronous handler that runs on the server's
+     * own loop holds that loop, and with it the deadline, until it returns; one on the
      * set_handler_executor() executor is left running. The handler of a tool call made as a task
      * is not waited for either: it goes on, and a question it asks the client afterwards is never
      * answered. Does nothing when the server is not running: a run that starts after the call is

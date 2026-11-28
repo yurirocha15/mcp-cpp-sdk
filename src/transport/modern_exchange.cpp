@@ -226,6 +226,7 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& req
     auto exchange = std::make_shared<ModernExchange>(start.strand, start.options, streams, start.budget,
                                                      start.budget_limit);
     const bool listening = method_is(request_json.at("method"), methods::g_SUBSCRIPTIONS_LISTEN);
+    exchange->long_lived = listening;
 
     RequestContext request_context;
     request_context.cancelled = exchange->cancelled;
