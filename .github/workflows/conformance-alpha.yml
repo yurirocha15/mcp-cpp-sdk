@@ -44,8 +44,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  conformance-2026-07-28-alpha:
-    name: Alpha runner, requirements 2026-07-28 (non-gating)
+  alpha-runner:
+    name: Alpha runner, requirement sets 2026-07-28 and 2025-11-25 (advisory)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # A report, never a gate: the job cannot fail the workflow, and no other job may need it
@@ -66,6 +66,8 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
+          cache: npm
+          cache-dependency-path: conformance/runner-alpha/package-lock.json
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
@@ -91,6 +93,9 @@ jobs:
       - name: Build conformance fixtures
         run: python3 scripts/build.py --conformance --jobs "$(nproc)"
 
+      - name: Install locked alpha runner
+        run: npm ci --ignore-scripts --prefix conformance/runner-alpha
+
       - name: Run the alpha runner against the fixtures
         run: bash conformance/run_alpha.sh build/release build/conformance-results-alpha
 
@@ -99,7 +104,7 @@ jobs:
         run: |
           if [ -f build/conformance-results-alpha/summary.txt ]; then
             {
-              echo '### Alpha runner, requirements 2026-07-28 (non-gating)'
+              echo '### Alpha runner, requirement sets 2026-07-28 and 2025-11-25 (advisory)'
               echo '```'
               cat build/conformance-results-alpha/summary.txt
               echo '```'
@@ -110,7 +115,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mcp-conformance-2026-07-28-alpha
+          name: mcp-conformance-alpha
           path: build/conformance-results-alpha
           if-no-files-found: ignore
           retention-days: 30

@@ -20,7 +20,7 @@ repos:
     hooks:
       - id: clang-format
         # Signed release files kept byte for byte, and JSON that npm and gen_json_matrix.py write.
-        exclude: ^(test/release/fixtures/|conformance/runner/package-lock\.json$|test/core/json_matrix_manifest\.json$)
+        exclude: ^(test/release/fixtures/|conformance/runner(-alpha)?/package-lock\.json$|test/core/json_matrix_manifest\.json$)
 
   - repo: https://github.com/cheshirekow/cmake-format-precommit
     rev: v0.6.10
