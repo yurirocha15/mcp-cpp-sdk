@@ -295,6 +295,11 @@ Task<void> Server::Impl::run_session(std::shared_ptr<Session> new_session) {
     shutdown_requested.store(false, std::memory_order_relaxed);
     // The next client on a reused Server starts from the default, not from what the last one chose.
     log_level.store(g_default_log_level, std::memory_order_relaxed);
+    {
+        std::scoped_lock lock(client_capabilities_mutex);
+        negotiated_version.clear();
+        client_capabilities = nlohmann::json::object();
+    }
 
     co_await read_session(session);
     co_await end_session(session);

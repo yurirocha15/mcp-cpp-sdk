@@ -583,6 +583,36 @@ TEST_F(Listen, NotifyReachesOnlyASessionThatBeganWithInitialize) {
     EXPECT_EQ(written_[2], (json{{"jsonrpc", "2.0"}, {"method", "notifications/example/ping"}}));
 }
 
+// A Server reused for the next client starts from the lifecycle of a new one: a 2026-07-28 client
+// that follows a client that initialized gets no notify() notification.
+TEST_F(Listen, NotifyAfterAnInitializedRunDoesNotReachTheNextModernClient) {
+    auto server = make_server();
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(make_initialize_request("i"));
+        send(make_initialized_notification());
+        co_await wait_written(1);
+        co_await finish();
+    });
+    ASSERT_EQ(written_.size(), 1u);
+
+    written_.clear();
+    run_done_.store(false);
+    start(*server);
+    run([&]() -> mcp::Task<void> {
+        send(make_modern_request(1, "tools/list"));
+        co_await wait_written(1);
+        auto sent = server->notify("notifications/example/changed", json{{"n", 1}});
+        co_await std::move(sent);
+        send(make_modern_request(2, "tools/list"));
+        co_await wait_written(2);
+        co_await finish();
+    });
+    ASSERT_EQ(written_.size(), 2u);
+    EXPECT_EQ(written_[0]["id"], 1) << written_[0];
+    EXPECT_EQ(written_[1]["id"], 2) << written_[1];
+}
+
 // The notifications the server addresses itself are not sent through notify(): a broadcast would
 // miss the listen streams, or reach sessions and requests they do not belong to.
 TEST(ServerNotifyTest, RefusesTheNotificationsTheServerRoutesItself) {
