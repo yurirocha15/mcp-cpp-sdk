@@ -250,7 +250,9 @@ anything else was sent gets that response alone. A GET opens the session's
 stream for what the server sends outside any request, one per session, for a
 client whose ``Accept`` lists ``text/event-stream`` (any other GET is answered
 406); the transport sends a request's messages on its own stream, and anything else on
-the GET stream, or on the stream of the only POST waiting when no GET is open.
+the GET stream, or on the stream of the only POST waiting when no GET is open. With
+no GET open and no POST waiting, it holds the message for the next GET, up to the
+queue limit.
 Every event is kept in a bounded store, and a GET with ``Last-Event-ID``
 resumes a stream from there: one still going on continues live, and one that
 ended is replayed. A client leaving a stream does not cancel its request.

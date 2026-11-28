@@ -28,12 +28,14 @@
 #include <boost/beast/http.hpp>
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <future>
 #include <mcp/core/constants.hpp>
 #include <memory>
@@ -867,6 +869,75 @@ TEST_F(ServerHttpTest, UrlElicitationRecordsEndWithTheSessionOfAnHttpServerTrans
     asio::post(io, [&] { transport->close(); });
     work.reset();
     loop.join();
+}
+
+// A completion sent while the client has no GET stream open waits for the stream the client opens
+// next, and the call reports that it was sent.
+TEST_F(ServerHttpTest, ElicitationCompleteWaitsForTheGetStreamOfASessionWithoutOne) {
+    server_->add_tool<nlohmann::json, nlohmann::json>(
+        "require", "Needs a sign-in", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& /*ctx*/, nlohmann::json /*args*/) -> mcp::Task<nlohmann::json> {
+            mcp::ElicitRequestURLParams params;
+            params.message = "Please sign in";
+            params.url = "https://example.com/sign-in";
+            params.elicitationId = "sign-in";
+            throw mcp::UrlElicitationRequired({params});
+        });
+    std::atomic<bool> finished{false};
+    std::thread server_thread([&] {
+        server_->run_http("127.0.0.1", 0);
+        finished = true;
+    });
+    const StopGuard guard(*server_, server_thread, finished);
+    const auto port = wait_for_port(*server_);
+
+    asio::io_context client_ctx;
+    beast::tcp_stream stream(client_ctx);
+    connect_when_listening(stream, port);
+    auto initialize = make_initialize_request("1");
+    initialize["params"]["capabilities"] = {{"elicitation", {{"url", nlohmann::json::object()}}}};
+    const auto initialized = send_json_rpc(stream, initialize);
+    const std::string session_id(initialized["Mcp-Session-Id"]);
+    ASSERT_FALSE(session_id.empty());
+    send_json_rpc(stream, make_initialized_notification(), session_id);
+    const auto called = send_json_rpc(
+        stream, make_tool_call_request("2", "require", nlohmann::json::object()), session_id);
+    EXPECT_NE(called.body().find("-32042"), std::string::npos) << called.body();
+
+    EXPECT_TRUE(server_->sync().notify_elicitation_complete("sign-in"));
+
+    http::request<http::empty_body> get{http::verb::get, "/mcp", 11};
+    get.set(http::field::host, "127.0.0.1");
+    get.set(http::field::accept, "text/event-stream");
+    get.set("MCP-Protocol-Version", std::string(protocol::g_LATEST_LEGACY_PROTOCOL_VERSION));
+    get.set("MCP-Session-Id", session_id);
+    beast::tcp_stream get_stream(client_ctx);
+    connect_when_listening(get_stream, port);
+    http::write(get_stream, get);
+    // The stream stays open, so reading ends with the notification, or with the guard when the
+    // notification never comes.
+    std::string received;
+    std::array<char, 1024> chunk{};
+    get_stream.expires_after(g_hang_guard);
+    std::function<void()> read_more = [&] {
+        get_stream.async_read_some(asio::buffer(chunk), [&](beast::error_code error,
+                                                            std::size_t count) {
+            received.append(chunk.data(), count);
+            if (!error && received.find("notifications/elicitation/complete") == std::string::npos) {
+                read_more();
+            }
+        });
+    };
+    read_more();
+    client_ctx.run();
+    EXPECT_NE(received.find("notifications/elicitation/complete"), std::string::npos) << received;
+    EXPECT_NE(received.find("sign-in"), std::string::npos) << received;
+
+    beast::error_code ignored;
+    get_stream.socket().close(ignored);
+    stream.socket().shutdown(asio::ip::tcp::socket::shutdown_both, ignored);
+    server_->stop();
+    server_thread.join();
 }
 
 // A manager constructed with a server serves it on the application's loop as run_http() does: the

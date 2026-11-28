@@ -151,6 +151,9 @@ struct SessionRuntime {
     std::shared_ptr<boost::asio::steady_timer> get_timer;
     SseEventList get_events;
     std::uint64_t get_generation{0};
+    /// Messages sent while no GET stream was open and no request waited, for the stream the first
+    /// GET opens.
+    std::vector<std::string> held_get_messages;
     /// The session is over, and so are its streams.
     bool ended{false};
 
@@ -1740,6 +1743,11 @@ struct StreamableHttpSessionManager::Impl {
                 legacy->replay.emplace_back(std::move(id), std::string());
                 legacy->retry = legacy_stream_options_.sse_retry;
             }
+            for (auto& held : session->held_get_messages) {
+                auto id = session->event_store.append(held, session->get_stream);
+                legacy->replay.emplace_back(std::move(id), std::move(held));
+            }
+            session->held_get_messages.clear();
         }
         legacy->session = std::move(session);
         co_return legacy;
@@ -1752,7 +1760,8 @@ struct StreamableHttpSessionManager::Impl {
     /// Routes a message the session's server wrote: a response to the stream of its POST, which
     /// it ends; a message written as related to a request still waiting, to that request's stream;
     /// and any other message to the GET stream, or, when no GET opened one, to the stream of the
-    /// only POST waiting. With several waiting it travels on the stream of the next response.
+    /// only POST waiting. With several waiting it travels on the stream of the next response, and
+    /// with none waiting it is held for the stream the first GET opens.
     /// Every event is stored in the event store, so a resume finds it; a connection serving the
     /// stream also gets it, up to @p max_queued not yet written.
     static void dispatch_response_to_pending(detail_session_mgr::SessionRuntime* session,
@@ -1838,6 +1847,10 @@ struct StreamableHttpSessionManager::Impl {
                     send_on(session->pending_responses.begin()->second, std::move(message));
                 } else if (!session->pending_responses.empty()) {
                     session->unassigned_stream_events.push_back(std::move(message));
+                } else if (session->held_get_messages.size() < max_queued) {
+                    session->held_get_messages.push_back(std::move(message));
+                } else {
+                    counters.dropped_notifications.fetch_add(1, std::memory_order_relaxed);
                 }
             } else {
                 auto pending_it = session->pending_responses.find(request_id_key);

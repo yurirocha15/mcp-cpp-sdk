@@ -36,6 +36,9 @@ Versioning; a `0.x` version is a stable release unless its version has an
   another session has in progress.
 - In a 2025-11-25 session, a POST answered as an SSE stream starts with a priming
   event; `set_legacy_stream_options()` turns it off or adds a `retry` field.
+- Over Streamable HTTP, a message for a 2025-11-25 or earlier session that
+  belongs to no request waits for the session's next GET stream when none is
+  open and no POST waits, up to the queue limit.
 
 ### Deprecated
 

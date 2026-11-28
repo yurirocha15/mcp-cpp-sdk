@@ -495,11 +495,13 @@ struct HttpServerTransport::Impl {
         ++get_generation;
         get_stream.clear();
         get_events.clear();
+        held_get_messages.clear();
     }
 
     /// Sends a message other than a response: on the stream of the request it relates to while
     /// that request waits on one, else on the GET stream, else on the stream of the only request
-    /// waiting on one. With nowhere to go it is dropped, as it is when nothing streams.
+    /// waiting on one. With none of these it waits for the next GET stream, and is dropped when
+    /// nothing streams.
     void route_event(std::string message, const std::string* related_request) {
         if (json_only_.load(std::memory_order_acquire) || !session_active ||
             session_ended_awaiting_next) {
@@ -512,8 +514,8 @@ struct HttpServerTransport::Impl {
                 target = &related->second;
             }
         }
+        std::size_t streaming = 0;
         if (target == nullptr && get_stream.empty()) {
-            std::size_t streaming = 0;
             for (auto& [key, pending] : pending_responses) {
                 if (pending.streams) {
                     ++streaming;
@@ -538,6 +540,8 @@ struct HttpServerTransport::Impl {
                 get_events.emplace_back(std::move(event_id), std::move(message));
                 get_timer->cancel();
             }
+        } else if (streaming == 0 && held_get_messages.size() < g_max_queued_events) {
+            held_get_messages.push_back(std::move(message));
         }
     }
 
@@ -1229,6 +1233,11 @@ struct HttpServerTransport::Impl {
             legacy->replay.emplace_back(std::move(id), std::string());
             legacy->retry = legacy_stream_options.sse_retry;
         }
+        for (auto& held : held_get_messages) {
+            auto id = event_store.append(held, get_stream);
+            legacy->replay.emplace_back(std::move(id), std::move(held));
+        }
+        held_get_messages.clear();
         co_return legacy;
     }
 
@@ -1734,6 +1743,9 @@ struct HttpServerTransport::Impl {
     std::shared_ptr<boost::asio::steady_timer> get_timer;
     SseEventList get_events;
     std::uint64_t get_generation{0};
+    /// Messages sent while no GET stream was open and no request streamed, for the stream the
+    /// next GET opens.
+    std::vector<std::string> held_get_messages;
 
     std::unordered_map<std::string, PendingResponse> pending_responses;
     std::chrono::steady_clock::time_point session_last_used;

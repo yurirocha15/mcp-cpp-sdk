@@ -519,7 +519,7 @@ class MCP_API HttpServerTransport final : public ITransport {
     /**
      * @brief Send a JSON-RPC message: a response answers its pending HTTP request, and any other
      *        message goes on the session's GET stream, or on the stream of the only request
-     *        waiting when no GET opened one.
+     *        waiting when no GET opened one, or waits for the next GET when no request waits.
      *
      * @param message Serialized JSON-RPC message.
      */
