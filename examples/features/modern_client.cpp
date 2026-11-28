@@ -70,7 +70,6 @@ int main() {
         asio::io_context io_ctx;
         bool succeeded = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
         server_caps.logging = nlohmann::json::object();
@@ -124,7 +123,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== CLIENT ==========
         asio::co_spawn(
             io_ctx,
             [&]() -> Task<void> {
@@ -142,7 +140,6 @@ int main() {
                     client_info.name = "modern-client-example-client";
                     client_info.version = "1.0.0";
 
-                    // ========== CONNECT ==========
                     {
                         ConnectResult connected =
                             co_await client.connect(client_info, ClientCapabilities{});
@@ -168,7 +165,6 @@ int main() {
                         }
                     }
 
-                    // ========== PER-REQUEST LOG LEVEL ==========
                     int log_messages = 0;
                     client.on_notification(
                         "notifications/message", [&log_messages](const nlohmann::json& params) {
@@ -203,7 +199,6 @@ int main() {
                         throw std::runtime_error("the two calls returned different results");
                     }
 
-                    // ========== CACHE HINTS ==========
                     ListToolsResult tools = co_await client.list_tools();
                     std::cout << "[Client] tools/list returned " << tools.tools.size() << " tool(s)\n";
                     if (tools.ttlMs && tools.cacheScope) {

@@ -221,7 +221,7 @@ inline Task<void> write_final_response(Connection& stream, StringResponse respon
     try {
         co_await boost::beast::http::async_write(stream, response, boost::asio::use_awaitable);
     } catch (const boost::system::system_error&) {
-        // The peer may already have left; there is nobody left to tell.
+        // The peer may already have closed the connection; the failure is ignored.
     }
 }
 

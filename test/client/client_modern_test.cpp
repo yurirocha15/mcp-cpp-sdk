@@ -262,10 +262,6 @@ mcp::ClientOptions pinned_options(std::string version) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Era detection (Auto)
-// ---------------------------------------------------------------------------
-
 // "A client that supports both ... SHOULD probe with server/discover before sending any other
 // request ... The server returns a DiscoverResult: the server is modern." and basic_index.md:
 // "Every request supplies this metadata in its _meta field."
@@ -1305,10 +1301,6 @@ TEST(ClientEra, ThrowingDecisionCallbackIsDiscarded) {
     EXPECT_EQ(connected.era, mcp::ProtocolEra::eModern);
 }
 
-// ---------------------------------------------------------------------------
-// Per-request metadata
-// ---------------------------------------------------------------------------
-
 TEST(ClientEra, PerRequestLogLevelInMeta) {
     Harness harness(auto_options());
     harness.peer.reply = modern_peer;
@@ -1427,10 +1419,6 @@ TEST(ClientEra, CapabilitiesDerivedFromHandlers) {
     // A handler registered after connect() counts from the next request on.
     EXPECT_TRUE(later.at(std::string(g_capabilities_key)).contains("elicitation"));
 }
-
-// ---------------------------------------------------------------------------
-// Pinned protocols
-// ---------------------------------------------------------------------------
 
 // Pinning a legacy version: no probe, initialize names the pin, later requests carry no `_meta`,
 // and the version in effect is whatever the server answered.
@@ -1568,10 +1556,6 @@ TEST(ClientPinned, EveryLimitMustBePositive) {
     cache_off.response_cache.max_entries = 0;
     EXPECT_NO_THROW(mcp::Client(transport, io.get_executor(), cache_off));
 }
-
-// ---------------------------------------------------------------------------
-// The SDK client against the SDK server
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -1869,7 +1853,7 @@ TEST(E2eEra, DefaultClientOverHttpIsModern) {
     EXPECT_EQ(outcome->whoami.at("modern"), true);
 }
 
-// A client pinned to the legacy protocol speaks it over HTTP exactly as before, even to a server
+// A client pinned to the legacy protocol speaks it over HTTP, even to a server
 // that serves both eras.
 TEST(E2eEra, LegacyClientOverHttpIsLegacy) {
     constexpr unsigned short port = 20502;

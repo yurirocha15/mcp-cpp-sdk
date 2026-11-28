@@ -8,7 +8,6 @@
 
 namespace mcp {
 
-// GUIDE: Move the following from protocol.hpp to here:
 /**
  * @brief Represents a resource definition.
  */

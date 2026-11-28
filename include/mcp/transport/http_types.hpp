@@ -79,7 +79,7 @@ using BearerTokenValidator = std::function<TokenValidation(std::string_view)>;
 /**
  * @brief Asynchronous validator invoked at the HTTP boundary for a bearer token.
  *
- * Use this when deciding on a token requires I/O — token introspection, a JWKS fetch — so the
+ * Use this when deciding on a token requires I/O (token introspection, a JWKS fetch), so the
  * decision suspends instead of blocking the executor that is concurrently serving MCP traffic.
  *
  * The token is passed by value: a view would point into the Beast request buffer, which is not
@@ -112,7 +112,7 @@ struct BearerChallengeConfig {
     std::string resource_metadata;  ///< RFC 9728 metadata URL, sent as `resource_metadata="..."`.
     std::string scope;              ///< Space-delimited scopes, sent as `scope="..."`.
     std::string realm;              ///< RFC 7235 realm, sent as `realm="..."`.
-    std::string error;              ///< RFC 6750 §3.1 code such as `invalid_token`.
+    std::string error;              ///< RFC 6750 section 3.1 code such as `invalid_token`.
 };
 
 /**
@@ -169,7 +169,7 @@ MCP_API std::string format_protected_resource_metadata(const ProtectedResourceMe
 /**
  * @brief Build the absolute URL the metadata document is reachable at.
  *
- * The URL is the origin of `resource` — its scheme and authority — followed by
+ * The URL is the origin of `resource` (its scheme and authority) followed by
  * protected_resource_metadata_path(). It is built entirely from `resource`, never from the
  * address a transport happens to be bound to: behind a TLS terminator, a reverse proxy or a
  * container port mapping the listener's own origin is not the one clients can reach, so inferring

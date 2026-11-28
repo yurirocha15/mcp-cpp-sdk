@@ -184,9 +184,6 @@ std::string request_bytes(http::request<http::string_body> request) {
 
 }  // namespace
 
-// ------------------------------------------------------------------------------------------------
-// Serving
-
 TEST(TlsServerTest, TheSessionManagerServesBothProtocolsOverTls) {
     const ManagerHost host(
         [](mcp::StreamableHttpSessionManager& manager) { manager.set_tls(server_options()); });
@@ -259,9 +256,6 @@ TEST(TlsServerTest, TheSettingsAreFixedOnceTheServerListens) {
     EXPECT_THROW(host.manager().set_tls(server_options()), std::logic_error);
     EXPECT_THROW(host.manager().set_allowed_hosts({"example.com"}), std::logic_error);
 }
-
-// ------------------------------------------------------------------------------------------------
-// Clients that are refused
 
 TEST(TlsServerTest, RequiresAClientCertificateFromTheNamedAuthorities) {
     auto options = server_options();
@@ -357,9 +351,6 @@ TEST(TlsServerTest, LimitsTheHandshakesInProgress) {
     second.close();
     EXPECT_TRUE(handshake_eventually(host.port()));
 }
-
-// ------------------------------------------------------------------------------------------------
-// Ending connections
 
 TEST(TlsServerTest, SendsCloseNotifyWhenItEndsAConnection) {
     const TransportHost host(

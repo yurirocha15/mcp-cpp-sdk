@@ -27,9 +27,8 @@ namespace client_notifications_test {
 
 namespace {
 
-// Returns just the result object (not a full JSON-RPC response) —
-// differs from the shared helper in test_utils.hpp which returns a
-// complete response envelope.  Callers here wrap it inline.
+// Returns just the result object, not a full JSON-RPC response; the shared helper in test_utils.hpp
+// returns a complete response envelope. Callers here wrap it inline.
 nlohmann::json make_initialize_result() {
     return {{"protocolVersion", mcp::constants::protocol::g_LATEST_LEGACY_PROTOCOL_VERSION},
             {"capabilities", nlohmann::json::object()},

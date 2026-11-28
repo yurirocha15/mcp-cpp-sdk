@@ -29,10 +29,10 @@ struct SchemaOptions {
     /// Most violations reported by one `validate()` call; validation stops after this many.
     std::size_t max_reported_violations = mcp::constants::schema::g_DEFAULT_MAX_REPORTED_VIOLATIONS;
     /// Pattern matching steps one `validate()` call may take, before the allowance for the value's
-    /// text below. A step takes a few nanoseconds.
+    /// text below.
     std::size_t base_pattern_steps = mcp::constants::schema::g_DEFAULT_BASE_PATTERN_STEPS;
     /// Further pattern matching steps allowed for every byte of string and property name in the
-    /// value. Typical patterns take a handful of steps per byte.
+    /// value.
     std::size_t pattern_steps_per_text_byte =
         mcp::constants::schema::g_DEFAULT_PATTERN_STEPS_PER_TEXT_BYTE;
     /// Most evaluation work one `validate()` call may do, and checking a schema against its
@@ -41,7 +41,7 @@ struct SchemaOptions {
     /// violation.
     std::size_t max_evaluation_work = mcp::constants::schema::g_DEFAULT_MAX_EVALUATION_WORK;
     /// Most instructions, in all, that the `pattern` and `patternProperties` regular expressions of
-    /// one schema may compile to. An instruction takes about 12 bytes.
+    /// one schema may compile to.
     std::size_t max_pattern_instructions = mcp::constants::schema::g_DEFAULT_MAX_PATTERN_INSTRUCTIONS;
 };
 
@@ -126,8 +126,9 @@ using SchemaDocuments = std::map<std::string, nlohmann::json>;
  * Validation is bounded: the value's nesting (`SchemaOptions::max_instance_depth`), the nesting
  * of the evaluation (192 subschemas evaluated one inside another, `$ref` targets included), and the
  * evaluation work, which may grow with the size and nesting of the value but not exponentially.
- * Pattern matching (`pattern`, `patternProperties`) has its own budget, by default 16 million
- * matcher steps plus 64 for every byte of string and property name in the value (`SchemaOptions`).
+ * Pattern matching (`pattern`, `patternProperties`) has its own budget:
+ * `SchemaOptions::base_pattern_steps` matcher steps plus `SchemaOptions::pattern_steps_per_text_byte`
+ * for every byte of string and property name in the value.
  * A value whose validation exceeds a bound is reported as invalid. A recursive schema takes one
  * level of nesting for each subschema on its way down one level of the value: one that passes
  * through `anyOf`, `items`, `allOf` and `$ref` at every level reaches the bound at 48 levels of the

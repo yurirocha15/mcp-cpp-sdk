@@ -197,7 +197,6 @@ int main() {
         asio::io_context io_ctx;
         bool ok = true;
 
-        // ========== REGISTRATION ==========
         std::cout << "=== Registration ===\n";
         auto checking_server = make_server("checking-server");
         ok &= expect_refused(*checking_server, "misspelled_type",
@@ -231,7 +230,6 @@ int main() {
                        run_clients(&io_ctx, checking_client_end, lenient_client_end, &clients_ok),
                        asio::detached);
 
-        // ========== AUTO-EXIT TIMER ==========
         // Stop after 10 seconds if the clients never finish, and report that as a failure.
         asio::steady_timer exit_timer(io_ctx.get_executor(), std::chrono::seconds(10));
         exit_timer.async_wait([&io_ctx](const boost::system::error_code& error) {

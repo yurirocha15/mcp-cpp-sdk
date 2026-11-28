@@ -28,7 +28,6 @@ namespace server_middleware_test {
 using namespace mcp;
 using json = nlohmann::json;
 
-// Test 1: Middleware modifies params before handler
 TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
     boost::asio::io_context io;
 
@@ -42,7 +41,6 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
 
     Server server(std::move(info), std::move(caps));
 
-    // Register middleware that adds 100 to the "addend" param
     server.use([](Context& ctx, const json& params, TypeErasedHandler next) -> Task<json> {
         json modified = params;
         if (modified.contains("arguments") && modified["arguments"].contains("addend")) {
@@ -51,7 +49,6 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
         co_return co_await next(ctx, modified);
     });
 
-    // Register a simple add tool
     server.add_tool<json, json>(
         "add", "Adds a number to 10",
         json{{"type", "object"}, {"properties", {{"addend", {{"type", "integer"}}}}}},
@@ -93,7 +90,6 @@ TEST(ServerMiddlewareTest, MiddlewareModifiesParams) {
     EXPECT_EQ((*it)["result"]["structuredContent"]["sum"], 115);
 }
 
-// Test 2: Middleware short-circuits (returns without calling next)
 TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     boost::asio::io_context io;
 
@@ -107,7 +103,6 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
 
     Server server(std::move(info), std::move(caps));
 
-    // Middleware that blocks "forbidden" tool without calling next
     server.use([](Context& ctx, const json& params, TypeErasedHandler next) -> Task<json> {
         if (params.contains("name") && params["name"] == "forbidden") {
             throw std::runtime_error("Tool 'forbidden' is not allowed");
@@ -115,7 +110,6 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
         co_return co_await next(ctx, params);
     });
 
-    // Register the forbidden tool (should never execute)
     bool tool_executed = false;
     server.add_tool<json, json>("forbidden", "A forbidden tool", json{{"type", "object"}},
                                 [&tool_executed](const json&) -> json {
@@ -146,7 +140,6 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     mcp_test::spawn_detached(io, server.run(transport, io.get_executor()));
     io.run();
 
-    // Verify the tool was never executed
     EXPECT_FALSE(tool_executed);
 
     // A middleware that throws is signalling that the call must not proceed, which belongs on the
@@ -159,7 +152,6 @@ TEST(ServerMiddlewareTest, MiddlewareShortCircuits) {
     EXPECT_TRUE((*it)["error"]["message"].get<std::string>().find("forbidden") != std::string::npos);
 }
 
-// Test 3: Multiple middlewares execute in order (1→2→handler→2→1)
 // Each of these reaches an application handler, so a middleware guarding the server guards it too.
 TEST(ServerMiddlewareTest, MiddlewareGuardsSubscriptionsAndCompletion) {
     boost::asio::io_context io;
@@ -245,7 +237,6 @@ TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
 
     Server server(std::move(info), std::move(caps));
 
-    // Track execution order
     auto order = std::make_shared<std::vector<int>>();
 
     // Middleware 1: logs 1 before, 3 after
@@ -264,7 +255,6 @@ TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
         co_return result;
     });
 
-    // Tool handler
     server.add_tool<json, json>("track", "Tracks execution order", json{{"type", "object"}},
                                 [order](const json&) -> json {
                                     order->push_back(99);
@@ -303,7 +293,6 @@ TEST(ServerMiddlewareTest, MultipleMiddlewaresExecuteInOrder) {
     EXPECT_EQ((*order)[4], 3);
 }
 
-// Test 4: Middleware post-processes result after handler
 TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
     boost::asio::io_context io;
 
@@ -321,7 +310,6 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
     server.use([](Context& ctx, const json& params, TypeErasedHandler next) -> Task<json> {
         auto result = co_await next(ctx, params);
 
-        // Post-process: double the sum if present
         if (result.is_object() && result.contains("sum")) {
             result["sum"] = result["sum"].get<int>() * 2;
             result["metadata"] = "processed by middleware";
@@ -330,7 +318,6 @@ TEST(ServerMiddlewareTest, MiddlewarePostProcessesResult) {
         co_return result;
     });
 
-    // Tool that computes value * 2
     server.add_tool<json, json>(
         "compute", "Computes value * 2",
         json{{"type", "object"}, {"properties", {{"value", {{"type", "integer"}}}}}},
@@ -526,8 +513,8 @@ json answer_to(Server& server, const std::vector<json>& messages, const json& id
     auto transport = std::make_shared<ScriptedTransport>(io.get_executor());
     auto* transport_ptr = transport.get();
 
-    // A request nobody answers keeps the server running even after its transport closes. The timer
-    // runs out only then, so that the regression fails the test instead of hanging the suite.
+    // A request that is never answered keeps the server running after its transport closes. The timer
+    // runs out only then, so a server that keeps running fails the test instead of hanging the suite.
     boost::asio::steady_timer watchdog(io);
     watchdog.expires_after(g_hang_guard);
     watchdog.async_wait([&io](const boost::system::error_code& error) {

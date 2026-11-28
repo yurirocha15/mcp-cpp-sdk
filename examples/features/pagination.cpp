@@ -34,7 +34,6 @@ int main() {
         asio::io_context io_ctx;
         bool client_ok = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
 
@@ -45,7 +44,6 @@ int main() {
         Server server(server_info, server_caps);
 
         // ========== TOOL REGISTRATION ==========
-        // Set page size to 3 to demonstrate pagination
         server.set_page_size(3);
         std::cout << "[Server] Page size set to 3\n";
 
@@ -54,7 +52,6 @@ int main() {
         server.set_cache_hints(CacheTarget::eToolsList,
                                CacheHint{.ttlMs = 30000, .scope = CacheScope::ePublic});
 
-        // Register 12 tools to demonstrate pagination
         nlohmann::json tool_schema = {
             {"type", "object"},
             {"properties", {{"value", {{"type", "string"}}}}},
@@ -85,15 +82,12 @@ int main() {
 
         std::cout << "[Server] Registered 12 tools\n";
 
-        // ========== CLIENT SETUP ==========
         Implementation client_info;
         client_info.name = "pagination-client";
         client_info.version = "1.0.0";
 
-        // Create bidirectional memory transport pair
         auto [server_transport, client_transport] = make_memory_transport_pair(io_ctx.get_executor());
 
-        // ========== SERVER COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&, transport = server_transport]() mutable -> Task<void> {
@@ -102,7 +96,6 @@ int main() {
             },
             asio::detached);
 
-        // ========== CLIENT COROUTINE ==========
         asio::co_spawn(
             io_ctx,
             [&, transport = client_transport]() -> Task<void> {
@@ -133,7 +126,6 @@ int main() {
                         }
                         std::cout << "\n";
 
-                        // Call list_tools with cursor if available
                         auto list_result = co_await client.list_tools(cursor);
 
                         std::cout << "[Client] Received " << list_result.tools.size() << " tools\n";
@@ -145,7 +137,6 @@ int main() {
                                       << "\n";
                         }
 
-                        // Display tools on this page
                         for (const auto& tool : list_result.tools) {
                             total_tools++;
                             std::cout << "  [" << total_tools << "] " << tool.name << ": ";
@@ -157,7 +148,6 @@ int main() {
                             std::cout << "\n";
                         }
 
-                        // Check if there are more pages
                         if (list_result.nextCursor) {
                             std::cout << "[Client] More pages available (nextCursor: "
                                       << list_result.nextCursor.value() << ")\n";
@@ -194,7 +184,6 @@ int main() {
             }
         });
 
-        // Run the event loop
         io_ctx.run();
 
         if (!client_ok) {

@@ -742,8 +742,8 @@ struct StdioTransport::Impl {
             pump.wake.notify_all();
             pump.wake_input_wait();
             if (shared_state->output_may_stall) {
-                // What was accepted is still written, but no one waits for a peer that stopped
-                // reading: a handler blocked here would hold up shutdown.
+                // What was accepted is still written, but a peer that stopped reading is not
+                // waited for: a handler blocked here would hold up shutdown.
                 for (auto& item : pump.outgoing) {
                     if (item.waiter) {
                         complete_write(shared_state, std::move(item.waiter), false);

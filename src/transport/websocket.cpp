@@ -192,10 +192,6 @@ class SerializedWriteGate {
 
 }  // namespace
 
-// ============================================================================
-// WebSocketServerTransport::Impl
-// ============================================================================
-
 struct WebSocketServerTransport::Impl {
     enum class HandshakeState : std::uint8_t {
         ePending,
@@ -539,10 +535,6 @@ void WebSocketServerTransport::close() {
     }
     asio::post(state->strand, [state] { Impl::close_on_strand(state); });
 }
-
-// ============================================================================
-// WebSocketClientTransport::Impl
-// ============================================================================
 
 struct WebSocketClientTransport::Impl {
     enum class ConnectionState : std::uint8_t {

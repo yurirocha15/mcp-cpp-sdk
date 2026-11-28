@@ -113,9 +113,6 @@ class Harness {
 
 }  // namespace
 
-// ------------------------------------------------------------------------------------------------
-// The bucket
-
 TEST(TokenBucketTest, LetsTheBurstThroughThenTheRate) {
     const auto start = Clock::now();
     TokenBucket bucket(NotificationRateLimit{2, 10.0}, start);
@@ -149,9 +146,6 @@ TEST(TokenBucketTest, RefusesARateThatIsNegativeOrNotANumber) {
                  std::invalid_argument);
     EXPECT_NO_THROW(mcp::detail::check_rate_limit(NotificationRateLimit{1, 0.0}));
 }
-
-// ------------------------------------------------------------------------------------------------
-// The client
 
 TEST(ClientNotificationLimit, IsOffUnlessSet) {
     Harness harness(mcp::ClientOptions{}, 50);

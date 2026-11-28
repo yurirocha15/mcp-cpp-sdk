@@ -391,8 +391,6 @@ mcp::Task<void> run_scenario(mcp::Client& client, std::string_view scenario) {
     throw std::runtime_error("unsupported conformance client scenario: " + std::string(scenario));
 }
 
-// --- Authorization wiring -------------------------------------------------------------------
-//
 // This fixture is a host application: the SDK never opens a browser and never binds a listener, so
 // carrying the user agent to the authorization endpoint and collecting the redirect is work the
 // application does. Here that means one plain HTTP GET whose redirect is deliberately not followed,
@@ -531,19 +529,14 @@ std::optional<nlohmann::json> conformance_context() {
 
 /// Resolve the issuer the runner's injected credentials are bound to.
 ///
-/// The SDK refuses to present a `client_secret` that names no issuer, because on a real deployment
-/// the authorization server is named by a document the client did not write. The fixture is the one
-/// case where that document is trustworthy: the runner starts both the MCP server and the
-/// authorization server for the scenario, and hands over the credentials it minted for that pair.
-/// The runner does not put the issuer in `MCP_CONFORMANCE_CONTEXT` (conformance 0.1.16 sends only
-/// `client_id` and `client_secret`), so this reads an `issuer` key when a future runner supplies
-/// one and otherwise performs the protected-resource discovery step itself, under the same fetch
-/// policy the SDK will use, and binds to the authorization server that document names.
+/// The SDK refuses a `client_secret` that names no issuer. The runner starts both servers of a
+/// scenario and mints the credentials for that pair, but sends only `client_id` and `client_secret`
+/// in `MCP_CONFORMANCE_CONTEXT` (conformance 0.1.16). This reads an `issuer` key when one is
+/// present; otherwise it runs the protected-resource discovery step under the SDK's fetch policy
+/// and binds to the authorization server that document names.
 ///
-/// This is a deliberate fixture-only decision and must not be copied into an application: an
-/// application that binds its secret to whatever issuer the protected-resource document names has
-/// re-created the very misbinding the SDK refusal exists to prevent. An application knows its own
-/// issuer out of band, because that is where it registered.
+/// An application must not copy this: binding a secret to whatever issuer the document names
+/// re-creates the misbinding the SDK refusal prevents. An application knows its issuer out of band.
 std::string resolve_injected_issuer(boost::asio::io_context& io_context, const std::string& server_url,
                                     const nlohmann::json& context) {
     if (context.contains("issuer") && context.at("issuer").is_string()) {

@@ -190,9 +190,6 @@ mcp::Task<bool> wait_until(std::function<bool()> condition) {
 
 }  // namespace
 
-// ------------------------------------------------------------------------------------------------
-// The cache
-
 TEST(ResponseCacheTest, KeysOnTheMethodAndTheParameters) {
     EXPECT_EQ(ResponseCache::key("tools/list", std::nullopt),
               ResponseCache::key("tools/list", std::nullopt));
@@ -309,9 +306,6 @@ TEST(ResponseCacheTest, ANotificationDuringACallKeepsItsResultOut) {
     cache.store(key, "tools/list", std::nullopt, json{{"ttlMs", 60000}}, before);
     EXPECT_FALSE(cache.find(key));
 }
-
-// ------------------------------------------------------------------------------------------------
-// The client
 
 TEST(ClientResponseCache, IsOffUnlessEnabled) {
     Harness harness;

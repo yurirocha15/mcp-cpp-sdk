@@ -1253,8 +1253,7 @@ TEST_F(ToolsStructured, AnyJsonValueModern) {
     }
 }
 
-// Before 2026-07-28 structuredContent is an object. A raw result that holds anything else is
-// refused exactly as it always was.
+// Before 2026-07-28 structuredContent is an object: a raw result that holds anything else is refused.
 TEST_F(ToolsStructured, LegacyNonObjectStillErrors) {
     for (const auto& value : {nlohmann::json::array({1, 2}), nlohmann::json(5), nlohmann::json("s")}) {
         SCOPED_TRACE(value.dump());

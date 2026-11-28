@@ -39,7 +39,6 @@ int main() {
     try {
         using namespace mcp;
 
-        // ========== MANUAL SETUP (for comparison - NOT used in this example) ==========
         // A transport of your own, which serves one client of protocol revision 2025-11-25 or
         // earlier at a time (any number of 2026-07-28 clients):
         //
@@ -68,7 +67,6 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        // Register a simple echo tool
         nlohmann::json tool_schema = {
             {"type", "object"},
             {"properties", {{"text", {{"type", "string"}}}}},
@@ -89,7 +87,6 @@ int main() {
         std::cout << "Starting HTTP server on port " << http_port << " (convenience method)\n";
         std::cout << "Server will run in background thread\n";
 
-        // Spawn server in background thread
         std::thread server_thread([&server, http_port] {
             try {
                 // This convenience method handles everything:
@@ -108,8 +105,6 @@ int main() {
 
         // Give server time to start
         std::this_thread::sleep_for(startup_delay);
-
-        // ========== CLIENT SIDE ==========
 
         asio::io_context client_io_ctx;
         bool client_ok = false;
@@ -140,7 +135,6 @@ int main() {
                         std::cout << "Protocol version: " << init_result.protocolVersion << '\n';
                     }
 
-                    // List available tools
                     auto tools = co_await client.list_tools();
                     std::cout << "Available tools: " << tools.tools.size() << '\n';
                     for (const auto& tool : tools.tools) {
@@ -151,7 +145,6 @@ int main() {
                         std::cout << '\n';
                     }
 
-                    // Call the echo tool
                     std::cout << "\nClient: calling echo tool\n";
                     nlohmann::json call_args = {{"text", "Hello from convenience API!"}};
                     auto result = co_await client.call_tool("echo", call_args);
@@ -175,8 +168,6 @@ int main() {
 
         client_io_ctx.run();
 
-        // ========== SHUTDOWN ==========
-
         std::cout << "\nShutting down server...\n";
         constexpr auto shutdown_delay = std::chrono::milliseconds(100);
         std::this_thread::sleep_for(shutdown_delay);
@@ -184,7 +175,6 @@ int main() {
         // Raise SIGINT so run_http() can trigger its graceful shutdown path.
         std::raise(SIGINT);
 
-        // Wait for server thread to finish
         server_thread.join();
 
         if (!client_ok) {

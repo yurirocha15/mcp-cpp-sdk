@@ -46,9 +46,6 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 using tcp = asio::ip::tcp;
 
-// ----------------------------------------------------------------------------------------------
-// Certificates
-
 using KeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
 using CertPtr = std::unique_ptr<X509, decltype(&X509_free)>;
 
@@ -150,9 +147,6 @@ inline Issued issue(const CertSpec& spec, const Issued* issuer = nullptr) {
     issued.key_pem = key_to_pem(issued.key.get());
     return issued;
 }
-
-// ----------------------------------------------------------------------------------------------
-// Servers
 
 /// Runs an io_context on a thread of its own until the object is destroyed, and closes what the
 /// server registered on the way out.

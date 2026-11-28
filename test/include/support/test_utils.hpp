@@ -33,11 +33,8 @@ inline mcp::ClientOptions legacy_client_options() {
     return options;
 }
 
-// ---------------------------------------------------------------------------
-// ScriptedTransport — mock ITransport that queues scripted messages and
-// captures outgoing writes.  Suspends via a strand-wrapped timer when the
-// incoming queue is empty; wakes on enqueue_message() or close().
-// ---------------------------------------------------------------------------
+// Mock ITransport that queues scripted messages and captures outgoing writes. Suspends on a
+// strand-wrapped timer when the incoming queue is empty; wakes on enqueue_message() or close().
 class ScriptedTransport final : public mcp::ITransport {
    public:
     explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
@@ -118,9 +115,6 @@ class ScriptedTransport final : public mcp::ITransport {
     std::atomic<bool> hold_writes_{false};
 };
 
-// ---------------------------------------------------------------------------
-// JSON-RPC message helpers
-// ---------------------------------------------------------------------------
 inline nlohmann::json make_initialize_request(std::string_view id) {
     return {
         {"jsonrpc", "2.0"},

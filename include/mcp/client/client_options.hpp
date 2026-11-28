@@ -83,7 +83,7 @@ struct ClientOptions {
      */
     std::function<void(const EraDecision&)> on_era_decision;
     /**
-     * @brief Default time limit for outgoing requests. Thirty seconds unless set.
+     * @brief Default time limit for outgoing requests.
      *
      * Every request the client issues carries this deadline, including the typed helpers such
      * as call_tool() and read_resource(), which accept no per-request override. A request that
@@ -95,7 +95,7 @@ struct ClientOptions {
     std::chrono::milliseconds request_timeout{mcp::constants::client::g_DEFAULT_REQUEST_TIMEOUT};
     /**
      * @brief Memory the server's requests being answered, and the answers not yet written, may
-     * take before the client stops reading. 256 MiB unless set; must be positive.
+     * take before the client stops reading. Must be positive.
      *
      * A request is counted as its parsed JSON takes memory, which can be far more than its text.
      * The client also stops reading while it answers 1024 requests of the server.
@@ -132,13 +132,12 @@ struct ClientOptions {
      */
     ClientTaskMode tasks{ClientTaskMode::eOff};
     /**
-     * @brief How often the client polls a task whose state names no interval. One second unless
-     * set; must be positive.
+     * @brief How often the client polls a task whose state names no interval. Must be positive.
      */
     std::chrono::milliseconds task_poll_interval{mcp::constants::client::g_DEFAULT_TASK_POLL_INTERVAL};
     /**
      * @brief How long call_tool() and TaskHandle::wait() follow one task before they give up with
-     * mcp::constants::jsonrpc::g_REQUEST_TIMEOUT. Thirty minutes unless set; must be positive.
+     * mcp::constants::jsonrpc::g_REQUEST_TIMEOUT. Must be positive.
      *
      * @details A TaskHandle::wait() that gives up leaves the task running on the server, and the
      * handle can pick it up again. A call_tool() that gives up, for this timeout or because a

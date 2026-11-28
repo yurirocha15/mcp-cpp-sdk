@@ -375,8 +375,6 @@ class TasksTest : public ::testing::Test {
     }
 };
 
-// ---- negotiation -------------------------------------------------------------------------------
-
 TEST_F(TasksTest, DiscoverDoesNotAdvertiseTheExtensionUntilEnabled) {
     json answer;
     run([&]() -> mcp::Task<void> {
@@ -492,8 +490,6 @@ TEST_F(TasksTest, ATaskToolWithoutAHandlerExecutorWarns) {
     server_->set_tool_task_mode("gated", mcp::ToolTaskMode::eAuto);
     EXPECT_EQ(warnings_.size(), 1u);
 }
-
-// ---- creation ----------------------------------------------------------------------------------
 
 TEST_F(TasksTest, ADeclaringClientGetsATaskHandle) {
     mcp::TaskOptions options;
@@ -624,8 +620,6 @@ TEST_F(TasksTest, TheRemovedCoreTaskMethodsStayUnknown) {
     }
 }
 
-// ---- polling -----------------------------------------------------------------------------------
-
 TEST_F(TasksTest, ATaskIsFindableAtOnceAndCompletesWithTheToolResult) {
     enable();
     json working;
@@ -752,8 +746,6 @@ TEST_F(TasksTest, ATaskRunsOnTheHandlerExecutor) {
     pool.join();
 }
 
-// ---- errors and gating -------------------------------------------------------------------------
-
 TEST_F(TasksTest, TheTaskMethodsNeedTheDeclaredExtension) {
     enable();
     std::vector<json> answers;
@@ -818,8 +810,6 @@ TEST_F(TasksTest, MalformedTaskRequestsAreInvalidParams) {
     }
 }
 
-// ---- principals --------------------------------------------------------------------------------
-
 TEST_F(TasksTest, ATaskBelongsToThePrincipalThatStartedIt) {
     enable();
     std::vector<json> foreign;
@@ -858,8 +848,6 @@ TEST_F(TasksTest, AnAnonymousCallerCanUseItsOwnTasks) {
     });
     EXPECT_EQ(completed["status"], "completed");
 }
-
-// ---- cancellation ------------------------------------------------------------------------------
 
 TEST_F(TasksTest, CancellingAcknowledgesAndStopsTheHandler) {
     enable();
@@ -915,8 +903,6 @@ TEST_F(TasksTest, CancellationDoesNotUseTheCancelledNotification) {
     });
     EXPECT_EQ(after["status"], "working");
 }
-
-// ---- input -------------------------------------------------------------------------------------
 
 TEST_F(TasksTest, ATaskAsksForInputThroughItsInputRequests) {
     enable();
@@ -1106,8 +1092,6 @@ TEST_F(TasksTest, CancellingATaskThatWaitsForInputRecordsNoFailure) {
     EXPECT_EQ(after["status"], "cancelled") << after;
     EXPECT_EQ(store->fails.load(), 0);
 }
-
-// ---- store -------------------------------------------------------------------------------------
 
 TEST_F(TasksTest, TheServerKeepsItsTasksInTheStoreItIsGiven) {
     auto store = std::make_shared<CountingStore>();
@@ -1314,8 +1298,6 @@ TEST_F(TasksTest, DestroyingTheServerCancelsARunningTask) {
         EXPECT_TRUE(stopped);
     });
 }
-
-// ---- task preparation --------------------------------------------------------------------------
 
 /// @p request retried with @p state and @p responses under a new id.
 json retried(json request, const json& id, const json& state, json responses) {
@@ -1674,8 +1656,6 @@ TEST_F(TasksTest, ATaskPreparationCannotChangeOnceTheServerServes) {
                      }),
                  std::logic_error);
 }
-
-// ---- notifications over subscriptions/listen ---------------------------------------------------
 
 class TaskListen : public TasksTest {
    protected:

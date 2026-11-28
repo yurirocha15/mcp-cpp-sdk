@@ -211,7 +211,7 @@ Task<void> Server::Impl::dispatch_request(nlohmann::json json_msg,
     forget();
     // A 2026-07-28 request belongs to no session, so a session ending does not orphan it.
     if (!modern && Impl::session_epoch(*session) != epoch) {
-        // The client ended this request's session while it ran; the answer is for nobody now.
+        // The client ended this request's session while it ran; the answer has no recipient.
         co_return;
     }
     if (modern && cancelled->load(std::memory_order_relaxed)) {
@@ -1198,7 +1198,7 @@ const std::string& Server::Impl::server_info_meta() const {
             meta[std::string(mcp::constants::meta::g_META_SERVER_INFO)] = server_info;
             server_info_meta_text = detail::dump_json(meta);
         } catch (const nlohmann::json::exception&) {
-            // Left empty: each result then has the identity inserted, and fails, as before.
+            // Left empty: each result then has the identity inserted, and fails.
         }
     });
     return server_info_meta_text;

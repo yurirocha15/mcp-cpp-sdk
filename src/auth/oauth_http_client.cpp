@@ -57,9 +57,9 @@ namespace {
 /// re-opens the hole silently.
 using detail::sanitize_for_diagnostics;
 
-/// Does `reference` begin with an RFC 3986 §3.1 scheme, `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`
-/// followed by ':', before any '/', '?' or '#'? Only then is it an absolute URI; "://" further on,
-/// say in a query, does not make it one.
+/// Does `reference` begin with an RFC 3986 section 3.1 scheme, `ALPHA *( ALPHA / DIGIT / "+" / "-" /
+/// "." )` followed by ':', before any '/', '?' or '#'? Only then is it an absolute URI; "://" further
+/// on, say in a query, does not make it one.
 bool has_uri_scheme(std::string_view reference) {
     const auto colon = reference.find_first_of(":/?#");
     if (colon == std::string_view::npos || colon == 0 || reference[colon] != ':' ||
@@ -111,8 +111,8 @@ namespace detail {
 
 /// One scope's abort latch, owned jointly by the scope object and by every exchange issued
 /// through it. `aborted` is guarded by the owning client's `active_mutex`, the same mutex the
-/// client-wide latch is read and written under, so the scoped and unscoped checks keep the
-/// single synchronisation discipline they have always had.
+/// client-wide latch is read and written under, so the scoped and unscoped checks share one
+/// synchronisation discipline.
 struct OAuthScopeState {
     OAuthScopeState() { live().fetch_add(1, std::memory_order_relaxed); }
     OAuthScopeState(const OAuthScopeState&) = delete;

@@ -18,7 +18,6 @@
 
 namespace asio = boost::asio;
 
-// ========== DEMO 1: MemoryTransport with make_memory_transport_pair() ==========
 void demo_memory_transport() {
     std::cout << "\n" << std::string(70, '=') << "\n";
     std::cout << "DEMO 1: MemoryTransport with make_memory_transport_pair()\n";
@@ -76,14 +75,12 @@ void demo_memory_transport() {
     }
 }
 
-// ========== MAIN ==========
 int main() {
     try {
         std::cout << "\n" << std::string(70, '=') << "\n";
         std::cout << "MCP Transport Example: MemoryTransport\n";
         std::cout << std::string(70, '=') << "\n";
 
-        // Run Demo 1: MemoryTransport
         demo_memory_transport();
 
         std::cout << "\n" << std::string(70, '=') << "\n";

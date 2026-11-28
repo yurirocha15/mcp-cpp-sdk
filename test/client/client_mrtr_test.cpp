@@ -203,10 +203,6 @@ json tool_params(const std::string& name = "ask") {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Scripted server
-// ---------------------------------------------------------------------------
-
 // Client Requirement 1: the requested inputs are built before the original request is retried,
 // and the retry answers every entry under the key the server chose.
 TEST(ClientMrtr, TwoRounds) {
@@ -764,10 +760,6 @@ TEST(ClientMrtr, EmptyInputRequiredRejected) {
     EXPECT_EQ(failure.code, mcp::constants::jsonrpc::g_INVALID_REQUEST);
     EXPECT_EQ(harness.requests("tools/call").size(), 1u);
 }
-
-// ---------------------------------------------------------------------------
-// The SDK client against the SDK server
-// ---------------------------------------------------------------------------
 
 namespace {
 

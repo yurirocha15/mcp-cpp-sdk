@@ -450,7 +450,6 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
 
         state->resource = runtime.mock_oauth->protected_resource_url();
 
-        // ---------------------------------------------------------------------------------
         // Authorization runs through OAuthAuthorizationManager. Do not hand-roll this flow:
         // driving OAuthDiscoveryClient and OAuthHttpClient::exchange_code() yourself compiles
         // and appears to work, but skips the checks the manager performs:
@@ -460,7 +459,6 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
         //   * RFC 9207 `iss` is validated before the response's `error` fields are read;
         //   * PKCE S256 is generated and the verifier is retained for the token request;
         //   * the RFC 8707 `resource` indicator is carried into the code exchange.
-        // ---------------------------------------------------------------------------------
 
         // docs-begin: manager-flow
         // A default-constructed policy refuses every metadata target: the allow list is empty
@@ -468,8 +466,7 @@ auto run_client_demo(ClientFlowRuntime runtime) -> mcp::Task<void> {
         // origins it intends to reach before the first request. This example talks only to its
         // own mock server on loopback, so it allows that one origin and opts in to plain-HTTP
         // loopback. A client lists the origins of its MCP server and of the authorization servers
-        // that server names. Leaving allow_plain_http_loopback false admits only https targets,
-        // which the built-in client cannot reach yet because it has no TLS support.
+        // that server names. Leaving allow_plain_http_loopback false admits only https targets.
         mcp::auth::MetadataFetchPolicy policy;
         policy.allowed_origins = {runtime.mock_oauth->issuer()};
         policy.allow_plain_http_loopback = true;
@@ -614,10 +611,6 @@ int main() {
         constexpr unsigned short oauth_port = 0;
         MockOAuthServer mock_oauth(io_ctx, oauth_port);
 
-        // ========== MOCK AUTH SERVER SETUP ==========
-        // (MockOAuthServer already initialized above)
-
-        // ========== MCP SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
 
@@ -627,7 +620,6 @@ int main() {
 
         Server server(server_info, server_caps);
 
-        // ========== AUTH MIDDLEWARE ==========
         server.use(
             mcp::auth::make_auth_middleware([&mock_oauth](const std::string& token) -> Task<bool> {
                 const bool valid = mock_oauth.validate_token(token);
@@ -654,7 +646,6 @@ int main() {
         auto server_transport =
             std::make_shared<MiddlewareAuthErrorBridgeTransport>(server_base_transport);
 
-        // ========== TRANSPORT & RUN ==========
         auto exit_timer = std::make_shared<asio::steady_timer>(io_ctx.get_executor());
         exit_timer->expires_after(std::chrono::seconds(10));
 

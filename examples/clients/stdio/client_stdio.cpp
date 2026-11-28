@@ -81,7 +81,6 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                                   << " session)\n";
                     }
 
-                    // list_tools
                     auto tools = co_await client.list_tools();
                     std::cerr << "Tools (" << tools.tools.size() << "):\n";
                     for (const auto& tool : tools.tools) {
@@ -106,14 +105,12 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         }
                     }
 
-                    // list_resources
                     auto resources = co_await client.list_resources();
                     std::cerr << "Resources (" << resources.resources.size() << "):\n";
                     for (const auto& res : resources.resources) {
                         std::cerr << "  - " << res.uri << " (" << res.name << ")\n";
                     }
 
-                    // read_resource
                     if (!resources.resources.empty()) {
                         auto read_result = co_await client.read_resource(resources.resources[0].uri);
                         for (const auto& content : read_result.contents) {
@@ -123,21 +120,18 @@ int main(int argc, char** argv) {  // NOLINT(readability-function-cognitive-comp
                         }
                     }
 
-                    // list_resource_templates
                     auto templates = co_await client.list_resource_templates();
                     std::cerr << "Resource templates (" << templates.resourceTemplates.size() << "):\n";
                     for (const auto& tmpl : templates.resourceTemplates) {
                         std::cerr << "  - " << tmpl.uriTemplate << " (" << tmpl.name << ")\n";
                     }
 
-                    // list_prompts
                     auto prompts = co_await client.list_prompts();
                     std::cerr << "Prompts (" << prompts.prompts.size() << "):\n";
                     for (const auto& prompt : prompts.prompts) {
                         std::cerr << "  - " << prompt.name << "\n";
                     }
 
-                    // get_prompt
                     if (!prompts.prompts.empty()) {
                         std::map<std::string, std::string> prompt_args;
                         prompt_args["language"] = "C++";

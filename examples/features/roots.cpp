@@ -40,7 +40,6 @@ int main() {
         asio::io_context io_ctx;
         bool client_ok = false;
 
-        // ========== SERVER SETUP ==========
         ServerCapabilities server_caps;
         server_caps.tools = ServerCapabilities::ToolsCapability{};
 
@@ -177,7 +176,6 @@ int main() {
                     std::cout << "Client: Closing connection\n";
                     client.close();
 
-                    // Schedule shutdown
                     asio::steady_timer shutdown_timer(io_ctx.get_executor());
                     shutdown_timer.expires_after(std::chrono::milliseconds(100));
                     co_await shutdown_timer.async_wait(asio::use_awaitable);

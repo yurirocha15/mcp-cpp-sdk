@@ -303,7 +303,7 @@ struct OAuthClientTransport::Impl {
     /// close() cancels only the authenticator work already in flight, so a write that is still in
     /// its retry loop checks for it before asking the authenticator for anything new. Otherwise a
     /// refresh that close() cut short would hand over to an interactive authorization for a
-    /// transport nobody can use any more.
+    /// closed transport.
     static bool is_closed(Impl& owner) {
         std::scoped_lock lock(owner.pending_mutex);
         return owner.closed;

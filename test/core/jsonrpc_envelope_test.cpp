@@ -157,8 +157,8 @@ TEST(JsonRpcEnvelopeTest, ResultBeforeErrorStillReportsTheResult) {
 
 namespace {
 
-/// The scan as it was before it skipped eight bytes at a time: one byte at a time throughout. The
-/// tests below hold the current scan to it.
+/// Reference scan that reads one byte at a time throughout. The tests below hold the current scan to
+/// it.
 namespace byte_scan {
 
 std::size_t skip_json_whitespace(std::string_view text, std::size_t pos) {

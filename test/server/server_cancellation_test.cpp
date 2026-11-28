@@ -62,7 +62,6 @@ TEST_F(ServerCancellationTest, CancellationFlagSetOnNotification) {
 
     mcp::Server server(std::move(info), std::move(caps));
 
-    // Register a tool that checks cancellation after a yield point.
     server.add_tool<SlowParams, SlowResult>(
         "slow_tool", "A tool that checks cancellation", nlohmann::json{{"type", "object"}},
         [&](mcp::Context& ctx, SlowParams /*params*/) -> mcp::Task<SlowResult> {
@@ -93,7 +92,6 @@ TEST_F(ServerCancellationTest, CancellationFlagSetOnNotification) {
     call_req["params"] = nlohmann::json{{"name", "slow_tool"}, {"arguments", {{"value", 42}}}};
     raw_transport->enqueue_message(call_req.dump());
 
-    // Send cancellation notification for request "2".
     nlohmann::json cancel_notif;
     cancel_notif["jsonrpc"] = "2.0";
     cancel_notif["method"] = "notifications/cancelled";
@@ -106,9 +104,8 @@ TEST_F(ServerCancellationTest, CancellationFlagSetOnNotification) {
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 2);
-    // First response is init
     EXPECT_EQ(responses[0]["id"], "1");
-    // Second is tool result — the handler should see cancellation
+    // The second response is the tool result; the handler sees the cancellation.
     EXPECT_EQ(responses[1]["id"], "2");
     ASSERT_TRUE(responses[1].contains("result"));
     EXPECT_TRUE(responses[1]["result"]["structuredContent"]["was_cancelled"].get<bool>());
@@ -248,7 +245,7 @@ TEST_F(ServerCancellationTest, CancellationForUnknownRequestIsIgnored) {
         raw_transport->close();
     });
 
-    // Send a cancellation for a request that doesn't exist — should be silently ignored.
+    // A cancellation for a request that does not exist is ignored.
     nlohmann::json cancel_notif;
     cancel_notif["jsonrpc"] = "2.0";
     cancel_notif["method"] = "notifications/cancelled";
@@ -289,14 +286,13 @@ TEST_F(ServerCancellationTest, InFlightCleanedUpAfterToolCompletes) {
     raw_transport->set_on_write([&responses, raw_transport](std::string_view msg) {
         responses.push_back(nlohmann::json::parse(msg));
         if (responses.size() == 2) {
-            // After tool completes, send a cancellation for it — should be a no-op.
+            // A cancellation for a request that has completed is a no-op.
             nlohmann::json cancel_notif;
             cancel_notif["jsonrpc"] = "2.0";
             cancel_notif["method"] = "notifications/cancelled";
             cancel_notif["params"] = nlohmann::json{{"requestId", "2"}};
             raw_transport->enqueue_message(cancel_notif.dump());
 
-            // Then send a ping to verify server is still healthy.
             nlohmann::json ping_req = {{"jsonrpc", "2.0"}, {"id", "3"}, {"method", "ping"}};
             raw_transport->enqueue_message(ping_req.dump());
         }
@@ -321,10 +317,9 @@ TEST_F(ServerCancellationTest, InFlightCleanedUpAfterToolCompletes) {
     io_ctx_.run();
 
     ASSERT_EQ(responses.size(), 3);
-    // Tool result
     EXPECT_EQ(responses[1]["id"], "2");
     ASSERT_TRUE(responses[1].contains("result"));
-    // Ping after cancellation of completed request — server still works
+    // The server still answers a ping after the cancellation.
     EXPECT_EQ(responses[2]["id"], "3");
     EXPECT_EQ(responses[2]["result"], nlohmann::json::object());
 }

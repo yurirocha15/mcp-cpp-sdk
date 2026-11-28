@@ -11,9 +11,9 @@ namespace mcp::auth {
  * @brief Abstract interface for providing access tokens and handling refresh.
  *
  * @details Implementations must be safe to call from within an asio strand context.
- * `get_access_token()` must be lightweight — no network I/O. Returns the current bearer token or empty
- * string. `try_refresh_token()` is a coroutine that performs network I/O to refresh the token and
- * persists the new token via the configured token store on success.
+ * `get_access_token()` must be lightweight, with no network I/O. Returns the current bearer token or
+ * empty string. `try_refresh_token()` is a coroutine that performs network I/O to refresh the token
+ * and persists the new token via the configured token store on success.
  */
 class MCP_API Authenticator {
    public:

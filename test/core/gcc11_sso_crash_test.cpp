@@ -1,25 +1,24 @@
 /**
  * @file gcc11_sso_crash_test.cpp
  *
- * Targeted regression tests for GCC 11 coroutine-frame SSO corruption
+ * Tests for GCC 11 coroutine-frame SSO corruption
  * (https://gcc.gnu.org/bugzilla/show_bug.cgi?id=100611).
  *
  * On GCC 11 / Ubuntu 22.04, std::string fields that use Short String
- * Optimisation (SSO, length ≤ 15) and live in a coroutine frame across a
+ * Optimisation (SSO, length <= 15) and live in a coroutine frame across a
  * suspension point can have their internal self-pointer (_M_p) corrupted,
  * causing an invalid-free crash on destruction.
  *
- * Each test exercises one specific hot-path that is suspected to contain such
- * a local.  The tests must PASS (not abort) after the fix is applied and must
- * reproduce the abort before the fix on GCC 11.
+ * Each test exercises one hot path that may keep such a string in a coroutine frame across a
+ * suspension, and must finish without aborting.
  *
  * Patterns tested:
- *   A – connect():    InitializeRequest with SSO clientInfo.version
- *   B – send_request(): method/params parameters span two co_awaits
- *   C – dispatch_incoming_request(): id_str / method strings span co_awaits
- *   D – send_notification(): JSONRPCNotification spans co_await
- *   E – send_response(): RequestId copy inside response spans co_await
- *   F – send_error_response(): Error.message string spans co_await
+ *   A - connect():    InitializeRequest with SSO clientInfo.version
+ *   B - send_request(): method/params parameters span two co_awaits
+ *   C - dispatch_incoming_request(): id_str / method strings span co_awaits
+ *   D - send_notification(): JSONRPCNotification spans co_await
+ *   E - send_response(): RequestId copy inside response spans co_await
+ *   F - send_error_response(): Error.message string spans co_await
  */
 
 #include "mcp/client/client.hpp"
@@ -48,9 +47,7 @@ namespace gcc11_sso_crash_test {
 
 namespace {
 
-// ---------------------------------------------------------------------------
-// Minimal scripted transport (same structure as client_notifications_test)
-// ---------------------------------------------------------------------------
+// Scripted transport, structured as in client_notifications_test.
 class ScriptedTransport final : public mcp::ITransport {
    public:
     explicit ScriptedTransport(const boost::asio::any_io_executor& executor)
@@ -77,7 +74,7 @@ class ScriptedTransport final : public mcp::ITransport {
     }
 
     mcp::Task<void> write_message(std::string_view message) override {
-        // Copy before co_await to avoid string_view dangling (fixed separately)
+        // Copy before co_await so the string_view cannot dangle
         std::string msg(message);
         co_await boost::asio::post(strand_, boost::asio::use_awaitable);
         written_.emplace_back(msg);
@@ -114,7 +111,6 @@ class ScriptedTransport final : public mcp::ITransport {
     bool closed_ = false;
 };
 
-// Helpers for common JSON-RPC shapes
 nlohmann::json make_init_response(const std::string& id) {
     return {{"jsonrpc", "2.0"},
             {"id", id},
@@ -142,10 +138,8 @@ class GCC11SSOCrashTest : public ::testing::Test {
     boost::asio::io_context io_ctx_;
 };
 
-// ---------------------------------------------------------------------------
-// Pattern A: connect() — InitializeRequest.clientInfo.version "1.0" is SSO.
-// This is the confirmed-crash case from valgrind.
-// ---------------------------------------------------------------------------
+// Pattern A: connect(): InitializeRequest.clientInfo.version "1.0" is SSO.
+// On GCC 11 this path aborts if connect() keeps an SSO string in its frame across a co_await.
 TEST_F(GCC11SSOCrashTest, PatternA_Connect_SSO_ClientInfo) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
@@ -167,7 +161,7 @@ TEST_F(GCC11SSOCrashTest, PatternA_Connect_SSO_ClientInfo) {
 
     bool connected = false;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
-        // SSO strings: "my-client" (9 chars), "1.0" (3 chars) — both SSO
+        // SSO strings: "my-client" (9 chars), "1.0" (3 chars); both SSO
         co_await client.connect("my-client", "1.0");
         connected = true;
     });
@@ -176,10 +170,8 @@ TEST_F(GCC11SSOCrashTest, PatternA_Connect_SSO_ClientInfo) {
     EXPECT_TRUE(connected);
 }
 
-// ---------------------------------------------------------------------------
-// Pattern B: send_request() — method parameter is SSO, spans two co_awaits
+// Pattern B: send_request(): method parameter is SSO, spans two co_awaits
 // (write_message + timer_wait).  Use ping (4 chars, SSO).
-// ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternB_SendRequest_SSO_Method_Ping) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
@@ -194,12 +186,9 @@ TEST_F(GCC11SSOCrashTest, PatternB_SendRequest_SSO_Method_Ping) {
             // initialize response
             raw->enqueue(make_init_response(id).dump());
         } else if (write_count == 2) {
-            // initialized notification — no id expected; now send ping response
-            // Client issued no explicit ping here, so this write_count==2 is
-            // the "notifications/initialized" notification (no id).
-            // Do nothing, just let the next step proceed.
+            // "notifications/initialized" carries no id and needs no answer.
         } else if (write_count == 3) {
-            // ping request — respond with empty result
+            // ping request; respond with empty result
             raw->enqueue(make_result_response(id, nlohmann::json::object()).dump());
         }
     });
@@ -207,7 +196,7 @@ TEST_F(GCC11SSOCrashTest, PatternB_SendRequest_SSO_Method_Ping) {
     bool ping_ok = false;
     mcp_test::spawn_detached(io_ctx_, [&]() -> mcp::Task<void> {
         co_await client.connect("cli", "1.0");
-        // "ping" is 4 chars — SSO; method string lives in send_request's
+        // "ping" is 4 chars, SSO; method string lives in send_request's
         // coroutine frame across the timer wait suspension
         co_await client.ping();
         ping_ok = true;
@@ -220,10 +209,8 @@ TEST_F(GCC11SSOCrashTest, PatternB_SendRequest_SSO_Method_Ping) {
     EXPECT_TRUE(ping_ok);
 }
 
-// ---------------------------------------------------------------------------
 // Pattern B2: send_request() with a short custom method name ("hi" = 2 chars)
-// via the raw API — maximally stresses the SSO case.
-// ---------------------------------------------------------------------------
+// via the raw API; maximally stresses the SSO case.
 TEST_F(GCC11SSOCrashTest, PatternB2_SendRequest_SSO_Method_Short) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
@@ -237,7 +224,7 @@ TEST_F(GCC11SSOCrashTest, PatternB2_SendRequest_SSO_Method_Short) {
         if (write_count == 1) {
             raw->enqueue(make_init_response(id).dump());
         } else if (write_count == 2) {
-            // initialized notification, no id — close after connect completes
+            // initialized notification, no id; close after connect completes
         } else if (write_count >= 3) {
             // respond to whatever request was made
             if (!id.empty()) {
@@ -262,11 +249,9 @@ TEST_F(GCC11SSOCrashTest, PatternB2_SendRequest_SSO_Method_Short) {
     EXPECT_TRUE(done);
 }
 
-// ---------------------------------------------------------------------------
-// Pattern C: dispatch_incoming_request() — server sends "ping" request.
+// Pattern C: dispatch_incoming_request(): server sends "ping" request.
 // id = "s1" (2 chars SSO), method = "ping" (4 chars SSO) both span co_awaits.
 // Also exercises send_response() with a short id string.
-// ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternC_DispatchIncomingRequest_SSO_IdAndMethod) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
@@ -282,14 +267,14 @@ TEST_F(GCC11SSOCrashTest, PatternC_DispatchIncomingRequest_SSO_IdAndMethod) {
         if (write_count == 1) {
             raw->enqueue(make_init_response(id).dump());
         } else if (write_count == 2) {
-            // initialized notification — now send server-side "ping" with SSO id
+            // initialized notification; the server then sends a "ping" with an SSO id
             nlohmann::json ping;
             ping["jsonrpc"] = "2.0";
-            ping["id"] = "s1";        // 2 chars — SSO
-            ping["method"] = "ping";  // 4 chars — SSO
+            ping["id"] = "s1";        // 2 chars, SSO
+            ping["method"] = "ping";  // 4 chars, SSO
             raw->enqueue(ping.dump());
         } else if (write_count == 3) {
-            // ping response written — close
+            // ping response written; close
             raw->close();
         }
     });
@@ -306,11 +291,9 @@ TEST_F(GCC11SSOCrashTest, PatternC_DispatchIncomingRequest_SSO_IdAndMethod) {
     EXPECT_TRUE(response.contains("result"));
 }
 
-// ---------------------------------------------------------------------------
-// Pattern C2: dispatch_incoming_request() — unknown method
+// Pattern C2: dispatch_incoming_request(): unknown method
 // (mcp::constants::jsonrpc::g_METHOD_NOT_FOUND). exercises send_error_response() with SSO id and short
 // error message.
-// ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorResponse) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
@@ -329,8 +312,8 @@ TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorR
             // Send unknown method request with a short SSO id
             nlohmann::json req;
             req["jsonrpc"] = "2.0";
-            req["id"] = "x";            // 1 char — SSO
-            req["method"] = "no/such";  // 7 chars — SSO
+            req["id"] = "x";            // 1 char, SSO
+            req["method"] = "no/such";  // 7 chars, SSO
             raw->enqueue(req.dump());
         } else if (write_count == 3) {
             raw->close();
@@ -349,18 +332,16 @@ TEST_F(GCC11SSOCrashTest, PatternC2_DispatchIncomingRequest_UnknownMethod_ErrorR
     EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_METHOD_NOT_FOUND);
 }
 
-// ---------------------------------------------------------------------------
-// Pattern C3: dispatch_incoming_request() — registered handler throws,
+// Pattern C3: dispatch_incoming_request(): registered handler throws,
 // exercises send_error_response() with mcp::constants::jsonrpc::g_INTERNAL_ERROR (-32603).
 // Error message comes from e.what() which can be short (SSO).
-// ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_InternalError) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
     mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
     client.on_request("test/method", [](const nlohmann::json&) -> mcp::Task<nlohmann::json> {
-        throw std::runtime_error("oops");  // 4 chars — SSO
+        throw std::runtime_error("oops");  // 4 chars, SSO
         co_return nlohmann::json{};
     });
 
@@ -376,7 +357,7 @@ TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_Intern
         } else if (write_count == 2) {
             nlohmann::json req;
             req["jsonrpc"] = "2.0";
-            req["id"] = "e1";  // 2 chars — SSO
+            req["id"] = "e1";  // 2 chars, SSO
             req["method"] = "test/method";
             req["params"] = nlohmann::json::object();
             raw->enqueue(req.dump());
@@ -397,18 +378,14 @@ TEST_F(GCC11SSOCrashTest, PatternC3_DispatchIncomingRequest_HandlerThrows_Intern
     EXPECT_EQ(response["error"]["code"], mcp::constants::jsonrpc::g_INTERNAL_ERROR);
 }
 
-// ---------------------------------------------------------------------------
-// Pattern D: send_notification() — method "notifications/initialized" (26 chars,
+// Pattern D: send_notification(): method "notifications/initialized" (26 chars,
 // heap) is fine; but also test a very short notification method.
 // Exercises JSONRPCNotification struct across co_await.
-// ---------------------------------------------------------------------------
 TEST_F(GCC11SSOCrashTest, PatternD_SendNotification_SSO_Method) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw = transport.get();
     mcp::Client client(transport, io_ctx_.get_executor(), legacy_client_options());
 
-    // Register a handler that sends a short notification back
-    // (the client sends a cancellation notification via cancel())
     int write_count = 0;
     raw->set_on_write([&](std::string_view msg) {
         ++write_count;
@@ -417,7 +394,7 @@ TEST_F(GCC11SSOCrashTest, PatternD_SendNotification_SSO_Method) {
         if (write_count == 1) {
             raw->enqueue(make_init_response(id).dump());
         } else if (write_count == 2) {
-            // initialized notification — now trigger cancel notification
+            // initialized notification; the client then cancels
             // (method = "notifications/cancelled", params.requestId = "r1" SSO)
         } else if (write_count >= 3) {
             raw->close();

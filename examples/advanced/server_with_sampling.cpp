@@ -32,7 +32,7 @@ int main() {
 
         Server server(info, caps);
 
-        // Tool: summarize — async with context, calls ctx.sample_llm() for reverse RPC
+        // Tool: summarize: async with context, calls ctx.sample_llm() for reverse RPC
         nlohmann::json schema = {
             {"type", "object"},
             {"properties", {{"text", {{"type", "string"}}}}},

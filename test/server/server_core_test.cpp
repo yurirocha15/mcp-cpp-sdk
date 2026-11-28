@@ -1218,10 +1218,6 @@ TEST_F(ServerCoreTest, ConcurrentReverseRequestsRemainCorrelatedOnMultiThreadedE
     EXPECT_EQ(errors.load(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// server/discover
-// ---------------------------------------------------------------------------
-
 TEST_F(ServerCoreTest, DiscoverWithoutInitializeReturnsFullPayload) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx_.get_executor());
     auto* raw_transport = transport.get();
@@ -1276,7 +1272,7 @@ TEST_F(ServerCoreTest, DiscoverWithoutInitializeReturnsFullPayload) {
 
 // An initialize naming a version this server does not negotiate -- unknown, or 2026-07-28, which
 // discover advertises but initialize does not speak -- still negotiates the latest legacy
-// version, byte-identical to pre-discover behavior.
+// version.
 TEST_F(ServerCoreTest, DiscoverThenInitializeStillNegotiatesLegacyVersionsUnchanged) {
     for (const char* requested : {"1900-01-01", "2026-07-28"}) {
         SCOPED_TRACE(requested);
@@ -1789,10 +1785,6 @@ TEST_F(ServerCoreTest, ReverseRequestErrorDiagnosticBoundsThePeerChosenMessage) 
     EXPECT_LE(outcome.what.size(), std::size_t{512}) << "what() size: " << outcome.what.size();
 }
 
-// ---------------------------------------------------------------------------
-// Server destruction
-// ---------------------------------------------------------------------------
-
 namespace {
 
 // A transport whose read loop stays suspended for as long as the test needs it to. close() is
@@ -1864,11 +1856,9 @@ class QuiescentSessionTransport final : public mcp::ITransport {
     std::atomic_size_t close_calls_{0};
 };
 
-// Runs `body` on a helper thread and aborts the process if it has not returned within `budget`.
-// A destructor that blocks forever hangs the whole test binary rather than failing one test, and
-// a hung binary reports neither a pass nor a failure for anything in it. Aborting converts that
-// into a loud failure with a named cause. std::abort is used instead of a gtest failure because
-// the blocked thread cannot be joined or unwound.
+// Runs `body` on a helper thread and aborts the process if it has not returned within `budget`: a
+// destructor that blocks forever would hang the whole test binary. std::abort is used instead of
+// a gtest failure because the blocked thread cannot be joined or unwound.
 void run_with_teardown_watchdog(std::chrono::milliseconds budget, const std::function<void()>& body) {
     std::promise<void> finished;
     auto reached_the_end = finished.get_future();
@@ -1897,11 +1887,9 @@ constexpr std::chrono::milliseconds g_teardown_budget{10000};
 
 }  // namespace
 
-// Positive control for the watchdog the tests below rely on: a body that deliberately overruns
-// its budget must abort with a named cause. Without this, a watchdog that had stopped biting
-// would make every test below look like it passed. The abort happens in a death-test child, so
-// this runs on every build. The threadsafe style re-executes the test binary for the child rather
-// than forking a process that already has threads.
+// Positive control for the watchdog the tests below rely on: a body that overruns its budget must
+// abort with a named cause. The abort happens in a death-test child; the threadsafe style
+// re-executes the test binary for it rather than forking a process that already has threads.
 TEST(ServerTeardownDeathTest, TeardownWatchdogAbortsOnOverrun) {
 #ifdef GTEST_FLAG_SET
     GTEST_FLAG_SET(death_test_style, "threadsafe");
@@ -1914,11 +1902,9 @@ TEST(ServerTeardownDeathTest, TeardownWatchdogAbortsOnOverrun) {
         "server teardown did not finish within 200 ms");
 }
 
-// Building a Server, registering tools and letting it go out of scope without ever running it is
-// the ordinary lifecycle in this SDK's own tests and examples. The destructor therefore has to
-// complete with no executor to post to and no session to unwind. Returning is the whole
-// assertion: what this detects is a destructor that blocks, which the watchdog turns into an
-// abort rather than a hang.
+// A Server that is built, given tools and destroyed without running has no executor to post to
+// and no session to unwind. Returning is the whole assertion: a destructor that blocks is turned
+// into an abort by the watchdog.
 TEST(ServerTeardownTest, DestroyWithoutSessionCompletes) {
     run_with_teardown_watchdog(g_teardown_budget, [] {
         mcp::ServerCapabilities capabilities;
@@ -1998,13 +1984,12 @@ TEST(ServerTeardownTest, DestroyFromSessionExecutorThreadCompletes) {
     EXPECT_GE(transport->close_calls(), 1U);
 }
 
-// The scenario: a Server destroyed from a thread that is not the session strand, while other
-// threads are servicing that strand and the session's pending-request map is full.
+// A Server destroyed from a thread that is not the session strand, while other threads service
+// that strand and the session's pending-request map is full.
 //
-// The two ASSERTs before the destructor are the reachability witness, and they stand on their own
-// without a sanitizer: every reverse request has reached the wire, so each owns an entry in the
-// session's pending-request map, and none has settled, so none of those entries has been erased.
-// The map the destructor is about to walk therefore holds pending_count entries.
+// The two ASSERTs before the destructor show that every reverse request has reached the wire, so
+// owns an entry in the pending-request map, and that none has settled, so the map the destructor
+// walks holds pending_count entries.
 TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
     constexpr std::size_t pending_count = 512;
     constexpr std::size_t pool_size = 2;
@@ -2062,13 +2047,12 @@ TEST(ServerTeardownTest, DestroyFromForeignThreadWithPendingReverseRequests) {
 }
 
 // A handler that is still running when its Server is destroyed must be able to find that out
-// instead of dereferencing freed memory. The reverse-RPC call below is the reachable hazard: it
-// goes through the Context the handler was given, which is the only route application code has
-// back into the Server.
+// instead of dereferencing freed memory. The reverse-RPC call through the Context the handler was
+// given is the only route application code has back into the Server.
 //
-// The failure it reports has to be distinguishable from the two neighbouring ones -- stateless
-// direct dispatch, and a session that is merely closing -- because a handler's correct response
-// differs in each case, so the message is asserted rather than just the fact of an exception.
+// The reported failure must be distinguishable from stateless direct dispatch and from a session
+// that is merely closing, because the handler's correct response differs in each case, so the
+// message is asserted.
 TEST(ServerTeardownTest, ReverseRequestFromAHandlerReportsADestroyedServer) {
     boost::asio::io_context io_ctx;
     auto transport = std::make_shared<QuiescentSessionTransport>(io_ctx.get_executor());

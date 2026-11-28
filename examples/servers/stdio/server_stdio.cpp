@@ -71,7 +71,7 @@ int main() {
 
         Server server(info, caps);
 
-        // Tool: add — sync handler, no context
+        // Tool: add: sync handler, no context
         nlohmann::json add_schema = {
             {"type", "object"},
             {"properties", {{"a", {{"type", "number"}}}, {"b", {{"type", "number"}}}}},
@@ -95,7 +95,7 @@ int main() {
                 return GreetOutput{.message = "Hello, " + in.name + "!"};
             });
 
-        // Tool: echo_async — async handler, no context
+        // Tool: echo_async: async handler, no context
         nlohmann::json echo_schema = {
             {"type", "object"},
             {"properties", {{"text", {{"type", "string"}}}}},
@@ -109,7 +109,7 @@ int main() {
                 co_return out;
             });
 
-        // Tool: log_and_upper — async handler, with context (demonstrates ctx.log_info)
+        // Tool: log_and_upper: async handler, with context (demonstrates ctx.log_info)
         // In a session of 2025-11-25 or earlier the log message reaches the client unless
         // logging/setLevel raised the session's level above info. A 2026-07-28 request gets it
         // only when the request names info or a less severe level (RequestOptions::log_level).

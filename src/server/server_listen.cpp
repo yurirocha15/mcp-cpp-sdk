@@ -185,7 +185,7 @@ Task<std::string> Server::Impl::handle_listen_wire(const nlohmann::json& json_ms
     co_await boost::asio::co_spawn(listener->strand, wait_for_listener_end(listener),
                                    boost::asio::use_awaitable);
 
-    // The stream is closed, or the client has gone and nobody reads the answer.
+    // The stream is closed, or the client disconnected, so the answer is not read.
     nlohmann::json result = nlohmann::json::object();
     result["_meta"] = subscription_meta(listener->id);
     auto closing = std::make_shared<const std::string>(

@@ -531,10 +531,6 @@ TEST(ClientCredentialsCapabilityTest, BothSidesDeclareTheExtension) {
         1U);
 }
 
-// ---------------------------------------------------------------------------
-// private_key_jwt
-// ---------------------------------------------------------------------------
-
 class JwtClientCredentialsTest : public ::testing::TestWithParam<std::string> {};
 
 TEST_P(JwtClientCredentialsTest, TheAssertionIsSignedByTheKeyAndNamesTheClientAndTheIssuer) {

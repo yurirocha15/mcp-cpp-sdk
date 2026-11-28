@@ -333,7 +333,7 @@ TEST(JsonParseTest, NestingUpToItsLimitParsesOnASmallStack) {
 }
 
 // A hostile peer's deep nesting is declined at the parser's limit, without recursing further,
-// and parse_peer_json() refuses it before parsing, as it always has.
+// and parse_peer_json() refuses it before parsing.
 TEST(JsonParseTest, DeepNestingIsDeclinedWithoutOverflowingTheStack) {
     constexpr std::size_t small_stack = 256 * 1024;
     for (const std::size_t depth : {std::size_t{100000}, std::size_t{1000000}}) {
