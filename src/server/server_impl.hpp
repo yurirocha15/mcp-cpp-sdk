@@ -1145,7 +1145,10 @@ struct Server::Impl : std::enable_shared_from_this<Server::Impl> {
             return !session.owner_before(other.session) && !other.session.owner_before(session) &&
                    epoch == other.epoch;
         }
-        [[nodiscard]] bool alive() const { return !session.expired(); }
+        [[nodiscard]] bool alive() const {
+            const auto locked = session.lock();
+            return locked != nullptr && session_epoch(*locked) == epoch;
+        }
     };
     using ElicitationRecords = detail::ElicitationRecords<ElicitationTarget>;
 

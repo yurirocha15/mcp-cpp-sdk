@@ -3,15 +3,19 @@
 #include "mcp/core/runtime.hpp"
 #include "mcp/detail/signal.hpp"
 #include "mcp/server/server.hpp"
+#include "mcp/server/url_elicitation.hpp"
 #include "mcp/transport/http_client.hpp"
+#include "mcp/transport/http_server.hpp"
 #include "mcp/transport/http_session_manager.hpp"
 
 #include <gtest/gtest.h>
 
 #include "support/hang_guard.hpp"
+#include "support/spawn.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/redirect_error.hpp>
@@ -789,6 +793,80 @@ TEST_F(ServerHttpTest, ElicitationCompleteReachesOnlyTheSessionThatAsked) {
     second.close();
     server_->stop();
     server_thread.join();
+}
+
+// HttpServerTransport serves successive sessions on one session object, so an elicitation a session
+// left in progress ends with that session: the client that follows reuses the ids.
+TEST_F(ServerHttpTest, UrlElicitationRecordsEndWithTheSessionOfAnHttpServerTransport) {
+    server_->add_tool<nlohmann::json, nlohmann::json>(
+        "open_with_id", "Asks a URL with a given id", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& ctx, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+            mcp::ElicitRequestURLParams params;
+            params.message = "Please sign in";
+            params.url = "https://example.com/sign-in";
+            params.elicitationId = args.at("id").get<std::string>();
+            nlohmann::json outcome;
+            try {
+                const auto answer = co_await ctx.elicit(params);
+                outcome = {{"action", nlohmann::json(answer.action)}};
+            } catch (const std::invalid_argument&) {
+                outcome = {{"error", "in use"}};
+            }
+            co_return outcome;
+        });
+    server_->add_tool<nlohmann::json, nlohmann::json>(
+        "require_id", "Needs a URL elicitation with a given id", nlohmann::json{{"type", "object"}},
+        [](mcp::Context& /*ctx*/, nlohmann::json args) -> mcp::Task<nlohmann::json> {
+            mcp::ElicitRequestURLParams params;
+            params.message = "Please sign in";
+            params.url = "https://example.com/sign-in";
+            params.elicitationId = args.at("id").get<std::string>();
+            throw mcp::UrlElicitationRequired({params});
+        });
+    asio::io_context io;
+    auto work = asio::make_work_guard(io);
+    auto transport = std::make_shared<mcp::HttpServerTransport>(io.get_executor(), "127.0.0.1", 0);
+    mcp_test::spawn_detached(io, transport->listen());
+    mcp_test::spawn_detached(
+        io, [&]() -> mcp::Task<void> { co_await server_->run(transport, io.get_executor()); });
+    std::thread loop([&] { io.run(); });
+    ASSERT_TRUE(eventually([&] { return transport->port() != 0; }));
+    const std::string url = "http://127.0.0.1:" + std::to_string(transport->port()) + "/mcp";
+
+    // Each client declines, so the server keeps the record of the elicitation it asked.
+    const auto one_session = [&url](const char* name) {
+        mcp::ClientOptions options;
+        options.protocol = mcp::ClientProtocol::legacy();
+        mcp::Client client(mcp::Endpoint::http(url), options);
+        client.on_elicitation([](const mcp::ElicitRequestParams&) -> mcp::Task<mcp::ElicitResult> {
+            mcp::ElicitResult answer;
+            answer.action = mcp::ElicitAction::eDecline;
+            co_return answer;
+        });
+        mcp::ClientCapabilities capabilities;
+        capabilities.elicitation = mcp::ClientCapabilities::ElicitationCapability{
+            .form = nlohmann::json::object(), .url = nlohmann::json::object()};
+        client.sync().connect(mcp::Implementation{name, "1.0"}, capabilities);
+        const auto opened = client.sync().call_tool("open_with_id", {{"id", "flow"}});
+        int code = 0;
+        try {
+            static_cast<void>(client.sync().call_tool("require_id", {{"id", "sign-in"}}));
+        } catch (const mcp::McpError& error) {
+            code = error.code();
+        }
+        client.close();
+        return std::pair{opened.structuredContent.value_or(nlohmann::json()), code};
+    };
+    const auto first = one_session("first");
+    const auto second = one_session("second");
+    EXPECT_EQ(first.first, (nlohmann::json{{"action", "decline"}}));
+    EXPECT_EQ(first.second, mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED);
+    EXPECT_EQ(second.first, (nlohmann::json{{"action", "decline"}}));
+    EXPECT_EQ(second.second, mcp::constants::jsonrpc::g_URL_ELICITATION_REQUIRED);
+
+    asio::post(io, [&] { transport->close(); });
+    work.reset();
+    loop.join();
 }
 
 // A manager constructed with a server serves it on the application's loop as run_http() does: the
