@@ -25,7 +25,8 @@ class Authenticator;
  */
 struct HttpEndpointOptions {
     /// Called with the HTTP transport before the client uses it, for settings such as
-    /// set_bearer_token_provider(), set_response_timeout() or set_warning_handler().
+    /// set_bearer_token_provider(), set_response_timeout(), set_max_message_bytes() or
+    /// set_warning_handler().
     std::function<void(HttpClientTransport&)> configure;
     /// Makes the authenticator whose tokens the client sends, given the executor the client runs
     /// on; the client then talks to the server through an auth::OAuthClientTransport. Unset sends

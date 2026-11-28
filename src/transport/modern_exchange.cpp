@@ -109,8 +109,29 @@ void ModernExchange::cancel() {
 }
 
 void ModernExchange::set_on_cancel(std::function<void()> hook) {
-    std::scoped_lock lock(mutex);
-    on_cancel = std::move(hook);
+    std::function<void()> ending;
+    {
+        std::scoped_lock lock(mutex);
+        on_cancel = std::move(hook);
+        if (end_requested) {
+            ending = on_cancel;
+        }
+    }
+    if (ending) {
+        ending();
+    }
+}
+
+void ModernExchange::end_stream() {
+    std::function<void()> hook;
+    {
+        std::scoped_lock lock(mutex);
+        end_requested = true;
+        hook = on_cancel;
+    }
+    if (hook) {
+        hook();
+    }
 }
 
 void ModernExchange::finish(std::string response_wire) {
@@ -125,11 +146,12 @@ namespace {
 
 Task<void> notification_queued() { co_return; }
 
-StringResponse json_response(const IncomingRequest& request, http::status status, std::string body) {
+StringResponse json_response(const IncomingRequest& request, http::status status, std::string body,
+                             bool keep_alive) {
     StringResponse response{status, request.version()};
     response.set(http::field::server, "mcp-cpp-sdk");
     response.set(http::field::content_type, "application/json");
-    response.keep_alive(request.keep_alive());
+    response.keep_alive(keep_alive);
     response.body() = std::move(body);
     response.prepare_payload();
     return response;
@@ -155,13 +177,13 @@ Task<bool> write_last_chunk(Connection& stream, const HttpConnectionLimits& limi
 }
 
 Task<bool> open_stream(Connection& stream, const IncomingRequest& request,
-                       const HttpConnectionLimits& limits) {
+                       const HttpConnectionLimits& limits, bool keep_alive) {
     http::response<http::empty_body> header{http::status::ok, request.version()};
     header.set(http::field::server, "mcp-cpp-sdk");
     header.set(http::field::content_type, "text/event-stream");
     header.set(http::field::cache_control, "no-cache");
     header.set("X-Accel-Buffering", "no");
-    header.keep_alive(request.keep_alive());
+    header.keep_alive(keep_alive);
     header.chunked(true);
     http::response_serializer<http::empty_body> serializer{header};
     arm_request_read_deadline(stream, limits);
@@ -173,18 +195,19 @@ Task<bool> open_stream(Connection& stream, const IncomingRequest& request,
 }
 
 /// Opens the SSE stream unless it is open, and counts it; returns false when the client is gone.
+/// @p keeps_alive is set to what the stream's head tells the client.
 Task<bool> ensure_stream_open(Connection& stream, const IncomingRequest& request,
-                              const HttpConnectionLimits& limits, StreamCounters& counters,
-                              bool& stream_open) {
+                              const ModernServing& serving, bool& stream_open, bool& keeps_alive) {
     if (!stream_open) {
+        keeps_alive = serving.keeps_alive(request);
         // Awaited first: with the co_await in the condition, GCC 12 builds a coroutine that
         // crashes when it resumes.
-        const bool opened = co_await open_stream(stream, request, limits);
+        const bool opened = co_await open_stream(stream, request, serving.limits, keeps_alive);
         if (!opened) {
             co_return false;
         }
         stream_open = true;
-        counters.streams_opened.fetch_add(1, std::memory_order_relaxed);
+        serving.counters.streams_opened.fetch_add(1, std::memory_order_relaxed);
     }
     co_return true;
 }
@@ -226,6 +249,7 @@ std::shared_ptr<ModernExchange> start_modern_exchange(const IncomingRequest& req
     auto exchange = std::make_shared<ModernExchange>(start.strand, start.options, streams, start.budget,
                                                      start.budget_limit);
     const bool listening = method_is(request_json.at("method"), methods::g_SUBSCRIPTIONS_LISTEN);
+    exchange->long_lived = listening;
 
     RequestContext request_context;
     request_context.cancelled = exchange->cancelled;
@@ -332,6 +356,8 @@ Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& 
     };
 
     bool stream_open = false;
+    // What the head of the SSE stream told the client, once it is written.
+    bool stream_keeps_alive = false;
     bool half_closed = client_finished_sending;
     // The client sent more than the server will hold, so the read that watches it has stopped.
     bool read_ahead_full = false;
@@ -359,7 +385,8 @@ Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& 
         }
 
         if (!notifications.empty() && exchange->streams) {
-            if (!co_await ensure_stream_open(stream, request, limits, serving.counters, stream_open)) {
+            if (!co_await ensure_stream_open(stream, request, serving, stream_open,
+                                             stream_keeps_alive)) {
                 client_gone = true;
                 break;
             }
@@ -400,11 +427,12 @@ Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& 
                 if (written) {
                     ended = co_await write_last_chunk(stream, limits);
                 }
-                co_return written && ended && request.keep_alive() &&
+                co_return written && ended && stream_keeps_alive &&
                     (!half_closed || buffer.size() != 0);
             }
             const auto status = error_code ? http_status_for_error(*error_code) : http::status::ok;
-            auto plain = json_response(request, status, std::move(*response));
+            auto plain =
+                json_response(request, status, std::move(*response), serving.keeps_alive(request));
             const bool written =
                 co_await write_response_within_limits(stream, plain, limits, response_head);
             co_return written&& plain.keep_alive() && (!half_closed || buffer.size() != 0);
@@ -444,7 +472,8 @@ Task<bool> serve_modern_exchange(Connection& stream, boost::beast::flat_buffer& 
         if (half_closed && exchange->streams) {
             // A client that closed cleanly cannot be told from one that only half-closed until a
             // write fails, so the answer becomes a stream that can be probed.
-            if (!co_await ensure_stream_open(stream, request, limits, serving.counters, stream_open)) {
+            if (!co_await ensure_stream_open(stream, request, serving, stream_open,
+                                             stream_keeps_alive)) {
                 client_gone = true;
                 break;
             }

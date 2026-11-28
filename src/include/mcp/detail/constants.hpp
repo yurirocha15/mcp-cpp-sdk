@@ -260,8 +260,12 @@ inline constexpr std::size_t g_READ_CHUNK_BYTES = 8192;
 /// First status code of an error response (400 Bad Request).
 inline constexpr int g_STATUS_BAD_REQUEST = 400;
 
-/// The most a single response body or SSE line may hold before the exchange is abandoned.
-inline constexpr std::size_t g_MAX_MODERN_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
+/// The default for the most one response body, SSE line or SSE event may hold before the exchange
+/// is abandoned.
+inline constexpr std::size_t g_DEFAULT_MAX_MESSAGE_BYTES = std::size_t{16} * 1024 * 1024;
+
+/// What an SSE data line carries besides its data: the field name and one space ("data: ").
+inline constexpr std::size_t g_SSE_FIELD_NAME_SLACK_BYTES = 6;
 
 /// How many times one request's event stream is resumed after it ends without the response.
 inline constexpr int g_MAX_STREAM_RESUMES = 3;
@@ -318,6 +322,14 @@ inline constexpr std::size_t g_WATCH_READ_SIZE = 4096;
 inline constexpr std::size_t g_MAX_READ_AHEAD = std::size_t{64} * 1024;
 
 }  // namespace modern_exchange
+
+/// Waiting for requests to finish when an HTTP endpoint drains.
+namespace drain {
+
+/// How often the wait looks again at the requests still being served.
+inline constexpr std::chrono::milliseconds g_POLL_INTERVAL = std::chrono::milliseconds(10);
+
+}  // namespace drain
 
 /// Memory for the requests an HTTP server reads.
 namespace http_request {

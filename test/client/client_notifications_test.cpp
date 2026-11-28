@@ -3,6 +3,7 @@
 
 #include "mcp/client/client.hpp"
 #include "mcp/core/async.hpp"
+#include "mcp/detail/text/diagnostic_text.hpp"
 #include "support/spawn.hpp"
 
 #include <gtest/gtest.h>
@@ -442,8 +443,8 @@ struct NotificationSessionOutcome {
 // Delivers `notifications` to a connected client, then issues one request over the same session.
 // That request is the probe: it completes only if the notifications left the session intact. A
 // notification the client mishandles by ending the read loop fails it instead.
-NotificationSessionOutcome deliver_notifications(
-    boost::asio::io_context& io_ctx, const std::vector<nlohmann::json>& notifications,
+NotificationSessionOutcome deliver_raw_messages(
+    boost::asio::io_context& io_ctx, const std::vector<std::string>& notifications,
     const std::function<void(mcp::Client&)>& register_handlers) {
     auto transport = std::make_shared<ScriptedTransport>(io_ctx.get_executor());
     auto* raw = transport.get();
@@ -474,7 +475,7 @@ NotificationSessionOutcome deliver_notifications(
         if (!delivered) {
             delivered = true;
             for (const auto& notification : notifications) {
-                raw->enqueue_message(notification.dump());
+                raw->enqueue_message(notification);
             }
         }
         raw->enqueue_message(
@@ -495,6 +496,17 @@ NotificationSessionOutcome deliver_notifications(
 
     io_ctx.run();
     return outcome;
+}
+
+NotificationSessionOutcome deliver_notifications(
+    boost::asio::io_context& io_ctx, const std::vector<nlohmann::json>& notifications,
+    const std::function<void(mcp::Client&)>& register_handlers) {
+    std::vector<std::string> texts;
+    texts.reserve(notifications.size());
+    for (const auto& notification : notifications) {
+        texts.push_back(notification.dump());
+    }
+    return deliver_raw_messages(io_ctx, texts, register_handlers);
 }
 
 }  // namespace
@@ -587,6 +599,94 @@ TEST_F(ClientNotificationsTest, MessageNestedBeyondTheDepthLimitIsDroppedNotFata
     EXPECT_EQ(outcome.reported.front().code, mcp::constants::jsonrpc::g_PARSE_ERROR);
     EXPECT_NE(outcome.reported.front().message.find("nests deeper than 128 levels"), std::string::npos)
         << "actual: " << outcome.reported.front().message;
+}
+
+// The text nlohmann::json reports for @p text, which the client passes on as its own report.
+std::string nlohmann_parse_failure(const std::string& text) {
+    try {
+        const auto parsed = nlohmann::json::parse(text);
+        static_cast<void>(parsed);
+    } catch (const std::exception& error) {
+        return error.what();
+    }
+    return {};
+}
+
+// Text that is not JSON is dropped and reported with the parse error nlohmann::json gives for it,
+// and the session goes on.
+TEST_F(ClientNotificationsTest, MalformedJsonIsReportedWithTheParseError) {
+    const std::vector<std::string> malformed = {
+        R"({"jsonrpc":"2.0","method":"notifications/custom")",
+        R"({"jsonrpc":"2.0","method":"notifications/custom",})",
+        R"({"jsonrpc":"2.0","method":"notifications/custom"} trailing)",
+        R"({"jsonrpc":"2.0","method":"notifications/custom","params":{"a":01}})",
+        R"({"jsonrpc":"2.0","method":"notifications/custom","params":{"a":"\x"}})",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/custom\",\"params\":{\"a\":\"\xff\"}}",
+        "",
+        "   ",
+        "nul",
+    };
+    const auto outcome = deliver_raw_messages(io_ctx_, malformed, [](mcp::Client&) {});
+
+    EXPECT_TRUE(outcome.survived) << "the session died on malformed text: " << outcome.failure;
+    ASSERT_EQ(outcome.reported.size(), malformed.size());
+    for (std::size_t index = 0; index < malformed.size(); ++index) {
+        EXPECT_EQ(outcome.reported[index].code, mcp::constants::jsonrpc::g_PARSE_ERROR);
+        const auto failure = nlohmann_parse_failure(malformed[index]);
+        ASSERT_FALSE(failure.empty()) << "case " << index << " parses";
+        EXPECT_EQ(outcome.reported[index].message, "Dropped an undecodable message from the peer: " +
+                                                       mcp::detail::sanitize_for_diagnostics(failure))
+            << "case " << index;
+    }
+}
+
+// A message nested past the limit is reported with the depth error, whatever else is wrong with
+// its text, since the depth is checked before the text is parsed.
+TEST_F(ClientNotificationsTest, OverDeepMessageIsReportedWithTheDepthError) {
+    const std::string too_deep = std::string(129, '[') + std::string(129, ']');
+    const std::string too_deep_and_truncated = std::string(129, '[');
+    const auto outcome =
+        deliver_raw_messages(io_ctx_, {too_deep, too_deep_and_truncated}, [](mcp::Client&) {});
+
+    EXPECT_TRUE(outcome.survived) << "the session died on a deep message: " << outcome.failure;
+    ASSERT_EQ(outcome.reported.size(), 2U);
+    for (const auto& error : outcome.reported) {
+        EXPECT_EQ(error.code, mcp::constants::jsonrpc::g_PARSE_ERROR);
+        EXPECT_EQ(error.message,
+                  "Dropped an undecodable message from the peer: JSON-RPC error -32700: JSON-RPC "
+                  "message nests deeper than 128 levels");
+    }
+}
+
+// Valid text is read as nlohmann::json reads it, including the inputs a fast parser leaves to it:
+// a byte order mark, a repeated member (the last one counts), an integer past 64 bits, a
+// surrogate pair and a negative zero.
+TEST_F(ClientNotificationsTest, ValidTextIsDeliveredAsNlohmannReadsIt) {
+    const std::string method_and_params_prefix =
+        R"({"jsonrpc":"2.0","method":"notifications/custom","params":)";
+    const std::vector<std::string> messages = {
+        "\xEF\xBB\xBF" + method_and_params_prefix + R"({"n":1}})",
+        method_and_params_prefix + R"({"n":1,"n":2}})",
+        method_and_params_prefix + R"({"n":123456789012345678901234567890}})",
+        method_and_params_prefix + R"({"n":"\ud83d\ude00"}})",
+        method_and_params_prefix + R"({"n":-0.0}})",
+        method_and_params_prefix + R"({"n":1e2}})",
+    };
+    std::vector<nlohmann::json> received;
+    const auto outcome = deliver_raw_messages(io_ctx_, messages, [&](mcp::Client& client) {
+        client.on_notification("notifications/custom",
+                               [&](const nlohmann::json& params) { received.push_back(params); });
+    });
+
+    EXPECT_TRUE(outcome.survived) << outcome.failure;
+    EXPECT_TRUE(outcome.reported.empty());
+    ASSERT_EQ(received.size(), messages.size());
+    for (std::size_t index = 0; index < messages.size(); ++index) {
+        EXPECT_EQ(received[index].dump(), nlohmann::json::parse(messages[index]).at("params").dump())
+            << "message " << index;
+    }
+    EXPECT_EQ(received[1].at("n"), 2);
+    EXPECT_EQ(received[3].at("n"), "\xF0\x9F\x98\x80");
 }
 
 // The notification callback is application code and it runs on the read loop. A bug in it is the

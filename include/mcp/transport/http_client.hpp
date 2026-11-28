@@ -7,6 +7,7 @@
 #include <mcp/transport/transport.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <mcp/core/executor.hpp>
 #include <memory>
@@ -151,6 +152,20 @@ class MCP_API HttpClientTransport final : public ITransport {
      * revision 2026-07-28 have no such limit.
      */
     void set_response_timeout(std::chrono::milliseconds timeout);
+
+    /**
+     * @brief Set the largest message the transport accepts from the server, in bytes.
+     *
+     * The limit holds a JSON response body, the data of one SSE event and one SSE line, on every
+     * read. The answers to initialize and notifications/initialized are read whole, so the limit holds
+     * their whole body, an SSE answer's framing included. A larger message
+     * fails the request with a TransportError of kind eProtocol, and the transport reads no more
+     * than the limit of it. The default is 16 MiB. A server that returns larger results needs a
+     * larger limit; a smaller one protects a client from servers it does not trust. A limit of
+     * zero accepts only empty bodies. Safe to call at any time: a read already started keeps the
+     * limit it started with, and the next one uses the new value.
+     */
+    void set_max_message_bytes(std::size_t bytes);
 
     /**
      * @brief Use these TLS settings for the connections opened from now on.

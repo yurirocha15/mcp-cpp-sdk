@@ -818,6 +818,43 @@ TEST(HttpClientModern, HeaderMismatchRefreshThenRetry) {
     EXPECT_EQ(raw.requests[1].body, raw.requests[3].body);
 }
 
+TEST(HttpClientModern, HeaderMismatchWithAnEscapedKeyIsRetriedToo) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        const auto message = request.parsed();
+        if (message.value("method", "") == "tools/call" && !request.header("Mcp-Param-Region")) {
+            // The key `error`, spelled with an escape.
+            auto reply = json_reply(rpc_error(message, mcp::constants::jsonrpc::g_HEADER_MISMATCH,
+                                              "Missing Mcp-Param-Region header"),
+                                    400);
+            reply.body.replace(reply.body.find("\"error\""), 7, R"("\u0065rror")");
+            return reply;
+        }
+        return modern_reply(request, json::array({route_tool()}));
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+
+    std::string text;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("headers", "1.0");
+        json arguments = {{"region", "eu"}, {"count", 3}};
+        const auto result = co_await client.call_tool("route", arguments);
+        text = std::get<mcp::TextContent>(result.content.at(0)).text;
+        client.close();
+    });
+
+    EXPECT_EQ(text, "ok");
+    EXPECT_EQ(raw.rpc_methods(),
+              (std::vector<std::string>{"server/discover", "tools/call", "tools/list", "tools/call"}));
+    ASSERT_EQ(raw.requests.size(), 4u);
+    EXPECT_FALSE(raw.requests[1].header("Mcp-Param-Region").has_value());
+    EXPECT_EQ(raw.requests[3].header("Mcp-Param-Region"), "eu");
+    EXPECT_EQ(raw.requests[3].header("Mcp-Param-Count"), "3");
+    // The retry is the same request.
+    EXPECT_EQ(raw.requests[1].body, raw.requests[3].body);
+}
+
 TEST(HttpClientModern, HeaderMismatchIsRetriedOnlyOnce) {
     asio::io_context io;
     RawServer raw(io, [](const Recorded& request) {
@@ -844,6 +881,35 @@ TEST(HttpClientModern, HeaderMismatchIsRetriedOnlyOnce) {
     EXPECT_EQ(code, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
     EXPECT_EQ(raw.rpc_methods(),
               (std::vector<std::string>{"server/discover", "tools/call", "tools/list", "tools/call"}));
+}
+
+// The specification answers a header mismatch with 400. A -32020 error a server answers with 200
+// reaches the caller as it is: the client neither lists the tools again nor retries.
+TEST(HttpClientModern, HeaderMismatchAnsweredWith200IsNotRetried) {
+    asio::io_context io;
+    RawServer raw(io, [](const Recorded& request) {
+        const auto message = request.parsed();
+        if (message.value("method", "") == "tools/call") {
+            return json_reply(
+                rpc_error(message, mcp::constants::jsonrpc::g_HEADER_MISMATCH, "Header mismatch"), 200);
+        }
+        return modern_reply(request, json::array({route_tool()}));
+    });
+    auto transport = make_transport(io, raw.url());
+    mcp::Client client(transport, io.get_executor(), modern_options());
+
+    int code = 0;
+    run_guarded(io, raw, [&]() -> mcp::Task<void> {
+        co_await client.connect("headers", "1.0");
+        code = co_await failure_code([&]() -> mcp::Task<void> {
+            json arguments = {{"region", "eu"}};
+            co_await client.call_tool("route", arguments);
+        });
+        client.close();
+    });
+
+    EXPECT_EQ(code, mcp::constants::jsonrpc::g_HEADER_MISMATCH);
+    EXPECT_EQ(raw.rpc_methods(), (std::vector<std::string>{"server/discover", "tools/call"}));
 }
 
 // ---------------------------------------------------------------------------

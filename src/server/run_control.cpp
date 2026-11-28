@@ -7,6 +7,7 @@
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/use_future.hpp>
 
+#include <algorithm>
 #include <future>
 #include <stdexcept>
 #include <thread>
@@ -18,6 +19,8 @@ RunControl::Registration::Registration(std::shared_ptr<RunControl> control, std:
     : control_(std::move(control)), id_(id) {}
 
 RunControl::Registration::~Registration() { control_->remove(id_); }
+
+void RunControl::Registration::add_loop_thread() { control_->add_thread(id_); }
 
 RunControl::BoundPort::BoundPort(RunControl& control, std::uint16_t port) : control_(control) {
     control_.port_.store(port, std::memory_order_release);
@@ -31,13 +34,21 @@ RunControl::Registration RunControl::add(std::function<void()> stop,
     const auto id = next_id_++;
     runs_.emplace(
         id,
-        Run{.stop = std::move(stop), .loop = std::move(loop), .thread = std::this_thread::get_id()});
+        Run{.stop = std::move(stop), .loop = std::move(loop), .threads = {std::this_thread::get_id()}});
     return {shared_from_this(), id};
 }
 
 void RunControl::remove(std::uint64_t id) {
     std::scoped_lock lock(mutex_);
     runs_.erase(id);
+}
+
+void RunControl::add_thread(std::uint64_t id) {
+    std::scoped_lock lock(mutex_);
+    const auto run = runs_.find(id);
+    if (run != runs_.end()) {
+        run->second.threads.push_back(std::this_thread::get_id());
+    }
 }
 
 void RunControl::stop_all() {
@@ -68,7 +79,7 @@ void RunControl::run_blocking(const std::function<Task<void>()>& start) {
                 "mcp::Server: blocking calls need run_stdio() or run_http(); a server run with "
                 "run() or served by a StreamableHttpSessionManager is used through its coroutines");
         }
-        if (owned->thread == std::this_thread::get_id()) {
+        if (std::ranges::find(owned->threads, std::this_thread::get_id()) != owned->threads.end()) {
             throw std::logic_error(
                 "mcp::Server: a blocking call on the server's own event loop thread would wait for "
                 "itself; await the coroutine instead");
