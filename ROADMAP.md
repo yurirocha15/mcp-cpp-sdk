@@ -70,8 +70,10 @@ No tier requires protocol extensions.
 
 | Work item | State |
 |---|---|
-| Workload identity federation (SEP-1933) | Planned |
 | DPoP (SEP-1932) | Not planned |
+
+Workload identity federation waits until its extension specification is
+merged.
 
 ### Project process
 
