@@ -44,7 +44,8 @@ request, set ``RequestOptions::log_level``.
 
 On the server, a handler reads the parsed fields with
 ``Context::request_meta()``. It returns a ``RequestMetadata`` (declared in
-``mcp/protocol/request_meta.hpp``, with the ``g_META_*`` key names) for a
+``mcp/protocol/request_meta.hpp``; the key names are the ``g_META_*`` constants
+of ``mcp/core/constants.hpp``) for a
 2026-07-28 request, and a null pointer for a request of an older revision.
 
 .. code-block:: cpp
@@ -166,8 +167,8 @@ the same calls work there:
 2. The server answers the request with an ``input_required`` result. It holds
    the question under a key the server picked, and a ``requestState`` token.
 3. The client runs the handler it registered for that kind of question:
-   ``on_elicitation()``, ``set_roots()`` or ``on_roots_list()``, or an
-   ``on_request("sampling/createMessage", ...)`` handler.
+   ``on_elicitation()``, ``on_sampling()``, ``set_roots()`` or
+   ``on_roots_list()``.
 4. The client sends the request again, with a new id, the same method and
    parameters, the ``requestState`` and the answers in ``inputResponses``.
 5. The waiting handler resumes with the answer, and its result is the answer to
@@ -302,7 +303,8 @@ to use one the client declared, and uses none a client did not declare.
 
 ``mcp/protocol/extensions.hpp`` has the helpers for both sides:
 ``declare_extension()``, ``declares_extension()`` and ``extension_settings()``.
-The one extension the SDK implements is :doc:`tasks`.
+The SDK implements the :doc:`tasks` extension of this revision and the official
+extensions that :doc:`extensions` lists.
 
 Subscriptions
 -------------

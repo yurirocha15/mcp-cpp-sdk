@@ -75,8 +75,10 @@ Install from a release's source archive
       cmake --build --preset conan-release
       cmake --install build/build/Release --prefix /your/install/prefix
 
-   Conan names the preset and build folder for your platform; use the ones it
-   prints.  Pass the install prefix in ``CMAKE_PREFIX_PATH`` when configuring
+   This builds the static library, which ``mcp::sdk`` then names; add
+   ``-o "mcp-cpp-sdk/*:shared=True"`` to ``conan install`` for the shared
+   library. Conan names the preset and build folder for your platform; use the
+   ones it prints.  Pass the install prefix in ``CMAKE_PREFIX_PATH`` when configuring
    your project.
 
 To work on the SDK itself, with its tests and examples, see

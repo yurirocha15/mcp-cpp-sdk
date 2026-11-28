@@ -20,7 +20,7 @@ compatibility problems.
 
 The built-in HTTP and WebSocket transports speak TLS through OpenSSL, as clients
 (`https://`, `wss://`) and as servers. Clients trust the operating system's
-certificate authorities by default, and those `TlsClientOptions` names.
+certificate authorities by default, and also those that `TlsClientOptions` names.
 
 Build, test, documentation, and release-only dependencies do not become part
 of the public link interface. Their exact versions should be locked where the

@@ -346,6 +346,38 @@ done
 
 ---
 
+### 17. TLS Client (`tls_client.cpp`)
+
+**What it demonstrates:**
+- TLS settings shared by every connection: the system's certificate authorities, and a private one from a PEM file
+- An `Endpoint::http()` client whose transport uses those settings and the proxy that `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` name
+- The `TlsError` a failed handshake throws, nested in the `McpError` of the call
+
+**Key APIs:**
+- `TlsClientOptions` / `TlsClientContext`
+- `HttpClientTransport::set_tls()` / `set_proxy()` / `ProxyOptions::from_environment()`
+
+**Run:** `./build/release/example-feature-tls-client [URL [CA_FILE]]`
+
+**Expected output:** without a URL, `TLS settings ready; pass an https:// URL to connect`; with one, the protocol revision of the server it connected to
+
+---
+
+### 18. TLS Server (`tls_server.cpp`)
+
+**What it demonstrates:**
+- `run_http()` ending TLS itself, with the server's certificate chain and key read from PEM files
+- Mutual TLS: with `CLIENT_CA_FILE`, a client must show a certificate that authority issued
+
+**Key APIs:**
+- `TlsServerOptions` / `StreamableHttpSessionManager::set_tls()`
+
+**Run:** `./build/release/example-feature-tls-server [CERT_FILE KEY_FILE [CLIENT_CA_FILE]]`
+
+**Expected output:** without the files, what to pass; with them, it serves https on port 8443 until stopped
+
+---
+
 ## Common Patterns
 
 ### Loopback Pattern (Non-Interactive Testing)

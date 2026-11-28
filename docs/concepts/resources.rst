@@ -163,12 +163,13 @@ Resource Change Notifications
 -----------------------------
 
 When a resource's content changes, call ``notify_resource_updated`` on the
-``Server`` instance for the relevant session. The method sends only when that
-session subscribed to the exact URI, with ``resources/subscribe`` in a session
-of an older revision or in the filter of a ``subscriptions/listen`` stream in a
-2026-07-28 session (see :doc:`subscriptions`). In a multi-session deployment, the
-application is responsible for invoking the notification on each relevant
-per-session server instance.
+``Server``. It sends only to the clients that subscribed to the exact URI, with
+``resources/subscribe`` in a session of an older revision or in the filter of a
+``subscriptions/listen`` stream (see :doc:`subscriptions`). A ``Server`` served
+by ``run_http()``, or given to a ``StreamableHttpSessionManager``, reaches all of
+its sessions with one call. A manager built from a server factory serves each
+session of an older revision with a ``Server`` of its own, so the application
+calls the method on each of them and on the manager's ``modern_server()``.
 
 .. code-block:: cpp
 

@@ -234,9 +234,9 @@ class MCP_API StreamableHttpSessionManager {
      * mcp::constants::http_server::g_DEFAULT_MAX_REQUEST_BODY_BYTES. Binary content travels as base64
      * inside the JSON body, so a cap near the size of the raw content rejects it.
      *
-     * The body is read, up to this cap, before the origin and bearer token are checked, so the cap
-     * is also what one unauthenticated connection can make the transport buffer. The body is parsed
-     * as JSON only after those checks pass.
+     * The origin and bearer token are checked on the request's headers, before its body is read,
+     * so a request they refuse never has its body buffered. The body is parsed as JSON only after
+     * those checks pass.
      *
      * Configure the cap before listen() starts.
      *

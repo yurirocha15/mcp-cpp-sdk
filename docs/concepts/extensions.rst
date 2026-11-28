@@ -35,6 +35,9 @@ repository of the ``modelcontextprotocol`` organization on GitHub:
      - ``ext-auth``, ``specification/stable`` (2026-07-28)
      - :ref:`oauth-enterprise-managed-authorization`
 
+The SDK also implements the tasks extension (``io.modelcontextprotocol/tasks``)
+of protocol revision 2026-07-28; see :doc:`tasks`.
+
 If one side supports an extension and the other does not, the supporting side
 falls back to the core protocol: a server offering MCP Apps still returns
 ordinary tool results, and a server that requires an authorization extension
@@ -65,7 +68,7 @@ and a handler reads them from ``Context::request_meta()->clientCapabilities``:
 A server declares extensions with ``Server::declare_extension()`` before it
 serves its first request. They appear in the capabilities that
 ``server/discover`` and ``initialize`` return, and ``Server::capabilities()``
-returns a copy of what is advertised:
+returns a reference to what is advertised:
 
 .. code-block:: cpp
 

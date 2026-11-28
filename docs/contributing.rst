@@ -79,9 +79,10 @@ versions report findings that it does not.
 Code Formatting
 ^^^^^^^^^^^^^^^
 
-Use ``make format`` to automatically format your code with clang-format.
-
-The CI pipeline will reject PRs with formatting violations.
+Use ``make format`` to automatically format your code with clang-format. The
+pre-commit hook that ``python scripts/init.py --dev`` installs formats the files
+of each commit with the clang-format version pinned in
+``.pre-commit-config.yaml``. CI does not check formatting.
 
 Doxygen Comments
 ^^^^^^^^^^^^^^^^
@@ -204,7 +205,8 @@ Sanitizers
 ^^^^^^^^^^
 
 CI runs the test suite under each sanitizer on pushes to ``main`` and on pull
-requests into it. The same builds run locally:
+requests into any branch, when they change the library, its tests, the examples or
+the build files. The same builds run locally:
 
 .. code-block:: bash
 
@@ -241,8 +243,10 @@ Distribution Builds
 
 The builds above use Conan's Boost. When a push to ``main`` changes the source
 or the packaging, CI also builds the Homebrew formula, the Windows payload and
-the native ``.deb`` and ``.rpm`` packages. Pull requests skip these builds;
-running the CI workflow by hand on a branch includes them. The native packages
+the native ``.deb`` and ``.rpm`` packages. A pull request builds a package only
+when it changes that package's own inputs, such as its packaging files, and not
+for the source and build files every package builds; running the CI workflow by
+hand on a branch builds them all. The native packages
 cover every x86_64 release route, built exactly as a release does: inside the
 locked release builder images (``release/native-builders/lock.json``),
 with each distribution's compiler, Boost, Python and packaging flags, from
