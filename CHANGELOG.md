@@ -19,11 +19,17 @@ Versioning; a `0.x` version is a stable release unless its version has an
 
 - The documentation moved to [mcp-cpp-sdk.yurirocha.com](https://mcp-cpp-sdk.yurirocha.com/), and links to the old address redirect there.
 - The installation guide has a page for each platform, each with its install, upgrade and uninstall steps.
+- The client parses each message it receives once, with the fast JSON parser
+  the servers use, and hands each response's result to the caller without
+  copying it.
 
 ### Fixed
 
 - `Server::run_http()` now answers the requests being served when it shuts down,
   within the shutdown timeout, instead of closing their connections at once.
+- `HttpClientTransport` retries a 2026-07-28 call after the header-mismatch error
+  (-32020) only when it comes with status 400; with another status, the error
+  reaches the caller.
 
 ## [0.4.0] - 2026-11-26
 

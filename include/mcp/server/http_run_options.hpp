@@ -42,8 +42,9 @@ struct HttpRunOptions {
      *
      * @details With more than one, the coroutine handlers of one server can run at the same time
      * on different threads, which a program with a single loop thread never had to consider: what
-     * handlers share needs its own synchronization. Server::sync() refuses on each of these
-     * threads.
+     * handlers share needs its own synchronization. Register the server's tools, prompts and
+     * resources before run_http() then, as adding one while requests are served races with their
+     * dispatch on the other threads. Server::sync() refuses on each of these threads.
      *
      * @throws std::invalid_argument From run_http() when zero.
      */
@@ -61,11 +62,13 @@ struct HttpRunOptions {
     /// run's loop stops.
     std::function<Task<void>(StreamableHttpSessionManager&)> on_start;
 
-    /// Called once, on the event loop, when the shutdown begins.
+    /// Called once, on the event loop, when the shutdown begins. An exception it throws does not
+    /// stop the shutdown: run_http() rethrows the run's first exception once the shutdown has run.
     std::function<void()> on_drain_start;
 
     /// Awaited on the event loop after the first wait for requests, bounded by @ref
-    /// shutdown_timeout.
+    /// shutdown_timeout. An exception it throws does not stop the shutdown: run_http() rethrows the
+    /// run's first exception once the shutdown has run.
     std::function<Task<void>()> on_shutdown;
 
     /// How long the first wait for requests lasts at most. Unset, half of @ref shutdown_timeout,

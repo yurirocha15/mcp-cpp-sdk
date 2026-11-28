@@ -257,9 +257,12 @@ once: what is unfinished by then, which includes an ``on_shutdown`` that does no
 :cpp:struct:`mcp::HttpRunOptions` also takes ``on_start``, which is awaited on the event loop before the server
 listens, so that a client that connects finds what it sets up. An exception it throws runs the shutdown
 steps, without a listener, and ``run_http()`` rethrows it. Once a shutdown has begun, ``run_http()`` returns
-normally, even when ``on_start`` then fails because the shutdown closed what it waited on. ``io_threads`` runs the event loop on more than one
-thread: the coroutine handlers of one server can then run at the same time, which a program with one loop thread
-never had to consider, and ``Server::sync()`` refuses on each of the loop's threads.
+normally, even when ``on_start`` then fails because the shutdown closed what it waited on. An exception from
+``on_drain_start`` or ``on_shutdown`` does not stop the shutdown either: ``run_http()`` rethrows the run's first
+exception once the shutdown has run. ``io_threads`` runs the event loop on more than one thread: the coroutine handlers of one
+server can then run at the same time, which a program with one loop thread never had to consider. Register the
+server's tools, prompts and resources before ``run_http()`` then, as adding one while requests are served races
+with their dispatch on the other threads. ``Server::sync()`` refuses on each of the loop's threads.
 
 A program that runs a :cpp:class:`mcp::StreamableHttpSessionManager` on its own event loop drains it with
 :cpp:func:`mcp::StreamableHttpSessionManager::drain`, which performs step 2 and waits as step 3 does, and then

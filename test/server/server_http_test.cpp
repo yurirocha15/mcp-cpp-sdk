@@ -1570,6 +1570,41 @@ TEST_F(ServerHttpDrainTest, TheManagersDrainLeavesTheListenStreamsOfAnotherManag
     loop.join();
 }
 
+// An exception from on_drain_start or on_shutdown leaves the shutdown to run, and run_http()
+// rethrows it afterwards.
+TEST_F(ServerHttpDrainTest, AnExceptionFromADrainCallbackIsRethrownAfterTheShutdown) {
+    for (const bool from_drain_start : {true, false}) {
+        SCOPED_TRACE(from_drain_start ? "on_drain_start" : "on_shutdown");
+        events_.clear();
+        finished_ = false;
+        run_error_ = nullptr;
+        mcp::HttpRunOptions options;
+        options.on_drain_start = [this, from_drain_start] {
+            note("drain");
+            if (from_drain_start) {
+                throw std::runtime_error("from on_drain_start");
+            }
+        };
+        options.on_shutdown = [this, from_drain_start]() -> mcp::Task<void> {
+            note("shutdown");
+            if (!from_drain_start) {
+                throw std::runtime_error("from on_shutdown");
+            }
+            co_return;
+        };
+        static_cast<void>(start(options));
+        server_->stop();
+        join();
+        EXPECT_EQ(events(), (std::vector<std::string>{"drain", "shutdown"}));
+        ASSERT_TRUE(run_error_);
+        try {
+            std::rethrow_exception(run_error_);
+        } catch (const std::runtime_error& error) {
+            EXPECT_STREQ(error.what(), from_drain_start ? "from on_drain_start" : "from on_shutdown");
+        }
+    }
+}
+
 // A drain whose time runs out with a request still being served returns, leaving it to close().
 TEST_F(ServerHttpDrainTest, TheManagersDrainEndsAtItsTimeout) {
     asio::io_context io_ctx;

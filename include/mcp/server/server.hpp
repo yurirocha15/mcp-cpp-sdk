@@ -870,7 +870,7 @@ class MCP_API Server {
      * @details The options set the number of event loop threads, run code on the event loop
      * before the server listens and while it shuts down, and bound the shutdown; see
      * HttpRunOptions for the steps. Exceptions from listening, and from HttpRunOptions::on_start,
-     * are propagated to the caller once the shutdown has run.
+     * on_drain_start and on_shutdown, are propagated to the caller once the shutdown has run.
      *
      * @param host  Local address to bind (e.g. "0.0.0.0" or "127.0.0.1").
      * @param port  TCP port to listen on, or 0 for one the system chooses.
