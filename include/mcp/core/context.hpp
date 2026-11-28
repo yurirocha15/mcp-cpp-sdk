@@ -60,6 +60,7 @@ class ITransport;
 namespace detail {
 struct ContextRouting;
 class DeprecationReporter;
+class InputActivity;
 class NotificationBudget;
 }  // namespace detail
 
@@ -423,6 +424,9 @@ class Context {
     std::shared_ptr<detail::NotificationBudget> budget_;
     /// Reports this context's use of a deprecated feature for its server; null reports nothing.
     std::shared_ptr<detail::DeprecationReporter> deprecations_;
+    /// Counts the questions this context has open, for the multi round-trip request it serves;
+    /// null outside one.
+    std::shared_ptr<detail::InputActivity> input_activity_;
     /// Record the URL-mode elicitations this context sends, and complete them; empty outside a
     /// session of 2025-11-25.
     std::function<void(const std::string&)> elicitation_recorder_;

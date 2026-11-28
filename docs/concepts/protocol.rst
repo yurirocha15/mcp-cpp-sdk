@@ -189,6 +189,13 @@ Some details to know:
 * A question that needs a capability the client did not declare in the request
   is answered with ``g_MISSING_REQUIRED_CLIENT_CAPABILITY`` (-32021), whose
   ``data.requiredCapabilities`` names it. The ``ctx`` call throws.
+* Questions the handler asks at the same time, such as the operands of
+  Boost.Asio's ``&&`` awaitable operator, share one ``input_required`` result.
+  The server sends it once no code of the handler runs or waits to run on its
+  executor and every question the handler has open is asked, so work that runs
+  next to an open question delays the result until the work waits or ends. A
+  question the handler asks after waiting for a timer or for I/O goes out in the
+  next round.
 * By default a waiting handler lives in the ``Server`` instance, and the retry
   must reach the same instance. Sealed request state removes that rule; see
   below.

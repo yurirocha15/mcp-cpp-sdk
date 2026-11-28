@@ -63,6 +63,12 @@ Versioning; a `0.x` version is a stable release unless its version has an
   and `set_legacy_sse()`) carries `[[deprecated]]`; the specification deprecates
   it.
 
+### Fixed
+
+- Questions a 2026-07-28 handler asks at the same time share one
+  `input_required` result also on the handler executor, where one asked a moment
+  later could miss the round.
+
 ### Migrating from 0.4.0
 
 - A build that treats warnings as errors and uses a deprecated feature defines

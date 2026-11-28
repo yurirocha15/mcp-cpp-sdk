@@ -105,6 +105,10 @@ Context Server::Impl::make_context(std::shared_ptr<std::atomic<bool>> cancelled,
                     std::move(principal),
                     mrtr ? mrtr->replaying : nullptr};
     detail::ContextRouting::set_deprecation_reporter(context, registry->deprecations);
+    if (mrtr && !task_run) {
+        // Its questions go to the multi round-trip request, which parks once all are asked.
+        detail::ContextRouting::set_input_activity(context, mrtr->activity);
+    }
     if (elicitation_target) {
         detail::ContextRouting::set_elicitation_routes(
             context,
@@ -620,10 +624,22 @@ Task<nlohmann::json> Server::Impl::call_on_handler_strand(const TypeErasedHandle
     if (handler_executor) {
         const auto loop = co_await boost::asio::this_coro::executor;
         detail::ContextRouting::through_loop(ctx, loop);
-        co_return co_await detail::run_on_pool(*handler_executor,
-                                               call_handler(handler, ctx, arguments));
+        // A handler that can ask the client runs counted, so that its request parks only once
+        // every part of it waits.
+        co_return co_await detail::run_on_pool(*handler_executor, call_handler(handler, ctx, arguments),
+                                               detail::ContextRouting::input_activity(ctx));
     }
     auto executor = co_await boost::asio::this_coro::executor;
+    auto activity = detail::ContextRouting::input_activity(ctx);
+    if (activity) {
+        // Counted as on the handler executor, so that its request parks only once every part of
+        // the handler waits.
+        auto strand =
+            detail::is_strand_executor(executor) ? executor : detail::make_strand_executor(executor);
+        const boost::asio::any_io_executor counted =
+            detail::CountingExecutor(std::move(strand), std::move(activity));
+        co_return co_await detail::spawn_awaitable(counted, call_handler(handler, ctx, arguments));
+    }
     if (detail::is_strand_executor(executor)) {
         co_return co_await handler(ctx, arguments);
     }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "mcp/detail/async/input_activity.hpp"
 #include "mcp/detail/async/strand_executor.hpp"
 
 #include <mcp/core/async.hpp>
@@ -266,13 +267,18 @@ inline bool awaits_elsewhere(const boost::asio::any_io_executor& executor) {
 /// The initiation of run_on_pool().
 struct PoolInitiation {
     template <typename Handler, typename T>
-    void operator()(Handler&& handler, const boost::asio::any_io_executor& pool, Task<T> task) const {
+    void operator()(Handler&& handler, const boost::asio::any_io_executor& pool, Task<T> task,
+                    std::shared_ptr<InputActivity> activity) const {
         const boost::asio::any_io_executor loop = boost::asio::get_associated_executor(handler);
         // The strand is made here, so that only the pool's side holds it: the waiting coroutine
         // may resume after the pool's context is gone, and a strand cannot be destroyed then.
+        boost::asio::any_io_executor strand = make_strand_executor(pool);
+        if (activity) {
+            strand = CountingExecutor(std::move(strand), std::move(activity));
+        }
         using Back = HandBack<std::decay_t<Handler>, T>;
         boost::asio::co_spawn(
-            make_strand_executor(pool), std::move(task),
+            std::move(strand), std::move(task),
             Back(std::make_shared<typename Back::Core>(
                 gate_of(loop), std::forward<Handler>(handler), loop,
                 "The handler executor ended before the handler returned", apart(pool, loop))));
@@ -285,18 +291,20 @@ struct PoolInitiation {
  *
  * @details The task returns to the awaiting coroutine through that coroutine's execution context
  * while the context takes results. The context's destruction waits for the task (see LoopGate) and
- * then destroys the coroutine unresumed; so does the pool's executor ending first.
+ * then destroys the coroutine unresumed; so does the pool's executor ending first. With an
+ * @p activity, the task runs on a CountingExecutor over the strand, which counts it there.
  */
 template <typename T>
-Task<T> run_on_pool(const boost::asio::any_io_executor& pool, Task<T> task) {
+Task<T> run_on_pool(const boost::asio::any_io_executor& pool, Task<T> task,
+                    std::shared_ptr<InputActivity> activity = nullptr) {
     if constexpr (std::is_void_v<T>) {
         return boost::asio::async_initiate<const boost::asio::use_awaitable_t<>&,
                                            void(std::exception_ptr)>(
-            PoolInitiation{}, boost::asio::use_awaitable, pool, std::move(task));
+            PoolInitiation{}, boost::asio::use_awaitable, pool, std::move(task), std::move(activity));
     } else {
         return boost::asio::async_initiate<const boost::asio::use_awaitable_t<>&,
                                            void(std::exception_ptr, T)>(
-            PoolInitiation{}, boost::asio::use_awaitable, pool, std::move(task));
+            PoolInitiation{}, boost::asio::use_awaitable, pool, std::move(task), std::move(activity));
     }
 }
 
@@ -416,6 +424,17 @@ struct ContextRouting {
     static void set_deprecation_reporter(Context& context,
                                          std::shared_ptr<DeprecationReporter> reporter) {
         context.deprecations_ = std::move(reporter);
+    }
+
+    /// Counts the questions @p context asks in @p activity, that of the multi round-trip request
+    /// it serves.
+    static void set_input_activity(Context& context, std::shared_ptr<InputActivity> activity) {
+        context.input_activity_ = std::move(activity);
+    }
+
+    /// The activity set_input_activity() gave @p context, or null.
+    [[nodiscard]] static const std::shared_ptr<InputActivity>& input_activity(const Context& context) {
+        return context.input_activity_;
     }
 
     /**

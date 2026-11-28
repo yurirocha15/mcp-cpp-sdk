@@ -1,4 +1,5 @@
 #include <mcp/core/constants.hpp>
+#include "mcp/detail/async/input_activity.hpp"
 #include "mcp/detail/protocol/notification_budget.hpp"
 
 #include <mcp/core/async.hpp>
@@ -133,6 +134,7 @@ Task<CreateMessageResult> Context::sample_llm(const CreateMessageRequestParams& 
     }
 
     nlohmann::json params = request;
+    const detail::OpenQuestion open(input_activity_);
     auto result_json = co_await sender_(std::string(methods::g_SAMPLING_CREATE_MESSAGE),
                                         std::move(params), std::move(options.key));
     co_return result_json.get<CreateMessageResult>();
@@ -153,6 +155,7 @@ Task<ElicitResult> Context::elicit(const ElicitRequestParams& params, InputOptio
             elicitation_recorder_(json_params.at("elicitationId").get<std::string>());
         }
     }
+    const detail::OpenQuestion open(input_activity_);
     auto result_json = co_await sender_(std::string(methods::g_ELICITATION_CREATE),
                                         std::move(json_params), std::move(options.key));
     auto result = result_json.get<ElicitResult>();
@@ -177,6 +180,7 @@ Task<ListRootsResult> Context::request_roots(InputOptions options) {
         throw std::runtime_error("Context has no request sender for reverse RPC");
     }
 
+    const detail::OpenQuestion open(input_activity_);
     auto result_json =
         co_await sender_(std::string(methods::g_ROOTS_LIST), std::nullopt, std::move(options.key));
     co_return result_json.get<ListRootsResult>();
