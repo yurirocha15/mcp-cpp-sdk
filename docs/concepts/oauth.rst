@@ -119,9 +119,11 @@ Any other miss is reported as an error: a server error, a ``404`` at a redirect
 target, a refusal by the fetch policy, or a ``404`` at the URL the challenge
 named. Nor does the manager fall back once it has accepted a
 protected-resource metadata document for its server, or when its injected
-credentials name an issuer on another origin. Nothing it reads or assumes on
-this path enters the discovery cache, so the next challenge looks for the
-protected-resource metadata again.
+credentials name an issuer on another origin. What it assumes on this path,
+the protected-resource metadata it stands in and the default endpoints, stays
+out of the discovery cache, so the next challenge looks for the
+protected-resource metadata again. Authorization-server metadata that the
+origin publishes is cached as any other is.
 
 ``AuthorizationRequest::legacy_discovery`` tells the consent callback that the
 attempt took this path, and a callback that does not trust such servers throws
